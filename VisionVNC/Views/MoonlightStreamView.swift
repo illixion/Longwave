@@ -164,7 +164,7 @@ struct MoonlightStreamView: View {
                 // explicitly — visionOS won't let an app close its own
                 // last window.
                 if !manager.openedViaPush {
-                    openWindow(id: "main")
+                    openWindow(id: "main", value: MainWindowID.shared)
                 }
                 dismissWindow(id: "moonlight-keyboard")
                 dismiss()
@@ -172,7 +172,7 @@ struct MoonlightStreamView: View {
             Button("End Session", role: .destructive) {
                 manager.stopStreamingAndQuit()
                 if !manager.openedViaPush {
-                    openWindow(id: "main")
+                    openWindow(id: "main", value: MainWindowID.shared)
                 }
                 dismissWindow(id: "moonlight-keyboard")
                 dismiss()
@@ -342,7 +342,7 @@ struct MoonlightStreamView: View {
             .tint(showStats ? .accentColor : nil)
 
             Button {
-                openWindow(id: "main")
+                openWindow(id: "main", value: MainWindowID.shared)
             } label: {
                 Label("Connections", systemImage: "house")
             }

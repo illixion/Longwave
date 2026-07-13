@@ -57,7 +57,7 @@ struct RemoteDesktopView: View {
                     // surface it explicitly — visionOS won't let an app
                     // close its own last window.
                     if !connectionManager.openedViaPush {
-                        openWindow(id: "main")
+                        openWindow(id: "main", value: MainWindowID.shared)
                     }
                     dismissWindow(id: "keyboard")
                     dismissWindow(id: "remote-desktop")
@@ -160,7 +160,7 @@ struct RemoteDesktopView: View {
                     .font(.headline)
                 Button("Close") {
                     if !connectionManager.openedViaPush {
-                        openWindow(id: "main")
+                        openWindow(id: "main", value: MainWindowID.shared)
                     }
                     dismissWindow(id: "remote-desktop")
                 }
@@ -216,7 +216,7 @@ struct RemoteDesktopView: View {
                 Label("Ctrl+Alt+Del", systemImage: "power")
             }
 
-            Button(action: { openWindow(id: "main") }) {
+            Button(action: { openWindow(id: "main", value: MainWindowID.shared) }) {
                 Label("Connections", systemImage: "house")
             }
             .labelStyle(.iconOnly)
@@ -225,7 +225,7 @@ struct RemoteDesktopView: View {
             Button(action: {
                 connectionManager.disconnect()
                 if !connectionManager.openedViaPush {
-                    openWindow(id: "main")
+                    openWindow(id: "main", value: MainWindowID.shared)
                 }
                 dismissWindow(id: "keyboard")
                 dismissWindow(id: "remote-desktop")

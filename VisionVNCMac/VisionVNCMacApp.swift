@@ -20,7 +20,10 @@ struct VisionVNCMacApp: App {
     @State private var broadcastServer = BroadcastServerManager()
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        // Value-typed with the shared constant identity so every
+        // `openWindow(id: "main", value:)` reactivates this one window instead
+        // of opening duplicates — matching visionOS. See `MainWindowID`.
+        WindowGroup(id: "main", for: MainWindowID.self) { _ in
             MacMainView()
                 .environment(connectionManager)
                 .environment(audioManager)
@@ -30,6 +33,8 @@ struct VisionVNCMacApp: App {
                 #endif
                 .frame(minWidth: 720, minHeight: 480)
                 .task { connectionManager.audioManager = audioManager }
+        } defaultValue: {
+            .shared
         }
         .modelContainer(for: SavedConnection.self)
 
@@ -123,11 +128,11 @@ private struct MenuBarHostContent: View {
         CompanionMenuView(
             controller: controller,
             broadcastServer: broadcastServer,
-            openMainAction: { openWindow(id: "main") }
+            openMainAction: { openWindow(id: "main", value: MainWindowID.shared) }
         )
         .onReceive(NotificationCenter.default.publisher(for: MacAppDelegate.summonMainWindow)) { _ in
             NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "main")
+            openWindow(id: "main", value: MainWindowID.shared)
         }
     }
 }

@@ -13,7 +13,10 @@ struct VisionVNCApp: App {
     #endif
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        // Value-typed with a single constant identity (`MainWindowID.shared`)
+        // so every `openWindow(id: "main", value:)` reactivates this one window
+        // rather than minting duplicates. See `MainWindowID`.
+        WindowGroup(id: "main", for: MainWindowID.self) { _ in
             MainView()
                 .environment(connectionManager)
                 .environment(audioManager)
@@ -28,6 +31,8 @@ struct VisionVNCApp: App {
                     // lockstep with its connection lifecycle.
                     connectionManager.audioManager = audioManager
                 }
+        } defaultValue: {
+            .shared
         }
         .modelContainer(for: SavedConnection.self)
 

@@ -59,7 +59,7 @@ struct AudioStreamView: View {
                 // surface it explicitly — visionOS won't let an app
                 // close its own last window.
                 if !audioManager.openedViaPush {
-                    openWindow(id: "main")
+                    openWindow(id: "main", value: MainWindowID.shared)
                 }
                 dismissWindow(id: "audio-stream")
             } label: {
@@ -68,7 +68,7 @@ struct AudioStreamView: View {
             .help("Disconnect")
 
             Button {
-                openWindow(id: "main")
+                openWindow(id: "main", value: MainWindowID.shared)
             } label: {
                 Image(systemName: "house")
             }

@@ -1,5 +1,16 @@
 import SwiftUI
 
+/// The main ("Connections") window is value-typed with a single constant
+/// identity. Every request to surface it opens with `MainWindowID.shared`, so
+/// visionOS reactivates the one existing main window instead of minting a
+/// duplicate — even when that window is buried in a `pushWindow` back-stack
+/// (the case that let the Home button spawn extra main windows). Value-matching
+/// enforces the one-window limit structurally, so no after-the-fact culling of
+/// stale instances is needed.
+enum MainWindowID: Int, Codable, Hashable {
+    case shared = 0
+}
+
 /// Tracks which of the app's windows are currently open and whether each is
 /// in the user's current room, so the Sessions tab can "summon" a window back
 /// to the user. On visionOS a window can be snapped in another room and become
@@ -51,7 +62,7 @@ final class WindowSessionRegistry {
             return
         }
         AppLog.app.line("ensureMainWindowVisible: summoning main window")
-        openWindow(id: "main")
+        openWindow(id: "main", value: MainWindowID.shared)
     }
 
     /// Window ids the user can summon, in display order. Excludes "main"

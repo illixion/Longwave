@@ -4,9 +4,6 @@ import SwiftData
 struct ConnectionListView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openWindow) private var openWindow
-    #if os(visionOS)
-    @Environment(\.pushWindow) private var pushWindow
-    #endif
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(SSHTerminalManager.self) private var sshManager
@@ -284,20 +281,9 @@ struct ConnectionListView: View {
             companionInject: companionInject
         )
 
-        // Push so the connection manager goes into the back stack and
-        // reappears automatically when the remote desktop window closes.
-        connectionManager.openedViaPush = true
-        presentSessionWindow(id: "remote-desktop")
-    }
-
-    /// Opens a session window. visionOS pushes (so the manager window goes into
-    /// the back stack and restores on dismiss); macOS opens a sibling window.
-    private func presentSessionWindow(id: String) {
-        #if os(visionOS)
-        pushWindow(id: id)
-        #else
-        openWindow(id: id)
-        #endif
+        // Open as a sibling window — the connection manager (main) stays open
+        // alongside, so surfacing one window never dismisses the other.
+        openWindow(id: "remote-desktop")
     }
 
     #if MOONLIGHT_ENABLED
@@ -315,7 +301,6 @@ struct ConnectionListView: View {
             title: connection.displayName,
             lowLatency: connection.lowLatencyAudio
         )
-        audioManager.openedViaPush = true
-        presentSessionWindow(id: "audio-stream")
+        openWindow(id: "audio-stream")
     }
 }

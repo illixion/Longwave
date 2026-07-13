@@ -3,10 +3,9 @@ import SwiftUI
 /// The main ("Connections") window is value-typed with a single constant
 /// identity. Every request to surface it opens with `MainWindowID.shared`, so
 /// visionOS reactivates the one existing main window instead of minting a
-/// duplicate — even when that window is buried in a `pushWindow` back-stack
-/// (the case that let the Home button spawn extra main windows). Value-matching
-/// enforces the one-window limit structurally, so no after-the-fact culling of
-/// stale instances is needed.
+/// duplicate when a Home button is tapped repeatedly. Value-matching enforces
+/// the one-window limit structurally, so no after-the-fact culling of stale
+/// instances is needed.
 enum MainWindowID: Int, Codable, Hashable {
     case shared = 0
 }

@@ -42,10 +42,6 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
 
     var connectionState: AppConnectionState = .idle
     var connectionTitle: String = ""
-    /// True when the remote desktop window was opened via pushWindow from
-    /// the connection manager — dismissing it then restores the manager
-    /// automatically, so no explicit openWindow("main") is needed.
-    var openedViaPush = false
     var framebufferImage: CGImage?
     var framebufferSize: CGSize = .zero
 

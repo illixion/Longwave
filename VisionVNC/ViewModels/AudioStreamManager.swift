@@ -110,10 +110,6 @@ final class AudioStreamManager {
             receiver?.setEQ(eqSettings)
         }
     }
-    /// True when the audio window was opened via pushWindow from the
-    /// connection manager — dismissing it then restores the manager
-    /// automatically. False after a space-restoration relaunch (standalone).
-    var openedViaPush = false
     var sampleRate: Double = 0
     var channelCount: Int = 0
     var bytesReceived: Int = 0

@@ -63,10 +63,6 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     }
 
     var connectionState: ConnectionState = .idle
-    /// True when the stream window was opened via pushWindow from the
-    /// connection manager — dismissing it then restores the manager
-    /// automatically, so no explicit openWindow("main") is needed.
-    var openedViaPush = false
     var serverInfo: ServerInfo?
     var apps: [MoonlightApp] = []
     var statusMessage: String = ""

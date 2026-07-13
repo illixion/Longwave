@@ -4,11 +4,7 @@ import SwiftUI
 /// Displays pairing status and PIN for Moonlight server pairing.
 struct MoonlightPairingView: View {
     @Environment(\.dismiss) private var dismiss
-    #if os(visionOS)
-    @Environment(\.pushWindow) private var pushWindow
-    #else
     @Environment(\.openWindow) private var openWindow
-    #endif
     @Environment(MoonlightConnectionManager.self) private var manager
 
     let connection: SavedConnection
@@ -152,14 +148,8 @@ struct MoonlightPairingView: View {
                 List(manager.apps) { app in
                     Button {
                         manager.launchApp(app)
-                        // Push so the connection manager returns when the
-                        // stream window closes.
-                        manager.openedViaPush = true
-                        #if os(visionOS)
-                        pushWindow(id: "moonlight-stream")
-                        #else
+                        // Open as a sibling window; the main window stays open.
                         openWindow(id: "moonlight-stream")
-                        #endif
                         dismiss()
                     } label: {
                         HStack {

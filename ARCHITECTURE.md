@@ -12,9 +12,9 @@ Seven `WindowGroup` scenes in `VisionVNCApp` (two conditionally compiled):
 6. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
 7. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 500x450 (`#if MOONLIGHT_ENABLED`)
 
-`VNCConnectionManager`, `AudioStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio connections **push** their windows (`pushWindow`), Moonlight presents `MoonlightPairingView` as a sheet which pushes the stream window on launch.
+`VNCConnectionManager`, `AudioStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio connections open their windows as plain siblings (`openWindow(id:)`), Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
 
-**Window navigation:** connection windows open via `pushWindow` so the main window goes into the back stack and restores automatically on dismiss; managers track `openedViaPush`. Sub-windows also carry a Home ornament (`.homeOrnament()`, bottom-front) that opens `id: "main"` — needed because visionOS reopens the last-used window on app launch. The audio mini player instead has home + reload buttons in its utility row (the ornament overlapped its transport controls).
+**Window navigation:** connection windows open as sibling windows (`openWindow(id:)`) so the main window stays open alongside — surfacing one window never dismisses the other. The main window is value-typed with a single constant identity (`MainWindowID.shared`); every `openWindow(id: "main", value:)` reactivates that one instance rather than spawning a duplicate. Sub-windows carry a Home ornament (`.homeOrnament()`, bottom-front) that opens `id: "main"` — needed because visionOS reopens the last-used window on app launch. The audio mini player instead has home + reload buttons in its utility row (the ornament overlapped its transport controls).
 
 ## Key Types — VNC
 
@@ -134,7 +134,7 @@ Gestures: single tap = left click, double tap = right click, two-finger press-an
 - Closing the remote desktop / stream window triggers `onDisappear` which disconnects and closes the keyboard window. The audio window instead uses a 2 s grace teardown (visionOS fires transient onDisappear during space restoration).
 - Pressing Disconnect immediately closes the windows; server-initiated VNC disconnect auto-closes after 1 second
 - Uses `dismissWindow(id:)` (not `dismiss()`) for proper `WindowGroup` window management
-- **visionOS refuses to programmatically close the app's last window.** Connection windows are pushed (`pushWindow`) so dismissal restores the manager from the back stack; standalone windows (space-restoration relaunch, `openedViaPush == false`) explicitly `openWindow(id: "main")` before dismissing. Don't reset `openedViaPush` in dismissal handlers — multiple dismissal paths can fire for one disconnect (caused spurious manager windows once).
+- **visionOS refuses to programmatically close the app's last window.** Connection windows open as siblings, so before dismissing one a window unconditionally re-surfaces the main window via `openWindow(id: "main", value: MainWindowID.shared)`. That's a no-op when main is already open (value-matching reactivates the single instance) and correctly restores it after a space-restoration relaunch brought back only a sub-window. (Earlier this used `pushWindow` + an `openedViaPush` flag; pushing buried main in a back-stack, and reactivating it popped the pushed window off the stack — closing the connection's window and tearing down the session.)
 - Moonlight disconnect offers choice: end session on server (quit app) or keep running (local disconnect only)
 
 ## Moonlight Networking Details

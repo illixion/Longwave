@@ -5,12 +5,33 @@ import SwiftUI
 /// Moonlight, or audio sender on the LAN. Without the grant, `NWConnection`
 /// and the audio receiver's `NWListener` silently fail to reach the host.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// Guards the home-screen re-invoke summon so it fires only for the first
+    /// activation of the process. A gaze-resume after visionOS suspends the
+    /// app also calls `applicationDidBecomeActive`; without this guard, merely
+    /// looking back at a wall-pinned window would pop an unwanted main window.
+    private var didHandleInitialActivation = false
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         triggerLocalNetworkAccessPrompt()
         return true
+    }
+
+    /// Home-screen re-invoke fix: if the app re-activates with no main window
+    /// open — e.g. the only connected scene is the audio-stream window snapped
+    /// in a room the user has left — summon a main window so tapping the app
+    /// icon does something instead of silently reactivating a far-away pop-out.
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        guard !didHandleInitialActivation else { return }
+        didHandleInitialActivation = true
+        Task { @MainActor in
+            // Let SwiftUI attach restored scenes and run their onAppear first,
+            // so `mainWindowCount` reflects reality before we decide to summon.
+            try? await Task.sleep(for: .milliseconds(400))
+            WindowSessionRegistry.shared.ensureMainWindowVisible()
+        }
     }
 
     /// Accessing `ProcessInfo.processInfo.hostName` performs a local-network

@@ -22,6 +22,7 @@ struct VisionVNCApp: App {
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightManager)
                 #endif
+                .trackMainWindow()
                 .task {
                     // Let the VNC manager drive a companion audio stream in
                     // lockstep with its connection lifecycle.

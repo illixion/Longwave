@@ -15,7 +15,44 @@ final class WindowSessionRegistry {
     /// (its scene phase is `.active`), `false` when snapped in another room.
     private(set) var sessions: [String: Bool] = [:]
 
+    /// Number of currently-open "main" windows. When this is zero the user has
+    /// no way to navigate the app, so a home-screen re-launch must summon one.
+    private(set) var mainWindowCount: Int = 0
+
+    /// Most recently captured `openWindow` action from a SwiftUI view. Every
+    /// window's root refreshes this on appear so a lifecycle hook can summon
+    /// the main window even when only pop-out scenes are connected (the main
+    /// window's own action disappears with it).
+    var openWindow: OpenWindowAction?
+
     private init() {}
+
+    // MARK: - Main window lifecycle
+
+    func registerMainWindow() {
+        mainWindowCount += 1
+    }
+
+    func unregisterMainWindow() {
+        mainWindowCount = max(0, mainWindowCount - 1)
+    }
+
+    /// Summons a main window if none is currently open. Safe to call from
+    /// app/scene lifecycle hooks; no-ops when a main window already exists.
+    ///
+    /// This is the home-screen re-invoke fix: on visionOS, tapping the app
+    /// icon while the only open window is a pop-out snapped in another room
+    /// merely reactivates that far-away scene — no main window appears and the
+    /// app looks dead. Re-opening "main" brings a usable window to the user.
+    func ensureMainWindowVisible() {
+        guard mainWindowCount == 0 else { return }
+        guard let openWindow else {
+            AppLog.app.line("ensureMainWindowVisible: no openWindow action captured")
+            return
+        }
+        AppLog.app.line("ensureMainWindowVisible: summoning main window")
+        openWindow(id: "main")
+    }
 
     /// Window ids the user can summon, in display order. Excludes "main"
     /// (the Sessions list itself lives there) and any window not open.
@@ -78,11 +115,16 @@ final class WindowSessionRegistry {
 private struct TrackWindowSession: ViewModifier {
     let id: String
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
         content
             .onAppear {
                 WindowSessionRegistry.shared.register(id)
+                // Keep a live openWindow reference from whichever scene is
+                // rendered, so the main window can be summoned even when only
+                // pop-outs remain connected.
+                WindowSessionRegistry.shared.openWindow = openWindow
             }
             .onDisappear {
                 WindowSessionRegistry.shared.unregister(id)
@@ -93,10 +135,33 @@ private struct TrackWindowSession: ViewModifier {
     }
 }
 
+/// Tracks the main window's presence (and refreshes the captured `openWindow`
+/// action) so `ensureMainWindowVisible()` knows when to summon one.
+private struct TrackMainWindow: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                WindowSessionRegistry.shared.registerMainWindow()
+                WindowSessionRegistry.shared.openWindow = openWindow
+            }
+            .onDisappear {
+                WindowSessionRegistry.shared.unregisterMainWindow()
+            }
+    }
+}
+
 extension View {
     /// Tracks this window in `WindowSessionRegistry` so it can be summoned
     /// from the Sessions tab.
     func trackWindowSession(id: String) -> some View {
         modifier(TrackWindowSession(id: id))
+    }
+
+    /// Tracks the main window so a home-screen re-launch can re-summon it when
+    /// only pop-out windows are connected.
+    func trackMainWindow() -> some View {
+        modifier(TrackMainWindow())
     }
 }

@@ -30,3 +30,6 @@ build/
 build/
 scripts/build-signing.conf
 Configuration/BuildInfo.xcconfig
+
+# Temp files
+spike/

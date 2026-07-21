@@ -111,7 +111,11 @@ trap cleanup EXIT
 # --- Helpers ---
 
 # Create a temporary keychain and import the given .p12 into it.
-# Echoes the SHA1 of the imported signing identity.
+# Sets SIGN_IDENTITY to the SHA1 of the imported signing identity.
+# Must be called directly, NOT via $(...): it sets KEYCHAIN_PATH and
+# ORIGINAL_KEYCHAINS for the EXIT trap, and a command-substitution
+# subshell would discard them — leaking the temp keychain into the
+# user search list on every build.
 setup_signing_keychain() {
     local p12="$1"
     local p12_password="$2"
@@ -141,7 +145,7 @@ setup_signing_keychain() {
         echo "       (is the password correct?)" >&2
         exit 1
     fi
-    echo "$sha1"
+    SIGN_IDENTITY="$sha1"
 }
 
 extract_entitlements() {
@@ -242,7 +246,7 @@ fi
 
 # Step 2: Import signing cert into a temporary keychain
 echo "==> Importing signing certificate from $(basename "$P12_PATH")..."
-SIGN_IDENTITY=$(setup_signing_keychain "$P12_PATH" "$P12_PW")
+setup_signing_keychain "$P12_PATH" "$P12_PW"
 echo "  Identity: $SIGN_IDENTITY"
 
 # Step 3: Extract entitlements from the provisioning profile

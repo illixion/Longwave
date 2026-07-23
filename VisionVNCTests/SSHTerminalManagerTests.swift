@@ -90,6 +90,87 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertEqual(Set([claude, copilot, custom]).count, 3)
     }
 
+    // MARK: - Stale-session reap
+
+    func testReapCommandOnlyKillsTaggedUnattachedIdleSessions() {
+        let cmd = SSHTerminalManager.staleSessionReapCommand(ttlSeconds: 43200)
+        // Host clock, not device clock, so skew can't mis-fire.
+        XCTAssertTrue(cmd.contains("now=$(date +%s)"))
+        // Lists attached-count, activity, the @visionvnc marker, and name.
+        XCTAssertTrue(cmd.contains("'#{session_attached}|#{session_activity}|#{@visionvnc}|#{session_name}'"))
+        // Guards: tagged (mark=1), zero attached clients (att=0), idle past TTL.
+        XCTAssertTrue(cmd.contains("[ \"$mark\" = 1 ]"))
+        XCTAssertTrue(cmd.contains("[ \"$att\" = 0 ]"))
+        XCTAssertTrue(cmd.contains("[ $((now - act)) -gt 43200 ]"))
+        XCTAssertTrue(cmd.contains("tmux kill-session -t \"$name\""))
+    }
+
+    func testReapTTLIsTwelveHours() {
+        XCTAssertEqual(SSHTerminalManager.staleSessionTTLSeconds, 12 * 60 * 60)
+    }
+
+    // MARK: - Modifier encoding
+
+    func testQuickKeyUnmodifiedReturnsBaseBytes() {
+        let up = TerminalQuickKey.catalog.first { $0.id == "up" }!
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(up, modifiers: []), [0x1B, 0x5B, 0x41])
+    }
+
+    func testAltArrowUsesCSIModifierForm() {
+        let left = TerminalQuickKey.catalog.first { $0.id == "left" }!
+        // ⌥← → ESC [ 1 ; 3 D  (param = 1 + alt(2))
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(left, modifiers: .alt),
+                       [0x1B, 0x5B, 0x31, 0x3B, 0x33, 0x44])
+    }
+
+    func testCtrlShiftArrowCombinesModifierParam() {
+        let up = TerminalQuickKey.catalog.first { $0.id == "up" }!
+        // ⌃⇧↑ → param = 1 + shift(1) + ctrl(4) = 6 → ESC [ 1 ; 6 A
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(up, modifiers: [.ctrl, .shift]),
+                       [0x1B, 0x5B, 0x31, 0x3B, 0x36, 0x41])
+    }
+
+    func testShiftTabViaTabModifiable() {
+        let tab = TerminalQuickKey.catalog.first { $0.id == "tab" }!
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(tab, modifiers: .shift), [0x1B, 0x5B, 0x5A])
+    }
+
+    func testPageUpModifierUsesTildeForm() {
+        let pgUp = TerminalQuickKey.catalog.first { $0.id == "page-up" }!
+        // ⌃PgUp → ESC [ 5 ; 5 ~
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(pgUp, modifiers: .ctrl),
+                       [0x1B, 0x5B, 0x35, 0x3B, 0x35, 0x7E])
+    }
+
+    func testControlKeysIgnoreModifiers() {
+        // ⌃C is already a control combo with no modifiable identity — latches
+        // don't corrupt it.
+        let ctrlC = TerminalQuickKey.catalog.first { $0.id == "ctrl-c" }!
+        XCTAssertEqual(TerminalKeyEncoder.encodeQuickKey(ctrlC, modifiers: [.alt, .shift]), [0x03])
+    }
+
+    func testComposerCtrlProducesControlByte() {
+        XCTAssertEqual(TerminalKeyEncoder.encodeComposerKey("b", modifiers: .ctrl), [0x02])
+    }
+
+    func testComposerAltPrefixesEscape() {
+        // ⌥f → ESC f (readline word-forward)
+        XCTAssertEqual(TerminalKeyEncoder.encodeComposerKey("f", modifiers: .alt), [0x1B, 0x66])
+    }
+
+    func testComposerCtrlAltCombines() {
+        XCTAssertEqual(TerminalKeyEncoder.encodeComposerKey("b", modifiers: [.ctrl, .alt]), [0x1B, 0x02])
+    }
+
+    func testComposerShiftUppercasesLetter() {
+        XCTAssertEqual(TerminalKeyEncoder.encodeComposerKey("a", modifiers: .shift), [0x41])
+    }
+
+    func testComposerMultiCharYieldsNil() {
+        // Not a single keypress — caller sends it as ordinary text instead.
+        XCTAssertNil(TerminalKeyEncoder.encodeComposerKey("ls", modifiers: .ctrl))
+    }
+
     // MARK: - Retry backoff
 
     func testNextRetryDelayDoublesAndCaps() {

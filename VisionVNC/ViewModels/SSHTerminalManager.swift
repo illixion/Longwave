@@ -536,6 +536,40 @@ final class SSHTerminalManager {
         return Self.parseLsEntries(out)
     }
 
+    // MARK: - Stale-session garbage collection
+
+    /// How long an app-created tmux session may sit with no attached client and
+    /// no activity before it's considered abandoned and reaped. Short disconnects
+    /// (window close, network blip, reconnect) stay well under this, so the
+    /// reconnect-to-a-running-agent behaviour is preserved; what it kills is the
+    /// long tail of sessions nobody came back to. Reaping them also frees agents
+    /// pinning a stale on-disk binary after a `claude` self-update (a running
+    /// process keeps executing the old inode until it exits and relaunches).
+    static let staleSessionTTLSeconds = 12 * 60 * 60  // 12h
+
+    /// Server-side reap pipeline: for every `@visionvnc`-tagged session with zero
+    /// attached clients whose last activity is older than `ttlSeconds`, kill it.
+    /// The host's own clock (`date +%s` vs tmux `#{session_activity}`, both host
+    /// epoch) is used so device/host clock skew can't mis-fire. Untagged sessions
+    /// (the user's own) and currently-attached ones (in use on this or another
+    /// device) are never touched. POSIX-`sh`-safe so it runs under either login
+    /// shell sshd hands us.
+    static func staleSessionReapCommand(ttlSeconds: Int) -> String {
+        "now=$(date +%s); tmux list-sessions "
+            + "-F '#{session_attached}|#{session_activity}|#{@visionvnc}|#{session_name}' 2>/dev/null "
+            + "| while IFS='|' read -r att act mark name; do "
+            + "[ \"$mark\" = 1 ] && [ \"$att\" = 0 ] && [ $((now - act)) -gt \(ttlSeconds) ] "
+            + "&& tmux kill-session -t \"$name\"; done"
+    }
+
+    /// Reap abandoned app-created sessions on the host. Run on connect, before
+    /// rediscovery, so reaped sessions simply don't reappear in the list. Silent
+    /// on any failure (no tmux, no server, host unreachable).
+    func reapStaleSessions(host: String, port: Int, username: String) async {
+        let command = Self.staleSessionReapCommand(ttlSeconds: Self.staleSessionTTLSeconds)
+        _ = try? await runCommand(host: host, port: port, username: username, command: command)
+    }
+
     // MARK: - Session rediscovery (after app restart)
 
     /// The in-memory `sessions` list doesn't survive an app relaunch, but the

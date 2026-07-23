@@ -12,6 +12,17 @@ import UIKit
 final class VisionTerminalView: TerminalView {
     var keyboardFocusEnabled = false
 
+    /// Fired when the view loses first responder for a reason *other* than an
+    /// app-initiated toggle — i.e. the user dismissed the software keyboard. Lets
+    /// the owning view reset its `keyboardFocused` state so the toggle button
+    /// reflects reality; without it the button's first tap is wasted "turning off"
+    /// an already-dismissed keyboard, forcing a double-tap to re-summon.
+    var onExternalFocusRelease: (() -> Void)?
+
+    /// Set while we resign first responder ourselves (`setKeyboardFocus(false)`)
+    /// so the resign override can tell an app-initiated release from a user one.
+    private var suppressReleaseCallback = false
+
     override var canBecomeFirstResponder: Bool { keyboardFocusEnabled }
 
     /// Apply the desired keyboard-focus state, grabbing or releasing first
@@ -22,8 +33,22 @@ final class VisionTerminalView: TerminalView {
         if on {
             _ = becomeFirstResponder()
         } else if isFirstResponder {
+            suppressReleaseCallback = true
             _ = resignFirstResponder()
+            suppressReleaseCallback = false
         }
+    }
+
+    /// The OS resigns us when the user dismisses the keyboard. Mirror that into
+    /// `keyboardFocusEnabled` (so `canBecomeFirstResponder` stays truthful) and,
+    /// unless we triggered the resign ourselves, notify the owner to reconcile.
+    override func resignFirstResponder() -> Bool {
+        let didResign = super.resignFirstResponder()
+        if didResign {
+            keyboardFocusEnabled = false
+            if !suppressReleaseCallback { onExternalFocusRelease?() }
+        }
+        return didResign
     }
 }
 
@@ -36,11 +61,16 @@ struct TerminalEmulatorView: UIViewRepresentable {
     var fontSize: Double = ConnectionDefaults.terminalFontSizeDefault
     /// When true, the terminal grabs first responder for direct hardware-keyboard
     /// input and text selection; when false it's display-only (dictation-safe).
-    var keyboardFocused: Bool = false
+    /// Two-way so a user-driven keyboard dismissal flows back and resets it.
+    @Binding var keyboardFocused: Bool
 
     func makeUIView(context: Context) -> TerminalView {
         let terminal = VisionTerminalView(frame: .zero)
         terminal.terminalDelegate = context.coordinator
+        context.coordinator.focusBinding = $keyboardFocused
+        terminal.onExternalFocusRelease = { [weak coordinator = context.coordinator] in
+            coordinator?.focusReleasedExternally()
+        }
         // Opaque dark backdrop — visionOS glass washes out ANSI colors.
         let dark = UIColor(white: 0.07, alpha: 1.0)
         terminal.nativeBackgroundColor = dark
@@ -65,6 +95,7 @@ struct TerminalEmulatorView: UIViewRepresentable {
         if uiView.font.pointSize != fontSize {
             uiView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
+        context.coordinator.focusBinding = $keyboardFocused
         (uiView as? VisionTerminalView)?.setKeyboardFocus(keyboardFocused)
     }
 
@@ -80,9 +111,20 @@ struct TerminalEmulatorView: UIViewRepresentable {
     /// keystroke ordering).
     final class Coordinator: NSObject, TerminalViewDelegate {
         private let session: SSHSession
+        /// Source of truth for the keyboard toggle, refreshed each update so a
+        /// user-driven dismissal can reset it. Held here (not on the struct,
+        /// which is recreated per update) so the UIView callback stays valid.
+        var focusBinding: Binding<Bool>?
         init(session: SSHSession) { self.session = session }
 
         func detach() { MainActor.assumeIsolated { session.detach() } }
+
+        /// User dismissed the software keyboard — clear the toggle so the next
+        /// button tap re-summons it (rather than being spent re-syncing state).
+        func focusReleasedExternally() {
+            guard focusBinding?.wrappedValue == true else { return }
+            focusBinding?.wrappedValue = false
+        }
 
         nonisolated func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
             MainActor.assumeIsolated { session.resize(cols: newCols, rows: newRows) }

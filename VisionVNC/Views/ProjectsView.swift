@@ -309,6 +309,9 @@ struct ProjectsView: View {
     /// host (the in-memory list is lost on app relaunch).
     private func discoverSessions() async {
         guard let host = selectedHost else { return }
+        // Reap abandoned sessions first so they don't reappear in the list (and
+        // so stale post-update agent binaries get relaunched on next open).
+        await sshManager.reapStaleSessions(host: host.hostname, port: host.port, username: host.sshUsername)
         await sshManager.discoverClaudeSessions(host: host.hostname, port: host.port, username: host.sshUsername)
     }
 

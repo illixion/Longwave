@@ -14,9 +14,10 @@ struct SSHTerminalView: View {
     @State private var composer: String = ""
     @FocusState private var composerFocused: Bool
 
-    /// When latched (the ⌃ key in the row), a single-letter send becomes the
-    /// matching control character (e.g. ⌃ + "b" → 0x02 — tmux prefix).
-    @State private var ctrlLatched = false
+    /// Latched on-screen modifiers (⌃/⌥/⇧). Applied to the next quick-key press
+    /// or the next composer send, then cleared. E.g. ⌃ + "b" → 0x02 (tmux
+    /// prefix), ⌥ + ← → word-left, ⇧ + tab → back-tab.
+    @State private var modifiers: TerminalModifiers = []
 
     /// Hands first responder to the terminal for direct hardware-keyboard input
     /// and text selection. Off by default so an accidental gaze-tap can't steal
@@ -53,7 +54,7 @@ struct SSHTerminalView: View {
         VStack(spacing: 0) {
             statusRow(session)
             TerminalEmulatorView(session: session, fontSize: terminalFontSize,
-                                 keyboardFocused: keyboardFocused)
+                                 keyboardFocused: $keyboardFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             quickKeyRow(session)
             composerBar(session)
@@ -168,13 +169,15 @@ struct SSHTerminalView: View {
         let keys = enabledQuickKeys
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ctrlLatchButton
+                modifierLatch("⌃", .ctrl)
+                modifierLatch("⌥", .alt)
+                modifierLatch("⇧", .shift)
                 Divider().frame(height: 28)
                 ForEach(Array(keys.enumerated()), id: \.element.id) { index, key in
                     if index > 0, keys[index - 1].group != key.group {
                         Divider().frame(height: 28)
                     }
-                    quickKey(key.label, key.bytes, session)
+                    quickKey(key, session)
                 }
             }
             .padding(.horizontal, 16)
@@ -183,20 +186,27 @@ struct SSHTerminalView: View {
         .background(.bar)
     }
 
-    private var ctrlLatchButton: some View {
-        Button("⌃") { ctrlLatched.toggle() }
-            .buttonStyle(.bordered)
-            .tint(ctrlLatched ? .accentColor : nil)
-            .frame(minWidth: 48, minHeight: 44)
+    /// A latching modifier key. Tap to arm/disarm; armed modifiers apply to the
+    /// next emitted key (quick-key or composer send) and then clear.
+    private func modifierLatch(_ label: String, _ mod: TerminalModifiers) -> some View {
+        Button(label) {
+            if modifiers.contains(mod) { modifiers.remove(mod) } else { modifiers.insert(mod) }
+        }
+        .buttonStyle(.bordered)
+        .tint(modifiers.contains(mod) ? .accentColor : nil)
+        .frame(minWidth: 48, minHeight: 44)
     }
 
-    private func quickKey(_ label: String, _ bytes: [UInt8], _ session: SSHSession) -> some View {
-        Button(label) { session.sendBytes(bytes) }
-            .buttonStyle(.bordered)
-            .frame(minWidth: 48, minHeight: 44)
-            // Unlike composed text, raw key bytes aren't worth queueing —
-            // disable instead of silently dropping while disconnected.
-            .disabled(!session.isReady)
+    private func quickKey(_ key: TerminalQuickKey, _ session: SSHSession) -> some View {
+        Button(key.label) {
+            let bytes = TerminalKeyEncoder.encodeQuickKey(key, modifiers: modifiers)
+            if session.sendBytes(bytes) { modifiers = [] }
+        }
+        .buttonStyle(.bordered)
+        .frame(minWidth: 48, minHeight: 44)
+        // Unlike composed text, raw key bytes aren't worth queueing —
+        // disable instead of silently dropping while disconnected.
+        .disabled(!session.isReady)
     }
 
     // MARK: - Composer
@@ -244,14 +254,15 @@ struct SSHTerminalView: View {
     /// and flushes when the session reconnects.
     private func send(_ session: SSHSession) {
         guard !composer.isEmpty else { return }
-        if ctrlLatched {
-            ctrlLatched = false
-            let trimmed = composer.trimmingCharacters(in: .whitespaces)
-            if let ctrl = TerminalKeyEncoder.controlByte(for: trimmed) {
-                if session.sendBytes([ctrl]) { composer = "" }
+        if !modifiers.isEmpty {
+            // A latched modifier turns the composed text into a single modified
+            // keypress (e.g. ⌃b → 0x02, ⌥f → ESC f). Only single ASCII chars
+            // have a modified form; anything longer falls through to plain text.
+            if let bytes = TerminalKeyEncoder.encodeComposerKey(composer, modifiers: modifiers) {
+                if session.sendBytes(bytes) { composer = ""; modifiers = [] }
                 return
             }
-            // No control mapping — fall through and send as plain text.
+            modifiers = []
         }
         session.sendComposerText(composer)
         composer = ""

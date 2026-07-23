@@ -37,6 +37,11 @@ struct SSHTerminalView: View {
     /// Drives the "close or force-restart" modal raised by the header's ✕ button.
     @State private var showingSessionActions = false
 
+    /// Auto-hands keyboard focus to the terminal whenever a hardware keyboard is
+    /// attached, so a Bluetooth keyboard drives the session without first tapping
+    /// the keyboard toggle (mirrors Moonlight/VNC's always-on capture).
+    @State private var keyboardMonitor = HardwareKeyboardMonitor()
+
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize)
     private var terminalFontSize: Double = ConnectionDefaults.terminalFontSizeDefault
     @AppStorage(ConnectionDefaults.Keys.terminalQuickKeys)
@@ -55,10 +60,28 @@ struct SSHTerminalView: View {
         // appear / scene activation, stop retrying when the window goes away.
         // Sessions are looked up by id inside the closures — the window can
         // outlive a captured session reference.
-        .onAppear { manager.session(sessionID)?.ensureConnected() }
-        .onDisappear { manager.session(sessionID)?.windowDisappeared() }
+        .onAppear {
+            manager.session(sessionID)?.ensureConnected()
+            keyboardMonitor.start()
+            // A keyboard already paired when the window opens should drive the
+            // terminal right away (unless the composer is actively focused).
+            if keyboardMonitor.isConnected, !composerFocused { keyboardFocus.request() }
+        }
+        .onDisappear {
+            manager.session(sessionID)?.windowDisappeared()
+            keyboardMonitor.stop()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { manager.session(sessionID)?.ensureConnected() }
+        }
+        // Hardware keyboard plugged in → grab focus; unplugged → release back to
+        // the dictation-safe display-only state.
+        .onChange(of: keyboardMonitor.isConnected) { _, connected in
+            if connected {
+                if !composerFocused { keyboardFocus.request() }
+            } else {
+                keyboardFocus.release()
+            }
         }
         // Composer focus always wins. Do not auto-focus the terminal on blur:
         // visionOS can transiently report a blur while dictation updates, and

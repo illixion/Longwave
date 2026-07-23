@@ -34,6 +34,9 @@ struct SSHTerminalView: View {
     #endif
 
 
+    /// Drives the "close or force-restart" modal raised by the header's ✕ button.
+    @State private var showingSessionActions = false
+
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize)
     private var terminalFontSize: Double = ConnectionDefaults.terminalFontSizeDefault
     @AppStorage(ConnectionDefaults.Keys.terminalQuickKeys)
@@ -94,25 +97,55 @@ struct SSHTerminalView: View {
     @ViewBuilder
     private func statusRow(_ session: SSHSession) -> some View {
         HStack(spacing: 10) {
+            // Controls on the left.
+            scrollControls(session)
+            keyboardFocusToggle
+            reloadButton(session)
+            closeButton
+            // Connection status next to the controls.
             Circle()
                 .fill(statusColor(session.state))
                 .frame(width: 8, height: 8)
+            Text(statusText(session))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            // Host info on the right.
             Text(session.title)
                 .font(.headline)
             Text(session.username + "@" + session.host)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Spacer()
-            Text(statusText(session))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            scrollControls(session)
-            keyboardFocusToggle
-            reloadButton(session)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+        .confirmationDialog("Session", isPresented: $showingSessionActions,
+                            titleVisibility: .visible) {
+            Button("Close Session", role: .destructive) {
+                manager.stopSession(sessionID)
+                dismissWindow(id: "ssh-terminal", value: sessionID)
+            }
+            Button("Force Restart") {
+                manager.forceRestartSession(sessionID)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Close this session, or force a fresh restart if the shell is frozen (e.g. bash stopped responding).")
+        }
+    }
+
+    /// Raises the close/force-restart modal. The remote tmux session is only
+    /// torn down once the user confirms a choice in the dialog.
+    private var closeButton: some View {
+        Button {
+            showingSessionActions = true
+        } label: {
+            Image(systemName: "xmark")
+        }
+        .buttonStyle(.borderless)
+        .tint(.red)
+        .help("Close or restart this session")
     }
 
     /// Gaze-friendly paging, a screenful at a time. Lands wherever a drag would:

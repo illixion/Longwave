@@ -35,6 +35,11 @@ final class SSHSession: Identifiable {
 
     enum Kind: Sendable { case shell, claude }
 
+    /// tmux session name on the host. Claude sessions use the bare slug; shell
+    /// sessions are namespaced with a `vnc-` prefix (see `newShellSession`). A
+    /// non-tmux shell has no such session — killing this name is a harmless no-op.
+    var tmuxSessionName: String { kind == .claude ? id.raw : "vnc-\(id.raw)" }
+
     enum State: Equatable {
         case connecting
         case ready
@@ -458,20 +463,39 @@ final class SSHTerminalManager {
         sessions.removeAll { $0.id == id }
     }
 
-    /// Stop a session from the UI. For managed agent sessions this also kills
-    /// the tmux session on the host, so the agent actually exits (a plain
-    /// disconnect leaves it running — the user previously had to Ctrl+C on the
-    /// Mac) and it isn't resurrected by the next rediscovery pass.
+    /// Stop a session from the UI. This also kills the tmux session on the host,
+    /// so the agent (or shell) actually exits — a plain disconnect leaves it
+    /// running (the user previously had to Ctrl+C on the Mac) and it would be
+    /// resurrected by the next rediscovery pass.
     func stopSession(_ id: SSHSessionID) {
-        if let s = session(id), s.kind == .claude {
-            let host = s.host, port = s.port, user = s.username, name = id.raw
-            Task { [weak self] in
-                _ = try? await self?.runCommand(
-                    host: host, port: port, username: user,
-                    command: "tmux kill-session -t \(Self.shellSingleQuote(name)) 2>/dev/null")
-            }
+        if let s = session(id) {
+            killTmux(host: s.host, port: s.port, username: s.username, name: s.tmuxSessionName)
         }
         remove(id)
+    }
+
+    /// Force a clean restart for a wedged session (e.g. a frozen shell that a
+    /// plain reconnect would just re-attach to): kill the remote tmux session so
+    /// the next launch creates a fresh one, then relaunch. Waits for the kill to
+    /// land before restarting so `tmux new -A` can't re-attach the dead pane.
+    func forceRestartSession(_ id: SSHSessionID) {
+        guard let s = session(id) else { return }
+        let host = s.host, port = s.port, user = s.username, name = s.tmuxSessionName
+        Task { [weak self] in
+            _ = try? await self?.runCommand(
+                host: host, port: port, username: user,
+                command: "tmux kill-session -t \(Self.shellSingleQuote(name)) 2>/dev/null")
+            s.restart()
+        }
+    }
+
+    /// Fire-and-forget `tmux kill-session` on the host (no-op if no such session).
+    private func killTmux(host: String, port: Int, username: String, name: String) {
+        Task { [weak self] in
+            _ = try? await self?.runCommand(
+                host: host, port: port, username: username,
+                command: "tmux kill-session -t \(Self.shellSingleQuote(name)) 2>/dev/null")
+        }
     }
 
     /// tmux-safe session name: alphanumerics, dashes collapsed, never empty.

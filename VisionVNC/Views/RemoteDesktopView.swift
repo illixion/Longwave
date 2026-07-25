@@ -52,11 +52,12 @@ struct RemoteDesktopView: View {
                 // Server-initiated disconnect: close windows after a brief delay
                 Task {
                     try? await Task.sleep(for: .seconds(1))
-                    // Surface the connection manager (a no-op if it's already
-                    // open; visionOS won't let an app close its last window).
-                    openWindow(id: "main", value: MainWindowID.shared)
-                    dismissWindow(id: "keyboard")
-                    dismissWindow(id: "remote-desktop")
+                    // Surface the connection manager and wait for it: visionOS
+                    // won't let an app close its own last window.
+                    WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                        dismissWindow(id: "keyboard")
+                        dismissWindow(id: "remote-desktop")
+                    }
                 }
             }
         }
@@ -155,8 +156,9 @@ struct RemoteDesktopView: View {
                 Text(error ?? "Disconnected")
                     .font(.headline)
                 Button("Close") {
-                    openWindow(id: "main", value: MainWindowID.shared)
-                    dismissWindow(id: "remote-desktop")
+                    WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                        dismissWindow(id: "remote-desktop")
+                    }
                 }
             } else {
                 ProgressView()
@@ -218,9 +220,10 @@ struct RemoteDesktopView: View {
 
             Button(action: {
                 connectionManager.disconnect()
-                openWindow(id: "main", value: MainWindowID.shared)
-                dismissWindow(id: "keyboard")
-                dismissWindow(id: "remote-desktop")
+                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                    dismissWindow(id: "keyboard")
+                    dismissWindow(id: "remote-desktop")
+                }
             }) {
                 Label("Disconnect", systemImage: "xmark.circle")
             }

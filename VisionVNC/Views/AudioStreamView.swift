@@ -54,10 +54,12 @@ struct AudioStreamView: View {
         HStack(spacing: 28) {
             Button(role: .destructive) {
                 audioManager.userDisconnect()
-                // Surface the connection manager (a no-op if it's already
-                // open; visionOS won't let an app close its own last window).
-                openWindow(id: "main", value: MainWindowID.shared)
-                dismissWindow(id: "audio-stream")
+                // Surface the connection manager first and wait for it to
+                // exist: visionOS won't let an app close its own last window,
+                // so closing before main is on screen is silently ignored.
+                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                    dismissWindow(id: "audio-stream")
+                }
             } label: {
                 Image(systemName: "xmark.circle")
             }

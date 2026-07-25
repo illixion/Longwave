@@ -64,6 +64,48 @@ final class WindowSessionRegistry {
         openWindow(id: "main", value: MainWindowID.shared)
     }
 
+    /// Surfaces the main window and runs `close` only once main is actually on
+    /// screen.
+    ///
+    /// visionOS refuses to let an app close its own last window, so every
+    /// session-teardown path has to open a main window first. But `openWindow`
+    /// is asynchronous — the scene is created a turn or more later — so a
+    /// `dismissWindow` issued in the same turn can still be evaluated while
+    /// the closing window *is* the last one, and the close is silently
+    /// dropped: the session window stays up (and, with the pushWindow
+    /// back-stack gone, nothing else pops it). Waiting for the main window
+    /// root's `onAppear` (i.e. `registerMainWindow()`) makes the handoff
+    /// ordered instead of racy.
+    ///
+    /// When main is already open this closes synchronously, so the common case
+    /// keeps its current single-turn behavior.
+    func closeAfterSurfacingMain(
+        using openWindow: OpenWindowAction,
+        _ close: @escaping @MainActor () -> Void
+    ) {
+        openWindow(id: "main", value: MainWindowID.shared)
+        guard mainWindowCount == 0 else {
+            close()
+            return
+        }
+        Task { @MainActor in
+            // Bounded wait: if the main window never materializes, close
+            // anyway rather than leaving the user stuck in a dead session.
+            var waitedMS = 0
+            while mainWindowCount == 0, waitedMS < Self.mainWindowWaitTimeoutMS {
+                try? await Task.sleep(for: .milliseconds(Self.mainWindowPollMS))
+                waitedMS += Self.mainWindowPollMS
+            }
+            if mainWindowCount == 0 {
+                AppLog.app.line("closeAfterSurfacingMain: main window never appeared; closing anyway")
+            }
+            close()
+        }
+    }
+
+    private static let mainWindowPollMS = 50
+    private static let mainWindowWaitTimeoutMS = 3_000
+
     /// Window ids the user can summon, in display order. Excludes "main"
     /// (the Sessions list itself lives there) and any window not open.
     var summonableIDs: [String] {

@@ -147,7 +147,12 @@ struct SSHTerminalView: View {
                             titleVisibility: .visible) {
             Button("Close Session", role: .destructive) {
                 manager.stopSession(sessionID)
-                dismissWindow(id: "ssh-terminal", value: sessionID)
+                // Surface the connection manager first and wait for it:
+                // visionOS won't let an app close its own last window, so a
+                // terminal that is the only open window would refuse to close.
+                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                    dismissWindow(id: "ssh-terminal", value: sessionID)
+                }
             }
             Button("Force Restart") {
                 manager.forceRestartSession(sessionID)

@@ -48,7 +48,6 @@ private struct VideoDisplayView: UIViewRepresentable {
 /// SwiftUI view that displays the Moonlight video stream and handles input.
 struct MoonlightStreamView: View {
     @Environment(MoonlightConnectionManager.self) private var manager
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.scenePhase) private var scenePhase
@@ -159,21 +158,28 @@ struct MoonlightStreamView: View {
         .alert("Disconnect", isPresented: $showDisconnectAlert) {
             Button("Keep Running") {
                 manager.stopStreaming()
-                // Surface the connection manager (a no-op if it's already
-                // open; visionOS won't let an app close its own last window).
-                openWindow(id: "main", value: MainWindowID.shared)
-                dismissWindow(id: "moonlight-keyboard")
-                dismiss()
+                closeStreamWindow()
             }
             Button("End Session", role: .destructive) {
                 manager.stopStreamingAndQuit()
-                openWindow(id: "main", value: MainWindowID.shared)
-                dismissWindow(id: "moonlight-keyboard")
-                dismiss()
+                closeStreamWindow()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Do you want to end the session on the server, or keep it running for later?")
+        }
+    }
+
+    // MARK: - Teardown
+
+    /// Hands off to the connection manager, then closes the stream window and
+    /// its keyboard. `dismissWindow(id:)` rather than `dismiss()` so the close
+    /// targets a known scene, and ordered behind the main window because
+    /// visionOS won't let an app close its own last window.
+    private func closeStreamWindow() {
+        WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+            dismissWindow(id: "moonlight-keyboard")
+            dismissWindow(id: "moonlight-stream")
         }
     }
 

@@ -19,7 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Load configuration ---
-CONF_FILE="$SCRIPT_DIR/build-signing.conf"
+# BUILD_SIGNING_CONF lets a one-off build (a reference sample, an A/B control app) reuse this
+# signing path without touching the real config.
+CONF_FILE="${BUILD_SIGNING_CONF:-$SCRIPT_DIR/build-signing.conf}"
 if [[ ! -f "$CONF_FILE" ]]; then
     echo "ERROR: Configuration file not found: $CONF_FILE" >&2
     echo "Copy scripts/build-signing.conf.example to scripts/build-signing.conf and edit it." >&2
@@ -172,11 +174,15 @@ sign_app() {
     # Sign nested app extensions before the outer bundle (inside-out rule).
     # Same profile entitlements as the app — sideload profiles carry one
     # application-identifier for everything.
-    find "$app_path/PlugIns" -maxdepth 1 -name '*.appex' -type d 2>/dev/null | while read -r appex; do
-        echo "  Signing: $(basename "$appex") (with entitlements)"
-        codesign --force --sign "$identity" --keychain "$keychain" \
-            --entitlements "$entitlements" --timestamp=none "$appex"
-    done
+    # Guard on the directory: an app with no extensions is normal, and a failing `find` in a
+    # pipeline trips `set -o pipefail` and aborts the whole script without printing anything.
+    if [[ -d "$app_path/PlugIns" ]]; then
+        find "$app_path/PlugIns" -maxdepth 1 -name '*.appex' -type d | while read -r appex; do
+            echo "  Signing: $(basename "$appex") (with entitlements)"
+            codesign --force --sign "$identity" --keychain "$keychain" \
+                --entitlements "$entitlements" --timestamp=none "$appex"
+        done
+    fi
 
     # Sign the main app bundle with entitlements
     echo "  Signing: $(basename "$app_path") (with entitlements)"
@@ -222,11 +228,17 @@ if [[ "$SIGN_ONLY" == false ]]; then
         build
 
     echo "==> Packaging IPA..."
-    APP_PATH=$(find "$BUILD_DIR/DerivedData" -name '*.app' -type d | head -1)
+    # Match the target's own bundle. DerivedData is shared across schemes, so a bare
+    # "first .app found" silently packages a stale app from a previous build of a different
+    # target — which is a very confusing way to deploy the wrong binary.
+    APP_PATH=$(find "$BUILD_DIR/DerivedData" -name "${TARGET_NAME}.app" -type d | head -1)
     if [[ -z "$APP_PATH" ]]; then
-        echo "ERROR: No .app bundle found in DerivedData" >&2
+        echo "ERROR: No ${TARGET_NAME}.app found in DerivedData." >&2
+        echo "       Bundles present:" >&2
+        find "$BUILD_DIR/DerivedData" -name '*.app' -type d -exec basename {} \; >&2
         exit 1
     fi
+    echo "  Packaging: $APP_PATH"
     rm -rf "$BUILD_DIR/Payload"
     mkdir -p "$BUILD_DIR/Payload"
     cp -R "$APP_PATH" "$BUILD_DIR/Payload/"
@@ -272,7 +284,12 @@ fi
 # IDs are patched per-bundle here instead.
 echo "==> Setting bundle identifiers..."
 plutil -replace CFBundleIdentifier -string "$BUILD_BUNDLE_ID" "$APP_BUNDLE/Info.plist"
-APPEX_BUNDLE=$(find "$APP_BUNDLE/PlugIns" -maxdepth 1 -name '*.appex' -type d 2>/dev/null | head -1)
+# An app with no PlugIns directory is fine (any single-target app). Without the `|| true`,
+# find's non-zero status trips `set -o pipefail` and the script exits here with no message.
+APPEX_BUNDLE=""
+if [[ -d "$APP_BUNDLE/PlugIns" ]]; then
+    APPEX_BUNDLE=$(find "$APP_BUNDLE/PlugIns" -maxdepth 1 -name '*.appex' -type d | head -1)
+fi
 if [[ -n "$APPEX_BUNDLE" ]]; then
     plutil -replace CFBundleIdentifier -string "${BUILD_BUNDLE_ID}.broadcast" "$APPEX_BUNDLE/Info.plist"
     echo "  App:       $BUILD_BUNDLE_ID"

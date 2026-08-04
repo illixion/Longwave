@@ -141,6 +141,7 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
     private var pendingImageUpdate: Bool = false
     private var displayLink: CADisplayLink?
     private var virtualCursorInitialized = false
+    private var lastImagePublish: ContinuousClock.Instant?
 
     // MARK: - Connection Lifecycle
 
@@ -212,7 +213,17 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
 
     @objc private func displayLinkFired() {
         guard pendingImageUpdate, let fb = framebuffer else { return }
+        // Pace the desktop down while the user is entering text anywhere in the
+        // app: republishing an image every tick keeps SwiftUI and UIKit busy at
+        // frame rate, which is what ends a visionOS dictation session (a remote
+        // desktop showing a busy terminal is the same "actively changing text"
+        // case as the SSH view). Nothing is dropped — `pendingImageUpdate` holds
+        // the newest frame and the next allowed tick publishes it.
+        let interval = TextInputActivity.shared.minimumUpdateInterval
+        let now = ContinuousClock.now
+        if interval != .zero, let last = lastImagePublish, now - last < interval { return }
         pendingImageUpdate = false
+        lastImagePublish = now
         framebufferImage = fb.cgImage
     }
 

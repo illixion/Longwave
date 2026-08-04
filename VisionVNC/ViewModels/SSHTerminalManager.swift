@@ -49,6 +49,20 @@ final class SSHSession: Identifiable {
     private var pendingOutput: [UInt8] = []
     private var connection: SSHConnection?
 
+    // Output pacing. Every `feed` drives UIKit hard — SwiftTerm rewrites its
+    // scroll offset per emitted line, repaints through CoreText and runs a
+    // display link — and a stream like a coding agent's TUI arrives in dozens of
+    // small reads a second. That churn is what still ended visionOS dictation
+    // after the first-responder thefts were fixed ("dictation stops while a
+    // window has actively changing text"), from a *sibling* window and without
+    // touching the responder chain. So while text entry is live anywhere in the
+    // app, reads coalesce into one paced feed (see `TextEntryPacing`); with
+    // nothing being edited there is no pacing at all and output feeds as it
+    // arrives, exactly as before.
+    private var bufferedOutput: [UInt8] = []
+    private var lastFeed: ContinuousClock.Instant?
+    private var feedTask: Task<Void, Never>?
+
     /// Last size reported by the terminal view; reconnects open the PTY at
     /// this size instead of the config default.
     private var lastCols = 80
@@ -118,6 +132,11 @@ final class SSHSession: Identifiable {
         // Full terminal reset (RIS) so stale output from the dead connection
         // doesn't mix with the relaunch.
         let reset: [UInt8] = [0x1B, 0x63]
+        // Drop anything still paced from the dead connection first — it must not
+        // land after the reset and mix into the relaunch.
+        feedTask?.cancel()
+        feedTask = nil
+        bufferedOutput.removeAll()
         terminalView?.feed(byteArray: reset[...])
         pendingOutput.removeAll()
         connect()
@@ -213,8 +232,9 @@ final class SSHSession: Identifiable {
                 sendSubmitReturn()
             }
         case .output(let bytes):
-            if let view = terminalView {
-                view.feed(byteArray: bytes[...])
+            if terminalView != nil {
+                bufferedOutput.append(contentsOf: bytes)
+                pumpBufferedOutput()
             } else {
                 pendingOutput.append(contentsOf: bytes)
             }
@@ -227,16 +247,57 @@ final class SSHSession: Identifiable {
         }
     }
 
+    /// Feed coalesced output if the current pacing allows, otherwise arm a timer
+    /// for the remaining wait. The level is re-read on every wake, so output
+    /// returns to full rate as soon as the text session ends.
+    private func pumpBufferedOutput() {
+        guard !bufferedOutput.isEmpty, let view = terminalView else { return }
+        let interval = TextInputActivity.shared.minimumUpdateInterval
+        let now = ContinuousClock.now
+        // No previous feed counts as due, and an unpaced (`.zero`) interval is
+        // always due — so the idle path feeds straight through.
+        let elapsed = lastFeed.map { now - $0 } ?? interval
+        if elapsed >= interval {
+            feedTask?.cancel()
+            feedTask = nil
+            let bytes = bufferedOutput
+            bufferedOutput.removeAll(keepingCapacity: true)
+            lastFeed = now
+            view.feed(byteArray: bytes[...])
+            return
+        }
+        guard feedTask == nil else { return }
+        let remaining = interval - elapsed
+        feedTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: remaining)
+            guard let self, !Task.isCancelled else { return }
+            self.feedTask = nil
+            self.pumpBufferedOutput()
+        }
+    }
+
     /// Bind the terminal view, flushing any output that arrived before attach.
     func attach(_ view: TerminalView) {
         terminalView = view
         if !pendingOutput.isEmpty {
             view.feed(byteArray: pendingOutput[...])
             pendingOutput.removeAll()
+            lastFeed = ContinuousClock.now
         }
+        pumpBufferedOutput()
     }
 
-    func detach() { terminalView = nil }
+    func detach() {
+        terminalView = nil
+        feedTask?.cancel()
+        feedTask = nil
+        // Nothing paced is lost: it goes back in the pre-attach queue, ahead of
+        // anything that arrives while no view is bound.
+        if !bufferedOutput.isEmpty {
+            pendingOutput.insert(contentsOf: bufferedOutput, at: 0)
+            bufferedOutput.removeAll()
+        }
+    }
 
     /// Scroll the terminal scrollback a page. SwiftTerm's iOS view scrolls via
     /// the terminal's yDisp (driven by this public API), not the UIScrollView

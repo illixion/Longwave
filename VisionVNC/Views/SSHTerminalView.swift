@@ -19,10 +19,10 @@ struct SSHTerminalView: View {
     /// prefix), ⌥ + ← → word-left, ⇧ + tab → back-tab.
     @State private var modifiers: TerminalModifiers = []
 
-    /// Hands first responder to the terminal for direct hardware-keyboard input
-    /// and text selection. Off by default so an accidental gaze-tap can't steal
-    /// the composer's focus and abort dictation; the user enables it deliberately.
-    @State private var keyboardFocused = false
+    /// Keeps terminal keyboard intent separate from current first-responder
+    /// status. The distinction matters because dictation may temporarily resign
+    /// its input view; that must not disable direct input or trigger a focus race.
+    @State private var keyboardFocus = TerminalKeyboardFocusState()
 
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize)
     private var terminalFontSize: Double = ConnectionDefaults.terminalFontSizeDefault
@@ -47,6 +47,12 @@ struct SSHTerminalView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { manager.session(sessionID)?.ensureConnected() }
         }
+        // Composer focus always wins. Do not auto-focus the terminal on blur:
+        // visionOS can transiently report a blur while dictation updates, and
+        // immediately reclaiming first responder aborts the active dictation.
+        .onChange(of: composerFocused) { _, focused in
+            keyboardFocus.composerFocusChanged(focused)
+        }
     }
 
     @ViewBuilder
@@ -54,7 +60,11 @@ struct SSHTerminalView: View {
         VStack(spacing: 0) {
             statusRow(session)
             TerminalEmulatorView(session: session, fontSize: terminalFontSize,
-                                 keyboardFocused: $keyboardFocused)
+                                 keyboardFocusEnabled: keyboardFocus.isEnabled,
+                                 keyboardFocusRequest: keyboardFocus.requestID,
+                                 keyboardFocusIsDeliberate: keyboardFocus.requestIsDeliberate) { focused in
+                keyboardFocus.firstResponderChanged(focused)
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             quickKeyRow(session)
             composerBar(session)
@@ -105,13 +115,18 @@ struct SSHTerminalView: View {
     /// selection). Off by default keeps dictation in the composer safe.
     private var keyboardFocusToggle: some View {
         Button {
-            keyboardFocused.toggle()
+            if keyboardFocus.hasFocus {
+                keyboardFocus.release()
+            } else {
+                composerFocused = false
+                keyboardFocus.requestDeliberately()
+            }
         } label: {
-            Image(systemName: keyboardFocused ? "keyboard.fill" : "keyboard")
+            Image(systemName: keyboardFocus.hasFocus ? "keyboard.fill" : "keyboard")
         }
         .buttonStyle(.borderless)
-        .tint(keyboardFocused ? .accentColor : nil)
-        .help(keyboardFocused ? "Terminal has the keyboard — tap to release" : "Send keyboard input to the terminal")
+        .tint(keyboardFocus.hasFocus ? .accentColor : nil)
+        .help(keyboardFocus.hasFocus ? "Terminal has the keyboard — tap to release" : "Send keyboard input to the terminal")
     }
 
     /// Manual relaunch — always reachable so a wedged launch can be kicked, and

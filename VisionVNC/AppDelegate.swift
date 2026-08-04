@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         triggerLocalNetworkAccessPrompt()
+        // Watch app-wide text entry from launch: keyboard-capture views consult
+        // it before taking first responder, and streaming windows pace themselves
+        // against it so their UIKit churn can't end a dictation session.
+        TextInputActivity.shared.start()
         return true
     }
 

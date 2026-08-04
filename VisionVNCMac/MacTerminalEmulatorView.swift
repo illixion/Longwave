@@ -4,14 +4,19 @@ import AppKit
 
 /// Hosts a SwiftTerm `TerminalView` (AppKit `NSView`) for an `SSHSession`.
 ///
-/// Deliberately named `TerminalEmulatorView` to match the visionOS type, so the
-/// shared `SSHTerminalView` constructs it identically on both platforms. On
-/// macOS a clicked terminal becomes first responder naturally; `keyboardFocused`
-/// just nudges first responder to follow the SwiftUI focus toggle.
+/// Deliberately named `TerminalEmulatorView` with the same parameters as the
+/// visionOS type, so the shared `SSHTerminalView` constructs it identically on
+/// both platforms. On macOS a clicked terminal becomes first responder naturally,
+/// so the focus request just nudges first responder to follow the SwiftUI toggle,
+/// and `keyboardFocusIsDeliberate` has nothing to protect: macOS dictation isn't
+/// hosted in a sibling window the way visionOS's is.
 struct TerminalEmulatorView: NSViewRepresentable {
     let session: SSHSession
     var fontSize: Double = ConnectionDefaults.terminalFontSizeDefault
-    var keyboardFocused: Bool = false
+    var keyboardFocusEnabled: Bool = false
+    var keyboardFocusRequest: Int = 0
+    var keyboardFocusIsDeliberate: Bool = false
+    var onKeyboardFocusChanged: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> TerminalView {
         let terminal = TerminalView(frame: .zero)
@@ -23,7 +28,7 @@ struct TerminalEmulatorView: NSViewRepresentable {
         // selection rather than forwarded mouse reporting.
         terminal.allowMouseReporting = false
         session.attach(terminal)
-        if keyboardFocused { terminal.window?.makeFirstResponder(terminal) }
+        applyFocus(to: terminal)
         return terminal
     }
 
@@ -31,9 +36,29 @@ struct TerminalEmulatorView: NSViewRepresentable {
         if nsView.font.pointSize != fontSize {
             nsView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
-        if keyboardFocused, nsView.window?.firstResponder !== nsView {
-            nsView.window?.makeFirstResponder(nsView)
+        applyFocus(to: nsView)
+    }
+
+    /// Keep first responder and the reported focus state in step, so the toggle
+    /// button in the shared header reflects reality on macOS too. The report is
+    /// deferred a turn: it lands in SwiftUI state, and this runs inside a view
+    /// update.
+    private func applyFocus(to terminal: TerminalView) {
+        let isFocused = terminal.window?.firstResponder === terminal
+        if keyboardFocusEnabled {
+            guard !isFocused else { return }
+            if terminal.window?.makeFirstResponder(terminal) == true {
+                report(true)
+            }
+        } else if isFocused {
+            terminal.window?.makeFirstResponder(nil)
+            report(false)
         }
+    }
+
+    private func report(_ focused: Bool) {
+        let notify = onKeyboardFocusChanged
+        DispatchQueue.main.async { notify(focused) }
     }
 
     static func dismantleNSView(_ nsView: TerminalView, coordinator: Coordinator) {

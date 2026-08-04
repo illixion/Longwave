@@ -9,44 +9,89 @@ import UIKit
 /// abort dictation mid-sentence. So first-responder is gated behind an explicit
 /// toggle (`keyboardFocusEnabled`): off by default (display-only, dictation-safe),
 /// flipped on deliberately when the user wants to drive the terminal directly.
-final class VisionTerminalView: TerminalView {
-    var keyboardFocusEnabled = false
-
-    /// Fired when the view loses first responder for a reason *other* than an
-    /// app-initiated toggle — i.e. the user dismissed the software keyboard. Lets
-    /// the owning view reset its `keyboardFocused` state so the toggle button
-    /// reflects reality; without it the button's first tap is wasted "turning off"
-    /// an already-dismissed keyboard, forcing a double-tap to re-summon.
-    var onExternalFocusRelease: (() -> Void)?
-
-    /// Set while we resign first responder ourselves (`setKeyboardFocus(false)`)
-    /// so the resign override can tell an app-initiated release from a user one.
-    private var suppressReleaseCallback = false
+final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
+    private var keyboardFocusEnabled = false
+    private var appliedFocusRequest = -1
+    /// Set when a grab was declined because text entry was live, so it can be
+    /// completed once that session ends instead of being lost.
+    private var focusGrabDeferred = false
+    private var textEntryObserver: NSObjectProtocol?
+    var onFirstResponderChange: ((Bool) -> Void)?
 
     override var canBecomeFirstResponder: Bool { keyboardFocusEnabled }
 
-    /// Apply the desired keyboard-focus state, grabbing or releasing first
-    /// responder to match. Idempotent.
-    func setKeyboardFocus(_ on: Bool) {
-        guard on != keyboardFocusEnabled else { return }
-        keyboardFocusEnabled = on
-        if on {
-            _ = becomeFirstResponder()
-        } else if isFirstResponder {
-            suppressReleaseCallback = true
-            _ = resignFirstResponder()
-            suppressReleaseCallback = false
+    /// Mirror it into the focus system too: a display-only terminal shouldn't be
+    /// a keyboard-navigation destination in a window that also hosts a composer.
+    override var canBecomeFocused: Bool { keyboardFocusEnabled }
+
+    /// Focus requests are edge-triggered so a single tap can re-open the
+    /// keyboard after a system-driven resignation. Losing first responder does
+    /// not disable future focus: dictation itself may resign transiently.
+    ///
+    /// An *automatic* request (window appeared, keyboard paired) yields to any
+    /// live text entry — this view lives in a sibling window of whatever composer
+    /// is being dictated into, and taking the responder ends that dictation. The
+    /// grab is retried when text entry ends. A *deliberate* request (the user
+    /// tapped the keyboard toggle) is honoured immediately: cutting the composer
+    /// off is exactly what the tap asked for.
+    func updateKeyboardFocus(enabled: Bool, request: Int, deliberate: Bool) {
+        keyboardFocusEnabled = enabled
+        if !enabled {
+            focusGrabDeferred = false
+            if isFirstResponder {
+                _ = resignFirstResponder()
+            }
+        } else if request != appliedFocusRequest {
+            appliedFocusRequest = request
+            grabFirstResponder(deliberate: deliberate)
         }
     }
 
-    /// The OS resigns us when the user dismisses the keyboard. Mirror that into
-    /// `keyboardFocusEnabled` (so `canBecomeFirstResponder` stays truthful) and,
-    /// unless we triggered the resign ourselves, notify the owner to reconcile.
+    private func grabFirstResponder(deliberate: Bool) {
+        guard !isFirstResponder else { return }
+        if !deliberate, !TextInputActivity.shared.mayTakeFirstResponder() {
+            focusGrabDeferred = true
+            return
+        }
+        focusGrabDeferred = false
+        _ = becomeFirstResponder()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            if textEntryObserver == nil {
+                textEntryObserver = NotificationCenter.default.addObserver(
+                    forName: .textEntryDidEnd, object: nil, queue: .main
+                ) { [weak self] _ in
+                    guard let self, self.focusGrabDeferred, self.keyboardFocusEnabled else { return }
+                    self.grabFirstResponder(deliberate: false)
+                }
+            }
+        } else if let observer = textEntryObserver {
+            NotificationCenter.default.removeObserver(observer)
+            textEntryObserver = nil
+        }
+    }
+
+    deinit {
+        if let textEntryObserver {
+            NotificationCenter.default.removeObserver(textEntryObserver)
+        }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let didBecome = super.becomeFirstResponder()
+        if didBecome {
+            onFirstResponderChange?(true)
+        }
+        return didBecome
+    }
+
     override func resignFirstResponder() -> Bool {
         let didResign = super.resignFirstResponder()
         if didResign {
-            keyboardFocusEnabled = false
-            if !suppressReleaseCallback { onExternalFocusRelease?() }
+            onFirstResponderChange?(false)
         }
         return didResign
     }
@@ -59,17 +104,18 @@ final class VisionTerminalView: TerminalView {
 struct TerminalEmulatorView: UIViewRepresentable {
     let session: SSHSession
     var fontSize: Double = ConnectionDefaults.terminalFontSizeDefault
-    /// When true, the terminal grabs first responder for direct hardware-keyboard
-    /// input and text selection; when false it's display-only (dictation-safe).
-    /// Two-way so a user-driven keyboard dismissal flows back and resets it.
-    @Binding var keyboardFocused: Bool
+    let keyboardFocusEnabled: Bool
+    let keyboardFocusRequest: Int
+    /// See `TerminalKeyboardFocusState.requestIsDeliberate`.
+    let keyboardFocusIsDeliberate: Bool
+    let onKeyboardFocusChanged: (Bool) -> Void
 
     func makeUIView(context: Context) -> TerminalView {
         let terminal = VisionTerminalView(frame: .zero)
         terminal.terminalDelegate = context.coordinator
-        context.coordinator.focusBinding = $keyboardFocused
-        terminal.onExternalFocusRelease = { [weak coordinator = context.coordinator] in
-            coordinator?.focusReleasedExternally()
+        context.coordinator.onKeyboardFocusChanged = onKeyboardFocusChanged
+        terminal.onFirstResponderChange = { [weak coordinator = context.coordinator] focused in
+            coordinator?.keyboardFocusChanged(focused)
         }
         // Opaque dark backdrop — visionOS glass washes out ANSI colors.
         let dark = UIColor(white: 0.07, alpha: 1.0)
@@ -83,7 +129,9 @@ struct TerminalEmulatorView: UIViewRepresentable {
         // is driven by the Scroll ▲▼ controls (SwiftTerm's public pageUp/Down),
         // not the UIScrollView drag, which doesn't move the yDisp-based view.
         terminal.allowMouseReporting = false
-        terminal.setKeyboardFocus(keyboardFocused)
+        terminal.updateKeyboardFocus(enabled: keyboardFocusEnabled,
+                                     request: keyboardFocusRequest,
+                                     deliberate: keyboardFocusIsDeliberate)
         session.attach(terminal)
         return terminal
     }
@@ -95,8 +143,12 @@ struct TerminalEmulatorView: UIViewRepresentable {
         if uiView.font.pointSize != fontSize {
             uiView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
-        context.coordinator.focusBinding = $keyboardFocused
-        (uiView as? VisionTerminalView)?.setKeyboardFocus(keyboardFocused)
+        context.coordinator.onKeyboardFocusChanged = onKeyboardFocusChanged
+        (uiView as? VisionTerminalView)?.updateKeyboardFocus(
+            enabled: keyboardFocusEnabled,
+            request: keyboardFocusRequest,
+            deliberate: keyboardFocusIsDeliberate
+        )
     }
 
     static func dismantleUIView(_ uiView: TerminalView, coordinator: Coordinator) {
@@ -111,19 +163,18 @@ struct TerminalEmulatorView: UIViewRepresentable {
     /// keystroke ordering).
     final class Coordinator: NSObject, TerminalViewDelegate {
         private let session: SSHSession
-        /// Source of truth for the keyboard toggle, refreshed each update so a
-        /// user-driven dismissal can reset it. Held here (not on the struct,
-        /// which is recreated per update) so the UIView callback stays valid.
-        var focusBinding: Binding<Bool>?
+        var onKeyboardFocusChanged: ((Bool) -> Void)?
+        private var reportedKeyboardFocus: Bool?
         init(session: SSHSession) { self.session = session }
 
         func detach() { MainActor.assumeIsolated { session.detach() } }
 
-        /// User dismissed the software keyboard — clear the toggle so the next
-        /// button tap re-summons it (rather than being spent re-syncing state).
-        func focusReleasedExternally() {
-            guard focusBinding?.wrappedValue == true else { return }
-            focusBinding?.wrappedValue = false
+        func keyboardFocusChanged(_ focused: Bool) {
+            guard reportedKeyboardFocus != focused else { return }
+            reportedKeyboardFocus = focused
+            DispatchQueue.main.async { [weak self] in
+                self?.onKeyboardFocusChanged?(focused)
+            }
         }
 
         nonisolated func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {

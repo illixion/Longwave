@@ -299,11 +299,11 @@ final class SSHSession: Identifiable {
         }
     }
 
-    /// Scroll the terminal scrollback a page. SwiftTerm's iOS view scrolls via
-    /// the terminal's yDisp (driven by this public API), not the UIScrollView
-    /// drag — so explicit controls are the way to reach history.
-    func scrollPageUp() { terminalView?.pageUp() }
-    func scrollPageDown() { terminalView?.pageDown() }
+    /// Scroll the terminal a page. Routed through `scrollPage(up:)` so the
+    /// buttons land wherever the drag gesture would: the emulator's scrollback
+    /// for a plain terminal, wheel events for a program tracking the mouse.
+    func scrollPageUp() { terminalView?.scrollPage(up: true) }
+    func scrollPageDown() { terminalView?.scrollPage(up: false) }
 
     var isReady: Bool { state == .ready }
 

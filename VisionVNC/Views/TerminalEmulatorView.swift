@@ -80,6 +80,84 @@ final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
         }
     }
 
+    // MARK: - Scrolling
+
+    /// Accumulated drag that hasn't yet added up to a whole line.
+    private var scrollRemainder: CGFloat = 0
+
+    /// Install drag-to-scroll over the output.
+    ///
+    /// One recognizer serves both input styles: on visionOS a gaze-pinch-drag
+    /// arrives as an ordinary touch pan, and `allowedScrollTypesMask` folds in a
+    /// trackpad's two-finger scroll and a mouse wheel. Where the scroll *goes* is
+    /// `scrollByLines`' decision — scrollback, or wheel events for a full-screen
+    /// program tracking the mouse.
+    ///
+    /// SwiftTerm's own scroll view is turned off to make room: panning it moves
+    /// `contentOffset` without moving the yDisp-based rendering, and it rewrites
+    /// that offset on every line of output anyway.
+    func enableScrollGesture() {
+        guard scrollRecognizer == nil else { return }
+        isScrollEnabled = false
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleScrollPan))
+        pan.allowedScrollTypesMask = .all
+        pan.delegate = self
+        addGestureRecognizer(pan)
+        scrollRecognizer = pan
+    }
+
+    private var scrollRecognizer: UIPanGestureRecognizer?
+
+    @objc private func handleScrollPan(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            scrollRemainder = 0
+        case .changed:
+            break
+        default:
+            return
+        }
+        // Consume the translation each time so it reads as a delta.
+        let delta = pan.translation(in: self).y
+        pan.setTranslation(.zero, in: self)
+
+        let terminal = getTerminal()
+        let lineHeight = bounds.height / CGFloat(max(1, terminal.rows))
+        guard lineHeight > 0 else { return }
+
+        scrollRemainder += delta
+        let lines = Int(scrollRemainder / lineHeight)
+        guard lines != 0 else { return }
+        scrollRemainder -= CGFloat(lines) * lineHeight
+
+        // Dragging the content down reveals earlier output, which is the positive
+        // direction — the same sense as a natural-scrolling wheel.
+        scrollByLines(lines, reportingAt: cell(at: pan.location(in: self)))
+    }
+
+    /// The terminal cell under a point, for reporting a wheel event where the
+    /// gesture actually happened. `location(in:)` is in content coordinates and
+    /// `bounds.origin` is the scroll offset, so the difference is on-screen.
+    private func cell(at point: CGPoint) -> (col: Int, row: Int) {
+        let terminal = getTerminal()
+        let cols = max(1, terminal.cols)
+        let rows = max(1, terminal.rows)
+        let col = Int((point.x - bounds.minX) / (bounds.width / CGFloat(cols)))
+        let row = Int((point.y - bounds.minY) / (bounds.height / CGFloat(rows)))
+        return (col: min(max(col, 0), cols - 1), row: min(max(row, 0), rows - 1))
+    }
+}
+
+extension VisionTerminalView: UIGestureRecognizerDelegate {
+    /// SwiftTerm adds pans of its own — one for selection after a long press, one
+    /// for mouse reporting whenever the remote enables tracking (inert here, since
+    /// `allowMouseReporting` is off). Recognizing alongside them keeps scrolling
+    /// working without taking selection away.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+
     override func becomeFirstResponder() -> Bool {
         let didBecome = super.becomeFirstResponder()
         if didBecome {
@@ -117,17 +195,18 @@ struct TerminalEmulatorView: UIViewRepresentable {
         terminal.onFirstResponderChange = { [weak coordinator = context.coordinator] focused in
             coordinator?.keyboardFocusChanged(focused)
         }
+        terminal.enableScrollGesture()
         // Opaque dark backdrop — visionOS glass washes out ANSI colors.
         let dark = UIColor(white: 0.07, alpha: 1.0)
         terminal.nativeBackgroundColor = dark
         terminal.backgroundColor = dark
         terminal.isOpaque = true
         terminal.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        // Ignore the agent's mouse-mode requests: VisionVNC sends no mouse input
-        // to the agent (input is the composer + quick-key row), and this keeps
-        // taps as local selection rather than forwarded mouse clicks. Scrollback
-        // is driven by the Scroll ▲▼ controls (SwiftTerm's public pageUp/Down),
-        // not the UIScrollView drag, which doesn't move the yDisp-based view.
+        // Don't forward taps and drags as mouse input: pointing is the composer +
+        // quick-key row's job here, and a tap is more useful as local selection.
+        // Scrolling is the exception — `enableScrollGesture` sends wheel events of
+        // its own when the remote is tracking the mouse, since a full-screen
+        // program's viewport can't be scrolled any other way.
         terminal.allowMouseReporting = false
         terminal.updateKeyboardFocus(enabled: keyboardFocusEnabled,
                                      request: keyboardFocusRequest,

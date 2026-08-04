@@ -12,6 +12,8 @@ enum ConnectionDefaults {
         static let audioPort = "default_audio_port"
         static let terminalFontSize = "default_terminal_font_size"
         static let terminalQuickKeys = "terminal_quick_keys"
+        /// UUID of the SSH host last picked in the Projects tab.
+        static let projectsLastHost = "projects_last_host"
         #if MOONLIGHT_ENABLED
         static let moonlightPort = "default_ml_port"
         static let moonlightResolution = "default_ml_resolution"

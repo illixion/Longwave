@@ -15,7 +15,13 @@ struct ProjectsView: View {
         connections.filter { $0.connectionType == .ssh }
     }
 
-    @State private var selectedHostID: UUID?
+    /// The host picked last time, so reopening the tab lands on the machine you
+    /// were working on rather than on whichever connection was used most recently
+    /// elsewhere in the app. Falls back to the most recent SSH connection when
+    /// unset, or when the remembered one has since been deleted.
+    @AppStorage(ConnectionDefaults.Keys.projectsLastHost)
+    private var lastHostID: String = ""
+
     @State private var homePath = ""
     @State private var path = ""
     @State private var entries: [DirEntry] = []
@@ -25,7 +31,7 @@ struct ProjectsView: View {
     @State private var showingAgentSetup = false
 
     private var selectedHost: SavedConnection? {
-        sshConnections.first { $0.id == selectedHostID } ?? sshConnections.first
+        sshConnections.first { $0.id.uuidString == lastHostID } ?? sshConnections.first
     }
 
     /// The agent the selected host will launch — its remembered default.
@@ -59,7 +65,7 @@ struct ProjectsView: View {
             Section {
                 Picker("Host", selection: Binding(
                     get: { selectedHost?.id },
-                    set: { selectedHostID = $0 }
+                    set: { lastHostID = $0?.uuidString ?? "" }
                 )) {
                     ForEach(sshConnections) { conn in
                         Text(conn.displayName).tag(Optional(conn.id))

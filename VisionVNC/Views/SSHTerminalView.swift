@@ -97,8 +97,8 @@ struct SSHTerminalView: View {
         .background(.bar)
     }
 
-    /// Scrollback paging — the terminal's history scrolls via these (SwiftTerm's
-    /// yDisp), not the UIScrollView drag.
+    /// Gaze-friendly paging, a screenful at a time. Lands wherever a drag would:
+    /// the scrollback, or wheel events for a program that tracks the mouse.
     @ViewBuilder
     private func scrollControls(_ session: SSHSession) -> some View {
         Button { session.scrollPageUp() } label: {

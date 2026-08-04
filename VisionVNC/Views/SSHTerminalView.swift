@@ -122,6 +122,7 @@ struct SSHTerminalView: View {
         HStack(spacing: 10) {
             // Controls on the left.
             scrollControls(session)
+            onScreenKeyboardButton
             keyboardFocusToggle
             reloadButton(session)
             closeButton
@@ -151,6 +152,7 @@ struct SSHTerminalView: View {
                 // visionOS won't let an app close its own last window, so a
                 // terminal that is the only open window would refuse to close.
                 WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                    dismissWindow(id: "ssh-keyboard", value: sessionID)
                     dismissWindow(id: "ssh-terminal", value: sessionID)
                 }
             }
@@ -178,16 +180,35 @@ struct SSHTerminalView: View {
 
     /// Gaze-friendly paging, a screenful at a time. Lands wherever a drag would:
     /// the scrollback, or wheel events for a program that tracks the mouse.
+    ///
+    /// Bordered rather than borderless: as bare glyphs among the other status
+    /// controls these read as decoration, and people couldn't find the scroll
+    /// control at all. The keyboard window's scroll pad is the continuous
+    /// version of the same thing.
     @ViewBuilder
     private func scrollControls(_ session: SSHSession) -> some View {
         Button { session.scrollPageUp() } label: {
             Image(systemName: "chevron.up")
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
+        .help("Scroll back a page")
         Button { session.scrollPageDown() } label: {
             Image(systemName: "chevron.down")
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
+        .help("Scroll forward a page")
+    }
+
+    /// Opens the on-screen keyboard window — the only way to send a modified
+    /// letter (⌃G, ⌥F) without routing it through the composer.
+    private var onScreenKeyboardButton: some View {
+        Button {
+            openWindow(id: "ssh-keyboard", value: sessionID)
+        } label: {
+            Image(systemName: "keyboard.badge.ellipsis")
+        }
+        .buttonStyle(.bordered)
+        .help("Open the on-screen keyboard")
     }
 
     /// Hand the keyboard to the terminal (BT keyboard, shortcuts, text

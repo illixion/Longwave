@@ -10,7 +10,9 @@ struct ScrollPadView: View {
     /// Positive = scroll up; magnitude is the step count for this tick.
     var onVerticalTick: (Int) -> Void
     /// Positive = scroll right; magnitude is the step count for this tick.
-    var onHorizontalTick: (Int) -> Void
+    /// Omitted where there is no horizontal axis to scroll (a terminal), which
+    /// also drops the slider — an inert control is worse than no control.
+    var onHorizontalTick: ((Int) -> Void)?
 
     @State private var vValue: Double = 0
     @State private var hValue: Double = 0
@@ -36,19 +38,21 @@ struct ScrollPadView: View {
                     Text("Vertical").font(.caption2).foregroundStyle(.secondary)
                 }
 
-                VStack(spacing: 6) {
-                    Slider(value: $hValue, in: -1...1) { editing in
-                        if !editing { hValue = 0 }
+                if onHorizontalTick != nil {
+                    VStack(spacing: 6) {
+                        Slider(value: $hValue, in: -1...1) { editing in
+                            if !editing { hValue = 0 }
+                        }
+                        .frame(width: 196)
+                        Text("Horizontal").font(.caption2).foregroundStyle(.secondary)
+                        Spacer().frame(height: 14)
                     }
-                    .frame(width: 196)
-                    Text("Horizontal").font(.caption2).foregroundStyle(.secondary)
-                    Spacer().frame(height: 14)
                 }
             }
         }
         .onReceive(ticker) { _ in
             emit(vValue, onVerticalTick)
-            emit(hValue, onHorizontalTick)
+            if let onHorizontalTick { emit(hValue, onHorizontalTick) }
         }
         .onDisappear {
             vValue = 0

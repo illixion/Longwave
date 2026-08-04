@@ -310,6 +310,10 @@ final class SSHSession: Identifiable {
     func scrollPageUp() { terminalView?.scrollPage(up: true) }
     func scrollPageDown() { terminalView?.scrollPage(up: false) }
 
+    /// Scroll by whole lines — positive moves toward earlier output. Backs the
+    /// keyboard window's scroll pad, and lands in the same place a drag would.
+    func scrollLines(_ lines: Int) { terminalView?.scrollByLines(lines) }
+
     var isReady: Bool { state == .ready }
 
     /// Composer text that couldn't be delivered (connection down), shown as a

@@ -18,6 +18,16 @@ protocol VirtualKeyboardSink {
     /// Type literal text — clipboard paste and dictation, where there are no
     /// modifiers to preserve and the transport's own text route is better.
     func insertText(_ text: String)
+
+    /// Whether this transport can express a cap at all. One layout serves every
+    /// transport, but not every transport has every key — a PTY has no ⌘ and no
+    /// Caps Lock — and a cap that silently does nothing is worse than one that
+    /// visibly can't.
+    func supports(_ action: VirtualKeyCap.Action) -> Bool
+}
+
+extension VirtualKeyboardSink {
+    func supports(_ action: VirtualKeyCap.Action) -> Bool { true }
 }
 
 /// Our own on-screen keyboard: a US ANSI key grid where every cap sends a real
@@ -99,15 +109,18 @@ struct VirtualKeyboardView: View {
             Button { activate(cap) } label: { label }
                 .buttonStyle(.borderedProminent)
                 .frame(width: width(cap), height: Metrics.height)
+                .disabled(!sink.supports(cap.action))
         case .oneShot:
             Button { activate(cap) } label: { label }
                 .buttonStyle(.bordered)
                 .tint(.accentColor)
                 .frame(width: width(cap), height: Metrics.height)
+                .disabled(!sink.supports(cap.action))
         case .off:
             Button { activate(cap) } label: { label }
                 .buttonStyle(.bordered)
                 .frame(width: width(cap), height: Metrics.height)
+                .disabled(!sink.supports(cap.action))
         }
     }
 

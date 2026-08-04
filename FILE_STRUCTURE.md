@@ -46,6 +46,7 @@ VisionVNC/
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
+│   ├── SSHVirtualKeyboardSink.swift    — Key + modifiers → PTY bytes (⌃G → 0x07), unit-tested
 │   └── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (VNC)
 ├── Assets.xcassets/                    — App icon (solidimagestack, 1024x1024 @2x)
 └── Info.plist                          — NSLocalNetworkUsageDescription, multi-scene

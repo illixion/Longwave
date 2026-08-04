@@ -14,6 +14,9 @@ enum ConnectionDefaults {
         static let terminalQuickKeys = "terminal_quick_keys"
         /// Whether the keyboard windows show the gaze scroll pad below the keys.
         static let keyboardScrollPad = "keyboard_scroll_pad"
+        /// Same, for the terminal keyboard — on by default, since scrollback is
+        /// the thing people reach for most in a terminal.
+        static let terminalScrollPad = "terminal_scroll_pad"
         /// UUID of the SSH host last picked in the Projects tab.
         static let projectsLastHost = "projects_last_host"
         #if MOONLIGHT_ENABLED

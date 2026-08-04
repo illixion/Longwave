@@ -2,15 +2,18 @@
 
 ## Multi-Window Design
 
-Seven `WindowGroup` scenes in `VisionVNCApp` (two conditionally compiled):
+Ten `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 
 1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
 3. **Audio Stream** (`id: "audio-stream"`) — `AudioStreamView` mini player, 400x540
-4. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
-5. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
-6. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
-7. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
+4. **Terminal** (`id: "ssh-terminal"`, value-typed by `SSHSessionID`) — `SSHTerminalView`, 900x640
+5. **Terminal Keyboard** (`id: "ssh-keyboard"`, value-typed by `SSHSessionID`) — `SSHKeyboardView`, 1180x780
+6. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
+7. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
+8. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
+9. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
+10. **PCVR** (`id: "foveated-controls"`, value-typed by `PCVRWindowID`) — foveated session controls (`#if FOVEATED_ENABLED`)
 
 `VNCConnectionManager`, `AudioStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio connections open their windows as plain siblings (`openWindow(id:)`), Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
 
@@ -113,11 +116,15 @@ moonlight-common-c (C, background thread)
 
 - `VirtualKeyboard.swift` — transport-independent model: `VirtualKey`, `VirtualModifiers`, the `VirtualKeyboardLayout` cap rows, and `VirtualModifierLatch`.
 - `VirtualKeyboardView` — renders the caps at fixed metrics (larger on visionOS for gaze targets) and owns the latch state.
-- `VNCKeyboardSink` / `MoonlightKeyboardSink` — translate a key + modifier set into keysyms or VK codes. `VNCKeyboardSink.events(for:modifiers:held:)` is a pure function, so the modified-key sequence is unit-tested (`VirtualKeyboardTests`).
+- `VNCKeyboardSink` / `MoonlightKeyboardSink` / `SSHKeyboardSink` — translate a key + modifier set into keysyms, VK codes, or PTY bytes. `VNCKeyboardSink.events(for:modifiers:held:)` and `SSHKeyboardSink.bytes(for:modifiers:)` are pure functions, so the modified-key sequences are unit-tested (`VirtualKeyboardTests`, `SSHVirtualKeyboardTests`).
+
+A sink declares what it can't express via `supports(_:)`, and those caps render disabled — a PTY has no ⌘ and no Caps Lock, and a cap that silently does nothing is worse than one that visibly can't.
 
 Modifier latches are three-state, like a soft keyboard's Shift: **off → one-shot → locked**. One-shot is local only — the modifier is pressed and released around the next keystroke, so it can't get stuck down remotely. Locked genuinely holds the key down on the remote, which is what makes ⌃-click and ⌥-drag work in the stream window; leaving the keyboard window releases anything locked.
 
-Only *unmodified* character keys take a transport's text route (so the Mac companion's Unicode injection still handles layouts and accents). Everything else is real key events. VNC sends the shifted keysym (`XK_G`) with Shift pressed around it; Moonlight sends the unshifted physical key (`VK_G`) with the shift bit in the mask.
+Only *unmodified* character keys take a transport's text route (so the Mac companion's Unicode injection still handles layouts and accents). Everything else is real key events. VNC sends the shifted keysym (`XK_G`) with Shift pressed around it; Moonlight sends the unshifted physical key (`VK_G`) with the shift bit in the mask; SSH sends the bytes that already *mean* the combination (⌃G → `0x07`), which is why `setHeld` is a no-op there — a PTY has no held-modifier state, so a locked latch just keeps applying itself.
+
+The terminal keeps its compact quick-key row (`TerminalQuickKey`, with its own ⌃/⌥/⇧ latches) for one-handed use; the keyboard window is the full grid, and the only way to send a modified *letter* without routing it through the composer.
 
 **Hardware keyboards** are captured separately, in the stream/desktop window:
 - `HardwareKeyboardView` — `UIViewRepresentable` wrapping `KeyCaptureView` that overrides `pressesBegan`/`pressesEnded` to intercept hardware/Bluetooth keyboard events. Maps `UIKeyboardHIDUsage` → X11 KeySymbol-based `VNCKeyCode`.

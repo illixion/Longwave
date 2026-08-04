@@ -82,6 +82,15 @@ struct VisionVNCMacApp: App {
         }
         .defaultSize(width: 900, height: 640)
 
+        WindowGroup("Terminal Keyboard", id: "ssh-keyboard", for: SSHSessionID.self) { $sessionID in
+            if let sessionID {
+                SSHKeyboardView(sessionID: sessionID)
+                    .environment(sshManager)
+                    .trackWindowSession(id: "ssh-keyboard")
+            }
+        }
+        .defaultSize(width: 800, height: 640)
+
         WindowGroup("Remote Desktop", id: "remote-desktop") {
             MacRemoteDesktopView()
                 .environment(connectionManager)

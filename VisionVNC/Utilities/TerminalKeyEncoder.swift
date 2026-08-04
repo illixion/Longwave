@@ -50,7 +50,8 @@ nonisolated enum TerminalKeyEncoder {
     /// the correct xterm sequence rather than blindly prefixing raw bytes.
     enum ModifiableKey: Equatable {
         case csiLetter(UInt8)   // final byte of a `ESC [ … <letter>` key: A/B/C/D, H, F
-        case csiTilde(UInt8)    // numeric param of a `ESC [ <n> ~` key: 5 (PgUp), 6 (PgDn)
+        /// Numeric param of a `ESC [ <n> ~` key: 5 (PgUp), 6 (PgDn), 15 (F5)…
+        case csiTilde(Int)
         case tab
         case character(UInt8)   // a printable ASCII byte (/, |, ~, -, …)
     }
@@ -81,7 +82,9 @@ nonisolated enum TerminalKeyEncoder {
         case .csiLetter(let final):
             return [0x1B, 0x5B, 0x31, 0x3B] + param + [final]        // ESC [ 1 ; p <final>
         case .csiTilde(let num):
-            return [0x1B, 0x5B, num + 0x30, 0x3B] + param + [0x7E]   // ESC [ n ; p ~
+            // Written out as decimal digits — the function keys are ESC [ 15 ~
+            // and up, so a single-byte form wouldn't reach them.
+            return [0x1B, 0x5B] + Array(String(num).utf8) + [0x3B] + param + [0x7E]
         case .tab:
             if modifiers.contains(.shift) { return shiftTab }        // ESC [ Z (back-tab)
             if modifiers.contains(.alt) { return [0x1B, 0x09] }      // Meta-Tab

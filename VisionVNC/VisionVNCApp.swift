@@ -66,6 +66,18 @@ struct VisionVNCApp: App {
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
 
+        WindowGroup("Terminal Keyboard", id: "ssh-keyboard", for: SSHSessionID.self) { $sessionID in
+            if let sessionID {
+                SSHKeyboardView(sessionID: sessionID)
+                    .homeOrnament()
+                    .environment(sshManager)
+                    .trackWindowSession(id: "ssh-keyboard")
+            }
+        }
+        .defaultSize(width: 1180, height: 780)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         WindowGroup("Remote Desktop", id: "remote-desktop") {
             RemoteDesktopView()
                 .environment(connectionManager)

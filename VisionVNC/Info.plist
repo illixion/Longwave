@@ -27,7 +27,14 @@
 	<key>NSCameraUsageDescription</key>
 	<string>VisionVNC broadcasts your selected camera (such as Persona or Mirror My View) to your streaming server.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>VisionVNC can include your microphone in the broadcast stream.</string>
+	<string>VisionVNC uses your microphone to dictate messages into terminal sessions, and can include it in the broadcast stream.</string>
+	<!-- Dictation transcribes on device via SpeechAnalyzer, which documents no
+	     authorization step of its own. The key is declared anyway: it is the same
+	     framework SFSpeechRecognizer gates on, and an API that asks for consent
+	     with no usage string in the bundle terminates the app rather than being
+	     denied. -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>VisionVNC transcribes your speech on this device to type messages into terminal sessions.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>VisionVNC connects to remote desktops, game streaming hosts, and the Companion on your local network.</string>
 	<key>NSAppTransportSecurity</key>

@@ -24,6 +24,16 @@ struct SSHTerminalView: View {
     /// its input view; that must not disable direct input or trigger a focus race.
     @State private var keyboardFocus = TerminalKeyboardFocusState()
 
+    #if os(visionOS)
+    /// In-app dictation, transcribed on device. Deliberately not the keyboard's
+    /// dictation — see `DictationController` for why that one keeps dying.
+    @State private var dictation = DictationController()
+    /// Whatever was already typed when dictation started; recognized text is
+    /// appended to it so a half-typed command isn't thrown away.
+    @State private var composerBeforeDictation = ""
+    #endif
+
+
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize)
     private var terminalFontSize: Double = ConnectionDefaults.terminalFontSizeDefault
     @AppStorage(ConnectionDefaults.Keys.terminalQuickKeys)
@@ -53,6 +63,14 @@ struct SSHTerminalView: View {
         .onChange(of: composerFocused) { _, focused in
             keyboardFocus.composerFocusChanged(focused)
         }
+        #if os(visionOS)
+        // Mirror recognized speech into the composer as it arrives, including the
+        // phrase still being revised, so dictation reads as live.
+        .onChange(of: dictation.transcript) { _, text in
+            composer = composerBeforeDictation + text
+        }
+        .onDisappear { Task { await dictation.cancel() } }
+        #endif
     }
 
     @ViewBuilder
@@ -241,6 +259,9 @@ struct SSHTerminalView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            #if os(visionOS)
+            dictationStatus
+            #endif
             HStack(spacing: 12) {
                 TextField("Type a command…", text: $composer, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -248,6 +269,9 @@ struct SSHTerminalView: View {
                     .autocorrectionDisabled()
                     .focused($composerFocused)
                     .onSubmit { send(session) }
+                #if os(visionOS)
+                dictationButton
+                #endif
                 Button {
                     send(session)
                 } label: {
@@ -261,6 +285,58 @@ struct SSHTerminalView: View {
         .padding(16)
         .background(.bar)
     }
+
+    #if os(visionOS)
+    /// Tap to talk, tap to stop. Recognized text lands in the composer for review
+    /// rather than being sent, so a misheard word is fixable before it reaches the
+    /// agent.
+    private var dictationButton: some View {
+        Button {
+            Task { await toggleDictation() }
+        } label: {
+            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
+                .font(.title2)
+        }
+        .buttonStyle(.bordered)
+        .tint(dictation.isListening ? .red : nil)
+        .disabled(dictation.isBusy)
+        .help(dictation.isListening ? "Stop dictating" : "Dictate a message")
+    }
+
+    /// Surfaces the states a user can act on: the first-run model download, and
+    /// anything that stopped dictation from working.
+    @ViewBuilder
+    private var dictationStatus: some View {
+        switch dictation.status {
+        case .preparing:
+            Label("Preparing dictation…", systemImage: "arrow.down.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .listening:
+            Label("Listening — tap the mic to stop", systemImage: "waveform")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .unavailable(let reason), .failed(let reason):
+            Label(reason, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    private func toggleDictation() async {
+        if dictation.isListening {
+            await dictation.stop()
+            return
+        }
+        // Drop the software keyboard first: its own dictation session would be
+        // competing for the microphone, and it is the one that keeps failing.
+        composerFocused = false
+        composerBeforeDictation = composer.isEmpty || composer.hasSuffix(" ") ? composer : composer + " "
+        await dictation.start()
+    }
+    #endif
 
     /// Note: the send path has no focus dependency — neither the terminal view
     /// nor the composer needs focus for delivery. The historical "had to focus

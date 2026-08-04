@@ -8,6 +8,14 @@ struct KeyboardInputView: View {
     @State private var textInput: String = ""
     @FocusState private var isTextFieldFocused: Bool
 
+    #if os(visionOS)
+    /// In-app dictation, so typing by voice into a remote desktop doesn't depend on
+    /// the system keyboard's dictation session (see `DictationController`). macOS
+    /// keeps its own dictation — the session that fails is visionOS's.
+    @State private var dictation = DictationController()
+    @State private var textBeforeDictation = ""
+    #endif
+
     // Modifier key toggle state
     @State private var ctrlActive = false
     @State private var altActive = false
@@ -23,19 +31,9 @@ struct KeyboardInputView: View {
 
             routeControl
 
-            TextField("Type here…", text: $textInput)
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($isTextFieldFocused)
-                .onChange(of: textInput) { oldValue, newValue in
-                    sendDelta(old: oldValue, new: newValue)
-                }
-                .onSubmit {
-                    connectionManager.sendKeyDown(.return)
-                    connectionManager.sendKeyUp(.return)
-                }
-                .padding(.horizontal)
+            typingRow
+
+            dictationNoteLabel
 
             // Modifier keys
             HStack(spacing: 12) {
@@ -95,9 +93,94 @@ struct KeyboardInputView: View {
         }
         .onDisappear {
             releaseAllModifiers()
+            #if os(visionOS)
+            Task { await dictation.cancel() }
+            #endif
         }
+        #if os(visionOS)
+        // Only settled phrases reach the field: it mirrors every change onto the
+        // remote as typing, and the recognizer's revisions would arrive there as
+        // backspace-and-retype churn.
+        .onChange(of: dictation.settledTranscript) { _, text in
+            textInput = textBeforeDictation + text
+        }
+        #endif
         } // NavigationStack
     }
+
+    // MARK: - Typing
+
+    /// The mirror field: every edit is sent onward as typing (see `sendDelta`),
+    /// whether it came from the keyboard or from dictation.
+    private var typingRow: some View {
+        HStack(spacing: 12) {
+            TextField("Type here…", text: $textInput)
+                .textFieldStyle(.roundedBorder)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($isTextFieldFocused)
+                .onChange(of: textInput) { oldValue, newValue in
+                    sendDelta(old: oldValue, new: newValue)
+                }
+                .onSubmit {
+                    connectionManager.sendKeyDown(.return)
+                    connectionManager.sendKeyUp(.return)
+                }
+            dictationButton
+        }
+        .padding(.horizontal)
+    }
+
+    // MARK: - Dictation
+
+    #if os(visionOS)
+    @ViewBuilder
+    private var dictationNoteLabel: some View {
+        if let note = dictationNote {
+            Text(note)
+                .font(.caption)
+                .foregroundStyle(dictation.isListening ? Color.secondary : Color.orange)
+        }
+    }
+
+    private var dictationButton: some View {
+        Button {
+            Task { await toggleDictation() }
+        } label: {
+            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
+                .font(.title3)
+        }
+        .buttonStyle(.bordered)
+        .tint(dictation.isListening ? .red : nil)
+        .disabled(dictation.isBusy)
+        .help(dictation.isListening ? "Stop dictating" : "Dictate text to the remote desktop")
+    }
+
+    private var dictationNote: String? {
+        switch dictation.status {
+        case .preparing: return "Preparing dictation…"
+        case .listening: return "Listening — words are typed as each phrase settles."
+        case .unavailable(let reason), .failed(let reason): return reason
+        case .idle: return nil
+        }
+    }
+
+    private func toggleDictation() async {
+        if dictation.isListening {
+            await dictation.stop()
+            return
+        }
+        // Drop the software keyboard: its own dictation would compete for the
+        // microphone, and it is the session that keeps dying.
+        isTextFieldFocused = false
+        textBeforeDictation = textInput
+        await dictation.start()
+    }
+    #else
+    private var dictationNoteLabel: some View { EmptyView() }
+    /// No in-app dictation on macOS: the system's own works there.
+    private var dictationButton: some View { EmptyView() }
+    #endif
 
     // MARK: - Typing Route
 

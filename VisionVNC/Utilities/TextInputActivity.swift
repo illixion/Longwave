@@ -79,6 +79,12 @@ final class TextInputActivity {
         TextEntryPacing.minimumUpdateInterval(for: level)
     }
 
+    // Note: in-app dictation (`DictationController`) deliberately does *not*
+    // register here. This exists to protect the system keyboard's session from the
+    // app's own UIKit churn; the in-process recognizer has no such session to lose,
+    // so pacing the producers down for it would only slow the window the user is
+    // dictating into — the remote desktop they're watching their words appear on.
+
     private var pollTask: Task<Void, Never>?
     private static let pollInterval: Duration = .milliseconds(200)
 

@@ -82,7 +82,7 @@ final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
 
     // MARK: - Scrolling
 
-    /// Accumulated drag that hasn't yet added up to a whole line.
+    /// Accumulated drag that hasn't yet added up to a whole scroll step.
     private var scrollRemainder: CGFloat = 0
 
     /// Install drag-to-scroll over the output.
@@ -90,8 +90,12 @@ final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
     /// One recognizer serves both input styles: on visionOS a gaze-pinch-drag
     /// arrives as an ordinary touch pan, and `allowedScrollTypesMask` folds in a
     /// trackpad's two-finger scroll and a mouse wheel. Where the scroll *goes* is
-    /// `scrollByLines`' decision — scrollback, or wheel events for a full-screen
+    /// `scrollBySteps`' decision — scrollback, or wheel events for a full-screen
     /// program tracking the mouse.
+    ///
+    /// Sessions here are tmux-backed, so it's always the second case: tmux owns
+    /// the history and takes the wheel events (see `mouseOption`). Without that
+    /// there is nothing for a drag to move and it silently does nothing.
     ///
     /// SwiftTerm's own scroll view is turned off to make room: panning it moves
     /// `contentOffset` without moving the yDisp-based rendering, and it rewrites
@@ -125,14 +129,18 @@ final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
         let lineHeight = bounds.height / CGFloat(max(1, terminal.rows))
         guard lineHeight > 0 else { return }
 
+        // Measure the drag in whatever a step is worth here, so the content
+        // tracks the finger: a wheel notch moves ~3 lines, so it takes ~3 lines
+        // of travel to earn one.
+        let stepHeight = lineHeight * CGFloat(linesPerScrollStep)
         scrollRemainder += delta
-        let lines = Int(scrollRemainder / lineHeight)
-        guard lines != 0 else { return }
-        scrollRemainder -= CGFloat(lines) * lineHeight
+        let steps = Int(scrollRemainder / stepHeight)
+        guard steps != 0 else { return }
+        scrollRemainder -= CGFloat(steps) * stepHeight
 
         // Dragging the content down reveals earlier output, which is the positive
         // direction — the same sense as a natural-scrolling wheel.
-        scrollByLines(lines, reportingAt: cell(at: pan.location(in: self)))
+        scrollBySteps(steps, reportingAt: cell(at: pan.location(in: self)))
     }
 
     /// The terminal cell under a point, for reporting a wheel event where the

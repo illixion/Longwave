@@ -130,6 +130,18 @@ The terminal keeps its compact quick-key row (`TerminalQuickKey`, with its own �
 - `HardwareKeyboardView` — `UIViewRepresentable` wrapping `KeyCaptureView` that overrides `pressesBegan`/`pressesEnded` to intercept hardware/Bluetooth keyboard events. Maps `UIKeyboardHIDUsage` → X11 KeySymbol-based `VNCKeyCode`.
 - `MoonlightHardwareKeyboardView` — Same pattern but maps `UIKeyboardHIDUsage` → Windows VK codes via `MoonlightKeyCodes`, sends via `LiSendKeyboardEvent()`.
 
+## Terminal Scrolling (SSH)
+
+Non-obvious, and it cost a round of "the scroll button scrolls my shell history": **tmux is a full-screen program, so it lives in the alternate screen buffer** — where the emulator keeps no scrollback of its own. The history belongs to tmux, and only tmux can move it. Every session here is tmux-backed, so this is always the case.
+
+So the app turns on tmux's own mouse handling, scoped to the session it created (`mouseOption` in `SSHTerminalManager` — never `-g`; the user's other tmux sessions are none of its business). Verified against tmux 3.5a: with `mouse on` the client receives DECSET `1000`/`1002`/`1006`, without it only `1049` (the alternate screen). That's what makes `TerminalView.remoteTracksMouse` true, and it's what gives a drag or a paging button something to move.
+
+Without it both fall through to *keys*: `scrollBySteps` reports it can't scroll, and `scrollPage` falls back to PageUp/PageDown — which zsh reads as history navigation.
+
+- `scrollBySteps(_:reportingAt:)` — one step is a scrollback line locally, or one wheel notch (X11 buttons 4/5, reported at the cell under the gesture) once the remote is tracking. `linesPerScrollStep` says which, so callers that think in lines (a page, a drag's travel) scale correctly — a notch moves ~3 lines, so a drag has to earn one.
+- The drag itself is a `UIPanGestureRecognizer` on `VisionTerminalView` (`enableScrollGesture`), with SwiftTerm's own scroll view switched off. A visionOS gaze-pinch-drag arrives as an ordinary touch pan; `allowedScrollTypesMask` folds in a trackpad and a mouse wheel.
+- Scrolling up puts tmux in copy-mode; its default `copy-mode -e` binding exits again when you reach the bottom.
+
 ## Mouse/Gesture Input (Moonlight)
 
 Two modes controlled by `SavedConnection.moonlightTouchMode`:

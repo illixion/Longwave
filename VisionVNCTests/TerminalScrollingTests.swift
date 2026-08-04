@@ -43,7 +43,7 @@ final class TerminalScrollingTests: XCTestCase {
         feed(terminal, "hello\r\n")
 
         XCTAssertFalse(terminal.remoteTracksMouse)
-        XCTAssertTrue(terminal.scrollByLines(3))
+        XCTAssertTrue(terminal.scrollBySteps(3))
         XCTAssertTrue(recorder.sent.isEmpty)
     }
 
@@ -56,7 +56,7 @@ final class TerminalScrollingTests: XCTestCase {
         recorder.sent.removeAll()
 
         XCTAssertTrue(terminal.remoteTracksMouse)
-        XCTAssertTrue(terminal.scrollByLines(2, reportingAt: (col: 4, row: 2)))
+        XCTAssertTrue(terminal.scrollBySteps(2, reportingAt: (col: 4, row: 2)))
         XCTAssertEqual(recorder.text, "\u{1b}[<64;5;3M\u{1b}[<64;5;3M")
     }
 
@@ -65,22 +65,46 @@ final class TerminalScrollingTests: XCTestCase {
         feed(terminal, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
         recorder.sent.removeAll()
 
-        XCTAssertTrue(terminal.scrollByLines(-1, reportingAt: (col: 0, row: 0)))
+        XCTAssertTrue(terminal.scrollBySteps(-1, reportingAt: (col: 0, row: 0)))
         XCTAssertEqual(recorder.text, "\u{1b}[<65;1;1M")
     }
 
-    /// A flick can resolve to a lot of lines at once; the burst is capped so a
+    /// A flick can resolve to a lot of notches at once; the burst is capped so a
     /// single gesture update can't flood the pty.
     func testWheelBurstIsCapped() {
         let (terminal, recorder) = makeTerminal()
         feed(terminal, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
         recorder.sent.removeAll()
 
-        terminal.scrollByLines(500, reportingAt: (col: 0, row: 0))
+        terminal.scrollBySteps(500, reportingAt: (col: 0, row: 0))
 
         let events = recorder.text.components(separatedBy: "\u{1b}").filter { !$0.isEmpty }
         XCTAssertGreaterThan(events.count, 0)
-        XCTAssertLessThanOrEqual(events.count, 8)
+        XCTAssertLessThanOrEqual(events.count, 32)
+    }
+
+    /// A step is a line locally but a whole notch once the remote is taking wheel
+    /// events — the drag handler scales its travel by this, or the content moves
+    /// three times as far as the finger.
+    func testStepSizeFollowsTheDestination() {
+        let (terminal, _) = makeTerminal()
+        XCTAssertEqual(terminal.linesPerScrollStep, 1)
+
+        feed(terminal, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
+        XCTAssertEqual(terminal.linesPerScrollStep, linesPerWheelNotch)
+    }
+
+    /// A page button asks for a screenful, which is fewer notches than lines.
+    func testPageScrollAsksForAScreenfulInNotches() {
+        let (terminal, recorder) = makeTerminal()
+        feed(terminal, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
+        recorder.sent.removeAll()
+
+        terminal.scrollPage(up: true)
+
+        let events = recorder.text.components(separatedBy: "\u{1b}").filter { !$0.isEmpty }
+        let rows = terminal.getTerminal().rows
+        XCTAssertEqual(events.count, max(1, rows / linesPerWheelNotch))
     }
 
     /// An alternate-screen program that never asked for mouse events has a
@@ -91,7 +115,7 @@ final class TerminalScrollingTests: XCTestCase {
         feed(terminal, "\u{1b}[?1049h")
         recorder.sent.removeAll()
 
-        XCTAssertFalse(terminal.scrollByLines(3))
+        XCTAssertFalse(terminal.scrollBySteps(3))
         XCTAssertTrue(recorder.sent.isEmpty)
     }
 

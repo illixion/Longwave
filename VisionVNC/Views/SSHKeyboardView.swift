@@ -37,7 +37,7 @@ struct SSHKeyboardView: View {
 
                 if showsScrollPad {
                     ScrollPadView { steps in
-                        session.scrollLines(steps)
+                        session.scrollSteps(steps)
                     }
                 }
 

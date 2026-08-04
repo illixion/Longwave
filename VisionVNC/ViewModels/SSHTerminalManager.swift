@@ -310,9 +310,9 @@ final class SSHSession: Identifiable {
     func scrollPageUp() { terminalView?.scrollPage(up: true) }
     func scrollPageDown() { terminalView?.scrollPage(up: false) }
 
-    /// Scroll by whole lines — positive moves toward earlier output. Backs the
-    /// keyboard window's scroll pad, and lands in the same place a drag would.
-    func scrollLines(_ lines: Int) { terminalView?.scrollByLines(lines) }
+    /// Scroll by steps — positive moves toward earlier output. Backs the keyboard
+    /// window's scroll pad, and lands in the same place a drag would.
+    func scrollSteps(_ steps: Int) { terminalView?.scrollBySteps(steps) }
 
     var isReady: Bool { state == .ready }
 
@@ -556,6 +556,7 @@ final class SSHTerminalManager {
         // an app restart can tell them apart from the user's own stray tmux
         // sessions (which it must never list or offer to kill).
         line += "tmux set-option -t \(tmuxSession) @visionvnc 1 >/dev/null 2>&1; "
+        line += mouseOption(tmuxSession: tmuxSession)
         // `exec` replaces this shell with the attach client, so the token-
         // bearing argv of `tmux new` is shed within milliseconds of launch.
         // `attach -d` detaches stale clients left behind by dropped connections
@@ -579,7 +580,26 @@ final class SSHTerminalManager {
     /// token (the live session already carries the agent and its env). Used to
     /// reconnect to sessions rediscovered on the host after an app restart.
     static func attachCommand(tmuxSession: String) -> String {
-        "zsh -lic \(shellSingleQuote("exec tmux attach -d -t \(tmuxSession)"))"
+        let inner = mouseOption(tmuxSession: tmuxSession)
+            + "exec tmux attach -d -t \(tmuxSession)"
+        return "zsh -lic \(shellSingleQuote(inner))"
+    }
+
+    /// Turn on tmux's own mouse handling, scoped to this session.
+    ///
+    /// Without it the terminal has nothing to scroll: tmux is a full-screen
+    /// program, so it lives in the alternate screen buffer where the emulator
+    /// keeps no scrollback of its own — the history is tmux's, and only tmux can
+    /// move it. With `mouse on` tmux enables mouse tracking (verified: it emits
+    /// DECSET 1000/1002/1006 to the client), so the wheel events a drag or a
+    /// paging button sends land in its copy-mode instead of falling through to
+    /// the shell as PageUp/PageDown — which zsh reads as history navigation, and
+    /// which is what "the scroll buttons scroll my history" looked like.
+    ///
+    /// Deliberately not `-g`: this is the app's own session, and the user's
+    /// other tmux sessions on the host are none of its business.
+    private static func mouseOption(tmuxSession: String) -> String {
+        "tmux set-option -t \(tmuxSession) mouse on >/dev/null 2>&1; "
     }
 
     /// tmux-wrapped generic terminal session: survives connection drops like a

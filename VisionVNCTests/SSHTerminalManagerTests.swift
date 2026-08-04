@@ -36,6 +36,26 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertTrue(cmd.contains("exec tmux attach -d -t proj-copilot"))
     }
 
+    /// tmux is a full-screen program, so it lives in the alternate screen where
+    /// the emulator keeps no scrollback — without tmux's own mouse handling there
+    /// is nothing for a drag or a paging button to scroll, and they fall through
+    /// to the shell as PageUp/PageDown (which zsh reads as history navigation).
+    func testEverySessionTurnsOnTmuxMouseHandling() {
+        let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
+        XCTAssertTrue(launched.contains("tmux set-option -t proj mouse on"))
+
+        // Sessions rediscovered after an app restart were created before this
+        // ran, so re-attaching has to set it too.
+        let reattached = SSHTerminalManager.attachCommand(tmuxSession: "proj")
+        XCTAssertTrue(reattached.contains("tmux set-option -t proj mouse on"))
+        XCTAssertTrue(reattached.contains("exec tmux attach -d -t proj"))
+
+        // Scoped to this session — the user's own tmux sessions are none of the
+        // app's business, so never `-g`.
+        XCTAssertFalse(launched.contains("set -g mouse"))
+        XCTAssertFalse(launched.contains("set-option -g mouse"))
+    }
+
     // MARK: - persistentShellCommand
 
     func testPersistentShellCommandFallsBackWithoutTmux() {

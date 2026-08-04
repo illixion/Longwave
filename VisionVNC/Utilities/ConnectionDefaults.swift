@@ -12,6 +12,8 @@ enum ConnectionDefaults {
         static let audioPort = "default_audio_port"
         static let terminalFontSize = "default_terminal_font_size"
         static let terminalQuickKeys = "terminal_quick_keys"
+        /// Whether the keyboard windows show the gaze scroll pad below the keys.
+        static let keyboardScrollPad = "keyboard_scroll_pad"
         /// UUID of the SSH host last picked in the Projects tab.
         static let projectsLastHost = "projects_last_host"
         #if MOONLIGHT_ENABLED

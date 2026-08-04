@@ -19,13 +19,14 @@ VisionVNC/
 │   ├── AudioStreamView.swift           — Audio mini player (album art, transport, mute, utility row)
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
 │   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
-│   ├── KeyboardInputView.swift         — VNC soft keyboard window
+│   ├── VirtualKeyboardView.swift       — Our own on-screen key grid + modifier latches
+│   ├── KeyboardInputView.swift         — VNC keyboard window (key grid, route picker, dictation)
 │   ├── HardwareKeyboardView.swift      — VNC hardware keyboard capture (UIViewRepresentable)
 │   ├── CredentialPromptView.swift      — VNC auth prompt sheet
 │   ├── ThirdPartyNoticesView.swift     — Parses THIRD_PARTY_NOTICES.md by H2 headings
 │   ├── MoonlightPairingView.swift      — Pairing flow, PIN display, app picker, launch
 │   ├── MoonlightStreamView.swift       — Stream display, gesture input, controls ornament
-│   ├── MoonlightKeyboardView.swift     — Moonlight soft keyboard window
+│   ├── MoonlightKeyboardView.swift     — Moonlight keyboard window (key grid, Ctrl+Alt+Del)
 │   ├── MoonlightHardwareKeyboardView.swift — Moonlight hardware keyboard capture
 │   └── StreamStatsOverlay.swift        — Live stats HUD (codec, FPS, RTT, decode time, drops)
 ├── Moonlight/
@@ -42,6 +43,9 @@ VisionVNC/
 │   ├── AppLog.swift                    — os.Logger per category + Logger.line() helper
 │   ├── ConnectionDefaults.swift        — UserDefaults keys/getters for new-connection defaults
 │   ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
+│   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
+│   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
+│   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
 │   └── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (VNC)
 ├── Assets.xcassets/                    — App icon (solidimagestack, 1024x1024 @2x)
 └── Info.plist                          — NSLocalNetworkUsageDescription, multi-scene

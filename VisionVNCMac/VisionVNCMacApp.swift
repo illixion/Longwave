@@ -95,7 +95,7 @@ struct VisionVNCMacApp: App {
                 .environment(connectionManager)
                 .trackWindowSession(id: "keyboard")
         }
-        .defaultSize(width: 500, height: 400)
+        .defaultSize(width: 800, height: 440)
 
         #if MOONLIGHT_ENABLED
         WindowGroup("Moonlight Stream", id: "moonlight-stream") {
@@ -110,7 +110,7 @@ struct VisionVNCMacApp: App {
                 .environment(moonlightManager)
                 .trackWindowSession(id: "moonlight-keyboard")
         }
-        .defaultSize(width: 500, height: 450)
+        .defaultSize(width: 800, height: 440)
         #endif
     }
 }

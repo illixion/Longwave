@@ -8,9 +8,9 @@ Seven `WindowGroup` scenes in `VisionVNCApp` (two conditionally compiled):
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
 3. **Audio Stream** (`id: "audio-stream"`) — `AudioStreamView` mini player, 400x540
 4. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
-5. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 500x400
+5. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
 6. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
-7. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 500x450 (`#if MOONLIGHT_ENABLED`)
+7. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
 
 `VNCConnectionManager`, `AudioStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio connections open their windows as plain siblings (`openWindow(id:)`), Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
 
@@ -109,13 +109,19 @@ moonlight-common-c (C, background thread)
 
 ## Keyboard Input
 
-**VNC:**
-- `HardwareKeyboardView` — `UIViewRepresentable` wrapping `KeyCaptureView` that overrides `pressesBegan`/`pressesEnded` to intercept hardware/Bluetooth keyboard events. Maps `UIKeyboardHIDUsage` → X11 KeySymbol-based `VNCKeyCode`.
-- `KeyboardInputView` — Separate window with soft keyboard controls.
+**On-screen keyboard (shared by VNC and Moonlight):** the app draws its own US ANSI key grid rather than using the system software keyboard. The system keyboard hands back *text*, and text can't carry a modifier — a latched Ctrl was dropped on the way to the remote, so Ctrl+G typed a bare "g" (worse with the Mac companion, whose Unicode injection has no modifier field at all).
 
-**Moonlight:**
+- `VirtualKeyboard.swift` — transport-independent model: `VirtualKey`, `VirtualModifiers`, the `VirtualKeyboardLayout` cap rows, and `VirtualModifierLatch`.
+- `VirtualKeyboardView` — renders the caps at fixed metrics (larger on visionOS for gaze targets) and owns the latch state.
+- `VNCKeyboardSink` / `MoonlightKeyboardSink` — translate a key + modifier set into keysyms or VK codes. `VNCKeyboardSink.events(for:modifiers:held:)` is a pure function, so the modified-key sequence is unit-tested (`VirtualKeyboardTests`).
+
+Modifier latches are three-state, like a soft keyboard's Shift: **off → one-shot → locked**. One-shot is local only — the modifier is pressed and released around the next keystroke, so it can't get stuck down remotely. Locked genuinely holds the key down on the remote, which is what makes ⌃-click and ⌥-drag work in the stream window; leaving the keyboard window releases anything locked.
+
+Only *unmodified* character keys take a transport's text route (so the Mac companion's Unicode injection still handles layouts and accents). Everything else is real key events. VNC sends the shifted keysym (`XK_G`) with Shift pressed around it; Moonlight sends the unshifted physical key (`VK_G`) with the shift bit in the mask.
+
+**Hardware keyboards** are captured separately, in the stream/desktop window:
+- `HardwareKeyboardView` — `UIViewRepresentable` wrapping `KeyCaptureView` that overrides `pressesBegan`/`pressesEnded` to intercept hardware/Bluetooth keyboard events. Maps `UIKeyboardHIDUsage` → X11 KeySymbol-based `VNCKeyCode`.
 - `MoonlightHardwareKeyboardView` — Same pattern but maps `UIKeyboardHIDUsage` → Windows VK codes via `MoonlightKeyCodes`, sends via `LiSendKeyboardEvent()`.
-- `MoonlightKeyboardView` — Separate window with soft keyboard, modifier toggles, special keys, function keys. Text input sends character-by-character key events.
 
 ## Mouse/Gesture Input (Moonlight)
 

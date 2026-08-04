@@ -13,7 +13,7 @@ VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game stream
 - Connect to any VNC server on your local network
 - Auto-login with saved credentials (VNC password and macOS Screen Sharing username/password auth)
 - Hardware and Bluetooth keyboard support with full key mapping
-- On-screen soft keyboard with modifier keys, function keys, and arrow keys
+- Full on-screen keyboard of our own — modifier keys that actually work (Ctrl+G, ⌥⌘F…), function keys, navigation cluster, and clipboard paste
 - Configurable quality presets (Low/Medium/High) with JPEG quality, compression level, and color depth tuning
 - Trackpad Only mode — transparent input overlay for use on top of Mac Virtual Display
 
@@ -25,7 +25,7 @@ VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game stream
 - Configurable resolution (720p to 4K), frame rate (30/60/120 FPS), and bitrate (0.5-150 Mbps)
 - Bluetooth gamepad support (DualSense, Xbox, and more) with up to 4 controllers
 - Relative mouse mode for games and absolute mode for desktop use
-- Hardware and soft keyboard with Windows virtual key code mapping
+- Hardware and on-screen keyboard with Windows virtual key code mapping
 - Live streaming statistics overlay (codec, FPS, RTT, decode time, dropped frames)
 - PIN-based pairing with Sunshine servers (SHA-256 and legacy SHA-1)
 - Session management — disconnect locally or quit the app on the server
@@ -202,7 +202,7 @@ VisionVNCApp
 ├── VNC Path
 │   ├── VNCConnectionManager      — RoyalVNCKit bridge, @Observable
 │   ├── RemoteDesktopView         — Framebuffer display + gesture input
-│   └── KeyboardInputView         — Soft keyboard window
+│   └── KeyboardInputView         — Keyboard window (VirtualKeyboardView + VNCKeyboardSink)
 │
 ├── Moonlight Path (#if MOONLIGHT_ENABLED)
 │   ├── MoonlightConnectionManager — Session orchestrator, state machine
@@ -214,7 +214,7 @@ VisionVNCApp
 │   ├── MoonlightGamepadManager   — GameController framework bridge
 │   ├── MoonlightStreamBridge     — C callback marshalling to Swift
 │   ├── MoonlightStreamView       — Stream display + gesture/mouse input
-│   └── MoonlightKeyboardView     — Soft keyboard window
+│   └── MoonlightKeyboardView     — Keyboard window (VirtualKeyboardView + MoonlightKeyboardSink)
 │
 ├── Audio Path
 │   ├── AudioStreamManager        — Stream state, @Observable

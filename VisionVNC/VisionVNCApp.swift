@@ -94,7 +94,7 @@ struct VisionVNCApp: App {
                 .environment(connectionManager)
                 .trackWindowSession(id: "keyboard")
         }
-        .defaultSize(width: 500, height: 400)
+        .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
 
@@ -105,7 +105,7 @@ struct VisionVNCApp: App {
                 .environment(moonlightManager)
                 .trackWindowSession(id: "moonlight-keyboard")
         }
-        .defaultSize(width: 500, height: 450)
+        .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
         #endif

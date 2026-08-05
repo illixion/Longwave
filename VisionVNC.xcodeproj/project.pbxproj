@@ -114,7 +114,6 @@
 				Views/HardwareKeyboardView.swift,
 				Views/MoonlightHardwareKeyboardView.swift,
 				Views/TerminalEmulatorView.swift,
-				Utilities/ClosureComponent.swift,
 				Utilities/GitHubDeviceFlow.swift,
 				Utilities/SecureEnclaveSSHKey.swift,
 				Utilities/SSHConnection.swift,

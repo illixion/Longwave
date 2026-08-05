@@ -4,38 +4,32 @@ import WebKit
 
 /// Where the sign-in browser keeps its cookies.
 ///
-/// The default is a **non-persistent** store: the claude.ai session established
-/// to approve a grant is itself a credential, and discarding it means the only
-/// thing that outlives the sheet is the OAuth credential in the keychain. That's
-/// the right default for a device that mostly signs in once.
+/// Persistent, so signing in again skips the emailed code. The claude.ai session
+/// cookie is a credential, but it lives in this app's container on visionOS —
+/// sandboxed and encrypted at rest, the same protection the OAuth credential in
+/// the keychain relies on. There's no separate decision to make about it. (Handing
+/// the *refresh token* to a managed session is different, and stays opt-in: that
+/// one leaves the headset and lands in a macOS process environment, where anything
+/// running as the same user can read it — see
+/// `SavedConnection.sshInjectClaudeRefreshToken`.)
 ///
-/// It's also miserable when you're iterating on the flow, since every run starts
-/// at the email-code screen. `persistSessionDefaultsKey` opts into a persistent
-/// store instead — a **dedicated, identified** one rather than
-/// `WKWebsiteDataStore.default()`, so Claude's cookies never mix with any other
-/// web content the app loads and signing out can delete them precisely.
+/// A **dedicated identified** store rather than `WKWebsiteDataStore.default()`, so
+/// Claude's cookies never mix with any other web content the app loads and signing
+/// out can delete exactly them.
 enum ClaudeLoginSession {
 
-    /// Stable identity for the persistent store. Must not be the all-zero UUID,
-    /// which WebKit rejects.
+    /// Stable identity for the store. Must not be the all-zero UUID, which WebKit
+    /// rejects.
     private static let storeIdentifier = UUID(uuidString: "6F2A1C34-9B7D-4E21-8A55-C1D0E3F47B92")!
 
-    /// Device-level, not per-host: a claude.ai browser session isn't scoped to
-    /// the Mac you're launching sessions on.
-    static let persistSessionDefaultsKey = "claudePersistClaudeLoginSession"
-
-    static var isPersistent: Bool {
-        UserDefaults.standard.bool(forKey: persistSessionDefaultsKey)
-    }
-
+    /// The ObjC factory `dataStoreForIdentifier:` imports as an initializer.
     static func dataStore() -> WKWebsiteDataStore {
-        // The factory method imports as an initializer.
-        isPersistent ? WKWebsiteDataStore(forIdentifier: storeIdentifier) : .nonPersistent()
+        WKWebsiteDataStore(forIdentifier: storeIdentifier)
     }
 
-    /// Deletes the persisted browser session. Called when signing out, and when
-    /// persistence is switched off — leaving a live claude.ai cookie on disk after
-    /// either would defeat the point of the setting.
+    /// Deletes the stored browser session, on sign-out — revoking the credential
+    /// while leaving the browser cookied would mean signing out still left a way
+    /// straight back in.
     ///
     /// WebKit requires that no live `WKWebView` still hold the store, so this is
     /// only called from the setup sheet with the login window closed. Failures are

@@ -420,6 +420,10 @@ private struct AgentSetupSheet: View {
 
     // In-app browser OAuth state (Claude).
     @State private var showingWebLogin = false
+    /// Device-level, so it's `@AppStorage` rather than a per-host column — the
+    /// claude.ai browser session isn't scoped to the host being launched on.
+    @AppStorage(ClaudeLoginSession.persistSessionDefaultsKey)
+    private var persistLoginSession = false
     /// Mirrors the stored credential for display. Held in view state rather than
     /// read inline because it lives in the keychain, not SwiftData — no
     /// observation would fire when it changes, so sign-in/out refresh it by hand.
@@ -507,6 +511,24 @@ private struct AgentSetupSheet: View {
                       systemImage: "person.crop.circle.badge.checkmark")
             }
 
+            // Applies to the next sign-in: the cookie store is fixed when the web
+            // view is created, so flipping this mid-session changes nothing.
+            Toggle(isOn: $persistLoginSession) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Stay signed in to claude.ai")
+                    Text(persistLoginSession
+                         ? "Claude's cookies are kept on this device, so signing in again skips the emailed code. They're stored apart from other web content and deleted when you sign out."
+                         : "Claude's cookies are discarded when the window closes, so each sign-in needs a fresh emailed code.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: persistLoginSession) { _, isOn in
+                // Switching off has to wipe what was already stored, or a live
+                // claude.ai session stays on disk after being turned "off".
+                if !isOn { Task { await ClaudeLoginSession.clearPersistedSession() } }
+            }
+
             if let credential = claudeCredential {
                 Label {
                     Text(claudeCredentialSummary ?? "").font(.caption)
@@ -540,6 +562,10 @@ private struct AgentSetupSheet: View {
                 Button("Sign Out of Claude", role: .destructive) {
                     Task {
                         await host.clearClaudeCredential()
+                        // Revoking the credential but leaving the browser session
+                        // cookied would mean "sign out" still left a way straight
+                        // back in.
+                        await ClaudeLoginSession.clearPersistedSession()
                         try? host.modelContext?.save()
                         reloadClaudeCredential()
                     }

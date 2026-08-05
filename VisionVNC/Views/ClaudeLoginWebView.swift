@@ -2,6 +2,50 @@ import SwiftUI
 import UIKit
 import WebKit
 
+/// Where the sign-in browser keeps its cookies.
+///
+/// The default is a **non-persistent** store: the claude.ai session established
+/// to approve a grant is itself a credential, and discarding it means the only
+/// thing that outlives the sheet is the OAuth credential in the keychain. That's
+/// the right default for a device that mostly signs in once.
+///
+/// It's also miserable when you're iterating on the flow, since every run starts
+/// at the email-code screen. `persistSessionDefaultsKey` opts into a persistent
+/// store instead — a **dedicated, identified** one rather than
+/// `WKWebsiteDataStore.default()`, so Claude's cookies never mix with any other
+/// web content the app loads and signing out can delete them precisely.
+enum ClaudeLoginSession {
+
+    /// Stable identity for the persistent store. Must not be the all-zero UUID,
+    /// which WebKit rejects.
+    private static let storeIdentifier = UUID(uuidString: "6F2A1C34-9B7D-4E21-8A55-C1D0E3F47B92")!
+
+    /// Device-level, not per-host: a claude.ai browser session isn't scoped to
+    /// the Mac you're launching sessions on.
+    static let persistSessionDefaultsKey = "claudePersistClaudeLoginSession"
+
+    static var isPersistent: Bool {
+        UserDefaults.standard.bool(forKey: persistSessionDefaultsKey)
+    }
+
+    static func dataStore() -> WKWebsiteDataStore {
+        // The factory method imports as an initializer.
+        isPersistent ? WKWebsiteDataStore(forIdentifier: storeIdentifier) : .nonPersistent()
+    }
+
+    /// Deletes the persisted browser session. Called when signing out, and when
+    /// persistence is switched off — leaving a live claude.ai cookie on disk after
+    /// either would defeat the point of the setting.
+    ///
+    /// WebKit requires that no live `WKWebView` still hold the store, so this is
+    /// only called from the setup sheet with the login window closed. Failures are
+    /// swallowed: there's nothing useful to say to the user, and the next sign-in
+    /// re-creates the store anyway.
+    static func clearPersistedSession() async {
+        try? await WKWebsiteDataStore.remove(forIdentifier: storeIdentifier)
+    }
+}
+
 /// Holds the live web view so the sheet can drive it — inject a pasted code, or
 /// follow a magic link — without the SwiftUI layer owning UIKit state.
 @MainActor
@@ -56,10 +100,9 @@ final class ClaudeLoginController {
 /// code is read straight out of the URL and the navigation cancelled. No local
 /// listener, no port to open, and no copy-paste step for the user.
 ///
-/// Cookies use a **non-persistent** data store, so the claude.ai session
-/// established to approve this grant is discarded with the sheet and never
-/// written to the app container. The credential this flow produces is the only
-/// thing that persists, and only in the keychain.
+/// Cookie storage comes from `ClaudeLoginSession` — non-persistent by default, so
+/// the claude.ai session established to approve this grant is discarded with the
+/// sheet and the keychain credential is the only thing that outlives it.
 private struct ClaudeOAuthWebView: UIViewRepresentable {
     let url: URL
     let controller: ClaudeLoginController
@@ -77,7 +120,9 @@ private struct ClaudeOAuthWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
+        // Read once, at construction: the store can't be swapped under a live web
+        // view, so toggling persistence takes effect on the next sign-in.
+        config.websiteDataStore = ClaudeLoginSession.dataStore()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         // Identify as desktop Safari. Federated identity providers commonly

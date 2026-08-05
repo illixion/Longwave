@@ -6,7 +6,9 @@ struct ConnectionListView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
+    #if os(visionOS)
     @Environment(SSHTerminalManager.self) private var sshManager
+    #endif
     #if MOONLIGHT_ENABLED
     @Environment(MoonlightConnectionManager.self) private var moonlightManager
     #endif
@@ -20,10 +22,18 @@ struct ConnectionListView: View {
     @State private var moonlightConnection: SavedConnection?
     #endif
 
+    private var visibleConnections: [SavedConnection] {
+        #if os(macOS)
+        savedConnections.filter { $0.connectionType != .ssh }
+        #else
+        savedConnections
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if savedConnections.isEmpty {
+                if visibleConnections.isEmpty {
                     ContentUnavailableView(
                         "No Connections",
                         systemImage: "display",
@@ -31,7 +41,7 @@ struct ConnectionListView: View {
                     )
                 } else {
                     List {
-                        ForEach(savedConnections) { connection in
+                        ForEach(visibleConnections) { connection in
                             Button {
                                 connectTo(connection)
                             } label: {
@@ -185,8 +195,13 @@ struct ConnectionListView: View {
         switch connection.connectionType {
         case .vnc:
             connectVNC(connection)
+        #if os(visionOS)
         case .ssh:
             connectSSH(connection)
+        #else
+        case .ssh:
+            break
+        #endif
         #if MOONLIGHT_ENABLED
         case .moonlight:
             connectMoonlight(connection)
@@ -196,6 +211,7 @@ struct ConnectionListView: View {
         }
     }
 
+    #if os(visionOS)
     private func connectSSH(_ connection: SavedConnection) {
         do {
             let id = try sshManager.newShellSession(
@@ -213,6 +229,7 @@ struct ConnectionListView: View {
             // surfaces connection-level errors itself once opened.
         }
     }
+    #endif
 
     private func connectVNC(_ connection: SavedConnection) {
         var username: String?

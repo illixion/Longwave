@@ -11,10 +11,12 @@ struct SettingsView: View {
     // Audio
     @AppStorage(ConnectionDefaults.Keys.audioPort) private var audioPort = ConnectionType.audio.defaultPort
 
+    #if os(visionOS)
     // Terminal (applies live to open terminal windows, unlike the
     // new-connection defaults above)
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize) private var terminalFontSize = ConnectionDefaults.terminalFontSizeDefault
     @AppStorage(ConnectionDefaults.Keys.terminalQuickKeys) private var quickKeysRaw = TerminalQuickKey.defaultSelectionStored
+    #endif
 
     #if MOONLIGHT_ENABLED
     @AppStorage(ConnectionDefaults.Keys.moonlightPort) private var moonlightPort = ConnectionType.moonlight.defaultPort
@@ -67,6 +69,7 @@ struct SettingsView: View {
                     portField("Port", value: $audioPort)
                 }
 
+                #if os(visionOS)
                 Section("Terminal") {
                     LabeledContent("Font Size") {
                         Stepper(value: $terminalFontSize, in: 10...24, step: 1) {
@@ -81,6 +84,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                #endif
 
                 #if MOONLIGHT_ENABLED
                 Section("Moonlight") {
@@ -148,6 +152,7 @@ struct SettingsView: View {
         return version
     }
 
+    #if os(visionOS)
     /// One toggle per catalog key, shown with its row glyph. The enabled set
     /// round-trips through the comma-joined id string the terminal row reads.
     private var quickKeyToggles: some View {
@@ -170,6 +175,7 @@ struct SettingsView: View {
             }
         }
     }
+    #endif
 
     private func portField(_ title: String, value: Binding<Int>) -> some View {
         LabeledContent(title) {

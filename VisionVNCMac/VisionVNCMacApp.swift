@@ -2,16 +2,14 @@ import SwiftUI
 import SwiftData
 import AppKit
 
-/// macOS app entry. Mirrors the visionOS `VisionVNCApp` scene set (minus the
-/// Broadcast windows): a main window plus separate windows for console, audio,
-/// SSH terminals, the VNC desktop, the Moonlight stream, and the soft keyboards.
-/// `openWindow`/`dismissWindow` drive them, exactly as on visionOS.
+/// macOS app entry. The Mac already ships an SSH client, so this target keeps
+/// the shared VNC, Moonlight, audio, console, and soft-keyboard scenes without
+/// compiling the visionOS SSH/SwiftTerm feature set.
 @main
 struct VisionVNCMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
-    @State private var sshManager = SSHTerminalManager()
     #if MOONLIGHT_ENABLED
     @State private var moonlightManager = MoonlightConnectionManager()
     #endif
@@ -27,7 +25,6 @@ struct VisionVNCMacApp: App {
             MacMainView()
                 .environment(connectionManager)
                 .environment(audioManager)
-                .environment(sshManager)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightManager)
                 #endif
@@ -72,24 +69,6 @@ struct VisionVNCMacApp: App {
         }
         .defaultSize(width: 400, height: 600)
         .windowResizability(.contentSize)
-
-        WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in
-            if let sessionID {
-                SSHTerminalView(sessionID: sessionID)
-                    .environment(sshManager)
-                    .trackWindowSession(id: "ssh-terminal")
-            }
-        }
-        .defaultSize(width: 900, height: 640)
-
-        WindowGroup("Terminal Keyboard", id: "ssh-keyboard", for: SSHSessionID.self) { $sessionID in
-            if let sessionID {
-                SSHKeyboardView(sessionID: sessionID)
-                    .environment(sshManager)
-                    .trackWindowSession(id: "ssh-keyboard")
-            }
-        }
-        .defaultSize(width: 800, height: 640)
 
         WindowGroup("Remote Desktop", id: "remote-desktop") {
             MacRemoteDesktopView()

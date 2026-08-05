@@ -11,17 +11,12 @@
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
 		1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B42F7FCBFA00C67700 /* Opus */; };
 		1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1DC83C3C2F74587300BF0482 /* RoyalVNCKit */; };
-		3BA03F5288F95924772DDA27 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 3EE005FAD790F309FE32B768 /* NIOSSH */; };
-		5424084CF0D36736292A5164 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 94FADC3940AECE01CB760632 /* SwiftTerm */; };
 		5511C0DE0000000000000021 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000011 /* SwiftTerm */; };
 		5511C0DE0000000000000022 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000012 /* NIOSSH */; };
 		5511C0DE0000000000000023 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000013 /* NIOCore */; };
 		5511C0DE0000000000000024 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000014 /* NIOTransportServices */; };
 		5511C0DE0000000000000025 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000015 /* Crypto */; };
 		5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9B918A25E70DE211DA3B92A /* Cocoa.framework */; };
-		6BE47025BE61D679828FC56B /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = E2246283F8893437C72C6C86 /* Crypto */; };
-		84BD67D2FAD41E9B3AC33CA3 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = 7C1DCE971E2AEA7BCF9DF77F /* NIOTransportServices */; };
-		933A925D98B6C0EA8BD90F0C /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = A33BCB940A750B8D538136F2 /* NIOCore */; };
 		A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */; };
 		CCBB0000000000000000000E /* VisionVNCBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* VisionVNCBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
@@ -119,6 +114,18 @@
 				Views/HardwareKeyboardView.swift,
 				Views/MoonlightHardwareKeyboardView.swift,
 				Views/TerminalEmulatorView.swift,
+				Utilities/ClosureComponent.swift,
+				Utilities/GitHubDeviceFlow.swift,
+				Utilities/SecureEnclaveSSHKey.swift,
+				Utilities/SSHConnection.swift,
+				Utilities/SSHVirtualKeyboardSink.swift,
+				Utilities/TerminalKeyboardFocusState.swift,
+				Utilities/TerminalKeyEncoder.swift,
+				Utilities/TerminalScrolling.swift,
+				ViewModels/SSHTerminalManager.swift,
+				Views/ProjectsView.swift,
+				Views/SSHKeyboardView.swift,
+				Views/SSHTerminalView.swift,
 			);
 			target = 228F25EB1D6A2BB4D767CB5C /* VisionVNCMac */;
 		};
@@ -226,11 +233,6 @@
 				113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */,
 				A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */,
 				F8A70081F839F9E06B341A4E /* Opus in Frameworks */,
-				5424084CF0D36736292A5164 /* SwiftTerm in Frameworks */,
-				3BA03F5288F95924772DDA27 /* NIOSSH in Frameworks */,
-				933A925D98B6C0EA8BD90F0C /* NIOCore in Frameworks */,
-				84BD67D2FAD41E9B3AC33CA3 /* NIOTransportServices in Frameworks */,
-				6BE47025BE61D679828FC56B /* Crypto in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -359,11 +361,6 @@
 				FEC92747F5953D917428BFA0 /* RoyalVNCKit */,
 				3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */,
 				BCF95F097C7D2DFE3EF72400 /* Opus */,
-				94FADC3940AECE01CB760632 /* SwiftTerm */,
-				3EE005FAD790F309FE32B768 /* NIOSSH */,
-				A33BCB940A750B8D538136F2 /* NIOCore */,
-				7C1DCE971E2AEA7BCF9DF77F /* NIOTransportServices */,
-				E2246283F8893437C72C6C86 /* Crypto */,
 			);
 			productName = VisionVNCMac;
 			productReference = A5B135754F5FB6AA031143FD /* VisionVNCMac.app */;
@@ -1149,10 +1146,6 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;
 		};
-		3EE005FAD790F309FE32B768 /* NIOSSH */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = NIOSSH;
-		};
 		5511C0DE0000000000000011 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5511C0DE0000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
@@ -1178,25 +1171,9 @@
 			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
 			productName = Crypto;
 		};
-		7C1DCE971E2AEA7BCF9DF77F /* NIOTransportServices */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = NIOTransportServices;
-		};
-		94FADC3940AECE01CB760632 /* SwiftTerm */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = SwiftTerm;
-		};
-		A33BCB940A750B8D538136F2 /* NIOCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = NIOCore;
-		};
 		BCF95F097C7D2DFE3EF72400 /* Opus */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Opus;
-		};
-		E2246283F8893437C72C6C86 /* Crypto */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = Crypto;
 		};
 		FEC92747F5953D917428BFA0 /* RoyalVNCKit */ = {
 			isa = XCSwiftPackageProductDependency;

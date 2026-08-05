@@ -542,6 +542,10 @@ final class SSHTerminalManager {
         for v in vars {
             line += "tmux set -gqa update-environment \(shellSingleQuote(v.name)) >/dev/null 2>&1; "
         }
+        // Interactive shells honor TMOUT only while sitting at a prompt. It
+        // lets abandoned shell sessions close themselves without interrupting
+        // a command or agent that is still running.
+        line += "TMOUT=\(promptIdleTimeoutSeconds) "
         // Inline assignments scope the secret to the short-lived `tmux new`
         // child's environment — never written to disk, and macOS redacts a
         // process's env from other (non-root) processes.
@@ -556,7 +560,7 @@ final class SSHTerminalManager {
         // an app restart can tell them apart from the user's own stray tmux
         // sessions (which it must never list or offer to kill).
         line += "tmux set-option -t \(tmuxSession) @visionvnc 1 >/dev/null 2>&1; "
-        line += mouseOption(tmuxSession: tmuxSession)
+        line += sessionOptions(tmuxSession: tmuxSession)
         // `exec` replaces this shell with the attach client, so the token-
         // bearing argv of `tmux new` is shed within milliseconds of launch.
         // `attach -d` detaches stale clients left behind by dropped connections
@@ -579,10 +583,19 @@ final class SSHTerminalManager {
     /// Re-attach an already-running tmux session — no create, no command, no
     /// token (the live session already carries the agent and its env). Used to
     /// reconnect to sessions rediscovered on the host after an app restart.
+    /// Session options are deliberately re-applied here so sessions created by
+    /// older VisionVNC versions gain scrolling and the prompt timeout too.
     static func attachCommand(tmuxSession: String) -> String {
-        let inner = mouseOption(tmuxSession: tmuxSession)
+        let inner = sessionOptions(tmuxSession: tmuxSession)
             + "exec tmux attach -d -t \(tmuxSession)"
         return "zsh -lic \(shellSingleQuote(inner))"
+    }
+
+    /// Options every app-managed session must have, including old sessions
+    /// being re-attached after an upgrade.
+    private static func sessionOptions(tmuxSession: String) -> String {
+        "tmux set-environment -t \(tmuxSession) TMOUT \(promptIdleTimeoutSeconds) >/dev/null 2>&1; "
+            + mouseOption(tmuxSession: tmuxSession)
     }
 
     /// Turn on tmux's own mouse handling, scoped to this session.
@@ -647,6 +660,11 @@ final class SSHTerminalManager {
 
     // MARK: - Stale-session garbage collection
 
+    /// Shells exit only after this much inactivity while waiting at a prompt.
+    /// `TMOUT` is inherited by the initial shell and stored in the tmux session
+    /// environment for any panes created later.
+    static let promptIdleTimeoutSeconds = 12 * 60 * 60  // 12h
+
     /// How long an app-created tmux session may sit with no attached client and
     /// no activity before it's considered abandoned and reaped. Short disconnects
     /// (window close, network blip, reconnect) stay well under this, so the
@@ -654,7 +672,7 @@ final class SSHTerminalManager {
     /// long tail of sessions nobody came back to. Reaping them also frees agents
     /// pinning a stale on-disk binary after a `claude` self-update (a running
     /// process keeps executing the old inode until it exits and relaunches).
-    static let staleSessionTTLSeconds = 12 * 60 * 60  // 12h
+    static let staleSessionTTLSeconds = promptIdleTimeoutSeconds
 
     /// Server-side reap pipeline: for every `@visionvnc`-tagged session with zero
     /// attached clients whose last activity is older than `ttlSeconds`, kill it.

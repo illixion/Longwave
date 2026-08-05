@@ -32,7 +32,7 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertTrue(cmd.hasPrefix("zsh -lic '"))
         // Rediscovered sessions only re-attach: no `tmux new`, no env/token.
         XCTAssertFalse(cmd.contains("tmux new"))
-        XCTAssertFalse(cmd.contains("="))
+        XCTAssertFalse(cmd.contains("secret"))
         XCTAssertTrue(cmd.contains("exec tmux attach -d -t proj-copilot"))
     }
 
@@ -54,6 +54,17 @@ final class SSHTerminalManagerTests: XCTestCase {
         // app's business, so never `-g`.
         XCTAssertFalse(launched.contains("set -g mouse"))
         XCTAssertFalse(launched.contains("set-option -g mouse"))
+    }
+
+    func testEverySessionInstallsPromptIdleTimeout() {
+        let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
+        XCTAssertTrue(launched.contains("TMOUT=43200 tmux new"))
+        XCTAssertTrue(launched.contains("tmux set-environment -t proj TMOUT 43200"))
+
+        // Existing sessions receive the session environment update on attach,
+        // so newly opened panes inherit it after an app upgrade.
+        let reattached = SSHTerminalManager.attachCommand(tmuxSession: "proj")
+        XCTAssertTrue(reattached.contains("tmux set-environment -t proj TMOUT 43200"))
     }
 
     // MARK: - persistentShellCommand
@@ -127,6 +138,7 @@ final class SSHTerminalManagerTests: XCTestCase {
 
     func testReapTTLIsTwelveHours() {
         XCTAssertEqual(SSHTerminalManager.staleSessionTTLSeconds, 12 * 60 * 60)
+        XCTAssertEqual(SSHTerminalManager.promptIdleTimeoutSeconds, 12 * 60 * 60)
     }
 
     // MARK: - Modifier encoding

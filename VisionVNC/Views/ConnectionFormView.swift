@@ -171,13 +171,21 @@ struct ConnectionFormView: View {
     private var connectionTypeSection: some View {
         Section {
             Picker("Type", selection: $connectionType) {
-                ForEach(ConnectionType.allCases, id: \.self) { type in
+                ForEach(availableConnectionTypes, id: \.self) { type in
                     Label(type.label, systemImage: type.systemImage).tag(type)
                 }
             }
             .pickerStyle(.segmented)
             .disabled(isEditing) // Can't change type after creation
         }
+    }
+
+    private var availableConnectionTypes: [ConnectionType] {
+        #if os(macOS)
+        ConnectionType.allCases.filter { $0 != .ssh }
+        #else
+        ConnectionType.allCases
+        #endif
     }
 
     private var serverSection: some View {

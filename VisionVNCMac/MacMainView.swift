@@ -1,12 +1,11 @@
 import SwiftUI
 
 /// Root of the macOS main window: a sidebar (`NavigationSplitView`) replacing
-/// the visionOS bottom ornament tab bar. Same feature tabs minus Broadcast
-/// (no Vision Pro cameras / "Mirror My View" on a Mac).
+/// the visionOS bottom ornament tab bar. Broadcast and SSH/Projects are omitted:
+/// the Mac has neither Vision Pro cameras nor a need for an embedded SSH client.
 struct MacMainView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case connections = "Connections"
-        case projects = "Projects"
         case sessions = "Sessions"
         case console = "Console"
 
@@ -14,7 +13,6 @@ struct MacMainView: View {
         var systemImage: String {
             switch self {
             case .connections: "rectangle.connected.to.line.below"
-            case .projects: "sparkles"
             case .sessions: "macwindow.on.rectangle"
             case .console: "terminal"
             }
@@ -34,7 +32,6 @@ struct MacMainView: View {
         } detail: {
             switch selectedTab ?? .connections {
             case .connections: ConnectionListView()
-            case .projects:    ProjectsView()
             case .sessions:    SessionsView()
             case .console:     ConsoleView()
             }

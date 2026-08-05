@@ -60,21 +60,26 @@ enum ClaudeCredentialStore {
     /// session is allowed to start. A still-valid-but-unrefreshable token beats
     /// refusing to launch, and if it really is dead the agent's own auth error is
     /// a clearer signal than a launch that silently didn't happen.
-    static func validAccessToken(connectionID: UUID) async -> String? {
+    static func validCredential(connectionID: UUID) async -> ClaudeOAuth.Credential? {
         guard let credential = load(connectionID: connectionID) else { return nil }
-        guard !credential.isFresh() else { return credential.accessToken }
+        guard !credential.isFresh() else { return credential }
         guard credential.canRefresh else {
             log.line("Credential stale and not refreshable; using it as-is")
-            return credential.accessToken
+            return credential
         }
         do {
             let refreshed = try await ClaudeOAuth.refresh(credential)
             save(refreshed, connectionID: connectionID)
-            return refreshed.accessToken
+            return refreshed
         } catch {
-            log.line("Refresh failed (\(error.localizedDescription)); falling back to stored token")
-            return credential.accessToken
+            log.line("Refresh failed (\(error.localizedDescription)); falling back to stored credential")
+            return credential
         }
+    }
+
+    /// Convenience for callers that only need the token itself.
+    static func validAccessToken(connectionID: UUID) async -> String? {
+        await validCredential(connectionID: connectionID)?.accessToken
     }
 
     /// Human-readable state for the login sheet — what was granted and how long
@@ -89,6 +94,18 @@ enum ClaudeCredentialStore {
             parts.append("Scopes: \(credential.scopes.joined(separator: ", "))")
         } else {
             parts.append("⚠︎ Missing user:profile — granted: \(credential.scopes.joined(separator: ", "))")
+        }
+        // The plan is reported separately from the scopes because it comes from a
+        // separate request, and a missing plan is its own distinct failure: the
+        // session runs, but the CLI shows it as "Claude API" and gates
+        // plan-included models behind usage credits.
+        if let plan = credential.subscriptionType {
+            parts.append("plan: \(plan)")
+        } else {
+            parts.append("⚠︎ no plan detected — models included with your subscription will ask for usage credits")
+        }
+        if let email = credential.accountEmail {
+            parts.append(email)
         }
         if let expiresAt = credential.expiresAt {
             let style = Date.RelativeFormatStyle(presentation: .named)

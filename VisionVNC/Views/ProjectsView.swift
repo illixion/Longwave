@@ -522,6 +522,21 @@ private struct AgentSetupSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Toggle(isOn: Binding(
+                    get: { host.sshInjectClaudeRefreshToken },
+                    set: { host.sshInjectClaudeRefreshToken = $0; try? host.modelContext?.save() }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Let sessions renew their own token")
+                        Text(host.sshInjectClaudeRefreshToken
+                             ? "The refresh token is sent to the host, so a session isn't limited to one 8-hour token. It also has no expiry of its own if anything there can read a process's environment."
+                             : "Only the access token is sent, so a leak on the host expires within ~8 hours. Long sessions are renewed at launch instead.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!credential.canRefresh)
+
                 Button("Sign Out of Claude", role: .destructive) {
                     Task {
                         await host.clearClaudeCredential()

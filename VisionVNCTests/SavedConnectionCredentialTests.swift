@@ -14,15 +14,25 @@ final class SavedConnectionCredentialTests: XCTestCase {
     }
 
     private func credential(_ token: String,
-                            scopes: [String] = ClaudeOAuth.Constants.fullScopes) -> ClaudeOAuth.Credential {
+                            scopes: [String] = ClaudeOAuth.Constants.fullScopes,
+                            subscriptionType: String? = "max",
+                            refresh: String? = "refresh") -> ClaudeOAuth.Credential {
         ClaudeOAuth.Credential(
             accessToken: token,
-            refreshToken: "refresh",
+            refreshToken: refresh,
             // Comfortably fresh, so the sync resolver is what's under test rather
             // than a refresh attempt.
             expiresAt: Date().addingTimeInterval(28_800),
-            scopes: scopes
+            scopes: scopes,
+            subscriptionType: subscriptionType,
+            rateLimitTier: "default_claude_max_20x",
+            accountEmail: "someone@example.com"
         )
+    }
+
+    private func env(_ c: SavedConnection, _ agent: SSHAgent = .claude) -> [String: String] {
+        Dictionary(uniqueKeysWithValues:
+            c.resolvedSSHEnvironment(for: agent).map { ($0.name, $0.value) })
     }
 
     /// Cleanup goes straight through the store: `clearClaudeCredential()` would
@@ -44,6 +54,95 @@ final class SavedConnectionCredentialTests: XCTestCase {
         XCTAssertTrue(c.hasClaudeCredential)
         XCTAssertTrue(c.hasToken(for: .claude), "an in-app sign-in is a complete setup on its own")
         XCTAssertEqual(c.claudeCredential?.accessToken, "oauth-access")
+    }
+
+    /// Regression guard for the bug this was built to fix. Injecting only the
+    /// token left the CLI assuming `user:inference` with no plan (its env-var
+    /// credential defaults scopes to inference-only and reads the tier solely from
+    /// `CLAUDE_CODE_SUBSCRIPTION_TYPE`), so a full-scope token still displayed as
+    /// "Claude API" and asked for usage credits on plan-included models.
+    func testCredentialAlsoInjectsScopesAndPlan() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("oauth-access"))
+        let e = env(c)
+
+        XCTAssertEqual(e["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-access")
+        XCTAssertEqual(e["CLAUDE_CODE_SUBSCRIPTION_TYPE"], "max")
+        XCTAssertEqual(e["CLAUDE_CODE_RATE_LIMIT_TIER"], "default_claude_max_20x")
+        let scopes = Set((e["CLAUDE_CODE_OAUTH_SCOPES"] ?? "").split(separator: " ").map(String.init))
+        XCTAssertEqual(scopes, Set(ClaudeOAuth.Constants.fullScopes))
+    }
+
+    /// The scopes reported must be what the server granted, not what was asked
+    /// for — overstating them would have the CLI act on capabilities the token
+    /// lacks.
+    func testInjectedScopesReflectWhatWasGranted() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("t", scopes: ["user:inference", "user:profile"]))
+        XCTAssertEqual(env(c)["CLAUDE_CODE_OAUTH_SCOPES"], "user:inference user:profile")
+    }
+
+    /// A profile fetch that failed leaves no tier; the variable must then be
+    /// absent rather than empty, since the CLI treats `""` as a value.
+    func testMissingPlanOmitsTheVariable() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("t", subscriptionType: nil))
+        let e = env(c)
+        XCTAssertNil(e["CLAUDE_CODE_SUBSCRIPTION_TYPE"])
+        XCTAssertNotNil(e["CLAUDE_CODE_OAUTH_TOKEN"], "the session must still authenticate")
+    }
+
+    // MARK: - Refresh-token toggle
+
+    /// Default off: the ~8h access-token expiry is a deliberate blast-radius
+    /// bound if anything on the host can read a process's environment.
+    func testRefreshTokenIsNotSentByDefault() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("t"))
+        XCTAssertFalse(c.sshInjectClaudeRefreshToken)
+        XCTAssertNil(env(c)["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
+    }
+
+    func testRefreshTokenIsSentWhenEnabled() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("t"))
+        c.sshInjectClaudeRefreshToken = true
+        let e = env(c)
+        XCTAssertEqual(e["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"], "refresh")
+        // The CLI refuses a refresh token that arrives without scopes.
+        XCTAssertNotNil(e["CLAUDE_CODE_OAUTH_SCOPES"])
+    }
+
+    func testEnablingTheToggleWithNoRefreshTokenInjectsNothingExtra() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("t", refresh: nil))
+        c.sshInjectClaudeRefreshToken = true
+        XCTAssertNil(env(c)["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
+    }
+
+    /// A pasted token is most likely an inference-only `setup-token` credential,
+    /// so it must not be dressed up with scopes or a plan it doesn't have.
+    func testPastedTokenGetsNoScopeOrPlanClaims() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setSSHAuthToken("pasted-token", for: .claude)
+        let e = env(c)
+        XCTAssertEqual(e["CLAUDE_CODE_OAUTH_TOKEN"], "pasted-token")
+        XCTAssertNil(e["CLAUDE_CODE_OAUTH_SCOPES"])
+        XCTAssertNil(e["CLAUDE_CODE_SUBSCRIPTION_TYPE"])
     }
 
     func testCredentialWinsOverPastedToken() {

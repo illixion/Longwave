@@ -47,6 +47,30 @@ enum ClaudeOAuth {
         /// be intercepted. Renders the code on a page instead of in the URL.
         static let manualRedirectURI = "https://platform.claude.com/oauth/code/callback"
 
+        /// Account profile, which is where the subscription tier comes from.
+        /// `/login` fetches this right after its exchange and persists it beside
+        /// the token; an env-var session has no persisted profile, so this app has
+        /// to fetch it too and pass the result through.
+        static let profileURL = "https://api.anthropic.com/api/oauth/profile"
+
+        /// `organization.organization_type` → the CLI's own `subscriptionType`
+        /// vocabulary, mirroring its internal map. An unrecognized type means no
+        /// tier, which the CLI renders as the "Claude API" fallback.
+        static let subscriptionTypesByOrgType = [
+            "claude_max": "max",
+            "claude_pro": "pro",
+            "claude_enterprise": "enterprise",
+            "claude_team": "team",
+        ]
+
+        // Env vars the CLI reads when authenticating from the environment. The
+        // token alone is not enough — see `Credential.sessionEnvironment`.
+        static let tokenEnvName = "CLAUDE_CODE_OAUTH_TOKEN"
+        static let scopesEnvName = "CLAUDE_CODE_OAUTH_SCOPES"
+        static let subscriptionTypeEnvName = "CLAUDE_CODE_SUBSCRIPTION_TYPE"
+        static let rateLimitTierEnvName = "CLAUDE_CODE_RATE_LIMIT_TIER"
+        static let refreshTokenEnvName = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN"
+
         /// The full managed-session scope set, matching the CLI's own `Hat`
         /// array — what `/login` grants and what the CLI re-requests on every
         /// refresh. `org:create_api_key` is deliberately **not** requested: the
@@ -91,6 +115,16 @@ enum ClaudeOAuth {
         /// Scopes the **server** granted, which can be narrower than requested.
         var scopes: [String]
 
+        // Profile fields, fetched separately from the token. All optional: a
+        // failed profile fetch must never block a sign-in that otherwise worked.
+
+        /// `max` / `pro` / `team` / `enterprise`. Without this the CLI shows the
+        /// plan as "Claude API" and treats the session as having no subscription.
+        var subscriptionType: String?
+        var rateLimitTier: String?
+        /// Shown in the login sheet so the user can confirm which account signed in.
+        var accountEmail: String?
+
         /// Whether the granted set covers everything a managed session needs.
         var hasFullScopes: Bool {
             Set(Constants.fullScopes).isSubset(of: Set(scopes))
@@ -116,6 +150,60 @@ enum ClaudeOAuth {
         }
 
         var canRefresh: Bool { !(refreshToken ?? "").isEmpty }
+
+        /// Everything a managed session needs in its environment, the access
+        /// token included.
+        ///
+        /// Passing the token alone is **not** sufficient, which is the whole
+        /// reason this exists. When the CLI authenticates from the environment it
+        /// builds its credential as `scopes: CGp()`, and `CGp` defaults to
+        /// `["user:inference"]` — it has no way to introspect the token, so a
+        /// full-scope token is still treated as inference-only unless
+        /// `CLAUDE_CODE_OAUTH_SCOPES` says otherwise. Likewise `subscriptionType`
+        /// comes only from `CLAUDE_CODE_SUBSCRIPTION_TYPE`; absent it the CLI
+        /// resolves no tier, prints the plan as "Claude API", and gates
+        /// plan-dependent models behind separately-purchased usage credits.
+        ///
+        /// `includeRefreshToken` hands the CLI the refresh token so it manages
+        /// renewal itself and a session stops being bounded by one token's life.
+        /// Off by default deliberately: the access token expires in ~8h, which is
+        /// a useful blast radius if anything on the host can read a process's
+        /// environment, and a refresh token has no such bound.
+        func sessionEnvironment(includeRefreshToken: Bool = false) -> [(name: String, value: String)] {
+            var env: [(name: String, value: String)] = [
+                (Constants.tokenEnvName, accessToken),
+                // Report what the server actually granted, not what was asked for.
+                (Constants.scopesEnvName, scopes.joined(separator: " ")),
+            ]
+            if let subscriptionType, !subscriptionType.isEmpty {
+                env.append((Constants.subscriptionTypeEnvName, subscriptionType))
+            }
+            if let rateLimitTier, !rateLimitTier.isEmpty {
+                env.append((Constants.rateLimitTierEnvName, rateLimitTier))
+            }
+            // The CLI rejects a refresh token that arrives without scopes; those
+            // are always set above, so the pairing is satisfied by construction.
+            if includeRefreshToken, let refreshToken, !refreshToken.isEmpty {
+                env.append((Constants.refreshTokenEnvName, refreshToken))
+            }
+            return env
+        }
+
+        /// Folds a fetched profile in, leaving existing values alone where the
+        /// profile came back empty.
+        mutating func apply(_ profile: Profile) {
+            subscriptionType = profile.subscriptionType ?? subscriptionType
+            rateLimitTier = profile.rateLimitTier ?? rateLimitTier
+            accountEmail = profile.accountEmail ?? accountEmail
+        }
+    }
+
+    /// The account details behind a token — separate from the token itself, and
+    /// fetched separately.
+    struct Profile: Sendable, Equatable {
+        var subscriptionType: String?
+        var rateLimitTier: String?
+        var accountEmail: String?
     }
 
     enum FlowError: LocalizedError {
@@ -245,11 +333,46 @@ enum ClaudeOAuth {
         if let returnedState, returnedState != pkce.state {
             throw FlowError.stateMismatch
         }
-        let credential = try await postToken(
+        var credential = try await postToken(
             authorizationCodeBody(code: code, pkce: pkce, useManualRedirect: useManualRedirect)
         )
-        log.line("Exchange granted scopes=\(credential.scopes.joined(separator: ","))")
+        credential.apply(await fetchProfile(accessToken: credential.accessToken))
+        log.line("Exchange granted scopes=\(credential.scopes.joined(separator: ",")) "
+                 + "plan=\(credential.subscriptionType ?? "unknown")")
         return credential
+    }
+
+    /// Reads the account profile so the subscription tier can be passed to a
+    /// session. Mirrors what `/login` does immediately after its own exchange.
+    ///
+    /// Non-throwing: a profile that can't be read yields an empty one. Sign-in
+    /// still succeeds and inference still works — the session just falls back to
+    /// the CLI's no-tier behaviour, which the login sheet surfaces rather than
+    /// hiding.
+    static func fetchProfile(accessToken: String) async -> Profile {
+        var req = URLRequest(url: URL(string: Constants.profileURL)!)
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        req.timeoutInterval = 10
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log.line("Profile fetch failed; session will report no subscription tier")
+            return Profile()
+        }
+        let organization = json["organization"] as? [String: Any]
+        let orgType = organization?["organization_type"] as? String
+        let account = json["account"] as? [String: Any]
+        return Profile(
+            subscriptionType: orgType.flatMap { Constants.subscriptionTypesByOrgType[$0] },
+            // The payload has been seen with the tier both nested under
+            // `organization` and flattened; accept either rather than guess.
+            rateLimitTier: (organization?["rate_limit_tier"] as? String)
+                ?? (json["organization_rate_limit_tier"] as? String),
+            accountEmail: (account?["email_address"] as? String)
+                ?? (json["account_email"] as? String)
+        )
     }
 
     // MARK: - Step 3: refresh
@@ -269,6 +392,16 @@ enum ClaudeOAuth {
         }
         var refreshed = try await postToken(refreshBody(refreshToken: refreshToken))
         if refreshed.refreshToken == nil { refreshed.refreshToken = refreshToken }
+        // Carry the profile across rather than re-fetching on every launch — the
+        // tier doesn't change token-to-token, and a refresh sits directly in front
+        // of a session start where an extra round-trip is felt.
+        refreshed.subscriptionType = credential.subscriptionType
+        refreshed.rateLimitTier = credential.rateLimitTier
+        refreshed.accountEmail = credential.accountEmail
+        // Unless it was never learned, in which case try again now.
+        if refreshed.subscriptionType == nil {
+            refreshed.apply(await fetchProfile(accessToken: refreshed.accessToken))
+        }
         log.line("Refreshed; scopes=\(refreshed.scopes.joined(separator: ","))")
         return refreshed
     }

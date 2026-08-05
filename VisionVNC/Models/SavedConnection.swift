@@ -376,6 +376,17 @@ final class SavedConnection {
     /// Empty → `.claude`. Remembered across launches; flippable before launch.
     var sshAgentRawValue: String = ""
 
+    /// Hand managed Claude sessions the **refresh** token as well, so the CLI
+    /// renews its own credential instead of living inside one access token's ~8h
+    /// window.
+    ///
+    /// Default false, and that default is a security decision rather than
+    /// conservatism: the access token expires in ~8h, which bounds the damage if
+    /// anything on the host can read a process's environment, and a refresh token
+    /// carries no such bound. Turning this on trades that boundary for sessions
+    /// that don't need renewing at launch.
+    var sshInjectClaudeRefreshToken: Bool = false
+
     /// Wrap terminal sessions in tmux so they survive connection drops
     /// (visionOS tracking loss suspends the app and kills the TCP link). Falls
     /// back to a plain shell at launch when tmux isn't installed on the host.
@@ -532,42 +543,68 @@ final class SavedConnection {
         return sshAuthToken(for: agent)
     }
 
+    /// Merges `additions` over `env`, last value winning per name, skipping any
+    /// name that isn't a legal POSIX identifier (the shell assignment built in
+    /// `SSHTerminalManager` depends on that).
+    private static func merge(_ env: inout [(name: String, value: String)],
+                              _ additions: [(name: String, value: String)]) {
+        for addition in additions where isValidEnvName(addition.name) && !addition.value.isEmpty {
+            env.removeAll { $0.name == addition.name }
+            env.append(addition)
+        }
+    }
+
     /// Full environment for a managed session running `agent`: the non-secret
-    /// vars plus `agent`'s stored token under its env name (token wins on
+    /// vars plus whatever the agent needs to authenticate (which wins on
     /// conflict).
+    ///
+    /// An in-app Claude credential contributes **several** variables, not just the
+    /// token — the CLI can't introspect a token handed to it via the environment,
+    /// so it has to be told the granted scopes and the subscription tier
+    /// separately or it assumes inference-only with no plan. See
+    /// `ClaudeOAuth.Credential.sessionEnvironment(includeRefreshToken:)`.
+    ///
+    /// A **pasted** token deliberately gets none of that extra context: it's
+    /// most likely a `setup-token` credential that really is inference-only, and
+    /// asserting scopes it doesn't have would be a lie the CLI acts on.
     ///
     /// This is the offline view — it never refreshes. Launch paths should prefer
     /// `resolvedSSHEnvironmentRenewingCredentials(for:)` so a session doesn't
     /// start with an access token that's about to expire.
     func resolvedSSHEnvironment(for agent: SSHAgent) -> [(name: String, value: String)] {
         var env = sshEnvironmentVariables()
+        if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
+            Self.merge(&env, credential.sessionEnvironment(
+                includeRefreshToken: sshInjectClaudeRefreshToken))
+            return env
+        }
         guard let token = storedToken(for: agent), !token.isEmpty else { return env }
-        let name = effectiveEnvName(for: agent)
-        guard Self.isValidEnvName(name) else { return env }
-        env.removeAll { $0.name == name }
-        env.append((name: name, value: token))
+        Self.merge(&env, [(name: effectiveEnvName(for: agent), value: token)])
         return env
     }
 
     /// Same as `resolvedSSHEnvironment(for:)`, but renews an in-app Claude
     /// credential first when it's close to expiring.
     ///
-    /// Claude's full-scope tokens are short-lived (the long-lived variant the CLI
-    /// mints is inference-only), so the working model is: mint a fresh access
-    /// token immediately before `claude` reads it, and let the tmux idle reaper
-    /// clear out sessions that outlive one. Refresh failures fall through to the
-    /// stored token rather than blocking the launch.
+    /// Claude's full-scope tokens are short-lived (a custom expiry is refused for
+    /// this scope set), so the working model is: mint a fresh access token
+    /// immediately before `claude` reads it, and let the tmux idle reaper clear
+    /// out sessions that outlive one. Refresh failures fall through to the stored
+    /// credential rather than blocking the launch.
+    ///
+    /// With `sshInjectClaudeRefreshToken` on, the CLI renews itself and this
+    /// pre-launch refresh stops being load-bearing — it's still done, since
+    /// starting from a fresh token costs nothing.
     func resolvedSSHEnvironmentRenewingCredentials(for agent: SSHAgent) async -> [(name: String, value: String)] {
         guard agent == .claude, hasClaudeCredential else {
             return resolvedSSHEnvironment(for: agent)
         }
         var env = sshEnvironmentVariables()
-        guard let token = await ClaudeCredentialStore.validAccessToken(connectionID: id),
-              !token.isEmpty else { return env }
-        let name = effectiveEnvName(for: agent)
-        guard Self.isValidEnvName(name) else { return env }
-        env.removeAll { $0.name == name }
-        env.append((name: name, value: token))
+        guard let credential = await ClaudeCredentialStore.validCredential(connectionID: id) else {
+            return env
+        }
+        Self.merge(&env, credential.sessionEnvironment(
+            includeRefreshToken: sshInjectClaudeRefreshToken))
         return env
     }
 

@@ -61,9 +61,18 @@ enum ClaudeOAuth {
             "user:file_upload",
         ]
 
-        /// One year, the expiry `setup-token` asks for. Sent on the exchange as
-        /// an opportunistic request — see `Credential.isLongLived`.
-        static let longLivedExpirySeconds = 31_536_000
+        // No custom expiry constant on purpose. `setup-token` asks the server for
+        // a one-year token, and the client will happily send `expires_in` on any
+        // exchange — but with this scope set the server **rejects the request
+        // outright**:
+        //
+        //     HTTP 400: custom expires_in not allowed for scope user:mcp_servers
+        //
+        // So a custom duration isn't merely downgraded, it fails sign-in, and the
+        // restriction is attached to specific scopes rather than to token
+        // lifetime in general. Full-scope tokens therefore take the server's
+        // default (~8h) and are refreshed instead. Don't reintroduce `expires_in`
+        // here without dropping scopes — `ClaudeOAuthTests` guards it.
     }
 
     private static let log = Logger(subsystem: "com.illixion.VisionVNC", category: "ClaudeOAuth")
@@ -204,23 +213,11 @@ enum ClaudeOAuth {
 
     // MARK: - Step 2: exchange
 
-    /// Exchanges an authorization code for a credential.
-    ///
-    /// `requestLongLived` opportunistically asks for a one-year token (what
-    /// `setup-token` requests). The two knobs are independent in the client, but
-    /// the server appears to couple them — the CLI's own copy states that
-    /// long-lived tokens "are limited to inference-only for security reasons".
-    /// So this asks for both and **believes the response**: if the granted scopes
-    /// come back narrowed, the caller keeps the refresh token and refreshes per
-    /// launch instead. Never assume the request shape determines what you got.
-    static func exchange(code: String, pkce: PKCE,
-                         returnedState: String?,
-                         useManualRedirect: Bool = false,
-                         requestLongLived: Bool = false) async throws -> Credential {
-        if let returnedState, returnedState != pkce.state {
-            throw FlowError.stateMismatch
-        }
-        var body: [String: Any] = [
+    /// The authorization-code exchange body. Extracted so a test can assert what
+    /// is (and isn't) on the wire — notably that no `expires_in` is present.
+    static func authorizationCodeBody(code: String, pkce: PKCE,
+                                      useManualRedirect: Bool = false) -> [String: Any] {
+        [
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": useManualRedirect ? Constants.manualRedirectURI : Constants.redirectURI,
@@ -228,9 +225,30 @@ enum ClaudeOAuth {
             "code_verifier": pkce.verifier,
             "state": pkce.state,
         ]
-        if requestLongLived { body["expires_in"] = Constants.longLivedExpirySeconds }
-        let credential = try await postToken(body)
-        log.line("Exchange granted scopes=\(credential.scopes.joined(separator: ",")) longLived=\(credential.isLongLived)")
+    }
+
+    /// Exchanges an authorization code for a credential, taking the server's
+    /// default token lifetime.
+    ///
+    /// No custom `expires_in` is requested: asking for one is rejected outright
+    /// with `custom expires_in not allowed for scope user:mcp_servers` (400), so
+    /// there is no version of this flow that yields both full scopes and a
+    /// long-lived token. The credential is short-lived by design and renewed
+    /// before each launch instead.
+    ///
+    /// The granted scopes still come from the **response**, not the request — the
+    /// server is free to narrow them, and the login sheet surfaces what it
+    /// actually returned.
+    static func exchange(code: String, pkce: PKCE,
+                         returnedState: String?,
+                         useManualRedirect: Bool = false) async throws -> Credential {
+        if let returnedState, returnedState != pkce.state {
+            throw FlowError.stateMismatch
+        }
+        let credential = try await postToken(
+            authorizationCodeBody(code: code, pkce: pkce, useManualRedirect: useManualRedirect)
+        )
+        log.line("Exchange granted scopes=\(credential.scopes.joined(separator: ","))")
         return credential
     }
 
@@ -249,16 +267,22 @@ enum ClaudeOAuth {
         guard let refreshToken = credential.refreshToken, !refreshToken.isEmpty else {
             throw FlowError.noRefreshToken
         }
-        let body: [String: Any] = [
+        var refreshed = try await postToken(refreshBody(refreshToken: refreshToken))
+        if refreshed.refreshToken == nil { refreshed.refreshToken = refreshToken }
+        log.line("Refreshed; scopes=\(refreshed.scopes.joined(separator: ","))")
+        return refreshed
+    }
+
+    /// The refresh body. Extracted alongside `authorizationCodeBody` so both
+    /// grants can be asserted on: the full `scope` must be present, and
+    /// `expires_in` must not be.
+    static func refreshBody(refreshToken: String) -> [String: Any] {
+        [
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
             "client_id": Constants.clientID,
             "scope": Constants.fullScopes.joined(separator: " "),
         ]
-        var refreshed = try await postToken(body)
-        if refreshed.refreshToken == nil { refreshed.refreshToken = refreshToken }
-        log.line("Refreshed; scopes=\(refreshed.scopes.joined(separator: ","))")
-        return refreshed
     }
 
     /// Best-effort revocation, so removing a token from the app also invalidates

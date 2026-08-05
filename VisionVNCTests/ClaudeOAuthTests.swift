@@ -127,6 +127,50 @@ final class ClaudeOAuthTests: XCTestCase {
         XCTAssertNil(ClaudeOAuth.splitPastedCode("bare").state)
     }
 
+    // MARK: - Token request bodies
+
+    /// Regression guard for a real 400. Sending a custom `expires_in` — which is
+    /// what `setup-token` does to get its one-year token — is refused outright
+    /// with `custom expires_in not allowed for scope user:mcp_servers`, so asking
+    /// for one doesn't downgrade the token, it breaks sign-in entirely.
+    func testExchangeNeverRequestsACustomExpiry() {
+        let body = ClaudeOAuth.authorizationCodeBody(code: "c", pkce: ClaudeOAuth.PKCE())
+        XCTAssertNil(body["expires_in"])
+    }
+
+    func testRefreshNeverRequestsACustomExpiry() {
+        XCTAssertNil(ClaudeOAuth.refreshBody(refreshToken: "rt")["expires_in"])
+    }
+
+    func testExchangeBodyCarriesPKCEVerifierAndRedirect() {
+        let pkce = ClaudeOAuth.PKCE()
+        let body = ClaudeOAuth.authorizationCodeBody(code: "the-code", pkce: pkce)
+        XCTAssertEqual(body["grant_type"] as? String, "authorization_code")
+        XCTAssertEqual(body["code"] as? String, "the-code")
+        XCTAssertEqual(body["code_verifier"] as? String, pkce.verifier)
+        XCTAssertEqual(body["state"] as? String, pkce.state)
+        XCTAssertEqual(body["client_id"] as? String, ClaudeOAuth.Constants.clientID)
+        // Must match the redirect the code was issued for, or the exchange 400s.
+        XCTAssertEqual(body["redirect_uri"] as? String, "http://localhost:3118/callback")
+    }
+
+    func testExchangeBodyHonoursManualRedirect() {
+        let body = ClaudeOAuth.authorizationCodeBody(
+            code: "c", pkce: ClaudeOAuth.PKCE(), useManualRedirect: true)
+        XCTAssertEqual(body["redirect_uri"] as? String,
+                       "https://platform.claude.com/oauth/code/callback")
+    }
+
+    /// Refreshing without an explicit `scope` has been observed to return a token
+    /// that silently lost `user:profile`.
+    func testRefreshBodyReRequestsTheFullScopeSet() {
+        let body = ClaudeOAuth.refreshBody(refreshToken: "rt")
+        XCTAssertEqual(body["grant_type"] as? String, "refresh_token")
+        XCTAssertEqual(body["refresh_token"] as? String, "rt")
+        let scopes = Set((body["scope"] as? String ?? "").split(separator: " ").map(String.init))
+        XCTAssertEqual(scopes, Set(ClaudeOAuth.Constants.fullScopes))
+    }
+
     // MARK: - Credential predicates
 
     private func credential(scopes: [String] = ClaudeOAuth.Constants.fullScopes,

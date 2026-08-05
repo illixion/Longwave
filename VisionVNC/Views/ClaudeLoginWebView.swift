@@ -378,12 +378,10 @@ struct ClaudeLoginSheet: View {
         error = nil
         Task {
             do {
-                // Ask for a one-year token as well. The server may decline to
-                // pair that with full scopes; whatever comes back is inspected
-                // rather than assumed, and the sheet's caller displays it.
+                // Takes the server's default lifetime — requesting a custom one
+                // is rejected for this scope set (see `ClaudeOAuth.Constants`).
                 let credential = try await ClaudeOAuth.exchange(
-                    code: code, pkce: pkce, returnedState: state,
-                    requestLongLived: true
+                    code: code, pkce: pkce, returnedState: state
                 )
                 onCredential(credential)
                 dismiss()

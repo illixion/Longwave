@@ -446,6 +446,18 @@ final class SavedConnection {
         agent == .claude ? id.uuidString : "\(id.uuidString).\(agent.rawValue)"
     }
 
+    /// Whether a token sits in `agent`'s single keychain slot — the one the paste
+    /// field writes (and, for Copilot, the device flow).
+    ///
+    /// Distinct from `hasToken(for:)`, which for Claude is also satisfied by an
+    /// in-app OAuth credential. The paste UI must key off *this*, or a
+    /// credential-only host shows a "stored token" it can't remove: the remove
+    /// button would clear an empty slot and the flag would immediately re-light
+    /// from the credential.
+    func hasPastedToken(for agent: SSHAgent) -> Bool {
+        !(sshAuthToken(for: agent) ?? "").isEmpty
+    }
+
     /// Whether a token is stored for `agent` (the per-agent UI flag).
     func hasToken(for agent: SSHAgent) -> Bool {
         switch agent {

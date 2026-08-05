@@ -460,11 +460,17 @@ private struct AgentSetupSheet: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
 
-                if host.hasToken(for: agent) {
-                    Label("A token is stored on this device for \(host.displayName).", systemImage: "checkmark.seal.fill")
+                // Keyed on the pasted slot specifically, not `hasToken`: for Claude
+                // that flag is also satisfied by an in-app credential, which this
+                // button can't remove — it would clear an empty slot and the flag
+                // would re-light from the credential, so the row appeared to be a
+                // stored token you couldn't get rid of. Signing out is what removes
+                // a credential.
+                if host.hasPastedToken(for: agent) {
+                    Label("A pasted token is stored on this device for \(host.displayName).", systemImage: "checkmark.seal.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
-                    Button("Remove Stored Token", role: .destructive) {
+                    Button("Remove Pasted Token", role: .destructive) {
                         host.setSSHAuthToken(nil, for: agent)
                         try? host.modelContext?.save()
                         token = ""

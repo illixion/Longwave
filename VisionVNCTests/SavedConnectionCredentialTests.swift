@@ -145,6 +145,49 @@ final class SavedConnectionCredentialTests: XCTestCase {
         XCTAssertNil(e["CLAUDE_CODE_SUBSCRIPTION_TYPE"])
     }
 
+    /// The paste UI keys off `hasPastedToken`, not `hasToken`. Conflating them put
+    /// a "stored token" row with a Remove button in front of credential-only
+    /// hosts, where pressing it cleared an empty slot and the flag immediately
+    /// re-lit from the credential — a destructive button that did nothing, next to
+    /// a similarly-labelled one that did.
+    func testCredentialDoesNotLookLikeAPastedToken() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("oauth-access"))
+
+        XCTAssertTrue(c.hasToken(for: .claude), "the host is configured…")
+        XCTAssertFalse(c.hasPastedToken(for: .claude), "…but not by pasting anything")
+    }
+
+    func testPastedTokenIsReportedAsPasted() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setSSHAuthToken("pasted-token", for: .claude)
+        XCTAssertTrue(c.hasPastedToken(for: .claude))
+
+        c.setSSHAuthToken(nil, for: .claude)
+        XCTAssertFalse(c.hasPastedToken(for: .claude))
+    }
+
+    /// Removing the pasted token must leave an in-app credential intact — they're
+    /// separate credentials with separate removal paths.
+    func testRemovingPastedTokenKeepsTheCredential() {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        c.setClaudeCredential(credential("oauth-access"))
+        c.setSSHAuthToken("pasted-token", for: .claude)
+        XCTAssertTrue(c.hasPastedToken(for: .claude))
+
+        c.setSSHAuthToken(nil, for: .claude)
+
+        XCTAssertFalse(c.hasPastedToken(for: .claude))
+        XCTAssertTrue(c.hasClaudeCredential)
+        XCTAssertEqual(env(c)["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-access")
+    }
+
     func testCredentialWinsOverPastedToken() {
         let c = makeConnection()
         defer { cleanUp(c) }

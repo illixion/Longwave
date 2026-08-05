@@ -167,6 +167,11 @@ struct ProjectsView: View {
                     Text("\(agent.displayName) launches with this command; its token is injected as that env var. Set it under \(agent.displayName) Login above.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if agent == .claude {
+                        Text("Sessions still start in Claude's normal permission mode — the flag only makes “bypass permissions” selectable in the Shift+Tab cycle, so you can skip prompts from the headset without every session starting unguarded.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 TextField("KEY=VALUE (one per line)", text: envVarsBinding, axis: .vertical)

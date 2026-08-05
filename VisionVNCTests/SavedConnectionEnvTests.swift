@@ -56,12 +56,14 @@ final class SavedConnectionEnvTests: XCTestCase {
 
     func testAgentDefaultCommandsAndEnvNames() {
         let c = SavedConnection(hostname: "host", port: 22, connectionType: .ssh)
-        XCTAssertEqual(c.effectiveCommand(for: .claude), "claude")
+        XCTAssertEqual(c.effectiveCommand(for: .claude),
+                       "claude --allow-dangerously-skip-permissions")
         XCTAssertEqual(c.effectiveCommand(for: .copilot), "copilot")
         XCTAssertEqual(c.effectiveEnvName(for: .claude), "CLAUDE_CODE_OAUTH_TOKEN")
         XCTAssertEqual(c.effectiveEnvName(for: .copilot), "COPILOT_GITHUB_TOKEN")
 
-        // Custom falls back to claude defaults until overridden.
+        // Custom falls back to the bare claude binary until overridden — the
+        // permission flag is only added to the agent the app launches itself.
         XCTAssertEqual(c.effectiveCommand(for: .custom), "claude")
         XCTAssertEqual(c.effectiveEnvName(for: .custom), "CLAUDE_CODE_OAUTH_TOKEN")
         c.sshClientCommand = "aider"

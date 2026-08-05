@@ -81,13 +81,41 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Built-in launch command. Empty for `.custom` (the user supplies it).
+    /// Built-in binary name. Empty for `.custom` (the user supplies it).
     var defaultCommand: String {
         switch self {
         case .claude: "claude"
         case .copilot: "copilot"
         case .custom: ""
         }
+    }
+
+    /// Flags appended to `defaultCommand` for built-in agents.
+    ///
+    /// Claude gets `--allow-dangerously-skip-permissions`, deliberately **not**
+    /// `--dangerously-skip-permissions`: the former only *unlocks* bypass mode in
+    /// the Shift+Tab cycle, leaving the session in its normal default (auto) mode,
+    /// while the latter starts the session in bypass outright. A managed headset
+    /// session is exactly where the difference matters — approving each permission
+    /// prompt through a floating terminal is the worst part of driving an agent
+    /// from Vision Pro, but silently starting every session with all checks off is
+    /// not the trade to make on the user's behalf. This way one Shift+Tab reaches
+    /// bypass when the user wants it, and nothing changes until they ask.
+    ///
+    /// Only built-ins are flagged: `.custom` is a free-form command line the user
+    /// owns, so it's passed through verbatim.
+    var defaultFlags: [String] {
+        switch self {
+        case .claude: ["--allow-dangerously-skip-permissions"]
+        case .copilot, .custom: []
+        }
+    }
+
+    /// Full built-in launch command line (binary + `defaultFlags`).
+    var defaultLaunchCommand: String {
+        ([defaultCommand] + defaultFlags)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     /// Built-in env-var name the token is injected as. Empty for `.custom`.
@@ -414,11 +442,13 @@ final class SavedConnection {
     }
 
     /// Command launched in the project folder for `agent`. Built-ins use their
-    /// fixed command; `.custom` uses the free-form `sshClientCommand` field.
+    /// fixed command line (binary + `SSHAgent.defaultFlags`); `.custom` uses the
+    /// free-form `sshClientCommand` field, unflagged — its fallback is the bare
+    /// `claude` binary, since flags belong to the agent the app knows it launched.
     func effectiveCommand(for agent: SSHAgent) -> String {
         switch agent {
         case .claude, .copilot:
-            return agent.defaultCommand
+            return agent.defaultLaunchCommand
         case .custom:
             return sshClientCommand.isEmpty ? SSHAgent.claude.defaultCommand : sshClientCommand
         }

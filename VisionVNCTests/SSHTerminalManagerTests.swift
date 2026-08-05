@@ -27,6 +27,22 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertTrue(cmd.contains("TOK='\\''secret'\\'' tmux new"))
     }
 
+    /// The managed Claude launch *unlocks* bypass mode rather than entering it:
+    /// `--allow-dangerously-skip-permissions` adds it to the Shift+Tab cycle while
+    /// the session still starts in Claude's normal default mode.
+    /// `--dangerously-skip-permissions` would start every headset session with all
+    /// checks off, so it must never reach the launch line.
+    func testManagedClaudeLaunchUnlocksBypassWithoutEnablingIt() {
+        let host = SavedConnection(hostname: "h", port: 22, connectionType: .ssh)
+        let cmd = SSHTerminalManager.claudeCommand(
+            tmuxSession: "proj", folder: "/p",
+            clientCommand: host.effectiveCommand(for: .claude))
+        XCTAssertTrue(cmd.contains("claude --allow-dangerously-skip-permissions"))
+        XCTAssertFalse(cmd.contains(" --dangerously-skip-permissions"))
+        // The mode is left to Claude's own default — no override is passed.
+        XCTAssertFalse(cmd.contains("--permission-mode"))
+    }
+
     func testAttachCommandReattachesWithoutCreatingOrToken() {
         let cmd = SSHTerminalManager.attachCommand(tmuxSession: "proj-copilot")
         XCTAssertTrue(cmd.hasPrefix("zsh -lic '"))

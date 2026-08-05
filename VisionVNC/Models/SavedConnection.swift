@@ -53,7 +53,8 @@ enum ConnectionType: String, CaseIterable, Codable {
 /// environment variable (the macOS Keychain is unreachable over SSH). A host
 /// stores a token per agent and remembers which one to launch by default.
 enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
-    /// Claude Code — `claude setup-token` mints a one-year `CLAUDE_CODE_OAUTH_TOKEN`.
+    /// Claude Code — authenticates off `CLAUDE_CODE_OAUTH_TOKEN`, minted in-app
+    /// by `ClaudeOAuth`'s PKCE flow (full session scopes, refreshed per launch).
     case claude
     /// GitHub Copilot CLI (`@github/copilot`) — auths off `COPILOT_GITHUB_TOKEN`
     /// (preferred over `GH_TOKEN`/`GITHUB_TOKEN` so it can't clobber other tools).
@@ -111,6 +112,14 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     /// its token (Copilot is a public GitHub App client). Others paste a token.
     var supportsDeviceFlow: Bool { self == .copilot }
 
+    /// Whether this agent can be signed in through the in-app browser
+    /// (authorization code + PKCE, see `ClaudeOAuth`). Claude Code's OAuth client
+    /// is public, so the headset can run the whole flow itself and mint a token
+    /// with the full session scope set — including `user:profile`, which
+    /// `claude setup-token` withholds and without which the agent can't read the
+    /// account's model entitlements.
+    var supportsWebOAuth: Bool { self == .claude }
+
     /// Slug component that distinguishes this agent's managed sessions for the
     /// same folder. Claude is bare (so tmux sessions / `SSHSessionID`s created
     /// before multi-agent support keep working, mirroring `tokenAccount`); the
@@ -128,7 +137,12 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     /// Empty when an in-app flow replaces it.
     var tokenGenerateCommand: String {
         switch self {
-        case .claude: "claude setup-token"
+        // Claude used to send the user to `claude setup-token` on the Mac. The
+        // in-app sign-in replaces it outright: same browser consent, but it runs
+        // on the headset, asks for the full scope set instead of inference-only,
+        // and lands the credential in this device's keychain without a copy-paste
+        // step.
+        case .claude: ""
         case .copilot: ""
         case .custom: ""
         }
@@ -138,7 +152,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     func setupInstructions(envName: String) -> String {
         switch self {
         case .claude:
-            "In Terminal on the Mac, run `claude setup-token` once. Log in via the browser it opens, then copy the one-year token it prints (it isn't saved anywhere automatically)."
+            "Sign in below — VisionVNC opens Claude's consent page in-app, captures the credential on this headset, and injects it into each session as \(envName). It requests the full session scopes (including user:profile, so the agent can see which models your plan covers) and renews the token before each launch. The Mac's keychain is never touched."
         case .copilot:
             "Sign in with GitHub below — VisionVNC runs the device-authorization flow on this headset, captures the token, and injects it into each session as \(envName). The Mac's keychain is never touched. (Prefer a token? Paste a fine-grained PAT with the “Copilot Requests” permission instead — classic ghp_ tokens aren't supported.)"
         case .custom:
@@ -448,7 +462,11 @@ final class SavedConnection {
     func setSSHAuthToken(_ value: String?, for agent: SSHAgent) {
         let v = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         KeychainStore.set(service: Self.sshAuthTokenService, account: tokenAccount(agent), value: v)
-        setHasToken(!v.isEmpty, for: agent)
+        // Clearing the pasted token doesn't mean Claude is unconfigured — an
+        // in-app credential is a separate, sufficient way to be set up.
+        let stillConfigured = !v.isEmpty
+            || (agent == .claude && ClaudeCredentialStore.load(connectionID: id) != nil)
+        setHasToken(stillConfigured, for: agent)
     }
 
     /// Back-compat alias for the Claude token (used by older call sites/tests).
@@ -475,17 +493,81 @@ final class SavedConnection {
         return env
     }
 
+    // MARK: In-app Claude credential (OAuth)
+
+    /// Whether an in-app-minted OAuth credential (not just a pasted token) is
+    /// stored for Claude on this host.
+    var hasClaudeCredential: Bool {
+        ClaudeCredentialStore.load(connectionID: id) != nil
+    }
+
+    /// The stored Claude credential, for showing granted scopes/expiry in the UI.
+    var claudeCredential: ClaudeOAuth.Credential? {
+        ClaudeCredentialStore.load(connectionID: id)
+    }
+
+    /// Persist a freshly minted credential and light up the same UI flag a pasted
+    /// token sets, so every existing "is Claude set up?" check keeps working.
+    func setClaudeCredential(_ credential: ClaudeOAuth.Credential) {
+        ClaudeCredentialStore.save(credential, connectionID: id)
+        setHasToken(true, for: .claude)
+    }
+
+    /// Remove the credential and revoke it upstream. The flag stays lit if a
+    /// pasted token is still present — that's an independent way to be set up.
+    func clearClaudeCredential() async {
+        await ClaudeCredentialStore.revokeAndDelete(connectionID: id)
+        let pasted = sshAuthToken(for: .claude) ?? ""
+        setHasToken(!pasted.isEmpty, for: .claude)
+    }
+
+    /// The token to inject for `agent`, without touching the network. Claude
+    /// prefers an in-app credential over a pasted one; everything else reads its
+    /// single keychain slot as before.
+    private func storedToken(for agent: SSHAgent) -> String? {
+        if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
+            return credential.accessToken
+        }
+        guard hasToken(for: agent) else { return nil }
+        return sshAuthToken(for: agent)
+    }
+
     /// Full environment for a managed session running `agent`: the non-secret
     /// vars plus `agent`'s stored token under its env name (token wins on
     /// conflict).
+    ///
+    /// This is the offline view — it never refreshes. Launch paths should prefer
+    /// `resolvedSSHEnvironmentRenewingCredentials(for:)` so a session doesn't
+    /// start with an access token that's about to expire.
     func resolvedSSHEnvironment(for agent: SSHAgent) -> [(name: String, value: String)] {
         var env = sshEnvironmentVariables()
-        if hasToken(for: agent), let token = sshAuthToken(for: agent), !token.isEmpty {
-            let name = effectiveEnvName(for: agent)
-            guard Self.isValidEnvName(name) else { return env }
-            env.removeAll { $0.name == name }
-            env.append((name: name, value: token))
+        guard let token = storedToken(for: agent), !token.isEmpty else { return env }
+        let name = effectiveEnvName(for: agent)
+        guard Self.isValidEnvName(name) else { return env }
+        env.removeAll { $0.name == name }
+        env.append((name: name, value: token))
+        return env
+    }
+
+    /// Same as `resolvedSSHEnvironment(for:)`, but renews an in-app Claude
+    /// credential first when it's close to expiring.
+    ///
+    /// Claude's full-scope tokens are short-lived (the long-lived variant the CLI
+    /// mints is inference-only), so the working model is: mint a fresh access
+    /// token immediately before `claude` reads it, and let the tmux idle reaper
+    /// clear out sessions that outlive one. Refresh failures fall through to the
+    /// stored token rather than blocking the launch.
+    func resolvedSSHEnvironmentRenewingCredentials(for agent: SSHAgent) async -> [(name: String, value: String)] {
+        guard agent == .claude, hasClaudeCredential else {
+            return resolvedSSHEnvironment(for: agent)
         }
+        var env = sshEnvironmentVariables()
+        guard let token = await ClaudeCredentialStore.validAccessToken(connectionID: id),
+              !token.isEmpty else { return env }
+        let name = effectiveEnvName(for: agent)
+        guard Self.isValidEnvName(name) else { return env }
+        env.removeAll { $0.name == name }
+        env.append((name: name, value: token))
         return env
     }
 

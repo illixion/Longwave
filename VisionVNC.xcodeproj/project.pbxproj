@@ -122,6 +122,7 @@
 				Utilities/TerminalKeyEncoder.swift,
 				Utilities/TerminalScrolling.swift,
 				ViewModels/SSHTerminalManager.swift,
+				Views/ClaudeLoginWebView.swift,
 				Views/ProjectsView.swift,
 				Views/SSHKeyboardView.swift,
 				Views/SSHTerminalView.swift,

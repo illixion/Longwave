@@ -43,6 +43,8 @@ VisionVNC/
 │   ├── AppLog.swift                    — os.Logger per category + Logger.line() helper
 │   ├── ConnectionDefaults.swift        — UserDefaults keys/getters for new-connection defaults
 │   ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
+│   ├── ClaudeOAuth.swift               — Claude Code OAuth PKCE flow → full-scope token (constants extracted from the CLI binary)
+│   ├── ClaudeCredentialStore.swift     — Keychain home for the Claude credential bundle + refresh-before-launch
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask

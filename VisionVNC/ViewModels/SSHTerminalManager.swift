@@ -593,9 +593,16 @@ final class SSHTerminalManager {
 
     /// Options every app-managed session must have, including old sessions
     /// being re-attached after an upgrade.
+    ///
+    /// `TMOUT` here only ever reaches a **shell**, and only one sitting at a
+    /// prompt. A managed agent session's pane process is the agent itself
+    /// (verified: `pane_current_command` is the `claude` binary, not a shell), so
+    /// TMOUT is structurally incapable of closing one — that's the watchdog's job.
     private static func sessionOptions(tmuxSession: String) -> String {
         "tmux set-environment -t \(tmuxSession) TMOUT \(promptIdleTimeoutSeconds) >/dev/null 2>&1; "
             + mouseOption(tmuxSession: tmuxSession)
+            + reaperWatchdogCommand(ttlSeconds: staleSessionTTLSeconds,
+                                    intervalSeconds: reaperIntervalSeconds)
     }
 
     /// Turn on tmux's own mouse handling, scoped to this session.
@@ -672,7 +679,58 @@ final class SSHTerminalManager {
     /// long tail of sessions nobody came back to. Reaping them also frees agents
     /// pinning a stale on-disk binary after a `claude` self-update (a running
     /// process keeps executing the old inode until it exits and relaunches).
-    static let staleSessionTTLSeconds = promptIdleTimeoutSeconds
+    ///
+    /// Deliberately **shorter than a full-scope Claude access token's ~8h life**
+    /// (see `ClaudeOAuth`). A token is injected once, at launch, into the agent
+    /// process's environment — a running process's env can't be rewritten, so
+    /// re-attaching a session whose token has expired hands back an agent that
+    /// can't authenticate and can only be fixed by restarting it. Reaping before
+    /// that point means a stale session is always gone rather than broken.
+    static let staleSessionTTLSeconds = 6 * 60 * 60  // 6h
+
+    /// How often the host-side watchdog re-checks. Cheap (one `tmux
+    /// list-sessions` per tick), so this is set for responsiveness near the TTL
+    /// boundary rather than to save cycles.
+    static let reaperIntervalSeconds = 15 * 60
+
+    /// tmux session name for the host-side watchdog. Deliberately **not** tagged
+    /// `@visionvnc`, which keeps it out of both the reap set (it must not kill
+    /// itself) and session rediscovery (it isn't a session the user opened).
+    static let reaperSessionName = "visionvnc-reaper"
+
+    /// Starts (or re-uses) a detached watchdog on the host that reaps stale
+    /// sessions on an interval and exits once none remain.
+    ///
+    /// This exists because `reapStaleSessions` only runs when the app connects,
+    /// which means nothing collects abandoned sessions while the headset is off —
+    /// observed in practice as app-tagged sessions alive after 13h, 14h and 88h
+    /// detached against a 12h TTL. A host-side timer is the only thing that closes
+    /// them without the app present.
+    ///
+    /// `tmux new -A` is the whole concurrency story: attach-or-create can't
+    /// produce a duplicate, and it transparently restarts a watchdog that died, so
+    /// no lockfile or pidfile is needed and nothing is left on the host's disk.
+    /// The script is base64'd because it has to survive three levels of shell
+    /// quoting (`zsh -lic '…'` → `tmux new … sh -c "…"` → the loop itself);
+    /// encoded, it carries no quotes or `$` for an outer layer to chew on.
+    static func reaperWatchdogCommand(ttlSeconds: Int, intervalSeconds: Int) -> String {
+        // `session_activity` is the idle signal: it advances on pane *output*, and
+        // an agent waiting at its prompt is silent, so it stops climbing when the
+        // session is genuinely abandoned (verified against real sessions).
+        let script = """
+        while :; do
+        sleep \(intervalSeconds)
+        now=$(date +%s)
+        tmux list-sessions -F '#{session_attached}|#{session_activity}|#{@visionvnc}|#{session_name}' 2>/dev/null | while IFS='|' read -r att act mark name; do
+        [ "$mark" = 1 ] && [ "$att" = 0 ] && [ $((now - act)) -gt \(ttlSeconds) ] && tmux kill-session -t "$name"
+        done
+        tmux list-sessions -F '#{@visionvnc}' 2>/dev/null | grep -q 1 || exit 0
+        done
+        """
+        let encoded = Data(script.utf8).base64EncodedString()
+        return "tmux new -A -d -s \(reaperSessionName) "
+            + "sh -c \"echo \(encoded)|base64 -d|sh\" >/dev/null 2>&1; "
+    }
 
     /// Server-side reap pipeline: for every `@visionvnc`-tagged session with zero
     /// attached clients whose last activity is older than `ttlSeconds`, kill it.

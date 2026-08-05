@@ -350,18 +350,25 @@ struct ProjectsView: View {
     private func openAgent(in folder: String) {
         guard let host = selectedHost, !folder.isEmpty else { return }
         let agent = host.sshAgent
-        do {
-            let id = try sshManager.newClaudeSession(
-                host: host.hostname, port: host.port, username: host.sshUsername,
-                folder: folder, projectName: "",
-                clientCommand: host.effectiveCommand(for: agent),
-                agentKey: agent.sessionKey,
-                environment: host.resolvedSSHEnvironment(for: agent)
-            )
-            addRecent(host: host.hostname, folder: folder)
-            openWindow(id: "ssh-terminal", value: id)
-        } catch {
-            self.error = "\(error)"
+        // Renewing the credential is a network round-trip, so the launch is async
+        // now. It only actually calls out when an in-app Claude credential is
+        // stored and near expiry; every other agent resolves from the keychain and
+        // falls straight through.
+        Task {
+            let environment = await host.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+            do {
+                let id = try sshManager.newClaudeSession(
+                    host: host.hostname, port: host.port, username: host.sshUsername,
+                    folder: folder, projectName: "",
+                    clientCommand: host.effectiveCommand(for: agent),
+                    agentKey: agent.sessionKey,
+                    environment: environment
+                )
+                addRecent(host: host.hostname, folder: folder)
+                openWindow(id: "ssh-terminal", value: id)
+            } catch {
+                self.error = "\(error)"
+            }
         }
     }
 
@@ -411,6 +418,14 @@ private struct AgentSetupSheet: View {
     @State private var flowError: String?
     @State private var signingIn = false
 
+    // In-app browser OAuth state (Claude).
+    @State private var showingWebLogin = false
+    /// Mirrors the stored credential for display. Held in view state rather than
+    /// read inline because it lives in the keychain, not SwiftData — no
+    /// observation would fire when it changes, so sign-in/out refresh it by hand.
+    @State private var claudeCredential: ClaudeOAuth.Credential?
+    @State private var claudeCredentialSummary: String?
+
     private var envName: String { host.effectiveEnvName(for: agent) }
 
     var body: some View {
@@ -419,6 +434,10 @@ private struct AgentSetupSheet: View {
                 Text(agent.setupInstructions(envName: envName))
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+
+            if agent.supportsWebOAuth {
+                webOAuthSection
             }
 
             if agent.supportsDeviceFlow {
@@ -435,7 +454,7 @@ private struct AgentSetupSheet: View {
                 }
             }
 
-            Section(agent.supportsDeviceFlow ? "Or paste a token" : "Paste the token") {
+            Section(agent.supportsDeviceFlow || agent.supportsWebOAuth ? "Or paste a token" : "Paste the token") {
                 SecureField(envName, text: $token)
                     .font(.system(.body, design: .monospaced))
                     .autocorrectionDisabled()
@@ -467,7 +486,56 @@ private struct AgentSetupSheet: View {
                 Button("Done") { dismiss() }
             }
         }
+        .onAppear { reloadClaudeCredential() }
         .onDisappear { flowTask?.cancel() }
+        .sheet(isPresented: $showingWebLogin) {
+            ClaudeLoginSheet { credential in
+                host.setClaudeCredential(credential)
+                try? host.modelContext?.save()
+                reloadClaudeCredential()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var webOAuthSection: some View {
+        Section("Sign in with Claude") {
+            Button {
+                showingWebLogin = true
+            } label: {
+                Label(claudeCredential == nil ? "Sign In with Claude" : "Sign In Again",
+                      systemImage: "person.crop.circle.badge.checkmark")
+            }
+
+            if let credential = claudeCredential {
+                Label {
+                    Text(claudeCredentialSummary ?? "").font(.caption)
+                } icon: {
+                    Image(systemName: credential.hasProfileScope
+                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                }
+                .foregroundStyle(credential.hasProfileScope ? .green : .orange)
+
+                if !credential.hasProfileScope {
+                    Text("Without user:profile the agent can't read your plan's model entitlements. Sign in again, and if it keeps coming back narrowed, Anthropic has tightened what this flow may request.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Sign Out of Claude", role: .destructive) {
+                    Task {
+                        await host.clearClaudeCredential()
+                        try? host.modelContext?.save()
+                        reloadClaudeCredential()
+                    }
+                }
+            }
+        }
+    }
+
+    private func reloadClaudeCredential() {
+        claudeCredential = host.claudeCredential
+        claudeCredentialSummary = ClaudeCredentialStore.summary(connectionID: host.id)
     }
 
     @ViewBuilder

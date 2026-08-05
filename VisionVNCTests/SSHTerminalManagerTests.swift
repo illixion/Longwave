@@ -30,8 +30,10 @@ final class SSHTerminalManagerTests: XCTestCase {
     func testAttachCommandReattachesWithoutCreatingOrToken() {
         let cmd = SSHTerminalManager.attachCommand(tmuxSession: "proj-copilot")
         XCTAssertTrue(cmd.hasPrefix("zsh -lic '"))
-        // Rediscovered sessions only re-attach: no `tmux new`, no env/token.
-        XCTAssertFalse(cmd.contains("tmux new"))
+        // Rediscovered sessions only re-attach: the target session is never
+        // (re)created, and no env/token is injected. The one `tmux new` allowed
+        // here is the idle watchdog's own session, which re-attach also starts.
+        XCTAssertFalse(cmd.contains("tmux new -A -d -s proj-copilot"))
         XCTAssertFalse(cmd.contains("secret"))
         XCTAssertTrue(cmd.contains("exec tmux attach -d -t proj-copilot"))
     }
@@ -136,9 +138,16 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertTrue(cmd.contains("tmux kill-session -t \"$name\""))
     }
 
-    func testReapTTLIsTwelveHours() {
-        XCTAssertEqual(SSHTerminalManager.staleSessionTTLSeconds, 12 * 60 * 60)
+    /// The two timeouts used to be the same 12h value. They're now independent:
+    /// `TMOUT` only ever closes an idle **shell** (an agent session's pane process
+    /// is the agent itself, so it can't apply there), while the reap TTL has to
+    /// stay under a Claude access token's ~8h life — a session that outlives its
+    /// token can't be handed a new one, since the token was injected into the
+    /// agent process's environment at launch.
+    func testReapTTLIsDecoupledFromThePromptTimeout() {
         XCTAssertEqual(SSHTerminalManager.promptIdleTimeoutSeconds, 12 * 60 * 60)
+        XCTAssertEqual(SSHTerminalManager.staleSessionTTLSeconds, 6 * 60 * 60)
+        XCTAssertLessThan(SSHTerminalManager.staleSessionTTLSeconds, 8 * 60 * 60)
     }
 
     // MARK: - Modifier encoding

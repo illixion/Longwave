@@ -36,7 +36,11 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>VisionVNC transcribes your speech on this device to type messages into terminal sessions.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>VisionVNC connects to remote desktops, game streaming hosts, and the Companion on your local network.</string>
+	<string>VisionVNC connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_visionvnc-native._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

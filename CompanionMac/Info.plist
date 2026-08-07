@@ -11,6 +11,10 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>VisionVNC Companion captures system audio to stream it to the VisionVNC app on your Apple Vision Pro.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>This app serves an audio stream to VisionVNC clients on your local network.</string>
+	<string>This app serves audio and native Mac screen streams to VisionVNC clients on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_visionvnc-native._tcp</string>
+	</array>
 </dict>
 </plist>

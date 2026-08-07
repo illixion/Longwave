@@ -2,12 +2,13 @@
 
 ```
 VisionVNC/
-├── VisionVNCApp.swift                  — App entry, 7 WindowGroup scenes (2 Moonlight conditional)
+├── VisionVNCApp.swift                  — App entry and multi-window scene registration
 ├── Models/
 │   └── SavedConnection.swift           — SwiftData model, ConnectionType, Moonlight settings enums
 ├── ViewModels/
 │   ├── VNCConnectionManager.swift      — VNC connection bridge, @Observable
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing)
+│   ├── MacNativeStreamManager.swift    — Native Mac stream lifecycle + transparent display layer
 │   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
 │   └── MoonlightConnectionManager.swift — Moonlight orchestrator, state machine, @Observable
 ├── Views/
@@ -17,6 +18,7 @@ VisionVNC/
 │   ├── SettingsView.swift              — New-connection defaults (@AppStorage)
 │   ├── ConsoleView.swift               — Log viewer (tab + "console" pop-out window)
 │   ├── AudioStreamView.swift           — Audio mini player (album art, transport, mute, utility row)
+│   ├── MacNativeStreamView.swift       — Transparent HEVC-alpha Mac stream scene
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
 │   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
 │   ├── VirtualKeyboardView.swift       — Our own on-screen key grid + modifier latches
@@ -29,6 +31,9 @@ VisionVNC/
 │   ├── MoonlightKeyboardView.swift     — Moonlight keyboard window (key grid, Ctrl+Alt+Del)
 │   ├── MoonlightHardwareKeyboardView.swift — Moonlight hardware keyboard capture
 │   └── StreamStatsOverlay.swift        — Live stats HUD (codec, FPS, RTT, decode time, drops)
+├── MacNative/
+│   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver
+│   └── MacNativeVideoRenderer.swift    — hvc1+alpha format reconstruction and display
 ├── Moonlight/
 │   ├── MoonlightStreamBridge.swift     — C callback → Swift marshalling, global renderer refs
 │   ├── MoonlightVideoRenderer.swift    — AVSampleBufferDisplayLayer H.264/HEVC/AV1 + HDR
@@ -55,6 +60,8 @@ VisionVNC/
 
 Shared/                                 — compiled into BOTH targets (visionOS app + macOS companion)
 ├── AudioStreamProtocol.swift           — Wire protocol v6 (int24 PCM via PCM24), NowPlayingInfo, MediaCommand
+├── MacNativeStreamProtocol.swift       — Native stream hello/format/video/replacement framing
+├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
 └── BroadcastSetupURL.swift             — visionvnc://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
@@ -72,6 +79,11 @@ CompanionMac/                           — macOS menu bar companion target (Vis
 ├── CompanionApp.swift                  — MenuBarExtra (slim quick-controls popover) + Settings scene + AudioStreamerController
 ├── CompanionWindowView.swift           — multi-pane companion window (sidebar + grouped forms: audio/token/broadcast/SSH/keyboard); Settings scene keeps the app menu-bar-only (no auto-open at launch), activation policy flips .regular↔.accessory with the window
 ├── AudioStreamServer.swift             — Single-client TCP server, metadata replay, command rx
+├── MacNativeStreamingController.swift  — Enable state, capture/server lifecycle, takeover notifications
+├── MacNativeStreamServer.swift         — Single authenticated newest-viewer-wins server + Bonjour
+├── MacNativeScreenCapture.swift        — Transparent ScreenCaptureKit window composition
+├── MacHEVCAlphaEncoder.swift           — Realtime VideoToolbox HEVC-with-alpha encoder
+├── MacNativeStreamNotifications.swift  — Foreground-capable connection/takeover notifications
 ├── SystemAudioTap.swift                — Core Audio process tap
 ├── MusicAppBridge.swift                — Music.app metadata/control (notifications + AppleScript)
 ├── BroadcastServerManager.swift        — one-button mediamtx setup (cert/password gen, managed config, brew restart, pairing URL) + one-click OBS scene provisioning
@@ -88,6 +100,7 @@ VisionVNCTests/                         — app-hosted XCTest target (run locall
 ├── TextDiffTests.swift                 — keyboard common-prefix diff
 ├── CompanionInjectProtocolTests.swift  — inject framing / drain / backspace
 ├── SavedConnectionEnvTests.swift       — SSH env parsing + name validation
+├── MacNativeStreamProtocolTests.swift  — Native hello/video framing and partial-frame draining
 └── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
 
 scripts/

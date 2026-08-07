@@ -28,6 +28,18 @@
 - **Apple Music streaming tracks expose no artwork** via the Music scripting interface (`artwork 1 of current track` is empty) — only local/downloaded files have it. The mini player falls back to the speaker status glyph; there is no public workaround.
 - **Audio-session / window-lifecycle changes can only be verified on device** — build, then commit right away; on-device testing happens after the commit, and a bad change is reverted rather than held back. Call out what to test on the Vision Pro in the commit summary.
 
+## Native Mac Streaming
+
+- **Transparent desktop capture is a window composition, not a display capture.** `MacNativeScreenCapture` includes visible layer-zero application windows over a clear ScreenCaptureKit background, which removes wallpaper without color keying and preserves translucent pixels correctly. A raw display capture is already flattened against its wallpaper; green-screen subtraction cannot recover correct RGB behind translucent windows.
+- **Menus, Dock, Menu Bar, popovers, Mission Control, Notification Center, and higher-layer utility surfaces are not in the first milestone.** The planned Mac Chrome window and VMware Unity-style per-window scenes require separate capture/filter policy.
+- **VideoToolbox's alpha encoder selector and its emitted format subtype differ.** The compression session is created with `kCMVideoCodecType_HEVCWithAlpha` (`muxa`), but encoded samples carry an `hvc1` format description with `kCMFormatDescriptionExtension_ContainsAlphaChannel = true`. The receiver must validate that extension rather than require a `muxa` subtype.
+- **Transport the exact CoreMedia ImageDescription.** Reconstructing only VPS/SPS/PPS can drop the alpha auxiliary-layer metadata. The protocol sends `CMVideoFormatDescriptionCopyAsBigEndianImageDescriptionBlockBuffer` output and reconstructs it with `CMVideoFormatDescriptionCreateFromBigEndianImageDescriptionData`.
+- **Physical Vision Pro testing is required to prove final compositing.** Simulator/device builds verify the API surface, but only the headset can prove that `AVSampleBufferVideoRenderer` preserves decoded alpha through the plain SwiftUI window, including rounded corners, shadows, and vibrancy.
+- **Exactly one authenticated viewer is allowed.** A candidate replaces the current viewer only after TLS authentication and a valid hello, receives the current format description, and causes the previous viewer to receive a named replacement frame before disconnect. The Mac posts a notification naming the new viewer and any displaced viewer.
+- **The current security transport is TLS 1.2 external PSK, domain-separated from audio and injection while reusing the companion token.** Network.framework's external-PSK path does not reliably negotiate TLS 1.3. Migration to TLS 1.3 pinned identities remains isolated behind `MacNativeStreamCrypto`.
+- **LAN-first, manual addressing for now.** The Mac advertises `_visionvnc-native._tcp` on port 4857 and both targets declare the Bonjour service, but the connection form does not yet browse/select services. A LAN IP/hostname is entered manually; a Tailscale address also works.
+- **Input and Unity mode are deferred until alpha playback passes on device.** This milestone does not yet inject mouse/keyboard events, offer opaque raw-display fallback, or split each Mac window into its own visionOS scene.
+
 ## Broadcast
 
 - **visionOS strips the AVCapture surface**: no `AVCaptureAudioDataOutput` (mic uses an `AVAudioEngine` input tap), no session presets (device native format only), no `AVCaptureVideoPreviewLayer` (preview is an `AVSampleBufferDisplayLayer` fed raw capture frames marked `DisplayImmediately`).

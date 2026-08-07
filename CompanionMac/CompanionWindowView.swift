@@ -20,6 +20,8 @@ struct CompanionWindowView: View {
         TabView {
             AudioPane(controller: controller)
                 .tabItem { Label("Audio", systemImage: "speaker.wave.2") }
+            MacStreamingPane(controller: controller.macNativeStreaming)
+                .tabItem { Label("Mac Stream", systemImage: "macwindow.on.rectangle") }
             AccessTokenPane(controller: controller)
                 .tabItem { Label("Token", systemImage: "key") }
             BroadcastPane(broadcastServer: broadcastServer)
@@ -36,6 +38,41 @@ struct CompanionWindowView: View {
         .onAppear {
             controller.refreshKeys()
             controller.injection.refreshAccessibility()
+        }
+    }
+}
+
+// MARK: - Native Mac streaming
+
+struct MacStreamingPane: View {
+    @Bindable var controller: MacNativeStreamingController
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Enable native Mac streaming", isOn: $controller.enabled)
+            } footer: {
+                Text("Streams the visible Mac windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Only one viewer is active; a new authenticated viewer replaces the previous one.")
+            }
+
+            Section("Status") {
+                LabeledContent("Stream", value: controller.statusText)
+                LabeledContent("Port", value: String(controller.port))
+                if controller.isCapturing {
+                    Label("Screen capture active", systemImage: "record.circle")
+                        .foregroundStyle(.green)
+                }
+                if let error = controller.lastError {
+                    Text(error)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section {
+                Text("The Mac shows its system screen-capture indicator while connected. VisionVNC Companion also posts a notification naming the connecting device and whether it replaced another viewer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

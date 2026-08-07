@@ -16,6 +16,8 @@ struct MacSettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             AudioPane(controller: controller)
                 .tabItem { Label("Audio", systemImage: "speaker.wave.2") }
+            MacStreamingPane(controller: controller.macNativeStreaming)
+                .tabItem { Label("Mac Stream", systemImage: "macwindow.on.rectangle") }
             AccessTokenPane(controller: controller)
                 .tabItem { Label("Token", systemImage: "key") }
             BroadcastPane(broadcastServer: broadcastServer)

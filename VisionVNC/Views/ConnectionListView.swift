@@ -7,6 +7,9 @@ struct ConnectionListView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     #if os(visionOS)
+    @Environment(MacNativeStreamManager.self) private var macNativeManager
+    #endif
+    #if os(visionOS)
     @Environment(SSHTerminalManager.self) private var sshManager
     #endif
     #if MOONLIGHT_ENABLED
@@ -24,7 +27,9 @@ struct ConnectionListView: View {
 
     private var visibleConnections: [SavedConnection] {
         #if os(macOS)
-        savedConnections.filter { $0.connectionType != .ssh }
+        savedConnections.filter {
+            $0.connectionType != .ssh && $0.connectionType != .macNative
+        }
         #else
         savedConnections
         #endif
@@ -195,6 +200,14 @@ struct ConnectionListView: View {
         switch connection.connectionType {
         case .vnc:
             connectVNC(connection)
+        #if os(visionOS)
+        case .macNative:
+            macNativeManager.connect(to: connection)
+            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        #else
+        case .macNative:
+            break
+        #endif
         #if os(visionOS)
         case .ssh:
             connectSSH(connection)

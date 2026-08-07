@@ -6,6 +6,7 @@ import RoyalVNCKit
 
 enum ConnectionType: String, CaseIterable, Codable {
     case vnc
+    case macNative
     case ssh
     #if MOONLIGHT_ENABLED
     case moonlight
@@ -15,6 +16,7 @@ enum ConnectionType: String, CaseIterable, Codable {
     var label: String {
         switch self {
         case .vnc: "VNC"
+        case .macNative: "Native Mac"
         case .ssh: "SSH"
         #if MOONLIGHT_ENABLED
         case .moonlight: "Moonlight"
@@ -26,6 +28,7 @@ enum ConnectionType: String, CaseIterable, Codable {
     var systemImage: String {
         switch self {
         case .vnc: "display"
+        case .macNative: "macwindow.on.rectangle"
         case .ssh: "terminal"
         #if MOONLIGHT_ENABLED
         case .moonlight: "gamecontroller"
@@ -37,6 +40,7 @@ enum ConnectionType: String, CaseIterable, Codable {
     var defaultPort: Int {
         switch self {
         case .vnc: 5900
+        case .macNative: Int(MacNativeStreamProtocol.defaultPort)
         case .ssh: 22
         #if MOONLIGHT_ENABLED
         case .moonlight: 47989
@@ -338,9 +342,10 @@ final class SavedConnection {
     /// for lightweight migration. Ignored on visionOS (no system cursor).
     var hideLocalCursor: Bool = false
 
-    // MARK: Audio-specific
+    // MARK: Companion-specific
 
-    /// Static auth token presented to the VisionVNC Companion. Default
+    /// Static auth token presented to the VisionVNC Companion for audio,
+    /// native Mac streaming, and other domain-separated services. Default
     /// empty so lightweight migration of existing stores is safe.
     var audioToken: String = ""
 

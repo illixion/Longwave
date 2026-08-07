@@ -10,6 +10,10 @@ enum MainWindowID: Int, Codable, Hashable {
     case shared = 0
 }
 
+enum MacNativeWindowID: Int, Codable, Hashable {
+    case shared = 0
+}
+
 /// Tracks which of the app's windows are currently open and whether each is
 /// in the user's current room, so the Sessions tab can "summon" a window back
 /// to the user. On visionOS a window can be snapped in another room and become

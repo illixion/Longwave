@@ -89,6 +89,24 @@ fi
 if [ "$NEEDS_DEPS" -eq 1 ]; then
   echo "▶ Ensuring Moonlight dependencies (setup-deps.sh)…"
   ./scripts/setup-deps.sh
+
+  # The Opus package used to ship a hand-written modulemap. Xcode persists its
+  # absolute path in DerivedData, so an incremental build created before that
+  # file was removed fails instead of regenerating the package module. Clean
+  # only when this specific stale reference is present.
+  REMOVED_OPUS_MODULEMAP="$PROJECT_DIR/repos/opus/include/module.modulemap"
+  if [ ! -e "$REMOVED_OPUS_MODULEMAP" ] \
+      && [ -d "$DERIVED/Build" ] \
+      && grep -RqsF "$REMOVED_OPUS_MODULEMAP" "$DERIVED/Build"; then
+    echo "▶ Cleaning stale Opus package build plan…"
+    xcodebuild \
+      -project VisionVNC.xcodeproj \
+      -scheme "$SCHEME" \
+      -configuration "$CONFIG" \
+      -destination 'generic/platform=macOS' \
+      -derivedDataPath "$DERIVED" \
+      clean
+  fi
 fi
 
 # Manual signing with a real identity; automatic (Xcode-managed) only matters

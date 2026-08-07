@@ -116,6 +116,8 @@ struct ConnectionFormView: View {
             switch connectionType {
             case .vnc:
                 vncSections
+            case .macNative:
+                macNativeSections
             case .ssh:
                 sshSections
             #if MOONLIGHT_ENABLED
@@ -182,10 +184,36 @@ struct ConnectionFormView: View {
 
     private var availableConnectionTypes: [ConnectionType] {
         #if os(macOS)
-        ConnectionType.allCases.filter { $0 != .ssh }
+        ConnectionType.allCases.filter { $0 != .ssh && $0 != .macNative }
         #else
         ConnectionType.allCases
         #endif
+    }
+
+    // MARK: - Native Mac Sections
+
+    @ViewBuilder
+    private var macNativeSections: some View {
+        Section("Native Mac Stream") {
+            Text("Streams the Mac's visible windows over a transparent background using ScreenCaptureKit and hardware HEVC with alpha.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section("Companion Token") {
+            TextField("Token", text: $audioToken)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .focused($focusedField, equals: .audioToken)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+                .onTapGesture { focusedField = .audioToken }
+
+            Text("Use the same token shown in VisionVNC Companion. A new authenticated viewer replaces the previous viewer.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var serverSection: some View {
@@ -630,6 +658,9 @@ struct ConnectionFormView: View {
             connection.savedPassword = autoLogin ? password : ""
             connection.vncTouchMode = vncTouchMode
             connection.linkedCompanionConnectionID = linkedAudioConnectionID
+
+        case .macNative:
+            connection.audioToken = audioToken.trimmingCharacters(in: .whitespacesAndNewlines)
 
         #if MOONLIGHT_ENABLED
         case .moonlight:

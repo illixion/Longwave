@@ -2,7 +2,7 @@
 
 ## Multi-Window Design
 
-Ten `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
+Eleven `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 
 1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
@@ -10,12 +10,13 @@ Ten `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 4. **Terminal** (`id: "ssh-terminal"`, value-typed by `SSHSessionID`) — `SSHTerminalView`, 900x640
 5. **Terminal Keyboard** (`id: "ssh-keyboard"`, value-typed by `SSHSessionID`) — `SSHKeyboardView`, 1180x780
 6. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
-7. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
-8. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
-9. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
-10. **PCVR** (`id: "foveated-controls"`, value-typed by `PCVRWindowID`) — foveated session controls (`#if FOVEATED_ENABLED`)
+7. **Native Mac Stream** (`id: "mac-native-stream"`, value-typed by `MacNativeWindowID.shared`) — transparent HEVC-alpha Mac desktop, 1440x900 default
+8. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
+9. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
+10. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
+11. **PCVR** (`id: "foveated-controls"`, value-typed by `PCVRWindowID`) — foveated session controls (`#if FOVEATED_ENABLED`)
 
-`VNCConnectionManager`, `AudioStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio connections open their windows as plain siblings (`openWindow(id:)`), Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
+`VNCConnectionManager`, `AudioStreamManager`, `MacNativeStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio/native-Mac connections open their windows as plain siblings, while Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
 
 **Window navigation:** connection windows open as sibling windows (`openWindow(id:)`) so the main window stays open alongside — surfacing one window never dismisses the other. The main window is value-typed with a single constant identity (`MainWindowID.shared`); every `openWindow(id: "main", value:)` reactivates that one instance rather than spawning a duplicate. Sub-windows carry a Home ornament (`.homeOrnament()`, bottom-front) that opens `id: "main"` — needed because visionOS reopens the last-used window on app launch. The audio mini player instead has home + reload buttons in its utility row (the ornament overlapped its transport controls).
 
@@ -54,12 +55,37 @@ Ten `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 | `AudioStreamerController` (macOS) | `@Observable` orchestrator behind the `MenuBarExtra` UI in `CompanionApp`. Tap starts **unmuted**; restarts muted on the 0→1 client edge and unmuted on 1→0 (mute only while someone is listening). |
 | `MusicAppBridge` (macOS) | Music.app metadata + control via public APIs only: `DistributedNotificationCenter` `com.apple.Music.playerInfo` (event-driven) + `NSAppleScript` one-shots for artwork (≤600 px JPEG, on track change), player position, and transport. Every script call is guarded by an `NSRunningApplication` check. Needs `NSAppleEventsUsageDescription` / one-time Automation TCC. |
 
+## Key Types — Native Mac Streaming
+
+| Type | Role |
+|------|------|
+| `MacNativeScreenCapture` (macOS) | ScreenCaptureKit display-sized composition of visible application windows over a clear background. Excludes desktop windows and the companion itself, preserves shadows, and refreshes the content filter as windows change. |
+| `MacHEVCAlphaEncoder` (macOS) | Realtime VideoToolbox HEVC-with-alpha encoder. Sends the exact big-endian CoreMedia image description before compressed frames so alpha-layer metadata survives transport. |
+| `MacNativeStreamServer` (macOS) | TLS-PSK `NWListener` on port 4857, advertised as `_visionvnc-native._tcp`. Exactly one authenticated viewer is active; a valid new hello replaces the old viewer and names it in the replacement frame. |
+| `MacNativeStreamingController` (macOS) | Starts capture only while an authenticated viewer is active, stops it on disconnect/failure, and posts a macOS notification naming the new and replaced devices. |
+| `MacNativeStreamClient` (visionOS) | Receives framed format/video/replacement messages and serializes renderer work onto the main queue. |
+| `MacNativeVideoRenderer` (visionOS) | Reconstructs the transported `hvc1` format with `ContainsAlphaChannel`, creates compressed `CMSampleBuffer`s, and submits them through `AVSampleBufferVideoRenderer`. |
+| `MacNativeStreamManager` / `MacNativeStreamView` (visionOS) | Own connection state and the single transparent plain-style visionOS window. Connection generations prevent stale callbacks from tearing down a replacement connection. |
+
+### Native Mac Video Pipeline
+
+```
+SCShareableContent visible layer-zero application windows
+  → SCContentFilter(display:including:) over clear BGRA
+    → MacHEVCAlphaEncoder (VideoToolbox HEVC-with-alpha)
+      → exact CoreMedia ImageDescription + length-prefixed compressed frames
+        → TLS-PSK NWConnection
+          → MacNativeVideoRenderer
+            → AVSampleBufferVideoRenderer
+              → transparent AVSampleBufferDisplayLayer in a plain visionOS window
+```
+
 ## Shared Types
 
 | Type | Role |
 |------|------|
 | `SavedConnection` | `@Model` (SwiftData). Persists hostname, port, label, connection type, quality settings. Extended with ~15 Moonlight-specific optional properties (bitrate, FPS, resolution, codec, audio config, touch mode, etc.). Server cert and UUID stored in UserDefaults (binary data not suitable for SwiftData). |
-| `ConnectionType` | Enum: `.vnc` / `.moonlight` (conditionally compiled) / `.audio`. Discriminates routing and form fields. |
+| `ConnectionType` | Enum: `.vnc` / `.moonlight` (conditionally compiled) / `.audio` / `.macNative`. Discriminates routing and form fields. |
 | `ConnectionDefaults` | UserDefaults-backed new-connection defaults (VNC quality/touch mode, ports, Moonlight video/audio/input), edited in the Settings tab and seeded into `ConnectionFormView` for new connections. |
 
 ## Moonlight Connection State Machine

@@ -6,6 +6,7 @@ struct VisionVNCApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
+    @State private var macNativeManager = MacNativeStreamManager()
     @State private var sshManager = SSHTerminalManager()
     @State private var broadcastManager = BroadcastManager()
     #if MOONLIGHT_ENABLED
@@ -20,6 +21,7 @@ struct VisionVNCApp: App {
             MainView()
                 .environment(connectionManager)
                 .environment(audioManager)
+                .environment(macNativeManager)
                 .environment(sshManager)
                 .environment(broadcastManager)
                 #if MOONLIGHT_ENABLED
@@ -85,6 +87,22 @@ struct VisionVNCApp: App {
                 .trackWindowSession(id: "remote-desktop")
         }
         .defaultSize(width: 1280, height: 800)
+        .windowResizability(.contentMinSize)
+        .windowStyle(.plain)
+        .defaultLaunchBehavior(.suppressed)
+
+        WindowGroup(
+            "Native Mac Stream",
+            id: "mac-native-stream",
+            for: MacNativeWindowID.self
+        ) { _ in
+            MacNativeStreamView()
+                .environment(macNativeManager)
+                .trackWindowSession(id: "mac-native-stream")
+        } defaultValue: {
+            .shared
+        }
+        .defaultSize(width: 1440, height: 900)
         .windowResizability(.contentMinSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)

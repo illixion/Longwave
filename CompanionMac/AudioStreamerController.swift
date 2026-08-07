@@ -7,12 +7,14 @@ import os
 final class AudioStreamerController {
 
     let port: UInt16 = AudioStreamProtocol.defaultPort
+    let macNativeStreaming = MacNativeStreamingController()
 
     /// Remembers whether the user had streaming on, so the menu bar app
     /// resumes it automatically on the next launch (e.g. after login).
     private static let autoStartKey = "autoStartStreaming"
 
     init() {
+        macNativeStreaming.configure(token: token)
         if UserDefaults.standard.bool(forKey: Self.autoStartKey) {
             // Defer past App init so it runs on the main actor's run loop —
             // starting the tap/server synchronously during init is too early.
@@ -51,6 +53,7 @@ final class AudioStreamerController {
         token = AudioToken.generate()
         if isRunning { start() } // restart audio server with the new token
         if injection.injectionEnabled { startInjectServer() } // re-key inject channel
+        macNativeStreaming.updateToken(token)
     }
 
     // MARK: - SSH authorized keys (remote control)

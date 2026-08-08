@@ -23,6 +23,13 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private nonisolated(unsafe) var encoder: MacHEVCAlphaEncoder?
     private var display: SCDisplay?
     private var refreshTask: Task<Void, Never>?
+    // SCStreamConfiguration.backgroundColor does not retain the CGColor it's
+    // handed — ScreenCaptureKit reads it back later (e.g. from
+    // startCaptureWithCompletionHandler:'s serializeStreamProperties), and
+    // without a strong reference of our own the color is deallocated first,
+    // crashing on a dangling CGColorRef read. Keep it alive for as long as
+    // the configuration (and thus the stream) is in use.
+    private var backgroundColor: CGColor?
     // Bumped on every start()/stop() so a start() resuming after an `await`
     // can tell whether a subsequent stop() (or restart) already superseded
     // it, instead of clobbering state a later call already tore down.
@@ -87,6 +94,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         display = nil
         encoder?.invalidate()
         encoder = nil
+        backgroundColor = nil
     }
 
     private nonisolated func makeFilter(
@@ -108,19 +116,21 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return filter
     }
 
-    private nonisolated func makeConfiguration(display: SCDisplay) -> SCStreamConfiguration {
+    private func makeConfiguration(display: SCDisplay) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.width = display.width
         configuration.height = display.height
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.backgroundColor = CGColor(
+        let backgroundColor = CGColor(
             red: 0,
             green: 0,
             blue: 0,
             alpha: 0
         )
+        self.backgroundColor = backgroundColor
+        configuration.backgroundColor = backgroundColor
         configuration.shouldBeOpaque = false
         configuration.showsCursor = true
         configuration.ignoreShadowsDisplay = false

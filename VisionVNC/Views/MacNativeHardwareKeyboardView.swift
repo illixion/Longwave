@@ -69,24 +69,44 @@ final class MacNativeKeyCaptureView: UIView {
 
     // MARK: - Press Events
 
+    /// When keyboard shortcuts are available, every mapped key goes through
+    /// the full keycode+modifier channel (`sendKeyDown`/`sendKeyUp`) as
+    /// before. When they're not, only printable characters get through, and
+    /// only as a fire-and-forget text insertion over the always-attempted
+    /// text-only channel — mirroring the restriction VNC's companion-inject
+    /// route already applies to typing (no modifiers, no special keys ever
+    /// leave this device as a "shortcut"). Modifier-only presses and
+    /// non-printable specials (arrows, F-keys, Escape, …) are simply dropped
+    /// in that case — there's no way to express them as plain text.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
         for press in presses {
-            guard let key = press.key, let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { continue }
-            screenManager?.sendKeyDown(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
+            guard let key = press.key, let screenManager, MacKeyCodeMap.keyCode(for: key.keyCode) != nil else { continue }
             handled = true
+            if screenManager.keyboardShortcutsAvailability == .available {
+                let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode)!
+                screenManager.sendKeyDown(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
+            } else if key.keyCode == .keyboardDeleteOrBackspace {
+                screenManager.sendInjectBackspace(1)
+            } else if !MacKeyCodeMap.isModifierOnly(key.keyCode), !key.characters.isEmpty {
+                screenManager.sendInjectText(key.characters)
+            }
         }
         if !handled {
             super.pressesBegan(presses, with: event)
         }
     }
 
+    /// Only the full-shortcuts path needs a matching key-up — the text-only
+    /// fallback above is a one-shot insertion on press, nothing to release.
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
         for press in presses {
-            guard let key = press.key, let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { continue }
-            screenManager?.sendKeyUp(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
+            guard let key = press.key, let screenManager, MacKeyCodeMap.keyCode(for: key.keyCode) != nil else { continue }
             handled = true
+            guard screenManager.keyboardShortcutsAvailability == .available else { continue }
+            let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode)!
+            screenManager.sendKeyUp(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
         }
         if !handled {
             super.pressesEnded(presses, with: event)

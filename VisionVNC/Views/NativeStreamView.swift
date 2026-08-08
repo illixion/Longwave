@@ -61,6 +61,7 @@ struct NativeStreamView: View {
     @State private var isDragging = false
     @State private var dragLocked = false
     @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
+    @State private var previousDragTranslation: CGSize = .zero
 
     var body: some View {
         @Bindable var screenManager = screenManager
@@ -210,7 +211,7 @@ struct NativeStreamView: View {
                     // held — a DragGesture only fires while a button is down.
                     if case .active(let location) = phase, let point = translator?.viewToFramebuffer(location) {
                         lastPointerPoint = point
-                        screenManager.sendMouseMove(x: point.x, y: point.y)
+                        screenManager.moveCursorAbsolute(x: point.x, y: point.y)
                     }
                 }
                 .onAppear {
@@ -219,6 +220,12 @@ struct NativeStreamView: View {
                 .onChange(of: geometry.size) { _, newSize in
                     viewSize = newSize
                 }
+            }
+
+            // Local pointer dot for trackpad mode — the Mac's own cursor
+            // isn't visible until the pointer actually lands there.
+            if screenManager.touchMode == .relative, screenManager.streamSize.width > 0 {
+                cursorOverlay
             }
         }
         .overlay(alignment: .top) {
@@ -248,7 +255,8 @@ struct NativeStreamView: View {
         return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
     }
 
-    /// Single tap = left click, or release an active drag lock.
+    /// Single tap = left click (absolute) or click at the virtual cursor
+    /// (trackpad), or release an active drag lock.
     private var tapGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
@@ -266,62 +274,97 @@ struct NativeStreamView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
-                guard let point = translator?.viewToFramebuffer(value.location) else { return }
-                if dragLocked {
-                    screenManager.sendMouseMove(x: point.x, y: point.y)
-                } else if !isDragging {
-                    isDragging = true
-                    screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+                if screenManager.touchMode == .absolute {
+                    guard let point = translator?.viewToFramebuffer(value.location) else { return }
+                    if dragLocked {
+                        screenManager.sendMouseMove(x: point.x, y: point.y)
+                    } else if !isDragging {
+                        isDragging = true
+                        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+                    } else {
+                        screenManager.sendMouseMove(x: point.x, y: point.y)
+                    }
                 } else {
-                    screenManager.sendMouseMove(x: point.x, y: point.y)
+                    let dx = value.translation.width - previousDragTranslation.width
+                    let dy = value.translation.height - previousDragTranslation.height
+                    previousDragTranslation = value.translation
+                    if let delta = translator?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
+                        screenManager.moveVirtualCursor(dx: delta.dx, dy: delta.dy)
+                    }
                 }
             }
             .onEnded { value in
-                if isDragging, !dragLocked, let point = translator?.viewToFramebuffer(value.location) {
+                if screenManager.touchMode == .absolute, isDragging, !dragLocked,
+                   let point = translator?.viewToFramebuffer(value.location) {
                     screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
                 }
                 isDragging = false
+                previousDragTranslation = .zero
             }
     }
 
-    /// Pinch = scroll wheel, centered on the stream (mirrors RemoteDesktopView).
+    /// Pinch = scroll wheel, centered on the stream in absolute mode, or at
+    /// the virtual cursor in trackpad mode (mirrors RemoteDesktopView).
     private var scrollGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 let delta = value.magnification - 1.0
                 guard abs(delta) > 0.01, screenManager.streamSize.width > 0 else { return }
-                let centerX = UInt16(screenManager.streamSize.width / 2)
-                let centerY = UInt16(screenManager.streamSize.height / 2)
                 let steps = Int16(max(1, min(127, abs(delta) * 10)))
-                screenManager.sendScroll(x: centerX, y: centerY, deltaX: 0, deltaY: delta > 0 ? steps : -steps)
+                let deltaY: Int16 = delta > 0 ? steps : -steps
+                if screenManager.touchMode == .absolute {
+                    let centerX = UInt16(screenManager.streamSize.width / 2)
+                    let centerY = UInt16(screenManager.streamSize.height / 2)
+                    screenManager.sendScroll(x: centerX, y: centerY, deltaX: 0, deltaY: deltaY)
+                } else {
+                    screenManager.scrollAtVirtualCursor(deltaX: 0, deltaY: deltaY)
+                }
             }
     }
 
     private func leftClick(at location: CGPoint) {
-        guard let point = translator?.viewToFramebuffer(location) else { return }
-        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-        screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+        if screenManager.touchMode == .absolute {
+            guard let point = translator?.viewToFramebuffer(location) else { return }
+            screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+        } else {
+            screenManager.clickAtVirtualCursor(button: .left)
+        }
     }
 
     /// Double tap = press and hold the left button so the next drag drags.
     private func beginDragLock(at location: CGPoint) {
-        guard !dragLocked, let point = translator?.viewToFramebuffer(location) else { return }
-        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+        guard !dragLocked else { return }
+        if screenManager.touchMode == .absolute {
+            guard let point = translator?.viewToFramebuffer(location) else { return }
+            screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+        } else {
+            screenManager.pressMouseAtVirtualCursor(button: .left)
+        }
         dragLocked = true
     }
 
     /// Release the held left button (ends a drag lock).
     private func releaseLeft(at location: CGPoint) {
-        guard let point = translator?.viewToFramebuffer(location) else { return }
-        screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+        if screenManager.touchMode == .absolute {
+            guard let point = translator?.viewToFramebuffer(location) else { return }
+            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+        } else {
+            screenManager.releaseMouseAtVirtualCursor(button: .left)
+        }
     }
 
-    /// Right click at the last known pointer position (toolbar button — there's
-    /// no gesture free to dedicate to it, matching RemoteDesktopView's approach).
+    /// Right click at the last known pointer position (absolute) or the
+    /// virtual cursor (trackpad) — a toolbar button, since there's no gesture
+    /// free to dedicate to it, matching RemoteDesktopView's approach.
     private func rightClickAtCursor() {
-        guard let point = lastPointerPoint else { return }
-        screenManager.sendMouseDown(button: .right, x: point.x, y: point.y)
-        screenManager.sendMouseUp(button: .right, x: point.x, y: point.y)
+        if screenManager.touchMode == .absolute {
+            guard let point = lastPointerPoint else { return }
+            screenManager.sendMouseDown(button: .right, x: point.x, y: point.y)
+            screenManager.sendMouseUp(button: .right, x: point.x, y: point.y)
+        } else {
+            screenManager.clickAtVirtualCursor(button: .right)
+        }
     }
 
     private var dragLockBadge: some View {
@@ -333,10 +376,25 @@ struct NativeStreamView: View {
             .padding(.top, 8)
     }
 
+    /// Local pointer dot drawn at the virtual cursor, for trackpad mode.
+    private var cursorOverlay: some View {
+        let point = translator?.framebufferToView(
+            x: screenManager.virtualCursorX,
+            y: screenManager.virtualCursorY
+        ) ?? .zero
+
+        return Circle()
+            .fill(.white.opacity(0.7))
+            .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
+            .frame(width: 12, height: 12)
+            .position(point)
+            .allowsHitTesting(false)
+    }
+
     private var inputWarningMessage: String? {
-        switch screenManager.inputAvailability {
-        case .disabled: return "Remote control is off — enable it in the Mac companion's Native settings."
-        case .accessibilityDenied: return "Remote control needs Accessibility permission on the Mac."
+        switch screenManager.mouseAvailability {
+        case .disabled: return "Mouse control is off — enable it in the Mac companion's Native settings."
+        case .accessibilityDenied: return "Mouse control needs Accessibility permission on the Mac."
         case .available, .unknown: return nil
         }
     }
@@ -510,6 +568,16 @@ struct NativeStreamView: View {
             .toggleStyle(.button)
 
             if screenManager.liveEnabled {
+                Button {
+                    screenManager.touchMode = screenManager.touchMode == .absolute ? .relative : .absolute
+                } label: {
+                    Label(
+                        screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
+                        systemImage: screenManager.touchMode == .absolute
+                            ? "hand.tap" : "rectangle.and.hand.point.up.left"
+                    )
+                }
+
                 Button(action: rightClickAtCursor) {
                     Label("Right-click", systemImage: "cursorarrow.click.2")
                 }

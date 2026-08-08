@@ -73,25 +73,27 @@ struct NativePane: View {
                 }
 
                 Section {
-                    Toggle("Allow mouse & keyboard control", isOn: $controller.macNativeStreaming.inputControlEnabled)
-                        .help("Lets the connected Vision Pro click, drag, scroll, and type on this Mac while viewing its Screen stream — full remote control, including shortcuts.")
+                    Toggle("Allow mouse control", isOn: $controller.macNativeStreaming.mouseControlEnabled)
+                        .help("Lets the connected Vision Pro click, drag, and scroll on this Mac while viewing its Screen stream.")
 
-                    if controller.macNativeStreaming.inputControlEnabled {
-                        if controller.macNativeStreaming.input.accessibilityTrusted {
-                            LabeledContent("Status", value: "Ready — remote control routes through this Mac.")
-                        } else {
-                            HStack {
-                                Text("Needs Accessibility permission to control input.")
-                                    .foregroundStyle(.orange)
-                                Spacer()
-                                Button("Grant Accessibility…") {
-                                    controller.macNativeStreaming.grantInputAccessibility()
-                                }
+                    Toggle("Allow keyboard shortcuts", isOn: $controller.macNativeStreaming.keyboardShortcutsEnabled)
+                        .help("Lets the connected Vision Pro send modifier shortcuts and special keys (Cmd+C, arrows, F-keys, …) on this Mac. Plain typing works either way — see Keyboard below.")
+
+                    if (controller.macNativeStreaming.mouseControlEnabled || controller.macNativeStreaming.keyboardShortcutsEnabled)
+                        && !controller.macNativeStreaming.input.accessibilityTrusted {
+                        HStack {
+                            Text("Needs Accessibility permission to control input.")
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("Grant Accessibility…") {
+                                controller.macNativeStreaming.grantInputAccessibility()
                             }
                         }
+                    } else if controller.macNativeStreaming.mouseControlEnabled || controller.macNativeStreaming.keyboardShortcutsEnabled {
+                        LabeledContent("Status", value: "Ready — remote control routes through this Mac.")
                     }
                 } footer: {
-                    Text("Off by default — Screen alone is view-only. Requires the same Accessibility permission as keyboard text injection below.")
+                    Text("Both off by default — Screen alone is view-only. Plain typing on Screen always tries the text-only channel below (\"Allow keyboard control\"), same as VNC; shortcuts need this toggle too. Both need the same Accessibility permission.")
                 }
             }
 

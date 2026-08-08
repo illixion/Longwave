@@ -3,38 +3,67 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
-/// Lets a paired Vision Pro move the pointer, click/drag/scroll, and type —
-/// including modifier shortcuts and special keys — on this Mac while viewing
-/// its Screen stream. Unlike `InjectionService` (text-only, deliberately no
-/// modifiers/key codes), this is full remote control, so it gets its own
-/// master toggle, off by default, mirroring `InjectionService`'s "the user
-/// opts in" convention. Posting requires the Accessibility
+/// Lets a paired Vision Pro move the pointer, click/drag/scroll, and — when
+/// explicitly allowed — type modifier shortcuts and special keys on this Mac
+/// while viewing its Screen stream. Mouse and keyboard-*shortcut* control are
+/// two independent, off-by-default toggles (mirroring `InjectionService`'s
+/// "the user opts in" convention): mouse has no restricted fallback, but
+/// keyboard shortcuts do — printable typing keeps working through the
+/// existing text-only `CompanionInjectProtocol` channel regardless of this
+/// toggle (see `MacNativeStreamManager`), the same modifier-safe channel VNC
+/// typing already uses. Posting requires the Accessibility
 /// (`AXIsProcessTrusted`) permission, same as text injection.
 @Observable
 final class MacNativeInputService {
-    /// Master switch, persisted. Off by default — the user opts in.
-    var inputControlEnabled: Bool {
+    /// Mouse master switch, persisted. Off by default — the user opts in.
+    var mouseControlEnabled: Bool {
         get {
-            access(keyPath: \.inputControlEnabled)
-            return UserDefaults.standard.bool(forKey: "macNativeInputControlEnabled")
+            access(keyPath: \.mouseControlEnabled)
+            return UserDefaults.standard.bool(forKey: "macNativeMouseControlEnabled")
         }
         set {
-            withMutation(keyPath: \.inputControlEnabled) {
-                UserDefaults.standard.set(newValue, forKey: "macNativeInputControlEnabled")
+            withMutation(keyPath: \.mouseControlEnabled) {
+                UserDefaults.standard.set(newValue, forKey: "macNativeMouseControlEnabled")
             }
         }
     }
 
-    /// Whether this process holds the Accessibility permission.
+    /// Keyboard-*shortcuts* master switch (full keycode + modifiers),
+    /// persisted. Off by default — the user opts in. Independent of
+    /// `InjectionService.injectionEnabled`, which governs the always-attempted
+    /// text-only fallback typing keeps working through when this is off.
+    var keyboardShortcutsEnabled: Bool {
+        get {
+            access(keyPath: \.keyboardShortcutsEnabled)
+            return UserDefaults.standard.bool(forKey: "macNativeKeyboardShortcutsEnabled")
+        }
+        set {
+            withMutation(keyPath: \.keyboardShortcutsEnabled) {
+                UserDefaults.standard.set(newValue, forKey: "macNativeKeyboardShortcutsEnabled")
+            }
+        }
+    }
+
+    /// Whether this process holds the Accessibility permission — shared by
+    /// both capabilities (and by `InjectionService`), since it's the same
+    /// CGEvent-posting permission underneath all three.
     private(set) var accessibilityTrusted = AXIsProcessTrusted()
 
-    var isAvailable: Bool { inputControlEnabled && accessibilityTrusted }
+    var isMouseAvailable: Bool { mouseControlEnabled && accessibilityTrusted }
+    var isKeyboardShortcutsAvailable: Bool { keyboardShortcutsEnabled && accessibilityTrusted }
 
-    /// Current availability as the wire `InputStatus` byte.
-    var statusByte: UInt8 {
-        if !inputControlEnabled { return MacNativeStreamProtocol.InputStatus.disabled.rawValue }
-        return (accessibilityTrusted ? MacNativeStreamProtocol.InputStatus.available
-                                     : MacNativeStreamProtocol.InputStatus.accessibilityDenied).rawValue
+    /// Current mouse availability as the wire `RemoteControlStatus` byte.
+    var mouseStatusByte: UInt8 {
+        if !mouseControlEnabled { return MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue }
+        return (accessibilityTrusted ? MacNativeStreamProtocol.RemoteControlStatus.available
+                                     : MacNativeStreamProtocol.RemoteControlStatus.accessibilityDenied).rawValue
+    }
+
+    /// Current keyboard-shortcuts availability as the wire `RemoteControlStatus` byte.
+    var keyboardStatusByte: UInt8 {
+        if !keyboardShortcutsEnabled { return MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue }
+        return (accessibilityTrusted ? MacNativeStreamProtocol.RemoteControlStatus.available
+                                     : MacNativeStreamProtocol.RemoteControlStatus.accessibilityDenied).rawValue
     }
 
     func refreshAccessibility() {
@@ -58,7 +87,7 @@ final class MacNativeInputService {
     private var clickCounts: [MacNativeStreamProtocol.MouseButton: Int] = [:]
 
     func moveMouse(to point: CGPoint) {
-        guard isAvailable else { return }
+        guard isMouseAvailable else { return }
         if let activeButton {
             postMouse(type: dragType(for: activeButton), point: point, button: activeButton, clickCount: 1)
         } else {
@@ -67,21 +96,21 @@ final class MacNativeInputService {
     }
 
     func mouseDown(button: MacNativeStreamProtocol.MouseButton, at point: CGPoint) {
-        guard isAvailable else { return }
+        guard isMouseAvailable else { return }
         activeButton = button
         let clickCount = registerClick(button: button, at: point)
         postMouse(type: downType(for: button), point: point, button: button, clickCount: clickCount)
     }
 
     func mouseUp(button: MacNativeStreamProtocol.MouseButton, at point: CGPoint) {
-        guard isAvailable else { return }
+        guard isMouseAvailable else { return }
         if activeButton == button { activeButton = nil }
         let clickCount = clickCounts[button] ?? 1
         postMouse(type: upType(for: button), point: point, button: button, clickCount: clickCount)
     }
 
     func scroll(deltaX: Int32, deltaY: Int32, at point: CGPoint) {
-        guard isAvailable else { return }
+        guard isMouseAvailable else { return }
         // Move the pointer under the scroll target first so the event lands
         // in the intended view, matching real trackpad behavior.
         postMouse(type: .mouseMoved, point: point, button: .left, clickCount: 0)
@@ -97,12 +126,12 @@ final class MacNativeInputService {
     }
 
     func keyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
-        guard isAvailable else { return }
+        guard isKeyboardShortcutsAvailable else { return }
         postKey(keyCode: CGKeyCode(keyCode), isDown: true, modifiers: modifiers.cgEventFlags)
     }
 
     func keyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
-        guard isAvailable else { return }
+        guard isKeyboardShortcutsAvailable else { return }
         postKey(keyCode: CGKeyCode(keyCode), isDown: false, modifiers: modifiers.cgEventFlags)
     }
 

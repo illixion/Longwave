@@ -16,12 +16,15 @@ final class MacNativeStreamClient: @unchecked Sendable {
         case firstFrame
         case closed(String?)
         case replaced(String)
-        /// The companion's current mouse/keyboard availability — pushed on
-        /// connect and whenever the Mac's toggle or Accessibility grant
-        /// changes.
-        case inputAvailability(InputAvailability)
+        /// The companion's current mouse availability — pushed on connect and
+        /// whenever the Mac's toggle or Accessibility grant changes.
+        case mouseAvailability(RemoteControlAvailability)
+        /// Same, for keyboard *shortcuts* (full keycode + modifiers). Plain
+        /// typing has its own always-attempted fallback independent of this —
+        /// see `MacNativeStreamManager`.
+        case keyboardAvailability(RemoteControlAvailability)
 
-        enum InputAvailability: Sendable {
+        enum RemoteControlAvailability: Sendable {
             case available
             case disabled
             case accessibilityDenied
@@ -162,15 +165,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
                         renderer.enqueue(videoFrame)
                     }
                 }
-            case MacNativeStreamProtocol.FrameType.inputStatus.rawValue:
-                let raw = frame.payload.first ?? MacNativeStreamProtocol.InputStatus.disabled.rawValue
-                let availability: Event.InputAvailability
-                switch MacNativeStreamProtocol.InputStatus(rawValue: raw) {
-                case .available: availability = .available
-                case .accessibilityDenied: availability = .accessibilityDenied
-                case .disabled, nil: availability = .disabled
-                }
-                onEvent?(.inputAvailability(availability))
+            case MacNativeStreamProtocol.FrameType.mouseStatus.rawValue:
+                onEvent?(.mouseAvailability(Self.decodeRemoteControlStatus(frame.payload)))
+            case MacNativeStreamProtocol.FrameType.keyboardStatus.rawValue:
+                onEvent?(.keyboardAvailability(Self.decodeRemoteControlStatus(frame.payload)))
             case MacNativeStreamProtocol.FrameType.replaced.rawValue:
                 let replacement = String(data: frame.payload, encoding: .utf8) ?? "another viewer"
                 onEvent?(.replaced(replacement))
@@ -193,6 +191,15 @@ final class MacNativeStreamClient: @unchecked Sendable {
             renderer.reset()
         }
         onEvent?(.closed(message))
+    }
+
+    private static func decodeRemoteControlStatus(_ payload: Data) -> Event.RemoteControlAvailability {
+        let raw = payload.first ?? MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
+        switch MacNativeStreamProtocol.RemoteControlStatus(rawValue: raw) {
+        case .available: return .available
+        case .accessibilityDenied: return .accessibilityDenied
+        case .disabled, nil: return .disabled
+        }
     }
 }
 #endif

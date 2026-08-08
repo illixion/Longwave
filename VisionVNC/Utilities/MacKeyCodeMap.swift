@@ -149,6 +149,23 @@ enum MacKeyCodeMap {
         }
     }
 
+    /// True for a standalone modifier key press (Shift/Control/Option/Command
+    /// alone) — these can never be expressed over the text-only fallback
+    /// channel (there's no "shortcut" without a paired key), so the capture
+    /// view drops them outright when keyboard shortcuts aren't available.
+    static func isModifierOnly(_ hid: UIKeyboardHIDUsage) -> Bool {
+        switch hid {
+        case .keyboardLeftControl, .keyboardRightControl,
+             .keyboardLeftShift, .keyboardRightShift,
+             .keyboardLeftAlt, .keyboardRightAlt,
+             .keyboardLeftGUI, .keyboardRightGUI,
+             .keyboardCapsLock:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func modifiers(for flags: UIKeyModifierFlags) -> MacNativeKeyModifiers {
         var result: MacNativeKeyModifiers = []
         if flags.contains(.shift) { result.insert(.shift) }

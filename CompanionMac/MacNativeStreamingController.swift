@@ -33,28 +33,37 @@ final class MacNativeStreamingController {
     /// itself.
     let input = MacNativeInputService()
 
-    /// Bridges `input.inputControlEnabled` so `NativePane` can bind through
-    /// this controller and so toggling it immediately re-broadcasts
-    /// availability to a connected client.
-    var inputControlEnabled: Bool {
-        get { input.inputControlEnabled }
+    /// Bridges `input.mouseControlEnabled`/`keyboardShortcutsEnabled` so
+    /// `NativePane` can bind through this controller and so toggling either
+    /// immediately re-broadcasts availability to a connected client.
+    var mouseControlEnabled: Bool {
+        get { input.mouseControlEnabled }
         set {
-            input.inputControlEnabled = newValue
+            input.mouseControlEnabled = newValue
             updateInputAvailability()
         }
     }
 
-    /// Re-checks Accessibility and pushes the current availability to a live
-    /// client. Safe to call repeatedly.
+    var keyboardShortcutsEnabled: Bool {
+        get { input.keyboardShortcutsEnabled }
+        set {
+            input.keyboardShortcutsEnabled = newValue
+            updateInputAvailability()
+        }
+    }
+
+    /// Re-checks Accessibility and pushes current mouse + keyboard-shortcuts
+    /// availability to a live client. Safe to call repeatedly.
     func updateInputAvailability() {
         input.refreshAccessibility()
-        server?.setInputAvailability(input.statusByte)
+        server?.setMouseAvailability(input.mouseStatusByte)
+        server?.setKeyboardAvailability(input.keyboardStatusByte)
     }
 
     /// Prompts for Accessibility, then refreshes the live channel's availability.
     func grantInputAccessibility() {
         input.promptAccessibility()
-        server?.setInputAvailability(input.statusByte)
+        updateInputAvailability()
     }
 
     /// The captured display's frame in global (point-space) coordinates —
@@ -197,7 +206,8 @@ final class MacNativeStreamingController {
         do {
             self.server = server
             try server.start()
-            server.setInputAvailability(input.statusByte)
+            server.setMouseAvailability(input.mouseStatusByte)
+            server.setKeyboardAvailability(input.keyboardStatusByte)
         } catch {
             self.server = nil
             lastError = error.localizedDescription

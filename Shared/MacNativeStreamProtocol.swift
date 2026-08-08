@@ -30,9 +30,15 @@ nonisolated enum MacNativeStreamProtocol {
         case keyDown = 0x44
         /// Client → server: same payload as `keyDown`.
         case keyUp = 0x45
-        /// Server → client: 1-byte `InputStatus` for current remote-control
+        /// Server → client: 1-byte `RemoteControlStatus` for current mouse
         /// availability, pushed on connect and whenever it changes.
-        case inputStatus = 0x46
+        case mouseStatus = 0x46
+        /// Server → client: 1-byte `RemoteControlStatus` for current
+        /// keyboard-*shortcuts* availability (full keycode + modifiers).
+        /// Printable typing has its own always-attempted fallback over
+        /// `CompanionInjectProtocol` (text only, no modifiers) independent of
+        /// this — see `MacNativeStreamManager`.
+        case keyboardStatus = 0x47
     }
 
     struct Hello: Codable, Sendable {
@@ -48,11 +54,12 @@ nonisolated enum MacNativeStreamProtocol {
         case other = 2
     }
 
-    /// Whether the companion will actually act on mouse/keyboard frames right
-    /// now — mirrors `CompanionInjectProtocol.Status`, but for the full
-    /// remote-control channel (mouse + arbitrary key codes/modifiers) rather
-    /// than text-only injection.
-    enum InputStatus: UInt8, Sendable {
+    /// Whether the companion will actually act on mouse or keyboard-shortcut
+    /// frames right now — mirrors `CompanionInjectProtocol.Status`. Mouse and
+    /// keyboard shortcuts are independent capabilities (independent toggles,
+    /// see `mouseStatus`/`keyboardStatus`), each gated the same way: a master
+    /// toggle plus the shared Accessibility permission.
+    enum RemoteControlStatus: UInt8, Sendable {
         case available = 0    // master toggle on + Accessibility granted
         case disabled = 1     // master toggle off
         case accessibilityDenied = 2 // toggle on but Accessibility not granted

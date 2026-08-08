@@ -48,7 +48,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var activeClient: Client?
     private nonisolated(unsafe) var pendingClient: Client?
     private nonisolated(unsafe) var currentFormatFrame: Data?
-    private nonisolated(unsafe) var inputAvailability = MacNativeStreamProtocol.InputStatus.disabled.rawValue
+    private nonisolated(unsafe) var mouseAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
+    private nonisolated(unsafe) var keyboardAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var stoppingListener: NWListener?
     private nonisolated(unsafe) var stopCompletion: (@Sendable () -> Void)?
 
@@ -106,13 +107,24 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
     }
 
-    /// Publishes a new `InputStatus` byte (toggle flipped / Accessibility
-    /// changed): cached for the next promotion, and pushed to a live client.
-    nonisolated func setInputAvailability(_ status: UInt8) {
+    /// Publishes a new mouse `RemoteControlStatus` byte (toggle flipped /
+    /// Accessibility changed): cached for the next promotion, and pushed to a
+    /// live client.
+    nonisolated func setMouseAvailability(_ status: UInt8) {
         queue.async { [self] in
-            inputAvailability = status
+            mouseAvailability = status
             guard let activeClient else { return }
-            sendRequired(MacNativeStreamProtocol.encodeFrame(.inputStatus, Data([status])), to: activeClient)
+            sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([status])), to: activeClient)
+        }
+    }
+
+    /// Same as `setMouseAvailability`, for keyboard *shortcuts* (full keycode
+    /// + modifiers) — independent of mouse and of plain text-only typing.
+    nonisolated func setKeyboardAvailability(_ status: UInt8) {
+        queue.async { [self] in
+            keyboardAvailability = status
+            guard let activeClient else { return }
+            sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([status])), to: activeClient)
         }
     }
 
@@ -273,7 +285,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         if let currentFormatFrame {
             sendRequired(currentFormatFrame, to: client)
         }
-        sendRequired(MacNativeStreamProtocol.encodeFrame(.inputStatus, Data([inputAvailability])), to: client)
+        sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
+        sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
         onClientActivated?(deviceName, previousName)
     }
 

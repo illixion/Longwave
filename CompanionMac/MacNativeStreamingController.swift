@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @Observable
 final class MacNativeStreamingController {
@@ -26,6 +27,44 @@ final class MacNativeStreamingController {
     private(set) var connectedDeviceName: String?
     private(set) var lastError: String?
     private(set) var isCapturing = false
+
+    /// Mouse/keyboard remote control for the Screen stream — see
+    /// `MacNativeInputService` for why it's a separate opt-in from Screen
+    /// itself.
+    let input = MacNativeInputService()
+
+    /// Bridges `input.inputControlEnabled` so `NativePane` can bind through
+    /// this controller and so toggling it immediately re-broadcasts
+    /// availability to a connected client.
+    var inputControlEnabled: Bool {
+        get { input.inputControlEnabled }
+        set {
+            input.inputControlEnabled = newValue
+            updateInputAvailability()
+        }
+    }
+
+    /// Re-checks Accessibility and pushes the current availability to a live
+    /// client. Safe to call repeatedly.
+    func updateInputAvailability() {
+        input.refreshAccessibility()
+        server?.setInputAvailability(input.statusByte)
+    }
+
+    /// Prompts for Accessibility, then refreshes the live channel's availability.
+    func grantInputAccessibility() {
+        input.promptAccessibility()
+        server?.setInputAvailability(input.statusByte)
+    }
+
+    /// The captured display's frame in global (point-space) coordinates —
+    /// used to translate a stream-space (x, y) from the viewer into a real
+    /// `CGEvent` screen position.
+    private var displayFrame: CGRect = .zero
+
+    private func globalPoint(x: UInt16, y: UInt16) -> CGPoint {
+        CGPoint(x: displayFrame.origin.x + CGFloat(x), y: displayFrame.origin.y + CGFloat(y))
+    }
 
     var statusText: String {
         if let connectedDeviceName {
@@ -118,10 +157,47 @@ final class MacNativeStreamingController {
                 self.lastError = message
             }
         }
+        server.onMouseMove = { [weak self] x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.moveMouse(to: self.globalPoint(x: x, y: y))
+            }
+        }
+        server.onMouseDown = { [weak self] button, x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.mouseDown(button: button, at: self.globalPoint(x: x, y: y))
+            }
+        }
+        server.onMouseUp = { [weak self] button, x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.mouseUp(button: button, at: self.globalPoint(x: x, y: y))
+            }
+        }
+        server.onScroll = { [weak self] x, y, deltaX, deltaY in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.scroll(deltaX: Int32(deltaX), deltaY: Int32(deltaY), at: self.globalPoint(x: x, y: y))
+            }
+        }
+        server.onKeyDown = { [weak self] keyCode, modifiers in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.keyDown(keyCode: keyCode, modifiers: modifiers)
+            }
+        }
+        server.onKeyUp = { [weak self] keyCode, modifiers in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.input.keyUp(keyCode: keyCode, modifiers: modifiers)
+            }
+        }
 
         do {
             self.server = server
             try server.start()
+            server.setInputAvailability(input.statusByte)
         } catch {
             self.server = nil
             lastError = error.localizedDescription
@@ -158,6 +234,12 @@ final class MacNativeStreamingController {
                 self.lastError = message
                 self.server?.disconnectActive(withError: message)
                 self.stopCapture()
+            }
+        }
+        capture.onDisplayFrame = { [weak self] frame in
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.captureGeneration else { return }
+                self.displayFrame = frame
             }
         }
         self.capture = capture

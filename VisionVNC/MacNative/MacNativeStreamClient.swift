@@ -16,6 +16,16 @@ final class MacNativeStreamClient: @unchecked Sendable {
         case firstFrame
         case closed(String?)
         case replaced(String)
+        /// The companion's current mouse/keyboard availability — pushed on
+        /// connect and whenever the Mac's toggle or Accessibility grant
+        /// changes.
+        case inputAvailability(InputAvailability)
+
+        enum InputAvailability: Sendable {
+            case available
+            case disabled
+            case accessibilityDenied
+        }
     }
 
     nonisolated(unsafe) var onEvent: (@Sendable (Event) -> Void)?
@@ -85,6 +95,32 @@ final class MacNativeStreamClient: @unchecked Sendable {
         }
     }
 
+    // MARK: - Remote control (mouse/keyboard)
+
+    func sendMouseMove(x: UInt16, y: UInt16) {
+        send(MacNativeStreamProtocol.encodeMouseMove(x: x, y: y))
+    }
+
+    func sendMouseDown(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        send(MacNativeStreamProtocol.encodeMouseButton(.mouseDown, button: button, x: x, y: y))
+    }
+
+    func sendMouseUp(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        send(MacNativeStreamProtocol.encodeMouseButton(.mouseUp, button: button, x: x, y: y))
+    }
+
+    func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        send(MacNativeStreamProtocol.encodeScroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY))
+    }
+
+    func sendKeyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        send(MacNativeStreamProtocol.encodeKeyEvent(.keyDown, keyCode: keyCode, modifiers: modifiers))
+    }
+
+    func sendKeyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        send(MacNativeStreamProtocol.encodeKeyEvent(.keyUp, keyCode: keyCode, modifiers: modifiers))
+    }
+
     private func send(_ data: Data) {
         connection?.send(content: data, completion: .contentProcessed { [weak self] error in
             if let error {
@@ -126,6 +162,15 @@ final class MacNativeStreamClient: @unchecked Sendable {
                         renderer.enqueue(videoFrame)
                     }
                 }
+            case MacNativeStreamProtocol.FrameType.inputStatus.rawValue:
+                let raw = frame.payload.first ?? MacNativeStreamProtocol.InputStatus.disabled.rawValue
+                let availability: Event.InputAvailability
+                switch MacNativeStreamProtocol.InputStatus(rawValue: raw) {
+                case .available: availability = .available
+                case .accessibilityDenied: availability = .accessibilityDenied
+                case .disabled, nil: availability = .disabled
+                }
+                onEvent?(.inputAvailability(availability))
             case MacNativeStreamProtocol.FrameType.replaced.rawValue:
                 let replacement = String(data: frame.payload, encoding: .utf8) ?? "another viewer"
                 onEvent?(.replaced(replacement))

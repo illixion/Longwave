@@ -11,6 +11,14 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onClientDisconnected: (@Sendable () -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
 
+    // Remote control — only ever fired for the active (promoted) client.
+    nonisolated(unsafe) var onMouseMove: (@Sendable (UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onMouseDown: (@Sendable (MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onMouseUp: (@Sendable (MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onScroll: (@Sendable (UInt16, UInt16, Int16, Int16) -> Void)?
+    nonisolated(unsafe) var onKeyDown: (@Sendable (UInt16, MacNativeKeyModifiers) -> Void)?
+    nonisolated(unsafe) var onKeyUp: (@Sendable (UInt16, MacNativeKeyModifiers) -> Void)?
+
     private static let maxPendingBytes = 12 * 1024 * 1024
 
     private nonisolated final class Client: @unchecked Sendable {
@@ -40,6 +48,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var activeClient: Client?
     private nonisolated(unsafe) var pendingClient: Client?
     private nonisolated(unsafe) var currentFormatFrame: Data?
+    private nonisolated(unsafe) var inputAvailability = MacNativeStreamProtocol.InputStatus.disabled.rawValue
     private nonisolated(unsafe) var stoppingListener: NWListener?
     private nonisolated(unsafe) var stopCompletion: (@Sendable () -> Void)?
 
@@ -94,6 +103,16 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 guard stopCompletion != nil else { return }
                 finishStop()
             }
+        }
+    }
+
+    /// Publishes a new `InputStatus` byte (toggle flipped / Accessibility
+    /// changed): cached for the next promotion, and pushed to a live client.
+    nonisolated func setInputAvailability(_ status: UInt8) {
+        queue.async { [self] in
+            inputAvailability = status
+            guard let activeClient else { return }
+            sendRequired(MacNativeStreamProtocol.encodeFrame(.inputStatus, Data([status])), to: activeClient)
         }
     }
 
@@ -201,6 +220,26 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 promote(client, deviceName: hello.deviceName)
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
+            // Remote control: only the promoted/active client may inject —
+            // a pending (not-yet-authenticated-as-current) client is ignored.
+            case MacNativeStreamProtocol.FrameType.mouseMove.rawValue:
+                guard activeClient === client, let point = MacNativeStreamProtocol.decodeMouseMove(frame.payload) else { break }
+                onMouseMove?(point.x, point.y)
+            case MacNativeStreamProtocol.FrameType.mouseDown.rawValue:
+                guard activeClient === client, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                onMouseDown?(event.button, event.x, event.y)
+            case MacNativeStreamProtocol.FrameType.mouseUp.rawValue:
+                guard activeClient === client, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                onMouseUp?(event.button, event.x, event.y)
+            case MacNativeStreamProtocol.FrameType.scroll.rawValue:
+                guard activeClient === client, let event = MacNativeStreamProtocol.decodeScroll(frame.payload) else { break }
+                onScroll?(event.x, event.y, event.deltaX, event.deltaY)
+            case MacNativeStreamProtocol.FrameType.keyDown.rawValue:
+                guard activeClient === client, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                onKeyDown?(event.keyCode, event.modifiers)
+            case MacNativeStreamProtocol.FrameType.keyUp.rawValue:
+                guard activeClient === client, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                onKeyUp?(event.keyCode, event.modifiers)
             default:
                 break
             }
@@ -234,6 +273,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         if let currentFormatFrame {
             sendRequired(currentFormatFrame, to: client)
         }
+        sendRequired(MacNativeStreamProtocol.encodeFrame(.inputStatus, Data([inputAvailability])), to: client)
         onClientActivated?(deviceName, previousName)
     }
 

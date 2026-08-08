@@ -54,6 +54,14 @@ struct NativeStreamView: View {
 
     @State private var showEQ = false
 
+    // Remote-control gesture state (mirrors RemoteDesktopView's absolute-mode
+    // handling — Native has no touchpad/relative mode, the video is always a
+    // 1:1 tap-to-click surface).
+    @State private var viewSize: CGSize = .zero
+    @State private var isDragging = false
+    @State private var dragLocked = false
+    @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
+
     var body: some View {
         @Bindable var screenManager = screenManager
         @Bindable var audioManager = audioManager
@@ -64,7 +72,11 @@ struct NativeStreamView: View {
             if screenManager.liveEnabled {
                 screenContent
             } else if audioManager.liveEnabled {
-                audioOnlyContent
+                if audioPoppedOut {
+                    audioPoppedOutContent
+                } else {
+                    audioOnlyContent
+                }
             } else {
                 emptyContent
             }
@@ -115,39 +127,240 @@ struct NativeStreamView: View {
         }
     }
 
+    // MARK: - Audio pop-out
+
+    /// True while the audio player has been popped out to its own
+    /// "Audio Stream" window (`AudioStreamView`) — tracked live off
+    /// `WindowSessionRegistry`, so the inline audio UI here stays hidden for
+    /// exactly as long as that window remains open, and reappears the
+    /// instant it's closed, with no separate persisted flag to fall out of
+    /// sync.
+    private var audioPoppedOut: Bool {
+        WindowSessionRegistry.shared.sessions["audio-stream"] != nil
+    }
+
+    private func popOutAudio() {
+        openWindow(id: "audio-stream")
+    }
+
+    private func foldAudioBackIn() {
+        dismissWindow(id: "audio-stream")
+    }
+
+    private var audioPoppedOutContent: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.system(size: 42))
+                .foregroundStyle(.secondary)
+            Text("Audio is playing in its own window")
+                .font(.headline)
+            Button("Bring Back", action: foldAudioBackIn)
+        }
+        .padding(24)
+        .glassBackgroundEffect()
+    }
+
     // MARK: - Screen (with an optional compact Audio overlay)
 
     @ViewBuilder
     private var screenContent: some View {
         ZStack {
-            if let displayLayer = screenManager.displayLayer {
-                MacNativeVideoView(displayLayer: displayLayer)
-                    .ignoresSafeArea()
-            }
+            // Invisible (1×1) hardware keyboard capture — bottommost so it
+            // never intercepts gestures. See `HardwareKeyboardView` (VNC's
+            // equivalent) for why 1×1-and-transparent beats zero-size.
+            MacNativeHardwareKeyboardView(screenManager: screenManager)
+                .frame(width: 1, height: 1)
 
-            if screenManager.state != .streaming {
-                VStack(spacing: 16) {
-                    if case .disconnected = screenManager.state {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 42))
-                            .foregroundStyle(.orange)
-                    } else {
-                        ProgressView()
-                            .controlSize(.large)
+            GeometryReader { geometry in
+                ZStack {
+                    if let displayLayer = screenManager.displayLayer {
+                        MacNativeVideoView(displayLayer: displayLayer)
+                            .ignoresSafeArea()
                     }
-                    Text(screenManager.state.statusText)
-                        .font(.headline)
+
+                    if screenManager.state != .streaming {
+                        VStack(spacing: 16) {
+                            if case .disconnected = screenManager.state {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 42))
+                                    .foregroundStyle(.orange)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.large)
+                            }
+                            Text(screenManager.state.statusText)
+                                .font(.headline)
+                        }
+                        .padding(24)
+                        .glassBackgroundEffect()
+                    }
                 }
-                .padding(24)
-                .glassBackgroundEffect()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .contentShape(Rectangle())
+                // Double tap = begin click+drag lock; single tap = left click
+                // (or release a drag lock). Right click is the toolbar button.
+                .gesture(SpatialTapGesture(count: 2).onEnded { value in
+                    beginDragLock(at: value.location)
+                })
+                .gesture(tapGesture)
+                .gesture(dragGesture)
+                .gesture(scrollGesture)
+                .onContinuousHover { phase in
+                    // Bluetooth-mouse / gaze pointer motion without a button
+                    // held — a DragGesture only fires while a button is down.
+                    if case .active(let location) = phase, let point = translator?.viewToFramebuffer(location) {
+                        lastPointerPoint = point
+                        screenManager.sendMouseMove(x: point.x, y: point.y)
+                    }
+                }
+                .onAppear {
+                    viewSize = geometry.size
+                }
+                .onChange(of: geometry.size) { _, newSize in
+                    viewSize = newSize
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if dragLocked {
+                dragLockBadge
+            } else if let message = inputWarningMessage {
+                inputWarningBadge(message)
             }
         }
         .overlay(alignment: .bottomTrailing) {
             if audioManager.liveEnabled {
-                compactAudioPanel
-                    .padding(24)
+                if audioPoppedOut {
+                    poppedOutAudioChip
+                        .padding(24)
+                } else {
+                    compactAudioPanel
+                        .padding(24)
+                }
             }
         }
+    }
+
+    // MARK: - Screen remote control (mouse + keyboard)
+
+    private var translator: GestureTranslator? {
+        guard screenManager.streamSize.width > 0 else { return nil }
+        return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
+    }
+
+    /// Single tap = left click, or release an active drag lock.
+    private var tapGesture: some Gesture {
+        SpatialTapGesture()
+            .onEnded { value in
+                if dragLocked {
+                    releaseLeft(at: value.location)
+                    dragLocked = false
+                } else {
+                    leftClick(at: value.location)
+                }
+            }
+    }
+
+    /// Drag moves the cursor; the left button stays down for the duration
+    /// (or, while a drag lock is held, for as long as the lock lasts).
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                guard let point = translator?.viewToFramebuffer(value.location) else { return }
+                if dragLocked {
+                    screenManager.sendMouseMove(x: point.x, y: point.y)
+                } else if !isDragging {
+                    isDragging = true
+                    screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+                } else {
+                    screenManager.sendMouseMove(x: point.x, y: point.y)
+                }
+            }
+            .onEnded { value in
+                if isDragging, !dragLocked, let point = translator?.viewToFramebuffer(value.location) {
+                    screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+                }
+                isDragging = false
+            }
+    }
+
+    /// Pinch = scroll wheel, centered on the stream (mirrors RemoteDesktopView).
+    private var scrollGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let delta = value.magnification - 1.0
+                guard abs(delta) > 0.01, screenManager.streamSize.width > 0 else { return }
+                let centerX = UInt16(screenManager.streamSize.width / 2)
+                let centerY = UInt16(screenManager.streamSize.height / 2)
+                let steps = Int16(max(1, min(127, abs(delta) * 10)))
+                screenManager.sendScroll(x: centerX, y: centerY, deltaX: 0, deltaY: delta > 0 ? steps : -steps)
+            }
+    }
+
+    private func leftClick(at location: CGPoint) {
+        guard let point = translator?.viewToFramebuffer(location) else { return }
+        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+        screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+    }
+
+    /// Double tap = press and hold the left button so the next drag drags.
+    private func beginDragLock(at location: CGPoint) {
+        guard !dragLocked, let point = translator?.viewToFramebuffer(location) else { return }
+        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+        dragLocked = true
+    }
+
+    /// Release the held left button (ends a drag lock).
+    private func releaseLeft(at location: CGPoint) {
+        guard let point = translator?.viewToFramebuffer(location) else { return }
+        screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+    }
+
+    /// Right click at the last known pointer position (toolbar button — there's
+    /// no gesture free to dedicate to it, matching RemoteDesktopView's approach).
+    private func rightClickAtCursor() {
+        guard let point = lastPointerPoint else { return }
+        screenManager.sendMouseDown(button: .right, x: point.x, y: point.y)
+        screenManager.sendMouseUp(button: .right, x: point.x, y: point.y)
+    }
+
+    private var dragLockBadge: some View {
+        Label("Dragging — tap to drop", systemImage: "hand.draw")
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .glassBackgroundEffect()
+            .padding(.top, 8)
+    }
+
+    private var inputWarningMessage: String? {
+        switch screenManager.inputAvailability {
+        case .disabled: return "Remote control is off — enable it in the Mac companion's Native settings."
+        case .accessibilityDenied: return "Remote control needs Accessibility permission on the Mac."
+        case .available, .unknown: return nil
+        }
+    }
+
+    private func inputWarningBadge(_ message: String) -> some View {
+        Label(message, systemImage: "computermouse")
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .glassBackgroundEffect()
+            .padding(.top, 8)
+    }
+
+    /// Shown over the video in place of `compactAudioPanel` once Audio has
+    /// been popped out — a small reminder it's still playing, with a way to
+    /// fold it back in without hunting down the separate window.
+    private var poppedOutAudioChip: some View {
+        Button(action: foldAudioBackIn) {
+            Label("Audio in its own window", systemImage: "macwindow.on.rectangle")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .padding(12)
+        .glassBackgroundEffect()
     }
 
     /// Slim floating status/volume cluster for when Audio plays alongside
@@ -177,6 +390,11 @@ struct NativeStreamView: View {
                 }
                 .tint(audioManager.eqSettings.enabled ? .accentColor : nil)
                 .help("Equalizer")
+
+                Button(action: popOutAudio) {
+                    Image(systemName: "arrow.up.forward.app")
+                }
+                .help("Pop out to its own window")
             }
             .buttonStyle(.borderless)
         }
@@ -249,6 +467,11 @@ struct NativeStreamView: View {
             }
             .tint(audioManager.eqSettings.enabled ? .accentColor : nil)
             .help("Equalizer")
+
+            Button(action: popOutAudio) {
+                Image(systemName: "arrow.up.forward.app")
+            }
+            .help("Pop out to its own window")
         }
         .buttonStyle(.borderless)
         .font(.title3)
@@ -285,6 +508,12 @@ struct NativeStreamView: View {
                 Label("Screen", systemImage: "macwindow.on.rectangle")
             }
             .toggleStyle(.button)
+
+            if screenManager.liveEnabled {
+                Button(action: rightClickAtCursor) {
+                    Label("Right-click", systemImage: "cursorarrow.click.2")
+                }
+            }
 
             Toggle(isOn: audioOn) {
                 Label("Audio", systemImage: "speaker.wave.2")

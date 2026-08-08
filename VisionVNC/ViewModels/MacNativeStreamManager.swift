@@ -21,10 +21,22 @@ final class MacNativeStreamManager {
         }
     }
 
+    /// Whether the companion will act on mouse/keyboard frames right now —
+    /// mirrors `MacNativeStreamClient.Event.InputAvailability`, plus
+    /// `.unknown` before the first status frame arrives (e.g. still
+    /// connecting).
+    enum InputAvailability: Equatable {
+        case unknown
+        case available
+        case disabled
+        case accessibilityDenied
+    }
+
     private(set) var state: State = .disconnected(nil)
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
     private(set) var streamSize: CGSize = .zero
     private(set) var title = "Native"
+    private(set) var inputAvailability: InputAvailability = .unknown
 
     /// The Native connection this session targets — remembered independent
     /// of whether Screen is actually running, so the live Screen toggle in
@@ -119,10 +131,37 @@ final class MacNativeStreamManager {
         oldClient?.close()
         displayLayer = nil
         streamSize = .zero
+        inputAvailability = .unknown
         if case .disconnected = state {
             return
         }
         state = .disconnected(nil)
+    }
+
+    // MARK: - Remote control (mouse/keyboard)
+
+    func sendMouseMove(x: UInt16, y: UInt16) {
+        client?.sendMouseMove(x: x, y: y)
+    }
+
+    func sendMouseDown(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        client?.sendMouseDown(button: button, x: x, y: y)
+    }
+
+    func sendMouseUp(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        client?.sendMouseUp(button: button, x: x, y: y)
+    }
+
+    func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        client?.sendScroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY)
+    }
+
+    func sendKeyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        client?.sendKeyDown(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    func sendKeyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        client?.sendKeyUp(keyCode: keyCode, modifiers: modifiers)
     }
 
     private func handle(_ event: MacNativeStreamClient.Event, connectionID: UUID) {
@@ -134,6 +173,12 @@ final class MacNativeStreamManager {
             streamSize = size
         case .firstFrame:
             state = .streaming
+        case .inputAvailability(let availability):
+            switch availability {
+            case .available: inputAvailability = .available
+            case .disabled: inputAvailability = .disabled
+            case .accessibilityDenied: inputAvailability = .accessibilityDenied
+            }
         case .replaced(let deviceName):
             state = .disconnected("Replaced by \(deviceName).")
             activeConnectionID = nil

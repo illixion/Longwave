@@ -1,0 +1,101 @@
+#if os(visionOS)
+import SwiftUI
+import UIKit
+
+/// A UIViewRepresentable that captures hardware/Bluetooth keyboard events
+/// and forwards them as Native remote-control key events. Mirrors
+/// `HardwareKeyboardView` (the VNC path), but every physical key maps to a
+/// macOS virtual keycode via `MacKeyCodeMap` instead of a VNC key code —
+/// there's no printable-character fallback because HID usage covers letters
+/// and symbols too (see `MacKeyCodeMap`'s doc comment).
+struct MacNativeHardwareKeyboardView: UIViewRepresentable {
+    let screenManager: MacNativeStreamManager
+
+    func makeUIView(context: Context) -> MacNativeKeyCaptureView {
+        let view = MacNativeKeyCaptureView()
+        view.screenManager = screenManager
+        return view
+    }
+
+    func updateUIView(_ uiView: MacNativeKeyCaptureView, context: Context) {
+        uiView.screenManager = screenManager
+    }
+}
+
+final class MacNativeKeyCaptureView: UIView {
+    var screenManager: MacNativeStreamManager?
+
+    private var observers: [NSObjectProtocol] = []
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            if observers.isEmpty {
+                observers.append(NotificationCenter.default.addObserver(
+                    forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
+                ) { [weak self] note in
+                    guard let self, (note.object as? UIWindow) === self.window else { return }
+                    self.reclaimFirstResponder()
+                })
+                observers.append(NotificationCenter.default.addObserver(
+                    forName: .textEntryDidEnd, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.reclaimFirstResponder()
+                })
+            }
+            reclaimFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.reclaimFirstResponder()
+            }
+        } else {
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    private func reclaimFirstResponder() {
+        guard let window = self.window else { return }
+        if window.rootViewController?.presentedViewController != nil { return }
+        if !TextInputActivity.shared.mayTakeFirstResponder() { return }
+        if isFirstResponder { return }
+        _ = becomeFirstResponder()
+    }
+
+    // MARK: - Press Events
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            guard let key = press.key, let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { continue }
+            screenManager?.sendKeyDown(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
+            handled = true
+        }
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            guard let key = press.key, let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { continue }
+            screenManager?.sendKeyUp(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
+            handled = true
+        }
+        if !handled {
+            super.pressesEnded(presses, with: event)
+        }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Treat cancellation as key up to avoid stuck keys.
+        pressesEnded(presses, with: event)
+    }
+}
+#endif

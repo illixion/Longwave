@@ -36,6 +36,7 @@ struct CompanionWindowView: View {
         .onAppear {
             controller.refreshKeys()
             controller.injection.refreshAccessibility()
+            controller.macNativeStreaming.input.refreshAccessibility()
         }
     }
 }
@@ -69,6 +70,28 @@ struct NativePane: View {
                         Text(error)
                             .foregroundStyle(.red)
                     }
+                }
+
+                Section {
+                    Toggle("Allow mouse & keyboard control", isOn: $controller.macNativeStreaming.inputControlEnabled)
+                        .help("Lets the connected Vision Pro click, drag, scroll, and type on this Mac while viewing its Screen stream — full remote control, including shortcuts.")
+
+                    if controller.macNativeStreaming.inputControlEnabled {
+                        if controller.macNativeStreaming.input.accessibilityTrusted {
+                            LabeledContent("Status", value: "Ready — remote control routes through this Mac.")
+                        } else {
+                            HStack {
+                                Text("Needs Accessibility permission to control input.")
+                                    .foregroundStyle(.orange)
+                                Spacer()
+                                Button("Grant Accessibility…") {
+                                    controller.macNativeStreaming.grantInputAccessibility()
+                                }
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Off by default — Screen alone is view-only. Requires the same Accessibility permission as keyboard text injection below.")
                 }
             }
 

@@ -46,6 +46,19 @@ struct VisionVNCApp: App {
         .defaultSize(width: 760, height: 480)
         .defaultLaunchBehavior(.suppressed)
 
+        // Popped out of the unified Native window by its pop-out button
+        // (`NativeStreamView`); stays a separate window for as long as it's
+        // open, tracked live via `WindowSessionRegistry` so the Native
+        // window knows to hide its own inline audio UI meanwhile.
+        WindowGroup("Audio Stream", id: "audio-stream") {
+            AudioStreamView()
+                .environment(audioManager)
+                .trackWindowSession(id: "audio-stream")
+        }
+        .defaultSize(width: 400, height: 600)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in
             if let sessionID {
                 SSHTerminalView(sessionID: sessionID)

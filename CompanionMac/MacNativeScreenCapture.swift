@@ -9,6 +9,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
+    /// The captured display's frame in the global (point-space) coordinate
+    /// system — the same space `CGEvent` mouse coordinates use. Fired once
+    /// capture starts and again if the window-inventory refresh resolves a
+    /// changed frame, so remote-control input can map a stream-space (x, y)
+    /// back to a real screen position, including on a non-main display.
+    nonisolated(unsafe) var onDisplayFrame: (@Sendable (CGRect) -> Void)?
 
     private let outputQueue = DispatchQueue(
         label: "com.illixion.VisionVNCCompanion.mac-native.capture",
@@ -79,6 +85,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         self.display = display
         self.encoder = encoder
         self.stream = stream
+        onDisplayFrame?(display.frame)
         startFilterRefresh()
     }
 
@@ -167,6 +174,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 makeFilter(content: content, display: refreshedDisplay)
             )
             self.display = refreshedDisplay
+            onDisplayFrame?(refreshedDisplay.frame)
         } catch {
             onError?("Window inventory refresh failed: \(error.localizedDescription)")
         }

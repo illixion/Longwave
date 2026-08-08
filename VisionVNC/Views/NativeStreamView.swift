@@ -83,7 +83,18 @@ struct NativeStreamView: View {
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
+            if screenManager.liveEnabled {
+                controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
+            } else if audioManager.liveEnabled {
+                // Audio-only (or popped out): the Screen/Audio toggles and
+                // Disconnect don't apply to this compact view — matches the
+                // old standalone Audio Stream window, which had no ornament
+                // at all beyond a home button (Disconnect lives inline in
+                // `audioUtilityRow` instead, as it did there).
+                homeOnlyControls
+            } else {
+                controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
+            }
         }
         .onAppear {
             resumeIfNeeded()
@@ -501,6 +512,11 @@ struct NativeStreamView: View {
 
     private var audioUtilityRow: some View {
         HStack(spacing: 28) {
+            Button(role: .destructive, action: disconnectAll) {
+                Image(systemName: "xmark.circle")
+            }
+            .help("Disconnect")
+
             Button {
                 audioManager.reconnectLast()
             } label: {
@@ -588,19 +604,35 @@ struct NativeStreamView: View {
             }
             .toggleStyle(.button)
 
-            Button {
-                screenManager.forget()
-                audioManager.userDisconnect()
-                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
-                    dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-                }
-            } label: {
+            Button(action: disconnectAll) {
                 Label("Disconnect", systemImage: "xmark.circle")
             }
         }
         .buttonStyle(.bordered)
         .padding(12)
         .glassBackgroundEffect()
+    }
+
+    /// Minimal ornament for the audio-only views — the old standalone Audio
+    /// Stream window had no ornament at all, just a home button alongside its
+    /// own inline utility row (see `audioUtilityRow`'s Disconnect icon).
+    private var homeOnlyControls: some View {
+        Button {
+            openWindow(id: "main", value: MainWindowID.shared)
+        } label: {
+            Label("Connections", systemImage: "house")
+        }
+        .buttonStyle(.bordered)
+        .padding(12)
+        .glassBackgroundEffect()
+    }
+
+    private func disconnectAll() {
+        screenManager.forget()
+        audioManager.userDisconnect()
+        WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        }
     }
 }
 #endif

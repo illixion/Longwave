@@ -65,6 +65,41 @@
       </div>
     </section>
 
+    <section class="card">
+      <div class="card-head">
+        <h2>Screen Streaming</h2>
+        <span id="nsBadge" class="badge badge-off">OFF</span>
+      </div>
+      <p class="join-help">Streams this PC's screen (or individual windows) to VisionVNC on the headset —
+        add a <strong>Native</strong> connection there with this PC's address and the token below.</p>
+
+      <div class="grid">
+        <label class="field">
+          <span>Access token</span>
+          <div class="with-button">
+            <input id="nsToken" type="text" readonly spellcheck="false" />
+            <button id="nsCopyToken" class="ghost" title="Copy token">⧉</button>
+            <button id="nsRegenToken" class="ghost" title="Generate a new token (disconnects the viewer)">⟳</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input id="nsPort" type="text" readonly value="4857" />
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="nsStartBtn" class="primary">Enable streaming</button>
+        <button id="nsStopBtn" class="danger hidden">Disable streaming</button>
+        <label class="checkline"><input id="nsMouse" type="checkbox" /> Allow mouse control</label>
+        <label class="checkline"><input id="nsKeyboard" type="checkbox" /> Allow keyboard control</label>
+        <span id="nsMsg" class="op-msg"></span>
+      </div>
+      <div class="join-stats">
+        <span id="nsViewer"></span>
+      </div>
+    </section>
+
     <section id="joinPanel" class="card join hidden">
       <h2>Join from Vision Pro</h2>
       <p class="join-help">On the headset: <strong>Settings → Wi-Fi</strong>, pick the network and type the

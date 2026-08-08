@@ -11,6 +11,12 @@ contextBridge.exposeInMainWorld('hotspot', {
   listWifiAdapters: () => ipcRenderer.invoke('rpc', 'ListWifiAdapters'),
   prepareApAdapter: () => ipcRenderer.invoke('rpc', 'PrepareApAdapter'),
 
+  // Native screen streaming (VisionVNC "Native" protocol on port 4857).
+  nativeStreamStatus: () => ipcRenderer.invoke('rpc', 'NativeStreamStatus'),
+  nativeStreamSetEnabled: (enabled) => ipcRenderer.invoke('rpc', 'NativeStreamSetEnabled', { enabled }),
+  nativeStreamSetInput: (params) => ipcRenderer.invoke('rpc', 'NativeStreamSetInput', params),
+  nativeStreamRegenerateToken: () => ipcRenderer.invoke('rpc', 'NativeStreamRegenerateToken'),
+
   // Local helpers (no backend round-trip).
   genPassphrase: () => ipcRenderer.invoke('gen-passphrase'),
   genSsid: () => ipcRenderer.invoke('gen-ssid'),

@@ -27,15 +27,21 @@ public sealed class PipeServer : BackgroundService
 
     private readonly ILogger<PipeServer> _log;
     private readonly TetheringController _controller;
+    private readonly NativeStream.NativeStreamingService _nativeStream;
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private StreamWriter? _writer;
 
-    public PipeServer(ILogger<PipeServer> log, TetheringController controller)
+    public PipeServer(
+        ILogger<PipeServer> log,
+        TetheringController controller,
+        NativeStream.NativeStreamingService nativeStream)
     {
         _log = log;
         _controller = controller;
+        _nativeStream = nativeStream;
         _controller.StatusChanged += OnStatusChanged;
+        _nativeStream.StatusChanged += OnNativeStreamChanged;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -147,6 +153,10 @@ public sealed class PipeServer : BackgroundService
                 "ListWifiAdapters" => _controller.ListWifiAdapters(),
                 "PrepareApAdapter" => await _controller.PrepareApAdapterAsync(),
                 "GetClients" => await GetClientsAsync(),
+                "NativeStreamStatus" => _nativeStream.GetStatus(),
+                "NativeStreamSetEnabled" => SetNativeStreamEnabled(ParseParams<NativeStreamEnableParams>(req)),
+                "NativeStreamSetInput" => SetNativeStreamInput(ParseParams<NativeStreamInputParams>(req)),
+                "NativeStreamRegenerateToken" => RegenerateNativeStreamToken(),
                 "Ping" => "pong",
                 _ => Sentinel.Unknown,
             };
@@ -168,6 +178,45 @@ public sealed class PipeServer : BackgroundService
     {
         var s = await _controller.GetStatusAsync();
         return new { count = s.ClientCount, max = s.MaxClientCount };
+    }
+
+    private object SetNativeStreamEnabled(NativeStreamEnableParams? p)
+    {
+        _nativeStream.SetEnabled(p?.Enabled ?? false);
+        return _nativeStream.GetStatus();
+    }
+
+    private object SetNativeStreamInput(NativeStreamInputParams? p)
+    {
+        if (p?.Mouse is { } mouse) _nativeStream.MouseControlEnabled = mouse;
+        if (p?.Keyboard is { } keyboard) _nativeStream.KeyboardControlEnabled = keyboard;
+        return _nativeStream.GetStatus();
+    }
+
+    private object RegenerateNativeStreamToken()
+    {
+        _nativeStream.RegenerateToken();
+        return _nativeStream.GetStatus();
+    }
+
+    private void OnNativeStreamChanged()
+    {
+        _ = SendEventAsync(RpcEvent.Of("nativeStream", _nativeStream.GetStatus()));
+    }
+
+    private sealed record NativeStreamEnableParams
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("enabled")]
+        public bool Enabled { get; init; }
+    }
+
+    private sealed record NativeStreamInputParams
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("mouse")]
+        public bool? Mouse { get; init; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("keyboard")]
+        public bool? Keyboard { get; init; }
     }
 
     private static T? ParseParams<T>(RpcRequest req) where T : class =>
@@ -199,6 +248,7 @@ public sealed class PipeServer : BackgroundService
     public override void Dispose()
     {
         _controller.StatusChanged -= OnStatusChanged;
+        _nativeStream.StatusChanged -= OnNativeStreamChanged;
         base.Dispose();
     }
 

@@ -104,4 +104,10 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 }
 .join-stats { display: flex; gap: 24px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 14px; }
 
+.checkline {
+  display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px;
+  -webkit-user-select: none; user-select: none;
+}
+.checkline input { accent-color: var(--accent); }
+
 .hidden { display: none !important; }

@@ -121,7 +121,7 @@ dotnet build -c Release
 
 # Backend (self-contained publish — what the installer bundles)
 dotnet publish -c Release -r win-x64 --self-contained true `
-  -o bin\Release\net8.0-windows10.0.19041.0\publish
+  -o bin\Release\net8.0-windows10.0.22621.0\publish
 
 # Electron app
 cd ..\app
@@ -146,7 +146,7 @@ Two deployment shapes share one backend binary (`Microsoft.Extensions.Hosting`, 
    connects to the service instead of spawning its own.
 
 Dev tips:
-- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.19041.0\VisionVNCHotspotBackend.exe`
+- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.22621.0\VisionVNCHotspotBackend.exe`
 - Run the app against it without spawning: `setx`-free `$env:VISIONVNC_NO_SPAWN=1; npm start`
 - Capability check only: `VisionVNCHotspotBackend.exe --probe`
 - Handy pipe-client scripts: `backend\test-client.js`, `start-hold.js`, `stop.js` (Node).

@@ -14,6 +14,17 @@ const el = {
   fixAdapterBtn: $('fixAdapterBtn'),
   regen: $('regen'),
   opMsg: $('opMsg'),
+  nsBadge: $('nsBadge'),
+  nsToken: $('nsToken'),
+  nsCopyToken: $('nsCopyToken'),
+  nsRegenToken: $('nsRegenToken'),
+  nsPort: $('nsPort'),
+  nsStartBtn: $('nsStartBtn'),
+  nsStopBtn: $('nsStopBtn'),
+  nsMouse: $('nsMouse'),
+  nsKeyboard: $('nsKeyboard'),
+  nsMsg: $('nsMsg'),
+  nsViewer: $('nsViewer'),
   joinPanel: $('joinPanel'),
   joinSsid: $('joinSsid'),
   joinPass: $('joinPass'),
@@ -77,9 +88,42 @@ function renderStatus(s) {
   }
 }
 
+function renderNativeStream(s) {
+  if (!s) return;
+  const running = !!s.running;
+  el.nsBadge.textContent = running ? 'ON' : 'OFF';
+  el.nsBadge.className = 'badge ' + (running ? 'badge-on' : 'badge-off');
+  el.nsStartBtn.classList.toggle('hidden', running);
+  el.nsStopBtn.classList.toggle('hidden', !running);
+  el.nsToken.value = s.token || '';
+  el.nsPort.value = s.port || 4857;
+  el.nsMouse.checked = !!s.mouseControlEnabled;
+  el.nsKeyboard.checked = !!s.keyboardControlEnabled;
+  if (s.lastError) {
+    el.nsMsg.textContent = s.lastError;
+    el.nsMsg.className = 'op-msg error';
+  } else if (!s.captureSupported) {
+    el.nsMsg.textContent = 'Screen capture is not supported on this Windows build.';
+    el.nsMsg.className = 'op-msg error';
+  }
+  el.nsViewer.textContent = s.connectedDevice
+    ? `Streaming to ${s.connectedDevice}`
+    : (running ? 'Waiting for a viewer…' : '');
+}
+
+async function refreshNativeStream() {
+  try {
+    renderNativeStream(await window.hotspot.nativeStreamStatus());
+  } catch (e) {
+    el.nsMsg.textContent = 'Could not read streaming status: ' + e.message;
+    el.nsMsg.className = 'op-msg error';
+  }
+}
+
 async function refreshAll() {
   try {
     await loadUpstreams();
+    await refreshNativeStream();
     const s = await window.hotspot.getStatus();
     // Seed SSID/pass fields from the live AP if running; else keep generated defaults.
     if (s.state === 'on') {
@@ -197,9 +241,34 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('.copy').forEach((b) =>
     b.addEventListener('click', () => copyValue(b.dataset.copy)));
 
+  el.nsStartBtn.addEventListener('click', async () => {
+    renderNativeStream(await window.hotspot.nativeStreamSetEnabled(true));
+  });
+  el.nsStopBtn.addEventListener('click', async () => {
+    renderNativeStream(await window.hotspot.nativeStreamSetEnabled(false));
+  });
+  el.nsMouse.addEventListener('change', async () => {
+    renderNativeStream(await window.hotspot.nativeStreamSetInput({ mouse: el.nsMouse.checked }));
+  });
+  el.nsKeyboard.addEventListener('change', async () => {
+    renderNativeStream(await window.hotspot.nativeStreamSetInput({ keyboard: el.nsKeyboard.checked }));
+  });
+  el.nsCopyToken.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(el.nsToken.value);
+      setOpMsg('Token copied', 'ok');
+    } catch {
+      setOpMsg('Copy failed', 'error');
+    }
+  });
+  el.nsRegenToken.addEventListener('click', async () => {
+    renderNativeStream(await window.hotspot.nativeStreamRegenerateToken());
+  });
+
   window.hotspot.onConnection(setBackendConnected);
   window.hotspot.onNotify(({ event, data }) => {
     if (event === 'state') renderStatus(data);
+    if (event === 'nativeStream') renderNativeStream(data);
   });
 
   setBackendConnected(await window.hotspot.isConnected());

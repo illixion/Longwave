@@ -25,8 +25,8 @@ function resolveBackendExe() {
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, 'backend', name)]
     : [
-        path.join(__dirname, '..', '..', 'backend', 'bin', 'Release', 'net8.0-windows10.0.19041.0', 'publish', name),
-        path.join(__dirname, '..', '..', 'backend', 'bin', 'Release', 'net8.0-windows10.0.19041.0', name),
+        path.join(__dirname, '..', '..', 'backend', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish', name),
+        path.join(__dirname, '..', '..', 'backend', 'bin', 'Release', 'net8.0-windows10.0.22621.0', name),
       ];
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
@@ -56,9 +56,9 @@ function startBackend() {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 780,
-    height: 760,
+    height: 980,
     minWidth: 640,
-    minHeight: 600,
+    minHeight: 700,
     title: 'VisionVNC Hotspot',
     icon: path.join(__dirname, '..', 'buildResources', 'icon.ico'),
     backgroundColor: '#0f1117',

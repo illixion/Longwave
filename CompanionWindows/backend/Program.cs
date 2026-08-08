@@ -1,7 +1,15 @@
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using VisionVNC.Hotspot.Backend;
+using VisionVNC.Hotspot.Backend.NativeStream;
+
+// Native streaming maps stream pixels straight onto screen coordinates —
+// per-monitor-v2 awareness keeps every win32 rect/metric in physical pixels.
+[DllImport("user32.dll")]
+static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+SetProcessDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 
 // One binary, two deployment shapes (the spike left the Session-0 question open, so we keep
 // both): a Windows Service (control plane) OR an elevated interactive-session helper (the
@@ -26,6 +34,8 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddWindowsService(o => o.ServiceName = "VisionVNCHotspot");
 builder.Services.AddSingleton<TetheringController>();
+builder.Services.AddSingleton<NativeStreamingService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<NativeStreamingService>());
 builder.Services.AddHostedService<MonitorService>();
 builder.Services.AddHostedService<PipeServer>();
 

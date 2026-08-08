@@ -117,11 +117,37 @@ struct NativeStreamView: View {
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
             if on {
+                // A host that serves no audio would leave this on
+                // "Connecting…" forever; refuse the toggle instead.
+                guard screenManager.hostServesAudio else {
+                    audioManager.liveEnabled = false
+                    return
+                }
                 audioManager.reconnectLast()
             } else {
                 audioManager.disconnect()
             }
         }
+        .onChange(of: screenManager.hostServesAudio) { _, servesAudio in
+            applyAudioAvailability(servesAudio)
+        }
+    }
+
+    /// Names the host so the missing control reads as a platform limit rather
+    /// than a failure the user should try to fix.
+    private var audioUnavailableText: String {
+        screenManager.serverPlatform == "windows"
+            ? "Audio streaming isn't available from Windows hosts."
+            : "This host doesn't stream audio."
+    }
+
+    /// The handshake tells us whether this host has an audio companion at all.
+    /// Windows hosts don't, so drop a hopeful audio connection rather than
+    /// leaving the player spinning on "Connecting…".
+    private func applyAudioAvailability(_ servesAudio: Bool) {
+        guard !servesAudio else { return }
+        if audioManager.liveEnabled { audioManager.liveEnabled = false }
+        audioManager.disconnect()
     }
 
     /// Recovers a toggle that's on but not actually connected — the normal
@@ -130,7 +156,11 @@ struct NativeStreamView: View {
     /// running, so this is safe to call on every appear/activation.
     private func resumeIfNeeded() {
         if audioManager.liveEnabled {
-            audioManager.ensureConnected()
+            if screenManager.hostServesAudio {
+                audioManager.ensureConnected()
+            } else {
+                applyAudioAvailability(false)
+            }
         }
         if screenManager.liveEnabled, !screenManager.isEnabled, let connection = screenManager.connection {
             screenManager.connect(to: connection)
@@ -183,6 +213,13 @@ struct NativeStreamView: View {
                     }
                 }
                 .frame(maxHeight: 460)
+            }
+
+            if !screenManager.hostServesAudio {
+                Divider()
+                Label(audioUnavailableText, systemImage: "speaker.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if audioManager.liveEnabled {
@@ -705,9 +742,13 @@ struct NativeStreamView: View {
             }
 
             Toggle(isOn: audioOn) {
-                Label("Audio", systemImage: "speaker.wave.2")
+                Label(
+                    "Audio",
+                    systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash"
+                )
             }
             .toggleStyle(.button)
+            .disabled(!screenManager.hostServesAudio)
 
             Button(action: disconnectAll) {
                 Label("Disconnect", systemImage: "xmark.circle")

@@ -52,7 +52,8 @@ final class MacNativeStreamProtocolTests: XCTestCase {
             platform: "windows",
             keyCodeSpace: .hidUsage,
             supportsWindowStreams: true,
-            supportsTransparentDesktop: false
+            supportsTransparentDesktop: false,
+            supportsAudioStream: false
         )
         var buffer = P.encodeHelloAck(ack)
         let frames = P.drainFrames(&buffer)
@@ -61,9 +62,24 @@ final class MacNativeStreamProtocolTests: XCTestCase {
         XCTAssertEqual(decoded?.keyCodeSpace, .hidUsage)
         XCTAssertEqual(decoded?.supportsWindowStreams, true)
         XCTAssertEqual(decoded?.supportsTransparentDesktop, false)
+        XCTAssertEqual(decoded?.servesAudioStream, false)
 
         // A v1 server sends an empty helloAck payload.
         XCTAssertNil(P.decodeHelloAck(Data()))
+    }
+
+    /// A host that predates `supportsAudioStream` must still decode, and must
+    /// fall back by platform — only the macOS companion ever served audio.
+    func testHelloAckWithoutAudioCapabilityFallsBackToPlatform() throws {
+        for (platform, expected) in [("macOS", true), ("windows", false)] {
+            let json = """
+            {"protocolVersion":2,"platform":"\(platform)","keyCodeSpace":"hidUsage",\
+            "supportsWindowStreams":true,"supportsTransparentDesktop":false}
+            """
+            let decoded = try XCTUnwrap(P.decodeHelloAck(Data(json.utf8)))
+            XCTAssertNil(decoded.supportsAudioStream)
+            XCTAssertEqual(decoded.servesAudioStream, expected, "platform \(platform)")
+        }
     }
 
     func testWindowInventoryRoundTrip() {

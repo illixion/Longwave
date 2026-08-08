@@ -82,6 +82,10 @@ final class MacNativeStreamManager {
     }
     /// "macOS"/"windows" — for display copy only.
     var serverPlatform: String { serverAck?.platform ?? "macOS" }
+    /// Whether this host also serves the companion audio stream. Optimistic
+    /// before the handshake lands, and for v1 hosts (which are always the
+    /// macOS companion), so audio only gets pulled when a host says no.
+    var hostServesAudio: Bool { serverAck?.servesAudioStream ?? true }
     private(set) var mouseAvailability: RemoteControlAvailability = .unknown
     /// Full keycode + modifier keyboard control. When this isn't `.available`,
     /// plain typing still tries the text-only fallback below — see

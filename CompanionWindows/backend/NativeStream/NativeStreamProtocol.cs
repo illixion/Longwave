@@ -88,6 +88,11 @@ public static class NativeStreamProtocol
         [JsonPropertyName("keyCodeSpace")] public string KeyCodeSpace { get; init; } = "hidUsage";
         [JsonPropertyName("supportsWindowStreams")] public bool SupportsWindowStreams { get; init; } = true;
         [JsonPropertyName("supportsTransparentDesktop")] public bool SupportsTransparentDesktop { get; init; }
+        /// <summary>
+        /// No audio companion on Windows — the headset must not sit on
+        /// "Connecting…" waiting for a stream that will never arrive.
+        /// </summary>
+        [JsonPropertyName("supportsAudioStream")] public bool SupportsAudioStream { get; init; }
     }
 
     public sealed record WindowInfo

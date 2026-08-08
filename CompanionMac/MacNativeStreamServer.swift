@@ -468,7 +468,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 platform: "macOS",
                 keyCodeSpace: .macVirtual,
                 supportsWindowStreams: true,
-                supportsTransparentDesktop: true
+                supportsTransparentDesktop: true,
+                supportsAudioStream: true
             )), to: client)
             if let currentInventoryFrame {
                 sendRequired(currentInventoryFrame, to: client)

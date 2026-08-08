@@ -115,6 +115,16 @@ nonisolated enum MacNativeStreamProtocol {
         /// Whether the alpha-preserving transparent-desktop composition is
         /// available (macOS). When false the desktop stream is opaque.
         let supportsTransparentDesktop: Bool
+        /// Whether this host also serves the companion audio stream on
+        /// `AudioStreamProtocol.defaultPort`. Optional so an older host that
+        /// predates the field still decodes — see `servesAudioStream`.
+        let supportsAudioStream: Bool?
+
+        /// Audio availability, with the pre-capability fallback: only the
+        /// macOS companion ever served audio, so an absent flag means
+        /// "macOS yes, anything else no". Without this a Windows host leaves
+        /// the audio player spinning on "Connecting…" forever.
+        var servesAudioStream: Bool { supportsAudioStream ?? (platform == "macOS") }
     }
 
     enum KeyCodeSpace: String, Codable, Sendable {

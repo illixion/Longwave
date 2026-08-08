@@ -14,21 +14,33 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         label: "com.illixion.VisionVNCCompanion.mac-native.capture",
         qos: .userInteractive
     )
-    private nonisolated(unsafe) var stream: SCStream?
+    // SCStream/display/refreshTask are only ever touched from start()/stop()/
+    // refreshFilter() below, which are MainActor-isolated (the project
+    // default) so those three calls can't run concurrently on different
+    // threads. `encoder` stays nonisolated(unsafe): it's written here but
+    // read from the SCStreamOutput callback on `outputQueue`.
+    private var stream: SCStream?
     private nonisolated(unsafe) var encoder: MacHEVCAlphaEncoder?
-    private nonisolated(unsafe) var display: SCDisplay?
-    private nonisolated(unsafe) var refreshTask: Task<Void, Never>?
+    private var display: SCDisplay?
+    private var refreshTask: Task<Void, Never>?
+    // Bumped on every start()/stop() so a start() resuming after an `await`
+    // can tell whether a subsequent stop() (or restart) already superseded
+    // it, instead of clobbering state a later call already tore down.
+    private var generation = 0
 
     nonisolated override init() {
         super.init()
     }
 
-    nonisolated func start() async throws {
+    func start() async throws {
+        generation += 1
+        let myGeneration = generation
         guard stream == nil else { return }
         let content = try await SCShareableContent.excludingDesktopWindows(
             true,
             onScreenWindowsOnly: true
         )
+        guard myGeneration == generation else { return }
         guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
                 ?? content.displays.first else {
             throw CaptureError.noDisplay
@@ -50,6 +62,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: outputQueue)
         try await stream.startCapture()
+        guard myGeneration == generation else {
+            try? await stream.stopCapture()
+            try? stream.removeStreamOutput(self, type: .screen)
+            encoder.invalidate()
+            return
+        }
 
         self.display = display
         self.encoder = encoder
@@ -57,7 +75,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         startFilterRefresh()
     }
 
-    nonisolated func stop() async {
+    func stop() async {
+        generation += 1
         refreshTask?.cancel()
         refreshTask = nil
         if let stream {
@@ -111,7 +130,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return configuration
     }
 
-    private nonisolated func startFilterRefresh() {
+    private func startFilterRefresh() {
         refreshTask?.cancel()
         refreshTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
@@ -122,7 +141,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    private nonisolated func refreshFilter() async {
+    private func refreshFilter() async {
         guard let stream, let display else { return }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(

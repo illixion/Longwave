@@ -152,9 +152,13 @@ final class WindowSessionRegistry {
         #if MOONLIGHT_ENABLED
         kinds.append(WindowKind(id: "moonlight-stream", title: "Game Stream", systemImage: "gamecontroller"))
         #endif
-        kinds.append(WindowKind(id: "audio-stream", title: "Audio Stream", systemImage: "hifispeaker"))
         #if os(visionOS)
         kinds.append(WindowKind(id: "mac-native-stream", title: "Native", systemImage: "macwindow.on.rectangle"))
+        #else
+        // visionOS folded the standalone Audio Stream window into the one
+        // live-toggling Native window above; macOS has no Screen receiver,
+        // so a Native connection there still opens this window on its own.
+        kinds.append(WindowKind(id: "audio-stream", title: "Audio Stream", systemImage: "hifispeaker"))
         #endif
         kinds.append(WindowKind(id: "keyboard", title: "Keyboard", systemImage: "keyboard"))
         #if MOONLIGHT_ENABLED

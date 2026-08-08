@@ -46,15 +46,6 @@ struct VisionVNCApp: App {
         .defaultSize(width: 760, height: 480)
         .defaultLaunchBehavior(.suppressed)
 
-        WindowGroup("Audio Stream", id: "audio-stream") {
-            AudioStreamView()
-                .environment(audioManager)
-                .trackWindowSession(id: "audio-stream")
-        }
-        .defaultSize(width: 400, height: 600)
-        .windowResizability(.contentSize)
-        .defaultLaunchBehavior(.suppressed)
-
         WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in
             if let sessionID {
                 SSHTerminalView(sessionID: sessionID)

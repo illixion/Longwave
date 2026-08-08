@@ -52,6 +52,16 @@ public static class NativeStreamCrypto
 
         protected override int[] GetSupportedCipherSuites() =>
             new[] { CipherSuite.TLS_PSK_WITH_AES_128_GCM_SHA256 };
+
+        // BouncyCastle's AbstractTlsServer happily echoes the client's
+        // status_request (OCSP stapling) extension even in a PSK handshake.
+        // That extension is only legal when a Certificate message follows —
+        // PSK has none — and Apple's TLS stack (unlike OpenSSL) rejects the
+        // ServerHello with decode_error. Certificate status has no meaning
+        // here; refuse it so the extension is never echoed.
+        protected override bool AllowCertificateStatus() => false;
+
+        protected override bool AllowMultiCertStatus() => false;
     }
 
     private sealed class IdentityManager : TlsPskIdentityManager

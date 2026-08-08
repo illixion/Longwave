@@ -207,7 +207,7 @@ public sealed class NativeStreamServer : IDisposable
         }
         catch (Exception ex)
         {
-            _log.LogInformation("TLS-PSK handshake rejected: {Message}", ex.Message);
+            _log.LogInformation(ex, "TLS-PSK handshake rejected: {Message}", ex.Message);
             try { tcp.Close(); } catch { }
             return;
         }

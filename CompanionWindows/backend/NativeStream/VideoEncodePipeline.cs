@@ -23,6 +23,8 @@ public sealed class VideoEncodePipeline : IDisposable
     /// <summary>(length-prefixed sample, isKeyFrame, sequence, ptsNanos).</summary>
     public event Action<byte[], bool, ulong, ulong>? EncodedFrame;
     public event Action<string>? Failed;
+    /// <summary>Low-volume diagnostics (first event, provides-samples flags).</summary>
+    public event Action<string>? Diagnostic;
 
     public int Width { get; }
     public int Height { get; }
@@ -35,16 +37,22 @@ public sealed class VideoEncodePipeline : IDisposable
     private readonly ID3D11Device _device;
     private readonly ID3D11DeviceContext _context;
     private readonly IMFDXGIDeviceManager _deviceManager;
-    private readonly IMFTransform _converter;
+    private readonly IMFTransform? _converter;
     private readonly IMFTransform _encoder;
     private readonly IMFMediaEventGenerator _encoderEvents;
     private readonly bool _converterProvidesSamples;
+    /// <summary>True when the encoder accepted ARGB32 input directly (NVIDIA
+    /// does its own color conversion) — the video processor is bypassed.</summary>
+    private readonly bool _directBgraInput;
     private readonly ID3D11Texture2D _bgraFrame;
 
     private readonly BlockingCollection<IMFSample> _encoderInput = new(boundedCapacity: 4);
     private readonly CancellationTokenSource _cancel = new();
     private readonly Thread _eventThread;
 
+    private readonly ID3D11Texture2D?[] _nv12Ring = new ID3D11Texture2D?[8];
+    private int _ringIndex;
+    private long _lastSubmitTicks;
     private byte[]? _lastParameterSets;
     private ulong _sequence;
     private bool _failed;
@@ -63,12 +71,15 @@ public sealed class VideoEncodePipeline : IDisposable
         _deviceManager.ResetDevice(device);
 
         _encoder = CreateHardwareHevcEncoder();
-        ConfigureEncoder(_encoder, bitrate);
+        _directBgraInput = ConfigureEncoder(_encoder, bitrate);
         _encoderEvents = _encoder.QueryInterface<IMFMediaEventGenerator>();
 
-        _converter = CreateVideoProcessor();
-        ConfigureConverter(_converter);
-        _converterProvidesSamples = HasProvidesSamples(_converter);
+        if (!_directBgraInput)
+        {
+            _converter = CreateVideoProcessor();
+            ConfigureConverter(_converter);
+            _converterProvidesSamples = HasProvidesSamples(_converter);
+        }
 
         _bgraFrame = device.CreateTexture2D(new Texture2DDescription
         {
@@ -82,8 +93,8 @@ public sealed class VideoEncodePipeline : IDisposable
             BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
         });
 
-        _converter.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-        _converter.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+        _converter?.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+        _converter?.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
         _encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
         _encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
 
@@ -93,6 +104,19 @@ public sealed class VideoEncodePipeline : IDisposable
             Name = "native-stream-encoder",
         };
         _eventThread.Start();
+
+        // Watchdog: an async MFT that never raises events means the encoder
+        // was mis-initialized — surface that instead of a downstream stall.
+        var watchdog = new Thread(() =>
+        {
+            Thread.Sleep(3000);
+            if (!_loggedFirstEvent && !_cancel.IsCancellationRequested)
+            {
+                Diagnostic?.Invoke(
+                    $"no encoder events after 3 s (directBgra={_directBgraInput}, converterProvidesSamples={_converterProvidesSamples})");
+            }
+        }) { IsBackground = true };
+        watchdog.Start();
     }
 
     /// <summary>
@@ -103,6 +127,10 @@ public sealed class VideoEncodePipeline : IDisposable
     public void Submit(ID3D11Texture2D poolTexture, int contentWidth, int contentHeight, long qpcTicks)
     {
         if (_failed || _cancel.IsCancellationRequested) return;
+        // Windows.Graphics.Capture fires per composition (up to the monitor's
+        // full refresh rate); cap encoding at the declared frame rate.
+        if (qpcTicks - _lastSubmitTicks < 10_000_000 / (FramesPerSecond + 5)) return;
+        _lastSubmitTicks = qpcTicks;
         if (contentWidth < Width || contentHeight < Height)
         {
             // Transition frame while the owner recreates the pipeline.
@@ -111,6 +139,26 @@ public sealed class VideoEncodePipeline : IDisposable
 
         try
         {
+            if (_directBgraInput)
+            {
+                // Copy into a ring texture the encoder can hold as long as
+                // it needs, and queue it straight in.
+                var ringTexture = NextRingTexture();
+                lock (_bgraFrame)
+                {
+                    _context.CopySubresourceRegion(
+                        ringTexture, 0, 0, 0, 0,
+                        poolTexture, 0,
+                        new Vortice.Mathematics.Box(0, 0, 0, Width, Height, 1));
+                }
+                var direct = SampleFromTexture(ringTexture, qpcTicks);
+                if (!_encoderInput.TryAdd(direct))
+                {
+                    direct.Dispose();
+                }
+                return;
+            }
+
             lock (_bgraFrame)
             {
                 _context.CopySubresourceRegion(
@@ -120,7 +168,21 @@ public sealed class VideoEncodePipeline : IDisposable
             }
 
             using var inputSample = SampleFromTexture(_bgraFrame, qpcTicks);
-            _converter.ProcessInput(0, inputSample, 0);
+            try
+            {
+                _converter!.ProcessInput(0, inputSample, 0);
+            }
+            catch (SharpGen.Runtime.SharpGenException ex)
+                when (ex.ResultCode.Code == unchecked((int)0xC00D36B5)) // MF_E_NOTACCEPTING
+            {
+                // The converter is holding un-drained output (its D3D sample
+                // pool can exhaust when the encoder back-pressures) — drain
+                // and retry once, dropping the frame if it still refuses.
+                var drained = DrainConverter(qpcTicks);
+                Diagnostic?.Invoke($"converter NOTACCEPTING; drained={(drained is not null)}");
+                drained?.Dispose();
+                _converter!.ProcessInput(0, inputSample, 0);
+            }
             var converted = DrainConverter(qpcTicks);
             if (converted is null) return;
 
@@ -137,40 +199,98 @@ public sealed class VideoEncodePipeline : IDisposable
         }
     }
 
+    private const int MFETransformNeedMoreInput = unchecked((int)0xC00D6D72);
+    private const int MFETransformStreamChange = unchecked((int)0xC00D6D61);
+
     private IMFSample? DrainConverter(long qpcTicks)
     {
-        var buffer = new OutputDataBuffer { StreamID = 0 };
-        if (!_converterProvidesSamples)
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            // Allocate a fresh NV12 target per frame — the async encoder may
-            // still be reading the previous one; COM refcounting keeps each
-            // alive exactly as long as needed.
-            using var nv12 = _device.CreateTexture2D(new Texture2DDescription
+            var buffer = new OutputDataBuffer { StreamID = 0 };
+            if (!_converterProvidesSamples)
+            {
+                buffer.Sample = SampleFromTexture(NextRingTexture(), qpcTicks);
+            }
+
+            var result = _converter!.ProcessOutput(ProcessOutputFlags.None, 1, ref buffer, out _);
+            buffer.Events?.Dispose();
+            if (result.Success)
+            {
+                var output = buffer.Sample!;
+                if (_converterProvidesSamples)
+                {
+                    // The converter's own D3D sample allocator is tiny (it
+                    // can be a single sample) and it refuses further input
+                    // until its samples come back. Copy into our ring and
+                    // release the converter's sample immediately, so the
+                    // encoder's queue never starves the converter.
+                    var ringTexture = NextRingTexture();
+                    using (var vpTexture = TextureFromSample(output))
+                    {
+                        lock (_bgraFrame)
+                        {
+                            _context.CopyResource(ringTexture, vpTexture);
+                        }
+                    }
+                    output.Dispose();
+                    output = SampleFromTexture(ringTexture, qpcTicks);
+                }
+                output.SampleTime = qpcTicks;
+                output.SampleDuration = 10_000_000 / FramesPerSecond;
+                return output;
+            }
+
+            buffer.Sample?.Dispose();
+            if (result.Code == MFETransformNeedMoreInput)
+            {
+                return null;
+            }
+            if (result.Code == MFETransformStreamChange)
+            {
+                // D3D-aware MFTs renegotiate their output on the first frame
+                // (and on device changes): re-set the output type and retry.
+                Diagnostic?.Invoke("converter stream change; renegotiating output type");
+                ConfigureConverterOutput(_converter!);
+                continue;
+            }
+            throw new InvalidOperationException(
+                $"Video processor ProcessOutput failed (0x{result.Code:X8}).");
+        }
+        return null;
+    }
+
+    /// <summary>NV12 targets handed to the encoder, reused round-robin. The
+    /// ring (8) comfortably outlasts the encoder's pipeline depth (bounded
+    /// queue of 4 plus a frame or two in flight) at 60 fps.</summary>
+    private ID3D11Texture2D NextRingTexture()
+    {
+        if (_nv12Ring[_ringIndex] is null)
+        {
+            _nv12Ring[_ringIndex] = _device.CreateTexture2D(new Texture2DDescription
             {
                 Width = (uint)Width,
                 Height = (uint)Height,
                 MipLevels = 1,
                 ArraySize = 1,
-                Format = Format.NV12,
+                Format = _directBgraInput ? Format.B8G8R8A8_UNorm : Format.NV12,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
             });
-            buffer.Sample = SampleFromTexture(nv12, qpcTicks);
         }
-
-        var result = _converter.ProcessOutput(ProcessOutputFlags.None, 1, ref buffer, out _);
-        buffer.Events?.Dispose();
-        if (result.Failure)
-        {
-            buffer.Sample?.Dispose();
-            return null;
-        }
-        var output = buffer.Sample!;
-        output.SampleTime = qpcTicks;
-        output.SampleDuration = 10_000_000 / FramesPerSecond;
-        return output;
+        var texture = _nv12Ring[_ringIndex]!;
+        _ringIndex = (_ringIndex + 1) % _nv12Ring.Length;
+        return texture;
     }
+
+    private static ID3D11Texture2D TextureFromSample(IMFSample sample)
+    {
+        using var mediaBuffer = sample.GetBufferByIndex(0);
+        using var dxgiBuffer = mediaBuffer.QueryInterface<IMFDXGIBuffer>();
+        return new ID3D11Texture2D(dxgiBuffer.GetResource(typeof(ID3D11Texture2D).GUID));
+    }
+
+    private bool _loggedFirstEvent;
 
     private void EncoderEventLoop()
     {
@@ -179,6 +299,11 @@ public sealed class VideoEncodePipeline : IDisposable
             while (!_cancel.IsCancellationRequested)
             {
                 using var mediaEvent = _encoderEvents.GetEvent(0);
+                if (!_loggedFirstEvent)
+                {
+                    _loggedFirstEvent = true;
+                    Diagnostic?.Invoke($"first encoder event: {mediaEvent.EventType}");
+                }
                 switch (mediaEvent.EventType)
                 {
                     case MediaEventTypes.TransformNeedInput:
@@ -410,7 +535,9 @@ public sealed class VideoEncodePipeline : IDisposable
         }
     }
 
-    private void ConfigureEncoder(IMFTransform encoder, int bitrate)
+    /// <summary>Configures output + input types. Returns true when the
+    /// encoder took ARGB32 input directly (no converter needed).</summary>
+    private bool ConfigureEncoder(IMFTransform encoder, int bitrate)
     {
         using (var outputType = MediaFactory.MFCreateMediaType())
         {
@@ -425,15 +552,25 @@ public sealed class VideoEncodePipeline : IDisposable
             encoder.SetOutputType(0, outputType, 0);
         }
 
-        using (var inputType = MediaFactory.MFCreateMediaType())
+        foreach (var subtype in new[] { VideoFormatGuids.Argb32, VideoFormatGuids.NV12 })
         {
+            using var inputType = MediaFactory.MFCreateMediaType();
             inputType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-            inputType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.NV12);
+            inputType.Set(MediaTypeAttributeKeys.Subtype, subtype);
             inputType.Set(MediaTypeAttributeKeys.FrameSize, PackTwo(Width, Height));
             inputType.Set(MediaTypeAttributeKeys.FrameRate, PackTwo(FramesPerSecond, 1));
             inputType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive);
-            encoder.SetInputType(0, inputType, 0);
+            try
+            {
+                encoder.SetInputType(0, inputType, 0);
+                return subtype == VideoFormatGuids.Argb32;
+            }
+            catch (SharpGen.Runtime.SharpGenException)
+            {
+                // Not accepted — try the next candidate.
+            }
         }
+        throw new InvalidOperationException("The hardware encoder accepts neither ARGB32 nor NV12 input.");
     }
 
     private IMFTransform CreateVideoProcessor()
@@ -469,15 +606,18 @@ public sealed class VideoEncodePipeline : IDisposable
             converter.SetInputType(0, inputType, 0);
         }
 
-        using (var outputType = MediaFactory.MFCreateMediaType())
-        {
-            outputType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-            outputType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.NV12);
-            outputType.Set(MediaTypeAttributeKeys.FrameSize, PackTwo(Width, Height));
-            outputType.Set(MediaTypeAttributeKeys.FrameRate, PackTwo(FramesPerSecond, 1));
-            outputType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive);
-            converter.SetOutputType(0, outputType, 0);
-        }
+        ConfigureConverterOutput(converter);
+    }
+
+    private void ConfigureConverterOutput(IMFTransform converter)
+    {
+        using var outputType = MediaFactory.MFCreateMediaType();
+        outputType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
+        outputType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.NV12);
+        outputType.Set(MediaTypeAttributeKeys.FrameSize, PackTwo(Width, Height));
+        outputType.Set(MediaTypeAttributeKeys.FrameRate, PackTwo(FramesPerSecond, 1));
+        outputType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive);
+        converter.SetOutputType(0, outputType, 0);
     }
 
     private static bool HasProvidesSamples(IMFTransform transform)
@@ -520,8 +660,9 @@ public sealed class VideoEncodePipeline : IDisposable
         _eventThread.Join(TimeSpan.FromSeconds(2));
         while (_encoderInput.TryTake(out var sample)) sample.Dispose();
         _encoderInput.Dispose();
+        foreach (var texture in _nv12Ring) texture?.Dispose();
         _bgraFrame.Dispose();
-        _converter.Dispose();
+        _converter?.Dispose();
         _encoderEvents.Dispose();
         _encoder.Dispose();
         _deviceManager.Dispose();

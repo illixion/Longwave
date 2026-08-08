@@ -386,6 +386,8 @@ public sealed class NativeStreamingService : BackgroundService
                     {
                         lock (_gate) { _server?.BroadcastWindowFrame(streamId, data, isKey, seq, pts); }
                     };
+                    pipeline.Diagnostic += message =>
+                        _log.LogInformation("Stream {Id} diag: {Message}", streamId, message);
                     pipeline.Failed += message =>
                     {
                         _log.LogError("Stream {Id} encode failed: {Message}", streamId, message);

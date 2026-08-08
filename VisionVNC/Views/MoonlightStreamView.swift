@@ -58,10 +58,13 @@ struct MoonlightStreamView: View {
     @State private var previousDragTranslation: CGSize = .zero
     // Track whether a drag is actively holding the mouse button (absolute mode)
     @State private var absoluteDragActive = false
-    // Gaze "drag lock": double-tap presses and holds the left button so a
-    // subsequent pinch-drag drags; a single tap releases it. Lets gaze users
+    // Gaze "drag lock": a press-and-hold holds the left button down so a
+    // subsequent pinch-drag drags; a single tap releases it. (It was a
+    // double-tap, which left no gesture free to double-click with.) Lets gaze users
     // drag (move windows, select) without a physical mouse button.
     @State private var dragLocked = false
+    @State private var clickCadence = DoubleClickCadence()
+    @State private var dragLockStartedAt: Date?
 
     var body: some View {
         ZStack {
@@ -96,14 +99,13 @@ struct MoonlightStreamView: View {
                                 manager.setPointerOverContent(false)
                             }
                         }
-                        // Double tap = begin click+drag lock; single tap = left
-                        // click (or release a drag lock). Right click is the
-                        // toolbar button. All suppressed when a physical mouse is
-                        // connected — it owns clicks via GCMouse, and visionOS
-                        // would otherwise double-deliver each click as a tap too.
-                        .gesture(SpatialTapGesture(count: 2).onEnded { value in
-                            beginDragLock(at: value.location, in: geometry.size)
-                        })
+                        // Press and hold = begin click+drag lock; single tap =
+                        // left click (or release a drag lock), and two quick
+                        // taps double-click. Right click is the toolbar button.
+                        // All suppressed when a physical mouse is connected — it
+                        // owns clicks via GCMouse, and visionOS would otherwise
+                        // double-deliver each click as a tap too.
+                        .gesture(dragLockGesture)
                         .gesture(SpatialTapGesture(count: 1).onEnded { value in
                             singleTap(at: value.location, in: geometry.size)
                         })
@@ -196,22 +198,47 @@ struct MoonlightStreamView: View {
     /// Single tap: left click, or release an active drag lock.
     private func singleTap(at location: CGPoint, in viewSize: CGSize) {
         guard !manager.isMouseConnected else { return }
-        positionForTap(at: location, in: viewSize)
         if dragLocked {
+            // Lifting off the press-and-hold that started the lock can arrive
+            // here as a tap; that would release it instantly.
+            if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
+            positionForTap(at: location, in: viewSize)
             LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_LEFT)
             dragLocked = false
         } else {
+            // Position the second of two quick taps where the first one landed,
+            // so the host reads them as a double-click rather than two clicks a
+            // few pixels apart (see DoubleClickCadence).
+            positionForTap(at: snappedTapLocation(location, in: viewSize), in: viewSize)
             LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
             LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_LEFT)
         }
     }
 
-    /// Double tap: press and hold the left button so the next drag drags.
-    private func beginDragLock(at location: CGPoint, in viewSize: CGSize) {
-        guard !manager.isMouseConnected, !dragLocked else { return }
-        positionForTap(at: location, in: viewSize)
-        LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
-        dragLocked = true
+    /// Runs a tap through the double-click cadence in view space — Moonlight
+    /// positions via `LiSendMousePositionEvent`, so the snap has to happen
+    /// before the coordinate mapping rather than after it.
+    private func snappedTapLocation(_ location: CGPoint, in viewSize: CGSize) -> CGPoint {
+        guard manager.touchMode == .absolute,
+              viewSize.width > 0, viewSize.height > 0,
+              location.x >= 0, location.y >= 0,
+              location.x <= CGFloat(UInt16.max), location.y <= CGFloat(UInt16.max)
+        else { return location }
+        let snapped = clickCadence.resolve((x: UInt16(location.x), y: UInt16(location.y)))
+        return CGPoint(x: CGFloat(snapped.x), y: CGFloat(snapped.y))
+    }
+
+    /// Press and hold = grab. The hover handler already positions the host
+    /// cursor in absolute mode, so this presses wherever it is — the same rule
+    /// the Right-click button uses.
+    private var dragLockGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.55)
+            .onEnded { _ in
+                guard !manager.isMouseConnected, !dragLocked else { return }
+                LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
+                dragLocked = true
+                dragLockStartedAt = Date()
+            }
     }
 
     /// Right click at the host's current cursor position (toolbar button).

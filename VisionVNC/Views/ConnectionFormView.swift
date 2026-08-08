@@ -340,8 +340,8 @@ struct ConnectionFormView: View {
             }
 
             Text(vncTouchMode == .relative
-                ? "Drag to move the cursor. Tap to click at the cursor position. Double-tap for right-click."
-                : "Tap and drag directly on the remote screen. Double-tap for right-click.")
+                ? "Drag to move the cursor. Tap to click at the cursor position, twice quickly to double-click. Press and hold to grab, then drag; tap to drop. Right-click is on the toolbar."
+                : "Tap and drag directly on the remote screen. Tap twice quickly to double-click. Press and hold to grab, then drag; tap to drop. Right-click is on the toolbar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             #endif

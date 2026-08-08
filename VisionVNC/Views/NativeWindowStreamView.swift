@@ -19,6 +19,8 @@ struct NativeWindowStreamView: View {
     @State private var isDragging = false
     @State private var dragLocked = false
     @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
+    @State private var clickCadence = DoubleClickCadence()
+    @State private var dragLockStartedAt: Date?
 
     private var session: MacNativeWindowSession? {
         screenManager.windowSessions[windowID]
@@ -70,9 +72,7 @@ struct NativeWindowStreamView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Rectangle())
-            .gesture(SpatialTapGesture(count: 2).onEnded { value in
-                beginDragLock(at: value.location, session: session)
-            })
+            .gesture(dragLockGesture)
             .gesture(tapGesture(session))
             .gesture(dragGesture(session))
             .gesture(scrollGesture(session))
@@ -147,15 +147,28 @@ struct NativeWindowStreamView: View {
     private func tapGesture(_ session: MacNativeWindowSession) -> some Gesture {
         SpatialTapGesture()
             .onEnded { value in
-                guard let point = translator(session)?.viewToFramebuffer(value.location) else { return }
+                guard let raw = translator(session)?.viewToFramebuffer(value.location) else { return }
                 if dragLocked {
-                    screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
+                    // Lifting off the press-and-hold that started the lock can
+                    // arrive here as a tap; that would release it instantly.
+                    if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
+                    screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: raw.x, y: raw.y)
                     dragLocked = false
                 } else {
+                    // Snap a quick second tap onto the first one's pixel so the
+                    // host reads the pair as a double-click.
+                    let point = clickCadence.resolve(raw)
                     screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
                     screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
                 }
             }
+    }
+
+    /// Press and hold = grab, at the tracked pointer. Was a double-tap, which
+    /// left no way to double-click.
+    private var dragLockGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.55)
+            .onEnded { _ in beginDragLockAtCursor() }
     }
 
     private func dragGesture(_ session: MacNativeWindowSession) -> some Gesture {
@@ -193,12 +206,12 @@ struct NativeWindowStreamView: View {
             }
     }
 
-    /// Double tap = press and hold the left button so the next drag drags.
-    private func beginDragLock(at location: CGPoint, session: MacNativeWindowSession) {
-        guard !dragLocked,
-              let point = translator(session)?.viewToFramebuffer(location) else { return }
+    /// Press and hold the left button so the next drag drags.
+    private func beginDragLockAtCursor() {
+        guard !dragLocked, let point = lastPointerPoint else { return }
         screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
         dragLocked = true
+        dragLockStartedAt = Date()
     }
 }
 

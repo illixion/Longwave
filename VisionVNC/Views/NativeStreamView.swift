@@ -62,6 +62,8 @@ struct NativeStreamView: View {
     @State private var dragLocked = false
     @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
     @State private var previousDragTranslation: CGSize = .zero
+    @State private var clickCadence = DoubleClickCadence()
+    @State private var dragLockStartedAt: Date?
 
     var body: some View {
         @Bindable var screenManager = screenManager
@@ -351,11 +353,9 @@ struct NativeStreamView: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .contentShape(Rectangle())
-                // Double tap = begin click+drag lock; single tap = left click
+                // Press and hold = begin click+drag lock; single tap = left click
                 // (or release a drag lock). Right click is the toolbar button.
-                .gesture(SpatialTapGesture(count: 2).onEnded { value in
-                    beginDragLock(at: value.location)
-                })
+                .gesture(dragLockGesture)
                 .gesture(tapGesture)
                 .gesture(dragGesture)
                 .gesture(scrollGesture)
@@ -414,12 +414,23 @@ struct NativeStreamView: View {
         SpatialTapGesture()
             .onEnded { value in
                 if dragLocked {
+                    // Lifting off the press-and-hold that *started* the lock
+                    // can arrive here as a tap; that would release it instantly.
+                    if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
                     releaseLeft(at: value.location)
                     dragLocked = false
                 } else {
                     leftClick(at: value.location)
                 }
             }
+    }
+
+    /// Press and hold = grab: holds the left button down so the next drag
+    /// drags, released by the next tap. This was a double-tap, which left no
+    /// way to double-click — the second tap grabbed instead of clicking.
+    private var dragLockGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.55)
+            .onEnded { _ in beginDragLockAtCursor() }
     }
 
     /// Drag moves the cursor; the left button stays down for the duration
@@ -477,24 +488,31 @@ struct NativeStreamView: View {
 
     private func leftClick(at location: CGPoint) {
         if screenManager.touchMode == .absolute {
-            guard let point = translator?.viewToFramebuffer(location) else { return }
+            guard let raw = translator?.viewToFramebuffer(location) else { return }
+            // Snap a quick second tap onto the first one's pixel so the host
+            // reads the pair as a double-click (see DoubleClickCadence).
+            let point = clickCadence.resolve(raw)
             screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
             screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
         } else {
+            // Trackpad mode already clicks twice at the same virtual cursor.
             screenManager.clickAtVirtualCursor(button: .left)
         }
     }
 
-    /// Double tap = press and hold the left button so the next drag drags.
-    private func beginDragLock(at location: CGPoint) {
+    /// Press and hold the left button so the next drag drags, at the tracked
+    /// pointer — the same "wherever the cursor is" rule the Right-click button
+    /// uses, since a long press carries no location of its own.
+    private func beginDragLockAtCursor() {
         guard !dragLocked else { return }
         if screenManager.touchMode == .absolute {
-            guard let point = translator?.viewToFramebuffer(location) else { return }
+            guard let point = lastPointerPoint else { return }
             screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
         } else {
             screenManager.pressMouseAtVirtualCursor(button: .left)
         }
         dragLocked = true
+        dragLockStartedAt = Date()
     }
 
     /// Release the held left button (ends a drag lock).

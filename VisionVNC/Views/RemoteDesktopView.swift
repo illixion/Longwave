@@ -11,9 +11,12 @@ struct RemoteDesktopView: View {
     @State private var isDragging = false
     @State private var previousDragTranslation: CGSize = .zero
     @State private var showAudioPanel = false
-    // Gaze "drag lock": double-tap presses and holds the left button so a
-    // subsequent pinch-drag drags; a single tap releases it.
+    // Gaze "drag lock": a press-and-hold holds the left button down so a
+    // subsequent pinch-drag drags; a single tap releases it. (It was a
+    // double-tap, which left no gesture free to double-click with.)
     @State private var dragLocked = false
+    @State private var clickCadence = DoubleClickCadence()
+    @State private var dragLockStartedAt: Date?
 
     var body: some View {
         Group {
@@ -103,11 +106,10 @@ struct RemoteDesktopView: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .contentShape(Rectangle())
-                // Double tap = begin click+drag lock; single tap = left click
-                // (or release a drag lock). Right click is the toolbar button.
-                .gesture(SpatialTapGesture(count: 2).onEnded { value in
-                    beginDragLock(at: value.location)
-                })
+                // Press and hold = begin click+drag lock; single tap = left
+                // click (or release a drag lock), and two quick taps
+                // double-click. Right click is the toolbar button.
+                .gesture(dragLockGesture)
                 .gesture(tapGesture)
                 .gesture(dragGesture)
                 .gesture(scrollGesture)
@@ -244,12 +246,24 @@ struct RemoteDesktopView: View {
         SpatialTapGesture()
             .onEnded { value in
                 if dragLocked {
+                    // Lifting off the press-and-hold that started the lock can
+                    // arrive here as a tap; that would release it instantly.
+                    if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
                     releaseLeft(at: value.location)
                     dragLocked = false
                 } else {
                     leftClick(at: value.location)
                 }
             }
+    }
+
+    /// Press and hold = grab: holds the left button down so the next drag
+    /// drags. Was a double-tap, which left no way to double-click. The hover
+    /// handler keeps the virtual cursor synced in both modes, so this needs no
+    /// location of its own — same rule as the Right-click button.
+    private var dragLockGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.55)
+            .onEnded { _ in beginDragLockAtCursor() }
     }
 
     /// Drag: moves the cursor. While a drag lock is held (or a plain absolute
@@ -297,7 +311,10 @@ struct RemoteDesktopView: View {
     /// Left click at a tapped location (absolute) or the virtual cursor (relative).
     private func leftClick(at location: CGPoint) {
         if connectionManager.touchMode == .absolute {
-            guard let point = translator?.viewToFramebuffer(location) else { return }
+            guard let raw = translator?.viewToFramebuffer(location) else { return }
+            // Snap a quick second tap onto the first one's pixel so the remote
+            // desktop reads the pair as a double-click (see DoubleClickCadence).
+            let point = clickCadence.resolve(raw)
             connectionManager.sendMouseDown(button: .left, x: point.x, y: point.y)
             connectionManager.sendMouseUp(button: .left, x: point.x, y: point.y)
         } else {
@@ -310,16 +327,12 @@ struct RemoteDesktopView: View {
         connectionManager.clickAtVirtualCursor(button: .right)
     }
 
-    /// Double tap = press and hold the left button so the next drag drags.
-    private func beginDragLock(at location: CGPoint) {
+    /// Press and hold the left button so the next drag drags.
+    private func beginDragLockAtCursor() {
         guard !dragLocked else { return }
-        if connectionManager.touchMode == .absolute {
-            guard let point = translator?.viewToFramebuffer(location) else { return }
-            connectionManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-        } else {
-            connectionManager.pressMouseAtVirtualCursor(button: .left)
-        }
+        connectionManager.pressMouseAtVirtualCursor(button: .left)
         dragLocked = true
+        dragLockStartedAt = Date()
     }
 
     /// Release the held left button (ends a drag lock).

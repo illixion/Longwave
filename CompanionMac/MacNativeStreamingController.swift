@@ -75,6 +75,30 @@ final class MacNativeStreamingController {
         CGPoint(x: displayFrame.origin.x + CGFloat(x), y: displayFrame.origin.y + CGFloat(y))
     }
 
+    /// Maps a stream-space (x, y) to a global point for any stream: the
+    /// desktop stream via the display frame, a window stream via its
+    /// window's current frame and pixel scale.
+    private func globalPoint(windowID: UInt32, x: UInt16, y: UInt16) -> CGPoint? {
+        if windowID == MacNativeStreamProtocol.desktopStreamID {
+            return globalPoint(x: x, y: y)
+        }
+        guard let target = windowStreams.target(for: windowID) else { return nil }
+        return CGPoint(
+            x: target.frame.origin.x + CGFloat(x) / target.pixelScale,
+            y: target.frame.origin.y + CGFloat(y) / target.pixelScale
+        )
+    }
+
+    /// Raises the target window when a click would otherwise land on
+    /// whatever occludes it — CGEvent clicks are routed by screen position,
+    /// not by window, so per-window input needs the window frontmost.
+    private func raiseIfOccluded(windowID: UInt32, at point: CGPoint) {
+        guard windowID != MacNativeStreamProtocol.desktopStreamID,
+              let target = windowStreams.target(for: windowID),
+              !MacNativeWindowStreamCoordinator.isTopmost(target, at: point) else { return }
+        input.raiseWindow(target)
+    }
+
     var statusText: String {
         if let connectedDeviceName {
             return "Streaming to \(connectedDeviceName)"
@@ -85,6 +109,8 @@ final class MacNativeStreamingController {
     private var token = ""
     private var server: MacNativeStreamServer?
     private var capture: MacNativeScreenCapture?
+    /// Per-window (Unity-style) streams for the active v2 viewer.
+    private let windowStreams = MacNativeWindowStreamCoordinator()
     private var captureGeneration = 0
     private var serverGeneration = 0
 
@@ -113,6 +139,7 @@ final class MacNativeStreamingController {
         server = nil
         connectedDeviceName = nil
         stopCapture()
+        windowStreams.stop()
 
         guard !token.isEmpty else {
             lastError = "The companion access token is empty."
@@ -140,7 +167,7 @@ final class MacNativeStreamingController {
 
     private func launchServer(generation: Int) {
         let server = MacNativeStreamServer(port: port, token: token)
-        server.onClientActivated = { [weak self] deviceName, replacedName in
+        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 self.connectedDeviceName = deviceName
@@ -148,8 +175,18 @@ final class MacNativeStreamingController {
                     deviceName: deviceName,
                     replacedDeviceName: replacedName
                 )
-                if self.capture == nil {
-                    self.startCapture()
+                if protocolVersion >= 2 {
+                    // A v2 viewer subscribes to the streams it wants; a
+                    // takeover starts from a clean slate (the new viewer has
+                    // no subscriptions yet).
+                    self.stopCapture()
+                    self.windowStreams.stop()
+                    self.windowStreams.start()
+                } else {
+                    self.windowStreams.stop()
+                    if self.capture == nil {
+                        self.startCapture()
+                    }
                 }
             }
         }
@@ -158,6 +195,7 @@ final class MacNativeStreamingController {
                 guard let self, self.serverGeneration == generation else { return }
                 self.connectedDeviceName = nil
                 self.stopCapture()
+                self.windowStreams.stop()
             }
         }
         server.onError = { [weak self] message in
@@ -203,6 +241,104 @@ final class MacNativeStreamingController {
             }
         }
 
+        // v2 multiplexed streams: the desktop stream starts/stops on demand,
+        // per-window streams go through the coordinator.
+        server.onWindowStreamStart = { [weak self] windowID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                if windowID == MacNativeStreamProtocol.desktopStreamID {
+                    if self.capture == nil {
+                        self.startCapture()
+                    }
+                } else {
+                    self.windowStreams.startStream(windowID: windowID)
+                }
+            }
+        }
+        server.onWindowStreamStop = { [weak self] windowID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                if windowID == MacNativeStreamProtocol.desktopStreamID {
+                    self.stopCapture()
+                } else {
+                    self.windowStreams.stopStream(windowID: windowID)
+                }
+            }
+        }
+        server.onFocusWindow = { [weak self] windowID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      let target = self.windowStreams.target(for: windowID) else { return }
+                self.input.raiseWindow(target)
+            }
+        }
+        server.onWindowMouseMove = { [weak self] windowID, x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      let point = self.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                self.input.moveMouse(to: point)
+            }
+        }
+        server.onWindowMouseDown = { [weak self] windowID, button, x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      let point = self.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                self.raiseIfOccluded(windowID: windowID, at: point)
+                self.input.mouseDown(button: button, at: point)
+            }
+        }
+        server.onWindowMouseUp = { [weak self] windowID, button, x, y in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      let point = self.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                self.input.mouseUp(button: button, at: point)
+            }
+        }
+        server.onWindowScroll = { [weak self] windowID, x, y, deltaX, deltaY in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      let point = self.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                self.input.scroll(deltaX: Int32(deltaX), deltaY: Int32(deltaY), at: point)
+            }
+        }
+
+        // Window coordinator → server: inventory pushes and per-window
+        // stream data, all tagged with the window ID.
+        windowStreams.onInventoryChanged = { [weak self] windows in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.server?.broadcastInventory(windows)
+            }
+        }
+        windowStreams.onWindowFormatDescription = { [weak self] windowID, data in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.server?.broadcastWindowFormatDescription(
+                    windowID: windowID,
+                    kind: .coreMediaImageDescription,
+                    data: data
+                )
+            }
+        }
+        windowStreams.onWindowFrame = { [weak self] windowID, data, keyFrame, sequence, timestamp in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.server?.broadcastWindowFrame(
+                    windowID: windowID,
+                    data,
+                    isKeyFrame: keyFrame,
+                    sequence: sequence,
+                    timestampNanoseconds: timestamp
+                )
+            }
+        }
+        windowStreams.onWindowClosed = { [weak self] windowID, reason in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.server?.sendWindowClosed(windowID: windowID, reason: reason)
+            }
+        }
+
         do {
             self.server = server
             try server.start()
@@ -221,6 +357,7 @@ final class MacNativeStreamingController {
         oldServer?.stop()
         connectedDeviceName = nil
         stopCapture()
+        windowStreams.stop()
     }
 
     private func startCapture() {

@@ -72,6 +72,8 @@ struct NativeStreamView: View {
 
             if screenManager.liveEnabled {
                 screenContent
+            } else if windowsModeAvailable {
+                windowPickerContent
             } else if audioManager.liveEnabled {
                 if audioPoppedOut {
                     audioPoppedOutContent
@@ -83,7 +85,7 @@ struct NativeStreamView: View {
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            if screenManager.liveEnabled {
+            if screenManager.liveEnabled || windowsModeAvailable {
                 controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
             } else if audioManager.liveEnabled {
                 // Audio-only (or popped out): the Screen/Audio toggles and
@@ -111,11 +113,7 @@ struct NativeStreamView: View {
             resumeIfNeeded()
         }
         .onChange(of: screenManager.liveEnabled) { _, on in
-            if on, let connection = screenManager.connection {
-                screenManager.connect(to: connection)
-            } else {
-                screenManager.disconnect()
-            }
+            screenManager.desktopToggleChanged(on)
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
             if on {
@@ -136,7 +134,114 @@ struct NativeStreamView: View {
         }
         if screenManager.liveEnabled, !screenManager.isEnabled, let connection = screenManager.connection {
             screenManager.connect(to: connection)
+        } else {
+            // Even with the desktop stream off, keep the session up so the
+            // window inventory and per-window streams work.
+            screenManager.ensureSessionConnected()
         }
+    }
+
+    // MARK: - Per-window (Unity-style) streaming
+
+    /// Whether this session can act as the controller for per-window scenes:
+    /// a live v2 connection that publishes an inventory.
+    private var windowsModeAvailable: Bool {
+        screenManager.isEnabled && screenManager.supportsWindowStreams
+    }
+
+    /// The controller face of the Native window while the desktop stream is
+    /// off: connection status plus the host's window inventory, each row
+    /// opening (or closing) that window as its own chrome-free scene.
+    private var windowPickerContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: "macwindow.on.rectangle")
+                    .foregroundStyle(.secondary)
+                Text(screenManager.title)
+                    .font(.headline)
+                Spacer()
+                Text(screenManager.state.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if screenManager.windowInventory.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Waiting for the window list…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(screenManager.windowInventory) { window in
+                            windowRow(window)
+                        }
+                    }
+                }
+                .frame(maxHeight: 460)
+            }
+
+            if audioManager.liveEnabled {
+                Divider()
+                HStack(spacing: 16) {
+                    Text(compactAudioStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    AudioVolumeRow()
+                        .frame(width: 180)
+                    Button(action: popOutAudio) {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Pop out to its own window")
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
+        .glassBackgroundEffect()
+    }
+
+    private func windowRow(_ window: MacNativeStreamProtocol.WindowInfo) -> some View {
+        let isOpen = screenManager.windowSessions[window.id] != nil
+        return HStack(spacing: 12) {
+            Image(systemName: window.isFocused ? "macwindow.badge.plus" : "macwindow")
+                .foregroundStyle(window.isFocused ? Color.accentColor : .secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(window.title.isEmpty ? window.appName : window.title)
+                    .lineLimit(1)
+                Text(window.title.isEmpty
+                     ? "\(Int(window.width))×\(Int(window.height))"
+                     : "\(window.appName) · \(Int(window.width))×\(Int(window.height))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(isOpen ? "Close" : "Open") {
+                if isOpen {
+                    dismissWindow(
+                        id: "mac-native-window",
+                        value: MacNativeWindowStreamID(windowID: window.id)
+                    )
+                } else {
+                    openWindow(
+                        id: "mac-native-window",
+                        value: MacNativeWindowStreamID(windowID: window.id)
+                    )
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Audio pop-out
@@ -628,6 +733,14 @@ struct NativeStreamView: View {
     }
 
     private func disconnectAll() {
+        // Take the per-window scenes down first — their sessions die with
+        // the manager's forget() below.
+        for windowID in screenManager.windowSessions.keys {
+            dismissWindow(
+                id: "mac-native-window",
+                value: MacNativeWindowStreamID(windowID: windowID)
+            )
+        }
         screenManager.forget()
         audioManager.userDisconnect()
         WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {

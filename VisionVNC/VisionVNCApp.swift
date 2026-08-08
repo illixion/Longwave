@@ -112,6 +112,25 @@ struct VisionVNCApp: App {
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
 
+        // Unity-style per-window streams: one chrome-free scene per streamed
+        // host window, keyed by the host window ID. No ornament by design —
+        // the scene is just the remote window's pixels; control lives in the
+        // Native controller window above.
+        WindowGroup(
+            "Mac Window",
+            id: "mac-native-window",
+            for: MacNativeWindowStreamID.self
+        ) { $streamID in
+            if let streamID {
+                NativeWindowStreamView(windowID: streamID.windowID)
+                    .environment(macNativeManager)
+            }
+        }
+        .defaultSize(width: 960, height: 720)
+        .windowResizability(.contentMinSize)
+        .windowStyle(.plain)
+        .defaultLaunchBehavior(.suppressed)
+
         #if MOONLIGHT_ENABLED
         WindowGroup("Moonlight Stream", id: "moonlight-stream") {
             MoonlightStreamView()

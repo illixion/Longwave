@@ -7,6 +7,18 @@ nonisolated enum MacNativeStreamProtocol {
     static let frameLengthPrefixSize = 4
     static let maxFrameBytes: UInt32 = 64 * 1024 * 1024
 
+    /// v1: single anonymous desktop stream over `formatDescription`/`videoFrame`.
+    /// v2: adds hosts other than macOS, a published window inventory, and
+    /// multiplexed per-window streams (`window*` frames, `.desktopStreamID`
+    /// for the whole-desktop composition). A v2 server keeps speaking v1 to a
+    /// hello without a `protocolVersion`.
+    static let protocolVersion = 2
+
+    /// The stream ID of the whole-desktop composition when multiplexed
+    /// streams are in use. Real window IDs are never 0 (CGWindowID and
+    /// Windows HWNDs are both nonzero).
+    static let desktopStreamID: UInt32 = 0
+
     enum FrameType: UInt8, Sendable {
         case keepAlive = 0x07
         case hello = 0x10
@@ -39,10 +51,102 @@ nonisolated enum MacNativeStreamProtocol {
         /// `CompanionInjectProtocol` (text only, no modifiers) independent of
         /// this — see `MacNativeStreamManager`.
         case keyboardStatus = 0x47
+
+        // MARK: v2 — window inventory + multiplexed streams
+
+        /// Server → client: JSON `WindowInventory` — the host's current
+        /// streamable windows. Pushed after `helloAck` (v2 clients only) and
+        /// again whenever the inventory changes.
+        case windowList = 0x50
+        /// Client → server: UInt32 stream ID (little-endian) — start
+        /// streaming this window (`desktopStreamID` for the whole desktop).
+        case windowStreamStart = 0x51
+        /// Client → server: UInt32 stream ID — stop streaming this window.
+        case windowStreamStop = 0x52
+        /// Server → client: UInt32 stream ID, UInt8 `FormatKind`, then the
+        /// codec configuration blob in that kind's encoding.
+        case windowFormatDescription = 0x53
+        /// Server → client: UInt32 stream ID, then the `videoFrame` payload
+        /// (UInt8 isKeyFrame, UInt64 sequence, UInt64 ptsNanos, sample data).
+        case windowVideoFrame = 0x54
+        /// Server → client: UInt32 stream ID + optional UTF-8 reason — the
+        /// stream ended (window closed, capture failed, budget exceeded).
+        case windowClosed = 0x55
+        /// Client → server: UInt32 stream ID — raise/activate this window on
+        /// the host so keyboard input routes to it.
+        case focusWindow = 0x56
+
+        /// Client → server: UInt32 stream ID + the v1 `mouseMove` payload,
+        /// with (x, y) in that stream's own pixel space.
+        case windowMouseMove = 0x60
+        /// Client → server: UInt32 stream ID + the v1 `mouseDown` payload.
+        case windowMouseDown = 0x61
+        /// Client → server: UInt32 stream ID + the v1 `mouseUp` payload.
+        case windowMouseUp = 0x62
+        /// Client → server: UInt32 stream ID + the v1 `scroll` payload.
+        case windowScroll = 0x63
     }
 
     struct Hello: Codable, Sendable {
         let deviceName: String
+        /// Absent in v1 clients — treat as 1.
+        var protocolVersion: Int?
+
+        init(deviceName: String, protocolVersion: Int? = nil) {
+            self.deviceName = deviceName
+            self.protocolVersion = protocolVersion
+        }
+    }
+
+    /// v2 `helloAck` payload. A v1 server sends an empty payload instead —
+    /// `decodeHelloAck` returns nil and the client falls back to v1 behavior
+    /// (one anonymous desktop stream, macOS virtual keycodes).
+    struct HelloAck: Codable, Sendable {
+        let protocolVersion: Int
+        /// "macOS" or "windows" — drives client copy and expectations only;
+        /// capabilities below are what actually gate behavior.
+        let platform: String
+        /// Interpretation of `keyDown`/`keyUp` keycodes: "macVirtual" (kVK_*)
+        /// or "hidUsage" (USB HID keyboard usage IDs). Servers on non-Mac
+        /// hosts use "hidUsage" so clients skip their HID→kVK mapping.
+        let keyCodeSpace: KeyCodeSpace
+        /// Whether `windowList`/per-window streams are available.
+        let supportsWindowStreams: Bool
+        /// Whether the alpha-preserving transparent-desktop composition is
+        /// available (macOS). When false the desktop stream is opaque.
+        let supportsTransparentDesktop: Bool
+    }
+
+    enum KeyCodeSpace: String, Codable, Sendable {
+        case macVirtual
+        case hidUsage
+    }
+
+    enum FormatKind: UInt8, Sendable {
+        /// CoreMedia big-endian ImageDescription blob (exact `muxa`/alpha
+        /// metadata transport) — what macOS hosts send.
+        case coreMediaImageDescription = 0
+        /// Concatenated Annex-B HEVC parameter sets (VPS/SPS/PPS, each with a
+        /// start code). Video samples are 4-byte big-endian length-prefixed
+        /// NAL units (AVCC/HVCC layout). What non-Apple hosts send.
+        case hevcParameterSets = 1
+    }
+
+    /// One streamable host window, published via `windowList`.
+    struct WindowInfo: Codable, Sendable, Equatable, Identifiable {
+        let id: UInt32
+        let title: String
+        let appName: String
+        /// Window size in host points — the aspect-ratio source of truth
+        /// (the stream's pixel size may be scaled).
+        let width: Double
+        let height: Double
+        /// Whether this is the host's frontmost window right now.
+        let isFocused: Bool
+    }
+
+    struct WindowInventory: Codable, Sendable, Equatable {
+        let windows: [WindowInfo]
     }
 
     /// Mirrors the stream's own pixel space — a mouse coordinate is only
@@ -81,15 +185,190 @@ nonisolated enum MacNativeStreamProtocol {
         return frame
     }
 
-    static func encodeHello(deviceName: String) -> Data {
+    static func encodeHello(deviceName: String, protocolVersion: Int = protocolVersion) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hello = Hello(deviceName: name.isEmpty ? "Vision Pro" : name)
+        let hello = Hello(
+            deviceName: name.isEmpty ? "Vision Pro" : name,
+            protocolVersion: protocolVersion
+        )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)
     }
 
     static func decodeHello(_ payload: Data) -> Hello? {
         try? JSONDecoder().decode(Hello.self, from: payload)
+    }
+
+    static func encodeHelloAck(_ ack: HelloAck) -> Data {
+        encodeFrame(.helloAck, (try? JSONEncoder().encode(ack)) ?? Data())
+    }
+
+    /// nil for an empty (v1) payload or undecodable JSON.
+    static func decodeHelloAck(_ payload: Data) -> HelloAck? {
+        guard !payload.isEmpty else { return nil }
+        return try? JSONDecoder().decode(HelloAck.self, from: payload)
+    }
+
+    static func encodeWindowInventory(_ windows: [WindowInfo]) -> Data {
+        let payload = (try? JSONEncoder().encode(WindowInventory(windows: windows))) ?? Data()
+        return encodeFrame(.windowList, payload)
+    }
+
+    static func decodeWindowInventory(_ payload: Data) -> [WindowInfo]? {
+        (try? JSONDecoder().decode(WindowInventory.self, from: payload))?.windows
+    }
+
+    /// `windowStreamStart` / `windowStreamStop` / `focusWindow` all carry a
+    /// bare little-endian UInt32 stream ID.
+    static func encodeWindowID(_ type: FrameType, windowID: UInt32) -> Data {
+        var payload = Data(capacity: 4)
+        payload.appendLittleEndian(windowID)
+        return encodeFrame(type, payload)
+    }
+
+    static func decodeWindowID(_ payload: Data) -> UInt32? {
+        payload.readLittleEndianUInt32(at: payload.startIndex)
+    }
+
+    static func encodeWindowFormatDescription(
+        windowID: UInt32,
+        kind: FormatKind,
+        data: Data
+    ) -> Data {
+        var payload = Data(capacity: 5 + data.count)
+        payload.appendLittleEndian(windowID)
+        payload.append(kind.rawValue)
+        payload.append(data)
+        return encodeFrame(.windowFormatDescription, payload)
+    }
+
+    static func decodeWindowFormatDescription(
+        _ payload: Data
+    ) -> (windowID: UInt32, kind: FormatKind, data: Data)? {
+        let start = payload.startIndex
+        guard payload.count >= 5,
+              let windowID = payload.readLittleEndianUInt32(at: start),
+              let kind = FormatKind(rawValue: payload[start + 4]) else { return nil }
+        return (windowID, kind, payload.subdata(in: (start + 5)..<payload.endIndex))
+    }
+
+    static func encodeWindowVideoFrame(
+        windowID: UInt32,
+        _ data: Data,
+        isKeyFrame: Bool,
+        sequence: UInt64,
+        timestampNanoseconds: UInt64
+    ) -> Data {
+        var payload = Data(capacity: 21 + data.count)
+        payload.appendLittleEndian(windowID)
+        payload.append(isKeyFrame ? 1 : 0)
+        payload.appendLittleEndian(sequence)
+        payload.appendLittleEndian(timestampNanoseconds)
+        payload.append(data)
+        return encodeFrame(.windowVideoFrame, payload)
+    }
+
+    static func decodeWindowVideoFrame(
+        _ payload: Data
+    ) -> (windowID: UInt32, frame: VideoFrame)? {
+        let start = payload.startIndex
+        guard payload.count >= 4,
+              let windowID = payload.readLittleEndianUInt32(at: start),
+              let frame = decodeVideoFrame(payload.subdata(in: (start + 4)..<payload.endIndex))
+        else { return nil }
+        return (windowID, frame)
+    }
+
+    static func encodeWindowClosed(windowID: UInt32, reason: String? = nil) -> Data {
+        var payload = Data(capacity: 4)
+        payload.appendLittleEndian(windowID)
+        if let reason {
+            payload.append(Data(reason.utf8))
+        }
+        return encodeFrame(.windowClosed, payload)
+    }
+
+    static func decodeWindowClosed(_ payload: Data) -> (windowID: UInt32, reason: String?)? {
+        let start = payload.startIndex
+        guard let windowID = payload.readLittleEndianUInt32(at: start) else { return nil }
+        let reasonData = payload.subdata(in: (start + 4)..<payload.endIndex)
+        let reason = reasonData.isEmpty ? nil : String(data: reasonData, encoding: .utf8)
+        return (windowID, reason)
+    }
+
+    // MARK: v2 per-window input — UInt32 stream ID + the v1 payload
+
+    static func encodeWindowMouseMove(windowID: UInt32, x: UInt16, y: UInt16) -> Data {
+        var payload = Data(capacity: 8)
+        payload.appendLittleEndian(windowID)
+        payload.appendLittleEndian(x)
+        payload.appendLittleEndian(y)
+        return encodeFrame(.windowMouseMove, payload)
+    }
+
+    static func decodeWindowMouseMove(_ payload: Data) -> (windowID: UInt32, x: UInt16, y: UInt16)? {
+        let start = payload.startIndex
+        guard payload.count >= 8,
+              let windowID = payload.readLittleEndianUInt32(at: start),
+              let x = payload.readLittleEndianUInt16(at: start + 4),
+              let y = payload.readLittleEndianUInt16(at: start + 6) else { return nil }
+        return (windowID, x, y)
+    }
+
+    static func encodeWindowMouseButton(
+        _ type: FrameType,
+        windowID: UInt32,
+        button: MouseButton,
+        x: UInt16,
+        y: UInt16
+    ) -> Data {
+        var payload = Data(capacity: 9)
+        payload.appendLittleEndian(windowID)
+        payload.append(button.rawValue)
+        payload.appendLittleEndian(x)
+        payload.appendLittleEndian(y)
+        return encodeFrame(type, payload)
+    }
+
+    static func decodeWindowMouseButton(
+        _ payload: Data
+    ) -> (windowID: UInt32, button: MouseButton, x: UInt16, y: UInt16)? {
+        let start = payload.startIndex
+        guard payload.count >= 9,
+              let windowID = payload.readLittleEndianUInt32(at: start),
+              let button = MouseButton(rawValue: payload[start + 4]),
+              let x = payload.readLittleEndianUInt16(at: start + 5),
+              let y = payload.readLittleEndianUInt16(at: start + 7) else { return nil }
+        return (windowID, button, x, y)
+    }
+
+    static func encodeWindowScroll(
+        windowID: UInt32,
+        x: UInt16,
+        y: UInt16,
+        deltaX: Int16,
+        deltaY: Int16
+    ) -> Data {
+        var payload = Data(capacity: 12)
+        payload.appendLittleEndian(windowID)
+        payload.appendLittleEndian(x)
+        payload.appendLittleEndian(y)
+        payload.appendLittleEndian(UInt16(bitPattern: deltaX))
+        payload.appendLittleEndian(UInt16(bitPattern: deltaY))
+        return encodeFrame(.windowScroll, payload)
+    }
+
+    static func decodeWindowScroll(
+        _ payload: Data
+    ) -> (windowID: UInt32, x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16)? {
+        let start = payload.startIndex
+        guard payload.count >= 12,
+              let windowID = payload.readLittleEndianUInt32(at: start),
+              let x = payload.readLittleEndianUInt16(at: start + 4),
+              let y = payload.readLittleEndianUInt16(at: start + 6),
+              let rawDeltaX = payload.readLittleEndianUInt16(at: start + 8),
+              let rawDeltaY = payload.readLittleEndianUInt16(at: start + 10) else { return nil }
+        return (windowID, x, y, Int16(bitPattern: rawDeltaX), Int16(bitPattern: rawDeltaY))
     }
 
     static func encodeVideoFrame(

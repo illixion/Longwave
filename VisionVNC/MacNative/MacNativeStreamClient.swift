@@ -11,11 +11,18 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     enum Event: Sendable {
-        case connected
+        /// The server accepted the hello. Carries the v2 capability payload,
+        /// or nil when the server is v1 (one anonymous desktop stream, macOS
+        /// virtual keycodes).
+        case connected(MacNativeStreamProtocol.HelloAck?)
         case format(CGSize)
         case firstFrame
         case closed(String?)
         case replaced(String)
+        /// v2: the host's current streamable-window inventory.
+        case inventory([MacNativeStreamProtocol.WindowInfo])
+        /// v2: a subscribed window stream ended on the host side.
+        case windowClosed(UInt32, String?)
         /// The companion's current mouse availability — pushed on connect and
         /// whenever the Mac's toggle or Accessibility grant changes.
         case mouseAvailability(RemoteControlAvailability)
@@ -42,6 +49,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
     private nonisolated(unsafe) var connection: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     private nonisolated(unsafe) var closed = false
+    /// Per-window renderers (v2 multiplexed streams), keyed by stream ID.
+    /// The desktop stream (`desktopStreamID`) always routes to `renderer`.
+    /// Only touched on `queue`.
+    private nonisolated(unsafe) var windowRenderers: [UInt32: MacNativeVideoRenderer] = [:]
 
     init(config: Config, renderer: MacNativeVideoRenderer) {
         self.config = config
@@ -124,6 +135,64 @@ final class MacNativeStreamClient: @unchecked Sendable {
         send(MacNativeStreamProtocol.encodeKeyEvent(.keyUp, keyCode: keyCode, modifiers: modifiers))
     }
 
+    // MARK: - v2 multiplexed streams
+
+    /// Registers (or, with nil, removes) the renderer that receives a window
+    /// stream's format/video frames.
+    func setWindowRenderer(_ renderer: MacNativeVideoRenderer?, for windowID: UInt32) {
+        queue.async { [self] in
+            if let renderer {
+                windowRenderers[windowID] = renderer
+            } else {
+                windowRenderers[windowID] = nil
+            }
+        }
+    }
+
+    func sendWindowStreamStart(windowID: UInt32) {
+        send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStart, windowID: windowID))
+    }
+
+    func sendWindowStreamStop(windowID: UInt32) {
+        send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStop, windowID: windowID))
+    }
+
+    func sendFocusWindow(windowID: UInt32) {
+        send(MacNativeStreamProtocol.encodeWindowID(.focusWindow, windowID: windowID))
+    }
+
+    func sendWindowMouseMove(windowID: UInt32, x: UInt16, y: UInt16) {
+        send(MacNativeStreamProtocol.encodeWindowMouseMove(windowID: windowID, x: x, y: y))
+    }
+
+    func sendWindowMouseDown(
+        windowID: UInt32,
+        button: MacNativeStreamProtocol.MouseButton,
+        x: UInt16,
+        y: UInt16
+    ) {
+        send(MacNativeStreamProtocol.encodeWindowMouseButton(
+            .windowMouseDown, windowID: windowID, button: button, x: x, y: y
+        ))
+    }
+
+    func sendWindowMouseUp(
+        windowID: UInt32,
+        button: MacNativeStreamProtocol.MouseButton,
+        x: UInt16,
+        y: UInt16
+    ) {
+        send(MacNativeStreamProtocol.encodeWindowMouseButton(
+            .windowMouseUp, windowID: windowID, button: button, x: x, y: y
+        ))
+    }
+
+    func sendWindowScroll(windowID: UInt32, x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        send(MacNativeStreamProtocol.encodeWindowScroll(
+            windowID: windowID, x: x, y: y, deltaX: deltaX, deltaY: deltaY
+        ))
+    }
+
     private func send(_ data: Data) {
         connection?.send(content: data, completion: .contentProcessed { [weak self] error in
             if let error {
@@ -154,7 +223,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
         for frame in MacNativeStreamProtocol.drainFrames(&inbound) {
             switch frame.type {
             case MacNativeStreamProtocol.FrameType.helloAck.rawValue:
-                onEvent?(.connected)
+                onEvent?(.connected(MacNativeStreamProtocol.decodeHelloAck(frame.payload)))
             case MacNativeStreamProtocol.FrameType.formatDescription.rawValue:
                 DispatchQueue.main.async { [renderer, payload = frame.payload] in
                     renderer.setFormatDescription(payload)
@@ -164,6 +233,28 @@ final class MacNativeStreamClient: @unchecked Sendable {
                     DispatchQueue.main.async { [renderer] in
                         renderer.enqueue(videoFrame)
                     }
+                }
+            case MacNativeStreamProtocol.FrameType.windowFormatDescription.rawValue:
+                if let format = MacNativeStreamProtocol.decodeWindowFormatDescription(frame.payload),
+                   let target = renderer(for: format.windowID) {
+                    DispatchQueue.main.async {
+                        target.setFormatDescription(format.data, kind: format.kind)
+                    }
+                }
+            case MacNativeStreamProtocol.FrameType.windowVideoFrame.rawValue:
+                if let decoded = MacNativeStreamProtocol.decodeWindowVideoFrame(frame.payload),
+                   let target = renderer(for: decoded.windowID) {
+                    DispatchQueue.main.async {
+                        target.enqueue(decoded.frame)
+                    }
+                }
+            case MacNativeStreamProtocol.FrameType.windowList.rawValue:
+                if let windows = MacNativeStreamProtocol.decodeWindowInventory(frame.payload) {
+                    onEvent?(.inventory(windows))
+                }
+            case MacNativeStreamProtocol.FrameType.windowClosed.rawValue:
+                if let closed = MacNativeStreamProtocol.decodeWindowClosed(frame.payload) {
+                    onEvent?(.windowClosed(closed.windowID, closed.reason))
                 }
             case MacNativeStreamProtocol.FrameType.mouseStatus.rawValue:
                 onEvent?(.mouseAvailability(Self.decodeRemoteControlStatus(frame.payload)))
@@ -180,6 +271,15 @@ final class MacNativeStreamClient: @unchecked Sendable {
                 break
             }
         }
+    }
+
+    /// The renderer for a multiplexed stream — the shared desktop renderer
+    /// for `desktopStreamID`, a registered per-window renderer otherwise.
+    private func renderer(for windowID: UInt32) -> MacNativeVideoRenderer? {
+        if windowID == MacNativeStreamProtocol.desktopStreamID {
+            return renderer
+        }
+        return windowRenderers[windowID]
     }
 
     private func emitClosed(_ message: String?) {

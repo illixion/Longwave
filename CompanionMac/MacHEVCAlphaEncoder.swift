@@ -14,6 +14,8 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
     private let bitrate: Int
     private let frameRate: Int
     private nonisolated(unsafe) var session: VTCompressionSession?
+    private nonisolated(unsafe) var sessionWidth = 0
+    private nonisolated(unsafe) var sessionHeight = 0
     private nonisolated(unsafe) var lastFormatDescription: Data?
     private nonisolated(unsafe) var sequence: UInt64 = 0
 
@@ -24,11 +26,19 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
 
     nonisolated func encode(_ sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        // A compression session has fixed dimensions; a resized source (a
+        // per-window stream whose window was resized) needs a fresh session.
+        // The new session's format description differs, so the receiver gets
+        // a new format frame and flushes before the next key frame arrives.
+        if let existing = session, sessionWidth != width || sessionHeight != height {
+            VTCompressionSessionCompleteFrames(existing, untilPresentationTimeStamp: .invalid)
+            VTCompressionSessionInvalidate(existing)
+            session = nil
+        }
         if session == nil {
-            createSession(
-                width: CVPixelBufferGetWidth(pixelBuffer),
-                height: CVPixelBufferGetHeight(pixelBuffer)
-            )
+            createSession(width: width, height: height)
         }
         guard let session else { return }
 
@@ -117,6 +127,8 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
             return
         }
         session = newSession
+        sessionWidth = width
+        sessionHeight = height
     }
 
     private nonisolated func emit(_ sampleBuffer: CMSampleBuffer) {

@@ -248,9 +248,11 @@ struct ConnectionListView: View {
         #if os(visionOS)
         macNativeManager.prepare(for: connection)
         macNativeManager.liveEnabled = connection.nativeScreenEnabled
-        if connection.nativeScreenEnabled {
-            macNativeManager.connect(to: connection)
-        }
+        // Connect even with Screen off: a v2 host publishes its window
+        // inventory over the same session, so the Native window can act as
+        // the per-window controller. (Against a v1 host with Screen off the
+        // manager tears the session back down after the handshake.)
+        macNativeManager.connect(to: connection)
         audioManager.prepareTarget(
             hostname: connection.hostname,
             port: AudioStreamProtocol.defaultPort,

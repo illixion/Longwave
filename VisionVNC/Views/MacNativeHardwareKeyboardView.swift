@@ -81,10 +81,10 @@ final class MacNativeKeyCaptureView: UIView {
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
         for press in presses {
-            guard let key = press.key, let screenManager, MacKeyCodeMap.keyCode(for: key.keyCode) != nil else { continue }
+            guard let key = press.key, let screenManager,
+                  let keyCode = Self.wireKeyCode(for: key, space: screenManager.keyCodeSpace) else { continue }
             handled = true
             if screenManager.keyboardShortcutsAvailability == .available {
-                let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode)!
                 screenManager.sendKeyDown(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
             } else if key.keyCode == .keyboardDeleteOrBackspace {
                 screenManager.sendInjectBackspace(1)
@@ -102,14 +102,29 @@ final class MacNativeKeyCaptureView: UIView {
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
         for press in presses {
-            guard let key = press.key, let screenManager, MacKeyCodeMap.keyCode(for: key.keyCode) != nil else { continue }
+            guard let key = press.key, let screenManager,
+                  let keyCode = Self.wireKeyCode(for: key, space: screenManager.keyCodeSpace) else { continue }
             handled = true
             guard screenManager.keyboardShortcutsAvailability == .available else { continue }
-            let keyCode = MacKeyCodeMap.keyCode(for: key.keyCode)!
             screenManager.sendKeyUp(keyCode: keyCode, modifiers: MacKeyCodeMap.modifiers(for: key.modifierFlags))
         }
         if !handled {
             super.pressesEnded(presses, with: event)
+        }
+    }
+
+    /// The keycode to put on the wire for this physical key, in the
+    /// server-negotiated key-code space: the kVK mapping for macOS hosts,
+    /// the raw HID usage for hosts that asked for `hidUsage` (the map lookup
+    /// still gates which physical keys we forward at all).
+    private static func wireKeyCode(
+        for key: UIKey,
+        space: MacNativeStreamProtocol.KeyCodeSpace
+    ) -> UInt16? {
+        guard let macCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { return nil }
+        switch space {
+        case .macVirtual: return macCode
+        case .hidUsage: return UInt16(exactly: key.keyCode.rawValue)
         }
     }
 

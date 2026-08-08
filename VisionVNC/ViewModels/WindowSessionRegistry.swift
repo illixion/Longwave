@@ -14,6 +14,13 @@ enum MacNativeWindowID: Int, Codable, Hashable {
     case shared = 0
 }
 
+/// Value key for the per-window (Unity-style) Native scenes — one visionOS
+/// window per streamed host window, keyed by the host's window ID so
+/// repeated opens of the same host window reactivate its one scene.
+struct MacNativeWindowStreamID: Codable, Hashable {
+    let windowID: UInt32
+}
+
 /// Tracks which of the app's windows are currently open and whether each is
 /// in the user's current room, so the Sessions tab can "summon" a window back
 /// to the user. On visionOS a window can be snapped in another room and become

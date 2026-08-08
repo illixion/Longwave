@@ -125,6 +125,66 @@ final class MacNativeInputService {
         event.post(tap: .cghidEventTap)
     }
 
+    // MARK: - Window raising (per-window streams)
+
+    /// Brings a streamed window to the front so a click or key event routes
+    /// to it rather than to whatever occludes it. Activation + an AX raise
+    /// (matched by frame, then title — there's no public CGWindowID→AXUIElement
+    /// bridge), best-effort: worst case the click still lands where the user
+    /// aimed, just possibly on an occluding window.
+    func raiseWindow(_ target: MacNativeWindowTarget) {
+        guard accessibilityTrusted, target.processID > 0 else { return }
+        NSRunningApplication(processIdentifier: target.processID)?
+            .activate(options: [])
+
+        let app = AXUIElementCreateApplication(target.processID)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            app,
+            kAXWindowsAttribute as CFString,
+            &windowsRef
+        ) == .success, let windows = windowsRef as? [AXUIElement] else { return }
+
+        var frameMatch: AXUIElement?
+        var titleMatch: AXUIElement?
+        for window in windows {
+            if let frame = Self.axFrame(of: window),
+               abs(frame.origin.x - target.frame.origin.x) < 2,
+               abs(frame.origin.y - target.frame.origin.y) < 2,
+               abs(frame.width - target.frame.width) < 2,
+               abs(frame.height - target.frame.height) < 2 {
+                frameMatch = window
+                break
+            }
+            if titleMatch == nil, !target.title.isEmpty,
+               Self.axTitle(of: window) == target.title {
+                titleMatch = window
+            }
+        }
+        guard let match = frameMatch ?? titleMatch else { return }
+        AXUIElementPerformAction(match, kAXRaiseAction as CFString)
+    }
+
+    private static func axFrame(of window: AXUIElement) -> CGRect? {
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success
+        else { return nil }
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionRef as! AXValue, .cgPoint, &position),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else { return nil }
+        return CGRect(origin: position, size: size)
+    }
+
+    private static func axTitle(of window: AXUIElement) -> String? {
+        var titleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success
+        else { return nil }
+        return titleRef as? String
+    }
+
     func keyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
         guard isKeyboardShortcutsAvailable else { return }
         postKey(keyCode: CGKeyCode(keyCode), isDown: true, modifiers: modifiers.cgEventFlags)

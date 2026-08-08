@@ -3,6 +3,34 @@ import Foundation
 import AVFoundation
 import UIKit
 
+/// One subscribed per-window (Unity-style) stream: its own display layer and
+/// renderer, plus the live metadata its visionOS scene renders from.
+@Observable
+final class MacNativeWindowSession: Identifiable {
+    let windowID: UInt32
+    let displayLayer: AVSampleBufferDisplayLayer
+    let renderer: MacNativeVideoRenderer
+
+    var id: UInt32 { windowID }
+    /// Stream pixel size — the gesture-translation source of truth.
+    var streamSize: CGSize = .zero
+    var hasFrame = false
+    /// Latest inventory entry for this window (title/app/focus updates).
+    var info: MacNativeStreamProtocol.WindowInfo?
+    /// Set when the host ended the stream — the scene dismisses itself.
+    var closedReason: String?
+
+    init(windowID: UInt32) {
+        self.windowID = windowID
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.backgroundColor = UIColor.clear.cgColor
+        layer.isOpaque = false
+        self.displayLayer = layer
+        self.renderer = MacNativeVideoRenderer(displayLayer: layer)
+    }
+}
+
 @Observable
 final class MacNativeStreamManager {
     enum State: Equatable {
@@ -36,6 +64,24 @@ final class MacNativeStreamManager {
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
     private(set) var streamSize: CGSize = .zero
     private(set) var title = "Native"
+
+    // MARK: - v2 capabilities & per-window streams
+
+    /// The server's v2 capability payload; nil while disconnected or when the
+    /// server is v1.
+    private(set) var serverAck: MacNativeStreamProtocol.HelloAck?
+    /// The host's current streamable windows (v2 servers only).
+    private(set) var windowInventory: [MacNativeStreamProtocol.WindowInfo] = []
+    /// Subscribed per-window streams, keyed by host window ID. Each entry
+    /// backs one ornament-free visionOS scene.
+    private(set) var windowSessions: [UInt32: MacNativeWindowSession] = [:]
+
+    var supportsWindowStreams: Bool { serverAck?.supportsWindowStreams ?? false }
+    var keyCodeSpace: MacNativeStreamProtocol.KeyCodeSpace {
+        serverAck?.keyCodeSpace ?? .macVirtual
+    }
+    /// "macOS"/"windows" — for display copy only.
+    var serverPlatform: String { serverAck?.platform ?? "macOS" }
     private(set) var mouseAvailability: RemoteControlAvailability = .unknown
     /// Full keycode + modifier keyboard control. When this isn't `.available`,
     /// plain typing still tries the text-only fallback below — see
@@ -83,6 +129,7 @@ final class MacNativeStreamManager {
     }
 
     private var client: MacNativeStreamClient?
+    private var renderer: MacNativeVideoRenderer?
     private var activeConnectionID: UUID?
     /// Text-only typing fallback — the same channel/token VNC uses, opened
     /// alongside Screen so plain typing works even with keyboard shortcuts
@@ -111,6 +158,7 @@ final class MacNativeStreamManager {
         displayLayer = layer
 
         let renderer = MacNativeVideoRenderer(displayLayer: layer)
+        self.renderer = renderer
         let client = MacNativeStreamClient(
             config: .init(
                 host: connection.hostname,
@@ -175,8 +223,125 @@ final class MacNativeStreamManager {
     /// session and Screen doesn't try to resume on a later relaunch.
     func forget() {
         teardown()
+        for session in windowSessions.values {
+            session.renderer.reset()
+        }
+        windowSessions = [:]
         connection = nil
         liveEnabled = false
+    }
+
+    /// Connects the session if a target is known and nothing is live yet —
+    /// used on the Native window's appearance so window streaming and the
+    /// inventory work with the Screen (desktop) toggle off. Against a v1
+    /// server with Screen off, the ack handler tears the session back down.
+    func ensureSessionConnected() {
+        guard !isEnabled, let connection else { return }
+        connect(to: connection)
+    }
+
+    /// The Native window's Screen toggle changed. On a live v2 session this
+    /// flips the desktop-stream subscription without touching the connection
+    /// (per-window streams and the inventory keep running); otherwise it
+    /// falls back to v1 behavior — connect or tear down the whole socket.
+    func desktopToggleChanged(_ on: Bool) {
+        if isEnabled, serverAck != nil {
+            if on {
+                client?.sendWindowStreamStart(windowID: MacNativeStreamProtocol.desktopStreamID)
+            } else {
+                client?.sendWindowStreamStop(windowID: MacNativeStreamProtocol.desktopStreamID)
+                renderer?.reset()
+            }
+            if state == .streaming {
+                state = .connected
+            }
+        } else if on {
+            if let connection {
+                connect(to: connection)
+            }
+        } else if serverAck == nil {
+            disconnect()
+        }
+    }
+
+    // MARK: - Per-window (Unity-style) streams
+
+    /// Subscribes to a host window's stream, creating (or reviving) the
+    /// session its visionOS scene renders from. Called by the scene's
+    /// `onAppear`, so a scene that visionOS re-materializes after a transient
+    /// hide re-requests its stream by itself.
+    func openWindowStream(_ windowID: UInt32) {
+        if let session = windowSessions[windowID] {
+            session.closedReason = nil
+            client?.setWindowRenderer(session.renderer, for: windowID)
+            client?.sendWindowStreamStart(windowID: windowID)
+            return
+        }
+        let session = MacNativeWindowSession(windowID: windowID)
+        session.info = windowInventory.first { $0.id == windowID }
+        session.renderer.onFormat = { [weak session] size in
+            Task { @MainActor [weak session] in
+                session?.streamSize = size
+            }
+        }
+        session.renderer.onFirstFrame = { [weak session] in
+            Task { @MainActor [weak session] in
+                session?.hasFrame = true
+            }
+        }
+        session.renderer.onError = { [weak session] message in
+            Task { @MainActor [weak session] in
+                session?.closedReason = message
+            }
+        }
+        windowSessions[windowID] = session
+        client?.setWindowRenderer(session.renderer, for: windowID)
+        client?.sendWindowStreamStart(windowID: windowID)
+    }
+
+    /// Unsubscribes a window stream and forgets its session — called when
+    /// its visionOS scene goes away.
+    func closeWindowStream(_ windowID: UInt32) {
+        guard let session = windowSessions.removeValue(forKey: windowID) else { return }
+        client?.setWindowRenderer(nil, for: windowID)
+        client?.sendWindowStreamStop(windowID: windowID)
+        session.renderer.reset()
+    }
+
+    func sendFocusWindow(windowID: UInt32) {
+        client?.sendFocusWindow(windowID: windowID)
+    }
+
+    func sendWindowMouseMove(windowID: UInt32, x: UInt16, y: UInt16) {
+        client?.sendWindowMouseMove(windowID: windowID, x: x, y: y)
+    }
+
+    func sendWindowMouseDown(
+        windowID: UInt32,
+        button: MacNativeStreamProtocol.MouseButton,
+        x: UInt16,
+        y: UInt16
+    ) {
+        client?.sendWindowMouseDown(windowID: windowID, button: button, x: x, y: y)
+    }
+
+    func sendWindowMouseUp(
+        windowID: UInt32,
+        button: MacNativeStreamProtocol.MouseButton,
+        x: UInt16,
+        y: UInt16
+    ) {
+        client?.sendWindowMouseUp(windowID: windowID, button: button, x: x, y: y)
+    }
+
+    func sendWindowScroll(windowID: UInt32, x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        client?.sendWindowScroll(windowID: windowID, x: x, y: y, deltaX: deltaX, deltaY: deltaY)
+    }
+
+    private func markAllWindowSessionsClosed(_ reason: String) {
+        for session in windowSessions.values {
+            session.closedReason = reason
+        }
     }
 
     private func teardown() {
@@ -188,7 +353,10 @@ final class MacNativeStreamManager {
         injectClient = nil
         oldInjectClient?.close()
         displayLayer = nil
+        renderer = nil
         streamSize = .zero
+        serverAck = nil
+        windowInventory = []
         mouseAvailability = .unknown
         keyboardShortcutsAvailability = .unknown
         textInputAvailable = false
@@ -279,8 +447,36 @@ final class MacNativeStreamManager {
     private func handle(_ event: MacNativeStreamClient.Event, connectionID: UUID) {
         guard activeConnectionID == connectionID else { return }
         switch event {
-        case .connected:
+        case .connected(let ack):
+            serverAck = ack
             state = .connected
+            if let ack {
+                // v2 session: streams are subscription-based. Desktop rides
+                // the Screen toggle; open per-window scenes resubscribe so a
+                // reconnect resumes them.
+                if liveEnabled {
+                    client?.sendWindowStreamStart(
+                        windowID: MacNativeStreamProtocol.desktopStreamID
+                    )
+                }
+                if ack.supportsWindowStreams {
+                    for (windowID, session) in windowSessions {
+                        session.closedReason = nil
+                        client?.setWindowRenderer(session.renderer, for: windowID)
+                        client?.sendWindowStreamStart(windowID: windowID)
+                    }
+                } else {
+                    markAllWindowSessionsClosed("This host doesn't support per-window streaming.")
+                }
+            } else {
+                // v1 server: it pushes the desktop stream unconditionally and
+                // knows nothing of window streams. If the Screen toggle is
+                // off we only connected hoping for v2 — drop the session.
+                markAllWindowSessionsClosed("This host doesn't support per-window streaming.")
+                if !liveEnabled {
+                    teardown()
+                }
+            }
         case .format(let size):
             streamSize = size
         case .firstFrame:
@@ -289,6 +485,15 @@ final class MacNativeStreamManager {
             mouseAvailability = Self.mapAvailability(availability)
         case .keyboardAvailability(let availability):
             keyboardShortcutsAvailability = Self.mapAvailability(availability)
+        case .inventory(let windows):
+            windowInventory = windows
+            for session in windowSessions.values {
+                if let info = windows.first(where: { $0.id == session.windowID }) {
+                    session.info = info
+                }
+            }
+        case .windowClosed(let windowID, let reason):
+            windowSessions[windowID]?.closedReason = reason ?? "The window closed on the host."
         case .replaced(let deviceName):
             state = .disconnected("Replaced by \(deviceName).")
             activeConnectionID = nil

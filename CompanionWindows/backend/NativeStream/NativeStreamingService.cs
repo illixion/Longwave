@@ -189,16 +189,53 @@ public sealed class NativeStreamingService : BackgroundService
         {
             _inventoryTimer?.Dispose();
             _inventoryTimer = null;
-            foreach (var stream in _streams.Values) stream.Dispose();
-            _streams.Clear();
+            ReleaseGraphicsResources();
             _server?.Dispose();
             _server = null;
-            _device?.Dispose();
-            _device = null;
-            _winrtDevice = null;
             _connectedDevice = null;
         }
         StatusChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Drops every graphics resource the session built. Disposing the streams is
+    /// not enough on its own: D3D11 defers destruction while the immediate
+    /// context still references the textures that were last copied, so the device
+    /// holds its allocations indefinitely — measured at ~150 MB of GPU memory and
+    /// ~290 MB of private bytes still resident minutes after a viewer left, on a
+    /// host whose idle cost is 17 MB. Clear the context, then let the device go;
+    /// the next subscription lazily builds a fresh one.
+    /// Caller must hold <see cref="_gate"/>.
+    /// </summary>
+    private void ReleaseGraphicsResources()
+    {
+        foreach (var stream in _streams.Values) stream.Dispose();
+        _streams.Clear();
+
+        if (_device is not null)
+        {
+            try
+            {
+                // Vortice caches this wrapper on the device, so it must not be
+                // disposed here — the device owns it and releases it below.
+                var context = _device.ImmediateContext;
+                context.ClearState();
+                context.Flush();
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Clearing the device context during teardown failed");
+            }
+        }
+
+        // Dispose the WinRT wrapper before the D3D device: it holds its own
+        // reference to the DXGI device, so merely dropping the field leaves the
+        // real device alive until a finalizer happens to run — which showed up
+        // as GPU memory staying at ~152 MB after every stream had stopped.
+        (_winrtDevice as IDisposable)?.Dispose();
+        _winrtDevice = null;
+        _device?.Dispose();
+        _device = null;
     }
 
     private void OnClientActivated(string deviceName, string? replaced)
@@ -223,9 +260,11 @@ public sealed class NativeStreamingService : BackgroundService
             _connectedDevice = null;
             _inventoryTimer?.Dispose();
             _inventoryTimer = null;
-            foreach (var stream in _streams.Values) stream.Dispose();
-            _streams.Clear();
+            ReleaseGraphicsResources();
         }
+        // An idle host should look idle: hand back the heap the session grew,
+        // not just the GPU resources released above.
+        TrimHeap();
         StatusChanged?.Invoke();
     }
 
@@ -356,11 +395,41 @@ public sealed class NativeStreamingService : BackgroundService
     private void StopStream(uint windowId)
     {
         ActiveStream? stream;
+        bool nowIdle;
         lock (_gate)
         {
             if (!_streams.Remove(windowId, out stream)) return;
+            nowIdle = _streams.Count == 0;
         }
         stream!.Dispose();
+
+        // A viewer that stays connected with nothing subscribed — Screen off,
+        // browsing the window picker — is the common idle case, and it held
+        // ~366 MB of private bytes and 152 MB of GPU memory before this. The
+        // device is lazily rebuilt on the next subscription.
+        if (nowIdle) ReleaseIdleGraphicsResources();
+    }
+
+    /// <summary>Releases the shared device once nothing is being captured.</summary>
+    private void ReleaseIdleGraphicsResources()
+    {
+        lock (_gate)
+        {
+            if (_streams.Count > 0) return; // raced with a new subscription
+            ReleaseGraphicsResources();
+        }
+        TrimHeap();
+    }
+
+    /// <summary>
+    /// Collects twice around a finalizer wait: the WinRT device wrappers are
+    /// finalizable, and the second pass is what actually reclaims them.
+    /// </summary>
+    private static void TrimHeap()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
     }
 
     private void OnCaptureFrame(ActiveStream stream, ID3D11Texture2D texture, int width, int height, long qpc)

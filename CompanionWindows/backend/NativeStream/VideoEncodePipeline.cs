@@ -667,5 +667,9 @@ public sealed class VideoEncodePipeline : IDisposable
         _encoder.Dispose();
         _deviceManager.Dispose();
         _cancel.Dispose();
+        // Balance the MFStartup in the constructor — Media Foundation refcounts
+        // these, and an unmatched startup keeps its work queues alive for the
+        // life of the process.
+        try { MediaFactory.MFShutdown(); } catch { }
     }
 }

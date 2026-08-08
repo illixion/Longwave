@@ -8,9 +8,6 @@ struct SettingsView: View {
     @AppStorage(ConnectionDefaults.Keys.vncTouchMode) private var vncTouchModeRaw = TouchMode.relative.rawValue
     @AppStorage(ConnectionDefaults.Keys.vncPort) private var vncPort = ConnectionType.vnc.defaultPort
 
-    // Audio
-    @AppStorage(ConnectionDefaults.Keys.audioPort) private var audioPort = ConnectionType.audio.defaultPort
-
     #if os(visionOS)
     // Terminal (applies live to open terminal windows, unlike the
     // new-connection defaults above)
@@ -63,10 +60,6 @@ struct SettingsView: View {
                         }
                     }
                     portField("Port", value: $vncPort)
-                }
-
-                Section("Audio Stream") {
-                    portField("Port", value: $audioPort)
                 }
 
                 #if os(visionOS)

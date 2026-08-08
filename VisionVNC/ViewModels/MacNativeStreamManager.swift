@@ -24,7 +24,7 @@ final class MacNativeStreamManager {
     private(set) var state: State = .disconnected(nil)
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
     private(set) var streamSize: CGSize = .zero
-    private(set) var title = "Native Mac Stream"
+    private(set) var title = "Native Screen"
 
     private var client: MacNativeStreamClient?
     private var activeConnectionID: UUID?
@@ -46,8 +46,8 @@ final class MacNativeStreamManager {
         let client = MacNativeStreamClient(
             config: .init(
                 host: connection.hostname,
-                port: UInt16(clamping: connection.port),
-                token: connection.audioToken,
+                port: MacNativeStreamProtocol.defaultPort,
+                token: connection.companionToken,
                 deviceName: UIDevice.current.name
             ),
             renderer: renderer

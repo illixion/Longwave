@@ -4,7 +4,7 @@ import SwiftUI
 /// **defaults** plus all the **host** (companion) configuration in one tabbed
 /// surface, so there's one place for everything instead of a separate sidebar
 /// "Settings" and a separate host window. Reuses `SettingsView` (the client
-/// defaults) and the companion's panes (`AudioPane` … `KeyboardPane`) directly —
+/// defaults) and the companion's panes (`NativePane` … `KeyboardPane`) directly —
 /// no duplicated forms.
 struct MacSettingsView: View {
     @Bindable var controller: AudioStreamerController
@@ -14,10 +14,8 @@ struct MacSettingsView: View {
         TabView {
             SettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
-            AudioPane(controller: controller)
-                .tabItem { Label("Audio", systemImage: "speaker.wave.2") }
-            MacStreamingPane(controller: controller.macNativeStreaming)
-                .tabItem { Label("Mac Stream", systemImage: "macwindow.on.rectangle") }
+            NativePane(controller: controller)
+                .tabItem { Label("Native", systemImage: "macwindow.on.rectangle") }
             AccessTokenPane(controller: controller)
                 .tabItem { Label("Token", systemImage: "key") }
             BroadcastPane(broadcastServer: broadcastServer)

@@ -7,7 +7,9 @@ import os
 final class AudioStreamerController {
 
     let port: UInt16 = AudioStreamProtocol.defaultPort
-    let macNativeStreaming = MacNativeStreamingController()
+    // `var`, not `let`: `NativePane` binds through it as `$controller.macNativeStreaming.enabled`,
+    // which needs a WritableKeyPath — a `let` property only produces a plain KeyPath.
+    var macNativeStreaming = MacNativeStreamingController()
 
     /// Remembers whether the user had streaming on, so the menu bar app
     /// resumes it automatically on the next launch (e.g. after login).

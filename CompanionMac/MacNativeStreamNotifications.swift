@@ -15,7 +15,7 @@ final class MacNativeStreamNotifications: NSObject, UNUserNotificationCenterDele
 
     func connected(deviceName: String, replacedDeviceName: String?) {
         let content = UNMutableNotificationContent()
-        content.title = "Native Mac Stream Connected"
+        content.title = "Native Screen Connected"
         if let replacedDeviceName {
             content.body = "\(deviceName) connected and replaced \(replacedDeviceName)."
         } else {

@@ -153,6 +153,9 @@ final class WindowSessionRegistry {
         kinds.append(WindowKind(id: "moonlight-stream", title: "Game Stream", systemImage: "gamecontroller"))
         #endif
         kinds.append(WindowKind(id: "audio-stream", title: "Audio Stream", systemImage: "hifispeaker"))
+        #if os(visionOS)
+        kinds.append(WindowKind(id: "mac-native-stream", title: "Native Screen", systemImage: "macwindow.on.rectangle"))
+        #endif
         kinds.append(WindowKind(id: "keyboard", title: "Keyboard", systemImage: "keyboard"))
         #if MOONLIGHT_ENABLED
         kinds.append(WindowKind(id: "moonlight-keyboard", title: "Game Keyboard", systemImage: "keyboard"))

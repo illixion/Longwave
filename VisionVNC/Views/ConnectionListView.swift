@@ -27,9 +27,7 @@ struct ConnectionListView: View {
 
     private var visibleConnections: [SavedConnection] {
         #if os(macOS)
-        savedConnections.filter {
-            $0.connectionType != .ssh && $0.connectionType != .macNative
-        }
+        savedConnections.filter { $0.connectionType != .ssh }
         #else
         savedConnections
         #endif
@@ -158,9 +156,15 @@ struct ConnectionListView: View {
                         .foregroundStyle(.secondary)
                     Text("·")
                         .foregroundStyle(.tertiary)
-                    Text("\(connection.hostname):\(connection.port)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if connection.connectionType == .native {
+                        Text(connection.hostname)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(connection.hostname):\(connection.port)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 #if MOONLIGHT_ENABLED
@@ -170,6 +174,12 @@ struct ConnectionListView: View {
                         .foregroundStyle(.tertiary)
                 }
                 #endif
+
+                if connection.connectionType == .native {
+                    Text(nativeSummary(connection))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
 
                 if let date = connection.lastConnected {
                     Text("Last connected: \(date, style: .relative) ago")
@@ -194,20 +204,24 @@ struct ConnectionListView: View {
         }
     }
 
+    /// "Screen + Audio" / "Screen only" / "Audio only" for the list row.
+    private func nativeSummary(_ connection: SavedConnection) -> String {
+        switch (connection.nativeScreenEnabled, connection.nativeAudioEnabled) {
+        case (true, true): "Screen + Audio"
+        case (true, false): "Screen only"
+        case (false, true): "Audio only"
+        case (false, false): "Nothing enabled"
+        }
+    }
+
     private func connectTo(_ connection: SavedConnection) {
         connection.lastConnected = Date()
 
         switch connection.connectionType {
         case .vnc:
             connectVNC(connection)
-        #if os(visionOS)
-        case .macNative:
-            macNativeManager.connect(to: connection)
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-        #else
-        case .macNative:
-            break
-        #endif
+        case .native:
+            connectNative(connection)
         #if os(visionOS)
         case .ssh:
             connectSSH(connection)
@@ -219,7 +233,21 @@ struct ConnectionListView: View {
         case .moonlight:
             connectMoonlight(connection)
         #endif
-        case .audio:
+        }
+    }
+
+    /// Starts whichever of Screen/Audio this Native connection has enabled —
+    /// both share the same host and token, so nothing else differs between
+    /// them. Screen has no macOS receiver yet, so it's a no-op there even if
+    /// the row's flag is set (e.g. a connection created on visionOS).
+    private func connectNative(_ connection: SavedConnection) {
+        #if os(visionOS)
+        if connection.nativeScreenEnabled {
+            macNativeManager.connect(to: connection)
+            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        }
+        #endif
+        if connection.nativeAudioEnabled {
             connectAudio(connection)
         }
     }
@@ -262,9 +290,9 @@ struct ConnectionListView: View {
         // uses a LAN host), else a saved audio connection on the same host. It
         // drives both the companion audio stream and the text-injection channel.
         let companionConnection: SavedConnection? = connection.linkedCompanionConnectionID.flatMap { linkedID in
-            savedConnections.first { $0.connectionType == .audio && $0.id == linkedID }
+            savedConnections.first { $0.connectionType == .native && $0.nativeAudioEnabled && $0.id == linkedID }
         } ?? savedConnections.first {
-            $0.connectionType == .audio && $0.hostname == connection.hostname
+            $0.connectionType == .native && $0.nativeAudioEnabled && $0.hostname == connection.hostname
         }
 
         // Companion audio is skipped for trackpad-only sessions (no video to
@@ -273,8 +301,8 @@ struct ConnectionListView: View {
         let audioCompanion = (connection.quality == .trackpadOnly ? nil : companionConnection).map {
             VNCConnectionManager.AudioCompanion(
                 hostname: $0.hostname,
-                port: UInt16($0.port),
-                token: $0.audioToken,
+                port: AudioStreamProtocol.defaultPort,
+                token: $0.companionToken,
                 title: $0.displayName,
                 lowLatency: $0.lowLatencyAudio
             )
@@ -283,7 +311,7 @@ struct ConnectionListView: View {
             VNCConnectionManager.CompanionInject(
                 hostname: $0.hostname,
                 port: CompanionInjectProtocol.defaultPort,
-                token: $0.audioToken
+                token: $0.companionToken
             )
         }
 
@@ -326,8 +354,8 @@ struct ConnectionListView: View {
     private func connectAudio(_ connection: SavedConnection) {
         audioManager.connect(
             hostname: connection.hostname,
-            port: UInt16(connection.port),
-            token: connection.audioToken,
+            port: AudioStreamProtocol.defaultPort,
+            token: connection.companionToken,
             title: connection.displayName,
             lowLatency: connection.lowLatencyAudio
         )

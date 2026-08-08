@@ -9,7 +9,6 @@ enum ConnectionDefaults {
         static let vncQuality = "default_vnc_quality"
         static let vncTouchMode = "default_vnc_touch_mode"
         static let vncPort = "default_vnc_port"
-        static let audioPort = "default_audio_port"
         static let terminalFontSize = "default_terminal_font_size"
         static let terminalQuickKeys = "terminal_quick_keys"
         /// Whether the keyboard windows show the gaze scroll pad below the keys.
@@ -53,12 +52,11 @@ enum ConnectionDefaults {
         let stored: Int
         switch type {
         case .vnc: stored = defaults.integer(forKey: Keys.vncPort)
-        case .macNative: stored = 0
+        case .native: stored = 0  // Screen/Audio each dial a fixed protocol port, never user-edited
         case .ssh: stored = 0  // no Settings override; falls back to port 22
         #if MOONLIGHT_ENABLED
         case .moonlight: stored = defaults.integer(forKey: Keys.moonlightPort)
         #endif
-        case .audio: stored = defaults.integer(forKey: Keys.audioPort)
         }
         return stored > 0 ? stored : type.defaultPort
     }

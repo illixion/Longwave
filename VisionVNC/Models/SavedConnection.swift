@@ -6,46 +6,50 @@ import RoyalVNCKit
 
 enum ConnectionType: String, CaseIterable, Codable {
     case vnc
-    case macNative
+    /// Streams from the VisionVNC Companion menu bar app: Screen (native
+    /// window compositing) and Audio (system audio), toggled independently
+    /// but sharing one host + token. Replaces the old, separate `macNative`
+    /// and `audio` cases — see `SavedConnection.connectionType`'s getter for
+    /// how existing rows using those raw values migrate.
+    case native
     case ssh
     #if MOONLIGHT_ENABLED
     case moonlight
     #endif
-    case audio
 
     var label: String {
         switch self {
         case .vnc: "VNC"
-        case .macNative: "Native Mac"
+        case .native: "Native"
         case .ssh: "SSH"
         #if MOONLIGHT_ENABLED
         case .moonlight: "Moonlight"
         #endif
-        case .audio: "Audio"
         }
     }
 
     var systemImage: String {
         switch self {
         case .vnc: "display"
-        case .macNative: "macwindow.on.rectangle"
+        case .native: "macwindow.on.rectangle"
         case .ssh: "terminal"
         #if MOONLIGHT_ENABLED
         case .moonlight: "gamecontroller"
         #endif
-        case .audio: "speaker.wave.2"
         }
     }
 
+    /// Nominal only for `.native`: Screen and Audio each dial their own
+    /// fixed Companion port (`MacNativeStreamProtocol`/`AudioStreamProtocol`
+    /// `.defaultPort`), never a user-edited value.
     var defaultPort: Int {
         switch self {
         case .vnc: 5900
-        case .macNative: Int(MacNativeStreamProtocol.defaultPort)
+        case .native: Int(MacNativeStreamProtocol.defaultPort)
         case .ssh: 22
         #if MOONLIGHT_ENABLED
         case .moonlight: 47989
         #endif
-        case .audio: Int(AudioStreamProtocol.defaultPort)
         }
     }
 }
@@ -322,7 +326,16 @@ final class SavedConnection {
     var connectionTypeRawValue: String = ConnectionType.vnc.rawValue
 
     var connectionType: ConnectionType {
-        get { ConnectionType(rawValue: connectionTypeRawValue) ?? .vnc }
+        get {
+            // Rows saved before Screen/Audio merged into one `.native` type
+            // still carry the old "macNative"/"audio" raw values on disk;
+            // both read back as `.native` (see nativeScreenEnabled/
+            // nativeAudioEnabled below for how the toggle infers from this).
+            if connectionTypeRawValue == "macNative" || connectionTypeRawValue == "audio" {
+                return .native
+            }
+            return ConnectionType(rawValue: connectionTypeRawValue) ?? .vnc
+        }
         set { connectionTypeRawValue = newValue.rawValue }
     }
 
@@ -342,12 +355,32 @@ final class SavedConnection {
     /// for lightweight migration. Ignored on visionOS (no system cursor).
     var hideLocalCursor: Bool = false
 
-    // MARK: Companion-specific
+    // MARK: Companion-specific (Native: Screen + Audio)
 
-    /// Static auth token presented to the VisionVNC Companion for audio,
-    /// native Mac streaming, and other domain-separated services. Default
-    /// empty so lightweight migration of existing stores is safe.
-    var audioToken: String = ""
+    /// Static auth token presented to the VisionVNC Companion, shared by both
+    /// the Screen and Audio toggles of a `.native` connection. Renamed from
+    /// `audioToken`; `originalName` keeps lightweight migration working.
+    @Attribute(originalName: "audioToken")
+    var companionToken: String = ""
+
+    /// Backing storage for `nativeScreenEnabled`/`nativeAudioEnabled` — nil
+    /// means "not explicitly set", so a legacy pre-merge row (saved as the
+    /// old `macNative` or `audio` type) infers its one enabled toggle from
+    /// which type it was until the connection is next edited and saved.
+    var nativeScreenEnabledStorage: Bool?
+    var nativeAudioEnabledStorage: Bool?
+
+    /// Whether this Native connection streams the Mac's screen.
+    var nativeScreenEnabled: Bool {
+        get { nativeScreenEnabledStorage ?? (connectionTypeRawValue == "macNative") }
+        set { nativeScreenEnabledStorage = newValue }
+    }
+
+    /// Whether this Native connection streams the Mac's system audio.
+    var nativeAudioEnabled: Bool {
+        get { nativeAudioEnabledStorage ?? (connectionTypeRawValue == "audio") }
+        set { nativeAudioEnabledStorage = newValue }
+    }
 
     /// Opt-in low-latency mode: carries PCM over UDP with a smaller jitter
     /// buffer (DTLS-encrypted) instead of TCP. Needs a clean LAN path. Default

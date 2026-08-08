@@ -18,10 +18,8 @@ struct CompanionWindowView: View {
 
     var body: some View {
         TabView {
-            AudioPane(controller: controller)
-                .tabItem { Label("Audio", systemImage: "speaker.wave.2") }
-            MacStreamingPane(controller: controller.macNativeStreaming)
-                .tabItem { Label("Mac Stream", systemImage: "macwindow.on.rectangle") }
+            NativePane(controller: controller)
+                .tabItem { Label("Native", systemImage: "macwindow.on.rectangle") }
             AccessTokenPane(controller: controller)
                 .tabItem { Label("Token", systemImage: "key") }
             BroadcastPane(broadcastServer: broadcastServer)
@@ -42,70 +40,60 @@ struct CompanionWindowView: View {
     }
 }
 
-// MARK: - Native Mac streaming
+// MARK: - Native (Screen + Audio)
 
-struct MacStreamingPane: View {
-    @Bindable var controller: MacNativeStreamingController
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Enable native Mac streaming", isOn: $controller.enabled)
-            } footer: {
-                Text("Streams the visible Mac windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Only one viewer is active; a new authenticated viewer replaces the previous one.")
-            }
-
-            Section("Status") {
-                LabeledContent("Stream", value: controller.statusText)
-                LabeledContent("Port", value: String(controller.port))
-                if controller.isCapturing {
-                    Label("Screen capture active", systemImage: "record.circle")
-                        .foregroundStyle(.green)
-                }
-                if let error = controller.lastError {
-                    Text(error)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Section {
-                Text("The Mac shows its system screen-capture indicator while connected. VisionVNC Companion also posts a notification naming the connecting device and whether it replaced another viewer.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-// MARK: - Audio
-
-struct AudioPane: View {
+/// Combines what used to be separate "Mac Stream" (screen) and "Audio" tabs:
+/// one Native feature, two independent toggles, sharing the host/token shown
+/// in the Token tab (AirDrop included) — so pairing once covers both.
+struct NativePane: View {
     @Bindable var controller: AudioStreamerController
 
     var body: some View {
         Form {
             Section {
-                Toggle("Stream system audio", isOn: $controller.isRunning)
-                Toggle("Mute Mac output while streaming", isOn: $controller.muteWhileStreaming)
-                    .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the VisionVNC app.")
-                Toggle("Show track in menu bar", isOn: $controller.showTrackInMenuBar)
-                    .help("Shows the current Music.app track as \"Artist – Title\" in the menu bar while streaming.")
+                Toggle("Screen", isOn: $controller.macNativeStreaming.enabled)
+                Toggle("Audio", isOn: $controller.isRunning)
             } footer: {
-                Text("Streams the Mac's system audio to the VisionVNC app — audio played by the app honors the per-app Spatial Audio setting (Mac Virtual Display forces it on).")
+                Text("Screen streams the Mac's visible windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Audio streams the Mac's system audio — playback on VisionVNC honors its own Spatial Audio setting (Mac Virtual Display forces it on). Both use the same host and token as shown in the Token tab; toggle either independently.")
             }
 
-            Section("Status") {
-                LabeledContent("Stream", value: controller.statusText)
-                if controller.isRunning {
+            if controller.macNativeStreaming.enabled {
+                Section("Screen Status") {
+                    LabeledContent("Stream", value: controller.macNativeStreaming.statusText)
+                    LabeledContent("Port", value: String(controller.macNativeStreaming.port))
+                    if controller.macNativeStreaming.isCapturing {
+                        Label("Screen capture active", systemImage: "record.circle")
+                            .foregroundStyle(.green)
+                    }
+                    if let error = controller.macNativeStreaming.lastError {
+                        Text(error)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            if controller.isRunning {
+                Section("Audio Status") {
+                    LabeledContent("Stream", value: controller.statusText)
                     LabeledContent("Format", value: "Port \(String(controller.port)) · \(controller.formatText)")
+                    if let nowPlaying = controller.nowPlaying, nowPlaying.hasTrack {
+                        LabeledContent("Now Playing", value: "\(nowPlaying.title ?? "") — \(nowPlaying.artist ?? "")")
+                    }
+                    Toggle("Mute Mac output while streaming", isOn: $controller.muteWhileStreaming)
+                        .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the VisionVNC app.")
+                    Toggle("Show track in menu bar", isOn: $controller.showTrackInMenuBar)
+                        .help("Shows the current Music.app track as \"Artist – Title\" in the menu bar while streaming.")
+                    if let error = controller.lastError {
+                        Text(error)
+                            .foregroundStyle(.red)
+                    }
                 }
-                if let nowPlaying = controller.nowPlaying, nowPlaying.hasTrack {
-                    LabeledContent("Now Playing", value: "\(nowPlaying.title ?? "") — \(nowPlaying.artist ?? "")")
-                }
-                if let error = controller.lastError {
-                    Text(error)
-                        .foregroundStyle(.red)
-                }
+            }
+
+            Section {
+                Text("The Mac shows its system screen-capture indicator while Screen is on. VisionVNC Companion also posts a notification naming the connecting device and whether it replaced another viewer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -157,7 +145,7 @@ struct AccessTokenPane: View {
                     .help("Invalidates the current token — connected devices must re-pair.")
                 }
             } footer: {
-                Text("Enter this token in VisionVNC, or AirDrop it to auto-fill. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access.")
+                Text("Enter this token in VisionVNC as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
             }
         }
     }

@@ -92,7 +92,7 @@ struct VisionVNCApp: App {
         .defaultLaunchBehavior(.suppressed)
 
         WindowGroup(
-            "Native Mac Stream",
+            "Native Screen",
             id: "mac-native-stream",
             for: MacNativeWindowID.self
         ) { _ in

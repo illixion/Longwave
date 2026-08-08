@@ -13,7 +13,7 @@ struct ConnectionFormView: View {
     /// All saved connections, used to populate the audio-companion picker.
     @Query private var allConnections: [SavedConnection]
     private var audioConnections: [SavedConnection] {
-        allConnections.filter { $0.connectionType == .audio }
+        allConnections.filter { $0.connectionType == .native && $0.nativeAudioEnabled }
     }
 
     // Common — new connections are seeded from ConnectionDefaults (Settings tab)
@@ -37,8 +37,16 @@ struct ConnectionFormView: View {
     /// remote may not draw one). See `defaultHideLocalCursor(for:)`.
     @State private var hideLocalCursor: Bool = false
 
-    // Audio
-    @State private var audioToken: String = ""
+    // Native (Screen + Audio)
+    @State private var companionToken: String = ""
+    @State private var nativeScreenEnabled: Bool = {
+        #if os(visionOS)
+        true
+        #else
+        false // no macOS receiver for the screen stream yet
+        #endif
+    }()
+    @State private var nativeAudioEnabled: Bool = true
     @State private var lowLatencyAudio: Bool = false
 
     // SSH
@@ -49,7 +57,7 @@ struct ConnectionFormView: View {
     @State private var sshUseTmux: Bool = true
 
     private enum Field: Hashable {
-        case hostname, port, username, password, label, audioToken, sshUsername, sshLaunchCommand
+        case hostname, port, username, password, label, companionToken, sshUsername, sshLaunchCommand
         case sshClientCommand, sshEnvVars
     }
     @FocusState private var focusedField: Field?
@@ -116,16 +124,14 @@ struct ConnectionFormView: View {
             switch connectionType {
             case .vnc:
                 vncSections
-            case .macNative:
-                macNativeSections
+            case .native:
+                nativeSections
             case .ssh:
                 sshSections
             #if MOONLIGHT_ENABLED
             case .moonlight:
                 moonlightSections
             #endif
-            case .audio:
-                audioSections
             }
 
             labelSection
@@ -145,7 +151,10 @@ struct ConnectionFormView: View {
                 Button("Save") {
                     saveConnection()
                 }
-                .disabled(hostname.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(
+                    hostname.trimmingCharacters(in: .whitespaces).isEmpty
+                    || (connectionType == .native && !nativeScreenEnabled && !nativeAudioEnabled)
+                )
             }
         }
         .onAppear {
@@ -184,35 +193,50 @@ struct ConnectionFormView: View {
 
     private var availableConnectionTypes: [ConnectionType] {
         #if os(macOS)
-        ConnectionType.allCases.filter { $0 != .ssh && $0 != .macNative }
+        ConnectionType.allCases.filter { $0 != .ssh }
         #else
         ConnectionType.allCases
         #endif
     }
 
-    // MARK: - Native Mac Sections
+    // MARK: - Native Sections (Screen + Audio)
 
     @ViewBuilder
-    private var macNativeSections: some View {
-        Section("Native Mac Stream") {
-            Text("Streams the Mac's visible windows over a transparent background using ScreenCaptureKit and hardware HEVC with alpha.")
+    private var nativeSections: some View {
+        Section("Native") {
+            Text("Streams from the VisionVNC Companion menu bar app on your Mac — Screen (the Mac's visible windows composited over a transparent background, via ScreenCaptureKit and hardware HEVC with alpha) and Audio (uncompressed system audio) toggle independently, sharing the same host and token.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            #if os(visionOS)
+            Toggle("Screen", isOn: $nativeScreenEnabled)
+            #endif
+            Toggle("Audio", isOn: $nativeAudioEnabled)
+        }
+
+        Section("Companion Token") {
+            TextField("Token", text: $companionToken)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .focused($focusedField, equals: .companionToken)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+                .onTapGesture { focusedField = .companionToken }
+
+            Text("Copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
 
-        Section("Companion Token") {
-            TextField("Token", text: $audioToken)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .audioToken)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .audioToken }
+        if nativeAudioEnabled {
+            Section("Latency") {
+                Toggle("Low-Latency Mode (UDP)", isOn: $lowLatencyAudio)
 
-            Text("Use the same token shown in VisionVNC Companion. A new authenticated viewer replaces the previous viewer.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text("Sends audio over UDP (DTLS-encrypted) with a smaller jitter buffer for lower latency. Needs a clean local network — falls back to the standard stream if UDP can't get through.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -227,12 +251,16 @@ struct ConnectionFormView: View {
                 .contentShape(.rect)
                 .onTapGesture { focusedField = .hostname }
 
-            TextField("Port", text: $port)
-                .keyboardType(.numberPad)
-                .focused($focusedField, equals: .port)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .port }
+            // Native dials fixed per-service Companion ports (Screen/Audio),
+            // never a user-edited one, so there's nothing to show here.
+            if connectionType != .native {
+                TextField("Port", text: $port)
+                    .keyboardType(.numberPad)
+                    .focused($focusedField, equals: .port)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                    .onTapGesture { focusedField = .port }
+            }
 
             if didDetectHotspotHost && hostname == LocalNetwork.windowsIcsGateway {
                 Label("Detected a Windows hotspot — host set to its gateway (\(LocalNetwork.windowsIcsGateway)). Edit if needed.",
@@ -321,11 +349,11 @@ struct ConnectionFormView: View {
 
         Section("Audio Companion") {
             if audioConnections.isEmpty {
-                Text("Create an Audio connection first to link one here.")
+                Text("Create a Native connection with Audio enabled first to link one here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Picker("Linked Audio", selection: $linkedAudioConnectionID) {
+                Picker("Linked Native", selection: $linkedAudioConnectionID) {
                     Text("None").tag(UUID?.none)
                     ForEach(audioConnections) { conn in
                         Text(conn.displayName).tag(Optional(conn.id))
@@ -336,40 +364,6 @@ struct ConnectionFormView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-
-    // MARK: - Audio Sections
-
-    @ViewBuilder
-    private var audioSections: some View {
-        Section("Audio Stream") {
-            Text("Streams uncompressed system audio from the VisionVNC Companion menu bar app on your Mac. Unlike Mac Virtual Display audio, playback respects this app's Spatial Audio setting.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        Section("Access Token") {
-            TextField("Token", text: $audioToken)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .audioToken)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .audioToken }
-
-            Text("Copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The token both authorizes and encrypts the connection (TLS) — no VPN needed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        Section("Latency") {
-            Toggle("Low-Latency Mode (UDP)", isOn: $lowLatencyAudio)
-
-            Text("Sends audio over UDP (DTLS-encrypted) with a smaller jitter buffer for lower latency. Needs a clean local network — falls back to the standard stream if UDP can't get through.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -596,7 +590,9 @@ struct ConnectionFormView: View {
         password = saved.savedPassword
         vncTouchMode = saved.vncTouchMode
         linkedAudioConnectionID = saved.linkedCompanionConnectionID
-        audioToken = saved.audioToken
+        companionToken = saved.companionToken
+        nativeScreenEnabled = saved.nativeScreenEnabled
+        nativeAudioEnabled = saved.nativeAudioEnabled
         lowLatencyAudio = saved.lowLatencyAudio
         sshUsername = saved.sshUsername
         sshLaunchCommand = saved.sshLaunchCommand
@@ -659,8 +655,11 @@ struct ConnectionFormView: View {
             connection.vncTouchMode = vncTouchMode
             connection.linkedCompanionConnectionID = linkedAudioConnectionID
 
-        case .macNative:
-            connection.audioToken = audioToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .native:
+            connection.companionToken = companionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            connection.nativeScreenEnabled = nativeScreenEnabled
+            connection.nativeAudioEnabled = nativeAudioEnabled
+            connection.lowLatencyAudio = lowLatencyAudio
 
         #if MOONLIGHT_ENABLED
         case .moonlight:
@@ -681,10 +680,6 @@ struct ConnectionFormView: View {
             connection.moonlightShowStatsOverlay = moonlightShowStatsOverlay
         #endif
 
-        case .audio:
-            connection.audioToken = audioToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            connection.lowLatencyAudio = lowLatencyAudio
-
         case .ssh:
             connection.sshUsername = sshUsername.trimmingCharacters(in: .whitespaces)
             connection.sshLaunchCommand = sshLaunchCommand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -695,16 +690,16 @@ struct ConnectionFormView: View {
     }
 
     /// Consumes a token delivered via an AirDropped x-callback URL: switches
-    /// a new form to the Audio type and fills the token field. For an
-    /// existing connection, only fills if it's already an audio connection.
+    /// a new form to the Native type and fills the token field. For an
+    /// existing connection, only fills if it's already a Native connection.
     private func consumePendingImportedToken() {
         guard let token = audioManager.pendingImportedToken else { return }
         if isEditing {
-            guard connectionType == .audio else { return }
+            guard connectionType == .native else { return }
         } else {
-            connectionType = .audio
+            connectionType = .native
         }
-        audioToken = token
+        companionToken = token
         audioManager.pendingImportedToken = nil
     }
 }

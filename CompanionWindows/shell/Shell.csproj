@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>VisionVNC.Companion.Shell</RootNamespace>
+    <AssemblyName>VisionVNCCompanion</AssemblyName>
+    <!-- The shell is the *unprivileged* half: it only talks to the backend over the
+         named pipe. The backend elevates on its own when tethering needs it. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\app\buildResources\icon.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Compile this Windows-targeted project on macOS/CI for syntax checks. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- The WebView2 package carries a WPF assembly we don't use; its WindowsBase
+         reference conflicts harmlessly with the WinForms one we do use. -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <!-- Injected into every document before page scripts run; replaces the Electron preload. -->
+  <ItemGroup>
+    <EmbeddedResource Include="bridge.js" />
+  </ItemGroup>
+
+  <!-- The web assets are the Electron renderer, unmodified. Keeping a single source
+       of truth is the point of the prototype: the shell swap must not touch the UI. -->
+  <ItemGroup>
+    <Content Include="..\app\src\renderer\**\*">
+      <Link>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

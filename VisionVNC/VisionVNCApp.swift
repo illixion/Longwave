@@ -92,12 +92,13 @@ struct VisionVNCApp: App {
         .defaultLaunchBehavior(.suppressed)
 
         WindowGroup(
-            "Native Screen",
+            "Native",
             id: "mac-native-stream",
             for: MacNativeWindowID.self
         ) { _ in
-            MacNativeStreamView()
+            NativeStreamView()
                 .environment(macNativeManager)
+                .environment(audioManager)
                 .trackWindowSession(id: "mac-native-stream")
         } defaultValue: {
             .shared

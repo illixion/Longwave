@@ -24,13 +24,48 @@ final class MacNativeStreamManager {
     private(set) var state: State = .disconnected(nil)
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
     private(set) var streamSize: CGSize = .zero
-    private(set) var title = "Native Screen"
+    private(set) var title = "Native"
+
+    /// The Native connection this session targets — remembered independent
+    /// of whether Screen is actually running, so the live Screen toggle in
+    /// the Native window can start it later even if it was off when the
+    /// window opened. Cleared only by `forget()` (the window's hard close),
+    /// not by `disconnect()` (a live toggle-off).
+    private(set) var connection: SavedConnection?
+
+    /// True once toggled on, even mid-connect or after a drop — mirrors user
+    /// intent rather than the transient handshake state, so the Screen
+    /// toggle in the Native window doesn't flip itself off on a hiccup.
+    var isEnabled: Bool {
+        if case .disconnected = state { false } else { true }
+    }
+
+    /// The Native window's live Screen toggle, persisted separately from
+    /// `state`: a transient drop or a deliberate toggle-off both leave
+    /// `state` disconnected, but only this flag says whether Screen should
+    /// resume after a scene reactivation or a full space-restoration
+    /// relaunch (a fresh `MacNativeStreamManager` with no in-memory state).
+    private static let liveEnabledKey = "nativeScreenLiveEnabled"
+    var liveEnabled: Bool = UserDefaults.standard.bool(forKey: MacNativeStreamManager.liveEnabledKey) {
+        didSet {
+            guard liveEnabled != oldValue else { return }
+            UserDefaults.standard.set(liveEnabled, forKey: Self.liveEnabledKey)
+        }
+    }
 
     private var client: MacNativeStreamClient?
     private var activeConnectionID: UUID?
 
+    /// Remembers `connection` as this session's target without starting
+    /// capture — used when opening the Native window with Screen initially
+    /// off, so the live toggle has something to connect to.
+    func prepare(for connection: SavedConnection) {
+        self.connection = connection
+    }
+
     func connect(to connection: SavedConnection) {
-        disconnect()
+        self.connection = connection
+        teardown()
         let connectionID = UUID()
         activeConnectionID = connectionID
         title = connection.displayName
@@ -61,7 +96,23 @@ final class MacNativeStreamManager {
         client.start()
     }
 
+    /// Stops Screen but keeps `connection` remembered, so a live toggle
+    /// back on (in the same Native window) can reconnect without needing
+    /// the connection list again.
     func disconnect() {
+        teardown()
+    }
+
+    /// Full teardown and forgets the target — called when the Native window
+    /// is explicitly closed, so a stale target doesn't leak into the next
+    /// session and Screen doesn't try to resume on a later relaunch.
+    func forget() {
+        teardown()
+        connection = nil
+        liveEnabled = false
+    }
+
+    private func teardown() {
         activeConnectionID = nil
         let oldClient = client
         client = nil

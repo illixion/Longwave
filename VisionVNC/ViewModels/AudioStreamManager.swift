@@ -183,6 +183,19 @@ final class AudioStreamManager {
         static let title = "lastAudioTitle"
         static let token = "lastAudioToken"
         static let lowLatency = "lastAudioLowLatency"
+        static let liveEnabled = "nativeAudioLiveEnabled"
+    }
+
+    /// The Native window's live Audio toggle, persisted separately from
+    /// `state`: a transient drop or a deliberate toggle-off both leave
+    /// `state` idle, but only this flag says whether Audio should resume
+    /// after a scene reactivation or a full space-restoration relaunch (a
+    /// fresh `AudioStreamManager` with no in-memory state).
+    var liveEnabled: Bool = UserDefaults.standard.bool(forKey: AudioStreamManager.DefaultsKeys.liveEnabled) {
+        didSet {
+            guard liveEnabled != oldValue else { return }
+            UserDefaults.standard.set(liveEnabled, forKey: DefaultsKeys.liveEnabled)
+        }
     }
 
     /// Forces TCP for the *next* reconnect without overwriting the user's
@@ -196,6 +209,30 @@ final class AudioStreamManager {
     var isHealthy: Bool {
         guard state == .streaming, let lastActivityAt else { return false }
         return Date().timeIntervalSince(lastActivityAt) < 2.5
+    }
+
+    /// True once toggled on, even mid-connect or after a drop — mirrors user
+    /// intent rather than the transient handshake state, so the Audio toggle
+    /// in the Native window doesn't flip itself off on a hiccup.
+    var isEnabled: Bool { state != .idle }
+
+    /// Remembers a target (same bookkeeping `connect(...)` does) without
+    /// starting the receiver — used when opening the Native window with
+    /// Audio initially off, so `reconnectLast()` has something to start
+    /// once the live toggle turns it on.
+    func prepareTarget(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool) {
+        rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
+    }
+
+    private func rememberTarget(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool) {
+        // Remember the target so the stream can resume after the app is
+        // relaunched by visionOS space restoration of a snapped window.
+        let defaults = UserDefaults.standard
+        defaults.set(hostname, forKey: DefaultsKeys.host)
+        defaults.set(Int(port), forKey: DefaultsKeys.port)
+        defaults.set(title, forKey: DefaultsKeys.title)
+        defaults.set(token, forKey: DefaultsKeys.token)
+        defaults.set(lowLatency, forKey: DefaultsKeys.lowLatency)
     }
 
     func connect(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool = false) {
@@ -219,14 +256,7 @@ final class AudioStreamManager {
         // preserve the warning for the UI.
         if lowLatency { lowLatencyDegraded = false }
 
-        // Remember the target so the stream can resume after the app is
-        // relaunched by visionOS space restoration of a snapped window.
-        let defaults = UserDefaults.standard
-        defaults.set(hostname, forKey: DefaultsKeys.host)
-        defaults.set(Int(port), forKey: DefaultsKeys.port)
-        defaults.set(title, forKey: DefaultsKeys.title)
-        defaults.set(token, forKey: DefaultsKeys.token)
-        defaults.set(lowLatency, forKey: DefaultsKeys.lowLatency)
+        rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
 
         let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: audioMode, eq: eqSettings)
         receiver.onEvent = { [weak self] event in
@@ -262,6 +292,7 @@ final class AudioStreamManager {
         defaults.removeObject(forKey: DefaultsKeys.title)
         defaults.removeObject(forKey: DefaultsKeys.token)
         defaults.removeObject(forKey: DefaultsKeys.lowLatency)
+        liveEnabled = false
         disconnect()
     }
 

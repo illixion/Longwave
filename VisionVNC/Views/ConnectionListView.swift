@@ -236,20 +236,44 @@ struct ConnectionListView: View {
         }
     }
 
-    /// Starts whichever of Screen/Audio this Native connection has enabled —
-    /// both share the same host and token, so nothing else differs between
-    /// them. Screen has no macOS receiver yet, so it's a no-op there even if
-    /// the row's flag is set (e.g. a connection created on visionOS).
+    /// Opens the Native window and starts whichever of Screen/Audio this
+    /// connection has enabled — both share the same host and token. Both
+    /// targets are always remembered (`prepare`/`prepareTarget`) even if
+    /// off, so the window's live Screen/Audio toggles can start either one
+    /// later without returning to the connection list. Screen has no macOS
+    /// receiver yet, so on macOS only Audio applies (its own standalone
+    /// window, unchanged) even if the row's Screen flag is set (e.g. a
+    /// connection created on visionOS).
     private func connectNative(_ connection: SavedConnection) {
         #if os(visionOS)
+        macNativeManager.prepare(for: connection)
+        macNativeManager.liveEnabled = connection.nativeScreenEnabled
         if connection.nativeScreenEnabled {
             macNativeManager.connect(to: connection)
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
         }
-        #endif
+        audioManager.prepareTarget(
+            hostname: connection.hostname,
+            port: AudioStreamProtocol.defaultPort,
+            token: connection.companionToken,
+            title: connection.displayName,
+            lowLatency: connection.lowLatencyAudio
+        )
+        audioManager.liveEnabled = connection.nativeAudioEnabled
+        if connection.nativeAudioEnabled {
+            audioManager.connect(
+                hostname: connection.hostname,
+                port: AudioStreamProtocol.defaultPort,
+                token: connection.companionToken,
+                title: connection.displayName,
+                lowLatency: connection.lowLatencyAudio
+            )
+        }
+        openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        #else
         if connection.nativeAudioEnabled {
             connectAudio(connection)
         }
+        #endif
     }
 
     #if os(visionOS)

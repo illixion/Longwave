@@ -16,29 +16,22 @@ internal sealed class MainForm : Form
     private const string DownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
 
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
-    private readonly PipeClient _client = new();
+    private readonly PipeClient _client;
     private bool _bridgeReady;
 
-    public MainForm()
+    /// <summary>The pipe outlives the window — <see cref="TrayContext"/> owns it.</summary>
+    public MainForm(PipeClient client)
     {
+        _client = client;
+
         Text = "VisionVNC Hotspot";
         ClientSize = new Size(780, 980);
         MinimumSize = new Size(640 + (Width - ClientSize.Width), 700 + (Height - ClientSize.Height));
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(0x0F, 0x11, 0x17);
-        Icon = LoadIcon();
+        Icon = AppIcon.Load();
 
         Controls.Add(_web);
-    }
-
-    private static Icon? LoadIcon()
-    {
-        try
-        {
-            var path = Path.Combine(AppContext.BaseDirectory, "VisionVNCCompanion.exe");
-            return File.Exists(path) ? Icon.ExtractAssociatedIcon(path) : null;
-        }
-        catch { return null; }
     }
 
     protected override async void OnLoad(EventArgs e)
@@ -58,7 +51,9 @@ internal sealed class MainForm : Form
 
         _client.ConnectionChanged += OnConnectionChanged;
         _client.Notified += OnNotified;
-        _client.Start();
+
+        // The pipe was already up before this window existed; seed the badge.
+        OnConnectionChanged(_client.Connected);
     }
 
     /// <summary>
@@ -196,7 +191,13 @@ internal sealed class MainForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         base.OnFormClosed(e);
-        _ = _client.DisposeAsync();
-        BackendLauncher.Stop();
+        _bridgeReady = false;
+        _client.ConnectionChanged -= OnConnectionChanged;
+        _client.Notified -= OnNotified;
+
+        // Explicit: disposing the control tears down the browser, GPU, renderer and utility
+        // processes this window brought up. Leaving it to finalization keeps them resident.
+        try { _web.Dispose(); }
+        catch (Exception ex) { Debug.WriteLine($"[shell] webview dispose: {ex.Message}"); }
     }
 }

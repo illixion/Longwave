@@ -55,13 +55,13 @@ function startBackend() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 780,
-    height: 980,
-    minWidth: 640,
-    minHeight: 700,
-    title: 'VisionVNC Hotspot',
+    width: 1000,
+    height: 720,
+    minWidth: 860,
+    minHeight: 620,
+    title: 'VisionVNC Companion',
     icon: path.join(__dirname, '..', 'buildResources', 'icon.ico'),
-    backgroundColor: '#0f1117',
+    backgroundColor: '#1b1a18',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

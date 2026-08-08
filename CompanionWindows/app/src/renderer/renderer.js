@@ -2,121 +2,273 @@
 const $ = (id) => document.getElementById(id);
 
 const el = {
-  backendPill: $('backendPill'),
+  // Rail
+  backendLamp: $('backendLamp'),
+  backendText: $('backendText'),
+  streamLamp: $('streamLamp'),
+  streamChannelState: $('streamChannelState'),
+  hotspotLamp: $('hotspotLamp'),
+  hotspotChannelState: $('hotspotChannelState'),
+  toast: $('toast'),
+
+  // Screen streaming
+  nsTransmit: $('nsTransmit'),
+  nsLamp: $('nsLamp'),
+  nsHeadline: $('nsHeadline'),
+  nsViewer: $('nsViewer'),
+  nsStartBtn: $('nsStartBtn'),
+  nsStopBtn: $('nsStopBtn'),
+  nsMsg: $('nsMsg'),
+  nsHost: $('nsHost'),
+  nsAddressWrap: $('nsAddressWrap'),
+  nsAddressPick: $('nsAddressPick'),
+  nsPort: $('nsPort'),
+  nsToken: $('nsToken'),
+  nsTokenHint: $('nsTokenHint'),
+  nsRegenToken: $('nsRegenToken'),
+  nsMouse: $('nsMouse'),
+  nsKeyboard: $('nsKeyboard'),
+
+  // Hotspot
   capabilityBanner: $('capabilityBanner'),
-  stateBadge: $('stateBadge'),
+  apTransmit: $('apTransmit'),
+  apLamp: $('apLamp'),
+  apHeadline: $('apHeadline'),
+  apDetail: $('apDetail'),
+  startBtn: $('startBtn'),
+  stopBtn: $('stopBtn'),
+  fixAdapterBtn: $('fixAdapterBtn'),
+  opMsg: $('opMsg'),
+  joinPanel: $('joinPanel'),
+  joinSsid: $('joinSsid'),
+  joinPass: $('joinPass'),
+  joinPassHint: $('joinPassHint'),
+  joinGateway: $('joinGateway'),
+  apSettingsHint: $('apSettingsHint'),
   ssid: $('ssid'),
   passphrase: $('passphrase'),
   band: $('band'),
   upstream: $('upstream'),
-  startBtn: $('startBtn'),
-  stopBtn: $('stopBtn'),
-  fixAdapterBtn: $('fixAdapterBtn'),
   regen: $('regen'),
-  opMsg: $('opMsg'),
-  nsBadge: $('nsBadge'),
-  nsToken: $('nsToken'),
-  nsCopyToken: $('nsCopyToken'),
-  nsRegenToken: $('nsRegenToken'),
-  nsPort: $('nsPort'),
-  nsStartBtn: $('nsStartBtn'),
-  nsStopBtn: $('nsStopBtn'),
-  nsMouse: $('nsMouse'),
-  nsKeyboard: $('nsKeyboard'),
-  nsMsg: $('nsMsg'),
-  nsViewer: $('nsViewer'),
-  joinPanel: $('joinPanel'),
-  joinSsid: $('joinSsid'),
-  joinPass: $('joinPass'),
-  joinGateway: $('joinGateway'),
-  clientCount: $('clientCount'),
-  maxClients: $('maxClients'),
-  upstreamName: $('upstreamName'),
 };
 
-let lastState = 'off';
+/** The address the operator picked, kept for as long as the window is open. */
+let preferredAddress = null;
+
+// ── Small helpers ──────────────────────────────────────────────────────────
+
+function setLamp(lamp, state) {
+  if (lamp) lamp.dataset.state = state;
+}
+
+/**
+ * Writes a value that has to be retyped on the headset. Returns whether it was
+ * split into reading groups, so the caller can show the caption that warns the
+ * gaps are not really there.
+ */
+function setReadout(node, value, { chunk = false } = {}) {
+  const text = value || '';
+  node.dataset.value = text;
+  if (!text) {
+    node.textContent = '—';
+    return false;
+  }
+  // Only group a run of plain characters. A value that already carries its own
+  // separators reads fine as it is, and slicing it every four would fight them.
+  if (!chunk || text.length < 8 || !/^[A-Za-z0-9]+$/.test(text)) {
+    node.textContent = text;
+    return false;
+  }
+  node.textContent = '';
+  for (let i = 0; i < text.length; i += 4) {
+    const group = document.createElement('span');
+    group.className = 'grp';
+    group.textContent = text.slice(i, i + 4);
+    node.appendChild(group);
+  }
+  return true;
+}
+
+function setNote(node, text, kind) {
+  node.textContent = text || '';
+  node.className = 'note' + (kind ? ' is-' + kind : '') + (text ? '' : ' hidden');
+}
+
+let toastTimer = null;
+function toast(text) {
+  el.toast.textContent = text;
+  el.toast.classList.add('is-shown');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove('is-shown'), 2200);
+}
+
+function showView(viewId) {
+  for (const tab of document.querySelectorAll('.channel')) {
+    const current = tab.dataset.view === viewId;
+    tab.classList.toggle('is-current', current);
+    tab.setAttribute('aria-selected', String(current));
+    $(tab.dataset.view).classList.toggle('hidden', !current);
+  }
+}
+
+// ── Backend connection ─────────────────────────────────────────────────────
 
 function setBackendConnected(connected) {
-  el.backendPill.textContent = connected ? 'Backend: connected' : 'Backend: disconnected';
-  el.backendPill.className = 'pill ' + (connected ? 'pill-good' : 'pill-bad');
+  setLamp(el.backendLamp, connected ? 'live' : 'fault');
+  el.backendText.textContent = connected
+    ? 'Companion service running'
+    : 'Companion service unreachable';
   el.startBtn.disabled = !connected;
+  el.nsStartBtn.disabled = !connected;
   if (connected) refreshAll();
 }
 
-function setOpMsg(text, kind) {
-  el.opMsg.textContent = text || '';
-  el.opMsg.className = 'op-msg' + (kind ? ' ' + kind : '');
-}
-
-function renderStatus(s) {
-  if (!s) return;
-  lastState = s.state;
-
-  // State badge
-  const map = {
-    on: ['ON', 'badge-on'],
-    off: ['OFF', 'badge-off'],
-    inTransition: ['…', 'badge-transition'],
-    unknown: ['?', 'badge-off'],
-  };
-  const [label, cls] = map[s.state] || map.unknown;
-  el.stateBadge.textContent = label;
-  el.stateBadge.className = 'badge ' + cls;
-
-  // Start/Stop visibility
-  const on = s.state === 'on';
-  el.startBtn.classList.toggle('hidden', on);
-  el.stopBtn.classList.toggle('hidden', !on);
-
-  // Capability banner
-  if (s.canHostAp === false) {
-    el.capabilityBanner.classList.remove('hidden');
-    el.capabilityBanner.textContent = '⚠ ' + (s.capabilityDetail || 'This PC may not be able to host a Wi-Fi hotspot.');
-  } else {
-    el.capabilityBanner.classList.add('hidden');
-  }
-
-  // Join panel
-  el.joinPanel.classList.toggle('hidden', !on);
-  if (on) {
-    el.joinSsid.textContent = s.ssid || '—';
-    el.joinPass.textContent = s.passphrase || '—';
-    el.joinGateway.textContent = s.gatewayIp || '192.168.137.1';
-    el.clientCount.textContent = s.clientCount ?? 0;
-    el.maxClients.textContent = s.maxClientCount ?? '—';
-    el.upstreamName.textContent = s.upstreamName || '—';
-  }
-}
+// ── Screen streaming ───────────────────────────────────────────────────────
 
 function renderNativeStream(s) {
   if (!s) return;
   const running = !!s.running;
-  el.nsBadge.textContent = running ? 'ON' : 'OFF';
-  el.nsBadge.className = 'badge ' + (running ? 'badge-on' : 'badge-off');
+  const connected = running && !!s.connectedDevice;
+  const broken = !s.captureSupported || !!s.lastError;
+
+  const state = broken ? 'fault' : connected ? 'live' : running ? 'waiting' : 'off';
+  el.nsTransmit.dataset.state = state;
+  setLamp(el.nsLamp, state);
+  setLamp(el.streamLamp, state);
+  el.streamChannelState.textContent =
+    { off: 'Off', waiting: 'Waiting', live: 'Streaming', fault: 'Needs attention' }[state];
+
+  if (connected) {
+    el.nsHeadline.textContent = `Streaming to ${s.connectedDevice}`;
+    el.nsViewer.textContent = 'The desktop and any windows the headset picks are going out now.';
+  } else if (running) {
+    el.nsHeadline.textContent = 'Waiting for the headset';
+    el.nsViewer.textContent = 'Add a Native connection in VisionVNC using the details below.';
+  } else {
+    el.nsHeadline.textContent = 'Streaming is off';
+    el.nsViewer.textContent = 'Start it, then connect from the headset.';
+  }
+
   el.nsStartBtn.classList.toggle('hidden', running);
   el.nsStopBtn.classList.toggle('hidden', !running);
-  el.nsToken.value = s.token || '';
-  el.nsPort.value = s.port || 4857;
+
+  if (!s.captureSupported) {
+    setNote(el.nsMsg, 'This Windows build cannot capture the screen. Windows 10 version 1903 or newer is required.', 'error');
+  } else if (s.lastError) {
+    setNote(el.nsMsg, s.lastError, 'error');
+  } else {
+    setNote(el.nsMsg, '');
+  }
+
+  renderAddresses(s.addresses || []);
+  setReadout(el.nsPort, String(s.port || 4857));
+  const tokenGrouped = setReadout(el.nsToken, s.token || '', { chunk: true });
+  el.nsTokenHint.classList.toggle('hidden', !tokenGrouped);
   el.nsMouse.checked = !!s.mouseControlEnabled;
   el.nsKeyboard.checked = !!s.keyboardControlEnabled;
-  if (s.lastError) {
-    el.nsMsg.textContent = s.lastError;
-    el.nsMsg.className = 'op-msg error';
-  } else if (!s.captureSupported) {
-    el.nsMsg.textContent = 'Screen capture is not supported on this Windows build.';
-    el.nsMsg.className = 'op-msg error';
+}
+
+function renderAddresses(addresses) {
+  if (addresses.length === 0) {
+    setReadout(el.nsHost, '');
+    el.nsAddressWrap.classList.add('hidden');
+    return;
   }
-  el.nsViewer.textContent = s.connectedDevice
-    ? `Streaming to ${s.connectedDevice}`
-    : (running ? 'Waiting for a viewer…' : '');
+  if (!addresses.includes(preferredAddress)) preferredAddress = addresses[0];
+  setReadout(el.nsHost, preferredAddress);
+
+  // Only worth a picker when this PC has more than one address to offer.
+  el.nsAddressWrap.classList.toggle('hidden', addresses.length < 2);
+  if (addresses.length < 2) return;
+  el.nsAddressPick.innerHTML = '';
+  for (const address of addresses) {
+    const option = document.createElement('option');
+    option.value = address;
+    option.textContent = address;
+    el.nsAddressPick.appendChild(option);
+  }
+  el.nsAddressPick.value = preferredAddress;
 }
 
 async function refreshNativeStream() {
   try {
     renderNativeStream(await window.hotspot.nativeStreamStatus());
   } catch (e) {
-    el.nsMsg.textContent = 'Could not read streaming status: ' + e.message;
-    el.nsMsg.className = 'op-msg error';
+    setNote(el.nsMsg, 'Could not read the streaming status: ' + e.message, 'error');
+  }
+}
+
+// ── Hotspot ────────────────────────────────────────────────────────────────
+
+function renderStatus(s) {
+  if (!s) return;
+  const on = s.state === 'on';
+  const clients = s.clientCount ?? 0;
+  const state = s.state === 'inTransition' ? 'waiting' : on ? (clients > 0 ? 'live' : 'waiting') : 'off';
+
+  el.apTransmit.dataset.state = state;
+  setLamp(el.apLamp, state);
+  setLamp(el.hotspotLamp, state);
+  el.hotspotChannelState.textContent =
+    { off: 'Off', waiting: on ? 'Waiting' : 'Starting', live: 'Joined' }[state];
+
+  if (on && clients > 0) {
+    const room = s.maxClientCount ? ` of ${s.maxClientCount}` : '';
+    el.apHeadline.textContent = clients === 1 ? `1 device joined${room}` : `${clients} devices joined${room}`;
+    el.apDetail.textContent = `Sharing internet from ${s.upstreamName || 'this PC'}.`;
+  } else if (on) {
+    el.apHeadline.textContent = 'Waiting for the headset';
+    el.apDetail.textContent = 'The network is up. Join it from Settings → Wi-Fi on the headset.';
+  } else {
+    el.apHeadline.textContent = 'Hotspot is off';
+    el.apDetail.textContent = 'Windows may ask for administrator approval when it starts.';
+  }
+
+  el.startBtn.classList.toggle('hidden', on);
+  el.stopBtn.classList.toggle('hidden', !on);
+
+  if (s.canHostAp === false) {
+    el.capabilityBanner.classList.remove('hidden');
+    el.capabilityBanner.textContent =
+      s.capabilityDetail || 'This PC may not be able to host a Wi-Fi hotspot. Its Wi-Fi adapter does not report SoftAP support.';
+  } else {
+    el.capabilityBanner.classList.add('hidden');
+  }
+
+  // A running AP ignores edits to these until it is restarted, so say so
+  // rather than letting someone type into a field that does nothing.
+  el.apSettingsHint.classList.toggle('hidden', !on);
+  for (const field of [el.ssid, el.passphrase, el.band, el.upstream, el.regen]) field.disabled = on;
+
+  el.joinPanel.classList.toggle('hidden', !on);
+  if (on) {
+    setReadout(el.joinSsid, s.ssid || '');
+    const passGrouped = setReadout(el.joinPass, s.passphrase || '', { chunk: true });
+    el.joinPassHint.classList.toggle('hidden', !passGrouped);
+    setReadout(el.joinGateway, s.gatewayIp || '192.168.137.1');
+  }
+}
+
+async function loadUpstreams() {
+  try {
+    const list = await window.hotspot.listUpstreams();
+    const previous = el.upstream.value;
+    el.upstream.innerHTML = '';
+    for (const p of list) {
+      const option = document.createElement('option');
+      option.value = p.id;
+      const kind = p.kind === 'ethernet' ? 'Ethernet' : p.kind === 'wifi' ? 'Wi-Fi' : p.kind;
+      let label = `${p.name} (${kind})`;
+      if (p.isDefault) label += ' • default';
+      if (!p.hasInternet) label += ' • no internet';
+      if (p.tetheringCapability !== 'enabled') label += ` • ${p.tetheringCapability}`;
+      option.textContent = label;
+      el.upstream.appendChild(option);
+    }
+    const fallback = list.find((p) => p.isDefault) || list[0];
+    el.upstream.value = list.some((p) => p.id === previous) ? previous : (fallback ? fallback.id : '');
+  } catch (e) {
+    setNote(el.opMsg, 'Could not list the internet connections: ' + e.message, 'error');
   }
 }
 
@@ -125,7 +277,8 @@ async function refreshAll() {
     await loadUpstreams();
     await refreshNativeStream();
     const s = await window.hotspot.getStatus();
-    // Seed SSID/pass fields from the live AP if running; else keep generated defaults.
+    // Seed the fields from the live AP when one is running; otherwise the
+    // generated defaults stay put.
     if (s.state === 'on') {
       if (s.ssid) el.ssid.value = s.ssid;
       if (s.passphrase) el.passphrase.value = s.passphrase;
@@ -133,119 +286,103 @@ async function refreshAll() {
     }
     renderStatus(s);
   } catch (e) {
-    setOpMsg('Could not read status: ' + e.message, 'error');
-  }
-}
-
-async function loadUpstreams() {
-  try {
-    const list = await window.hotspot.listUpstreams();
-    const prev = el.upstream.value;
-    el.upstream.innerHTML = '';
-    for (const p of list) {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      const tag = p.kind === 'ethernet' ? 'Ethernet' : p.kind === 'wifi' ? 'Wi-Fi' : p.kind;
-      opt.textContent = `${p.name} (${tag})${p.isDefault ? ' • default' : ''}${p.hasInternet ? '' : ' • no internet'}`;
-      if (p.tetheringCapability !== 'enabled') opt.textContent += ` • ${p.tetheringCapability}`;
-      el.upstream.appendChild(opt);
-    }
-    // Restore previous selection or pick the default.
-    const def = list.find((p) => p.isDefault);
-    el.upstream.value = list.some((p) => p.id === prev) ? prev : (def ? def.id : (list[0] && list[0].id));
-  } catch (e) {
-    setOpMsg('Could not list upstreams: ' + e.message, 'error');
+    setNote(el.opMsg, 'Could not read the hotspot status: ' + e.message, 'error');
   }
 }
 
 async function onStart() {
-  setOpMsg('Starting…');
+  setNote(el.opMsg, 'Starting the hotspot…');
   el.startBtn.disabled = true;
   try {
-    const params = {
+    const res = await window.hotspot.start({
       ssid: el.ssid.value.trim() || undefined,
       passphrase: el.passphrase.value.trim() || undefined,
       band: el.band.value,
       profileId: el.upstream.value || undefined,
-    };
-    const res = await window.hotspot.start(params);
+    });
     if (res.ok) {
-      setOpMsg('Hotspot started.', 'ok');
+      setNote(el.opMsg, '');
+      toast('Hotspot started');
       el.fixAdapterBtn.classList.add('hidden');
-      renderStatus(res.snapshot);
     } else {
-      setOpMsg(`Failed (${res.status}): ${res.detail || ''}`, 'error');
-      // Offer the guided fix when an incapable adapter is blocking a capable one.
+      setNote(el.opMsg, res.detail || `The hotspot did not start (${res.status}).`, 'error');
+      // Offer the guided fix when an adapter that cannot host is in the way of
+      // one that can.
       el.fixAdapterBtn.classList.toggle('hidden', res.status !== 'adapterConflict');
-      renderStatus(res.snapshot);
     }
+    renderStatus(res.snapshot);
   } catch (e) {
-    setOpMsg('Start error: ' + e.message, 'error');
+    setNote(el.opMsg, 'The hotspot did not start: ' + e.message, 'error');
   } finally {
     el.startBtn.disabled = !(await window.hotspot.isConnected());
   }
 }
 
 async function onFixAdapter() {
-  setOpMsg('Disabling conflicting adapter…');
+  setNote(el.opMsg, 'Turning off the conflicting adapter…');
   el.fixAdapterBtn.disabled = true;
   try {
     const r = await window.hotspot.prepareApAdapter();
     if (!r.ok) {
-      setOpMsg(r.detail || 'Could not prepare an adapter.', 'error');
+      setNote(el.opMsg, r.detail || 'No adapter on this PC can host a hotspot.', 'error');
       return;
     }
-    setOpMsg(r.detail || 'Adapter disabled; retrying…', 'ok');
     el.fixAdapterBtn.classList.add('hidden');
     await onStart(); // retry now that the capable radio is the only Wi-Fi adapter
   } catch (e) {
-    setOpMsg('Fix error: ' + e.message, 'error');
+    setNote(el.opMsg, 'Could not turn off the adapter: ' + e.message, 'error');
   } finally {
     el.fixAdapterBtn.disabled = false;
   }
 }
 
 async function onStop() {
-  setOpMsg('Stopping…');
+  setNote(el.opMsg, 'Stopping the hotspot…');
   el.stopBtn.disabled = true;
   try {
     const res = await window.hotspot.stop();
-    setOpMsg(res.ok ? 'Hotspot stopped.' : `Stop failed: ${res.detail || res.status}`, res.ok ? 'ok' : 'error');
+    if (res.ok) {
+      setNote(el.opMsg, '');
+      toast('Hotspot stopped');
+    } else {
+      setNote(el.opMsg, res.detail || `The hotspot did not stop (${res.status}).`, 'error');
+    }
     if (res.snapshot) renderStatus(res.snapshot);
   } catch (e) {
-    setOpMsg('Stop error: ' + e.message, 'error');
+    setNote(el.opMsg, 'The hotspot did not stop: ' + e.message, 'error');
   } finally {
     el.stopBtn.disabled = false;
   }
 }
 
-async function copyValue(id) {
-  const text = $(id).textContent;
+async function copyReadout(id) {
+  const node = $(id);
+  const text = node.dataset.value || node.textContent;
   try {
     await navigator.clipboard.writeText(text);
-    setOpMsg(`Copied ${text}`, 'ok');
+    toast(`Copied ${text}`);
   } catch {
-    setOpMsg('Copy failed', 'error');
+    toast('Could not copy — select the value and press Ctrl+C');
   }
 }
 
-// ---- wire up ----
-window.addEventListener('DOMContentLoaded', async () => {
-  el.ssid.value = await window.hotspot.genSsid();
-  el.passphrase.value = await window.hotspot.genPassphrase();
+// ── Wiring ─────────────────────────────────────────────────────────────────
 
-  el.startBtn.addEventListener('click', onStart);
-  el.stopBtn.addEventListener('click', onStop);
-  el.fixAdapterBtn.addEventListener('click', onFixAdapter);
-  el.regen.addEventListener('click', async () => { el.passphrase.value = await window.hotspot.genPassphrase(); });
-  document.querySelectorAll('.copy').forEach((b) =>
-    b.addEventListener('click', () => copyValue(b.dataset.copy)));
+window.addEventListener('DOMContentLoaded', async () => {
+  for (const tab of document.querySelectorAll('.channel')) {
+    tab.addEventListener('click', () => showView(tab.dataset.view));
+  }
+  for (const button of document.querySelectorAll('[data-copy]')) {
+    button.addEventListener('click', () => copyReadout(button.dataset.copy));
+  }
 
   el.nsStartBtn.addEventListener('click', async () => {
     renderNativeStream(await window.hotspot.nativeStreamSetEnabled(true));
+    toast('Streaming started');
   });
   el.nsStopBtn.addEventListener('click', async () => {
     renderNativeStream(await window.hotspot.nativeStreamSetEnabled(false));
+    toast('Streaming stopped');
   });
   el.nsMouse.addEventListener('change', async () => {
     renderNativeStream(await window.hotspot.nativeStreamSetInput({ mouse: el.nsMouse.checked }));
@@ -253,17 +390,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   el.nsKeyboard.addEventListener('change', async () => {
     renderNativeStream(await window.hotspot.nativeStreamSetInput({ keyboard: el.nsKeyboard.checked }));
   });
-  el.nsCopyToken.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(el.nsToken.value);
-      setOpMsg('Token copied', 'ok');
-    } catch {
-      setOpMsg('Copy failed', 'error');
-    }
-  });
   el.nsRegenToken.addEventListener('click', async () => {
     renderNativeStream(await window.hotspot.nativeStreamRegenerateToken());
+    toast('New token — reconnect the headset with it');
   });
+  el.nsAddressPick.addEventListener('change', () => {
+    preferredAddress = el.nsAddressPick.value;
+    setReadout(el.nsHost, preferredAddress);
+  });
+
+  el.startBtn.addEventListener('click', onStart);
+  el.stopBtn.addEventListener('click', onStop);
+  el.fixAdapterBtn.addEventListener('click', onFixAdapter);
+  el.regen.addEventListener('click', async () => {
+    el.passphrase.value = await window.hotspot.genPassphrase();
+  });
+
+  el.ssid.value = await window.hotspot.genSsid();
+  el.passphrase.value = await window.hotspot.genPassphrase();
 
   window.hotspot.onConnection(setBackendConnected);
   window.hotspot.onNotify(({ event, data }) => {

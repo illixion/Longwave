@@ -3,130 +3,220 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
-  <title>VisionVNC Hotspot Companion</title>
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>VisionVNC Windows Companion</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <img class="logo" src="logo.png" alt="VisionVNC" />
-      <div>
-        <h1>VisionVNC Hotspot Companion</h1>
-        <p class="subtitle">Direct Wi-Fi link for Vision Pro — NAT'd through this PC</p>
-      </div>
-    </div>
-    <div id="backendPill" class="pill pill-bad">Backend: connecting…</div>
-  </header>
-
-  <main>
-    <div id="capabilityBanner" class="banner hidden"></div>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Hotspot</h2>
-        <span id="stateBadge" class="badge badge-off">OFF</span>
+  <div class="console">
+    <aside class="rail">
+      <div class="mark">
+        <img class="mark-logo" src="logo.png" alt="" />
+        <div class="mark-text">
+          <strong>VisionVNC</strong>
+          <small>Windows companion</small>
+        </div>
       </div>
 
-      <div class="grid">
-        <label class="field">
-          <span>Network name (SSID)</span>
-          <input id="ssid" type="text" maxlength="32" autocomplete="off" spellcheck="false" />
-        </label>
+      <nav class="channels" role="tablist" aria-label="Companion features">
+        <button id="streamTab" class="channel is-current" type="button" role="tab"
+                data-view="streamView" aria-controls="streamView" aria-selected="true">
+          <span class="lamp" id="streamLamp" data-state="off" aria-hidden="true"></span>
+          <span class="channel-text">
+            <strong>Screen streaming</strong>
+            <small id="streamChannelState">Off</small>
+          </span>
+        </button>
+        <button id="hotspotTab" class="channel" type="button" role="tab"
+                data-view="hotspotView" aria-controls="hotspotView" aria-selected="false">
+          <span class="lamp" id="hotspotLamp" data-state="off" aria-hidden="true"></span>
+          <span class="channel-text">
+            <strong>Wi-Fi hotspot</strong>
+            <small id="hotspotChannelState">Off</small>
+          </span>
+        </button>
+      </nav>
 
-        <label class="field">
-          <span>Password (8-char WPA2)</span>
-          <div class="with-button">
-            <input id="passphrase" type="text" maxlength="63" autocomplete="off" spellcheck="false" />
-            <button id="regen" class="ghost" title="Generate a new password">⟳</button>
+      <div class="rail-foot">
+        <span class="lamp lamp-sm" id="backendLamp" data-state="off" aria-hidden="true"></span>
+        <span id="backendText">Connecting to the companion service…</span>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <!-- ─────────────────────────── Screen streaming ────────────────────── -->
+      <section id="streamView" class="view" role="tabpanel" aria-labelledby="streamTab">
+        <header class="view-head">
+          <div>
+            <p class="silk">Desktop and windows</p>
+            <h2>Screen streaming</h2>
           </div>
-        </label>
+          <p class="lede">Sends this PC to VisionVNC on the headset — the whole desktop, or
+            individual windows you pick from there.</p>
+        </header>
 
-        <label class="field">
-          <span>Band</span>
-          <select id="band">
-            <option value="auto" selected>Auto</option>
-            <option value="2.4">2.4 GHz</option>
-            <option value="5">5 GHz</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>Share internet from</span>
-          <select id="upstream"></select>
-        </label>
-      </div>
-
-      <div class="actions">
-        <button id="startBtn" class="primary">Start hotspot</button>
-        <button id="stopBtn" class="danger hidden">Stop hotspot</button>
-        <button id="fixAdapterBtn" class="ghost hidden">Disable conflicting adapter &amp; retry</button>
-        <span id="opMsg" class="op-msg"></span>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Screen Streaming</h2>
-        <span id="nsBadge" class="badge badge-off">OFF</span>
-      </div>
-      <p class="join-help">Streams this PC's screen (or individual windows) to VisionVNC on the headset —
-        add a <strong>Native</strong> connection there with this PC's address and the token below.</p>
-
-      <div class="grid">
-        <label class="field">
-          <span>Access token</span>
-          <div class="with-button">
-            <input id="nsToken" type="text" readonly spellcheck="false" />
-            <button id="nsCopyToken" class="ghost" title="Copy token">⧉</button>
-            <button id="nsRegenToken" class="ghost" title="Generate a new token (disconnects the viewer)">⟳</button>
+        <div id="nsTransmit" class="transmit" data-state="off">
+          <span class="lamp lamp-lg" id="nsLamp" data-state="off" aria-hidden="true"></span>
+          <div class="transmit-text">
+            <strong id="nsHeadline">Streaming is off</strong>
+            <span id="nsViewer">Start it, then connect from the headset.</span>
           </div>
-        </label>
-        <label class="field">
-          <span>Port</span>
-          <input id="nsPort" type="text" readonly value="4857" />
-        </label>
-      </div>
+          <button id="nsStartBtn" class="key" type="button">Start streaming</button>
+          <button id="nsStopBtn" class="key key-stop hidden" type="button">Stop streaming</button>
+        </div>
 
-      <div class="actions">
-        <button id="nsStartBtn" class="primary">Enable streaming</button>
-        <button id="nsStopBtn" class="danger hidden">Disable streaming</button>
-        <label class="checkline"><input id="nsMouse" type="checkbox" /> Allow mouse control</label>
-        <label class="checkline"><input id="nsKeyboard" type="checkbox" /> Allow keyboard control</label>
-        <span id="nsMsg" class="op-msg"></span>
-      </div>
-      <div class="join-stats">
-        <span id="nsViewer"></span>
-      </div>
-    </section>
+        <p id="nsMsg" class="note hidden" aria-live="polite"></p>
 
-    <section id="joinPanel" class="card join hidden">
-      <h2>Join from Vision Pro</h2>
-      <p class="join-help">On the headset: <strong>Settings → Wi-Fi</strong>, pick the network and type the
-        password. Then in VisionVNC, add a VNC/Moonlight connection to the <strong>gateway IP</strong>.</p>
-      <div class="join-grid">
-        <div class="join-item">
-          <span class="join-label">Network</span>
-          <div class="join-value" id="joinSsid">—</div>
-          <button class="copy" data-copy="joinSsid">Copy</button>
+        <section class="plate" aria-labelledby="nsPlateTitle">
+          <p class="silk plate-title" id="nsPlateTitle">Type this into VisionVNC on the headset</p>
+
+          <div class="plate-row">
+            <div class="plate-label">
+              <span class="silk">Hostname or IP address</span>
+              <span class="addr-wrap hidden" id="nsAddressWrap">
+                <select id="nsAddressPick" class="addr-pick" aria-label="Which address to show"></select>
+              </span>
+            </div>
+            <div class="readout" id="nsHost" data-value="">—</div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="nsHost">Copy</button>
+            </div>
+          </div>
+
+          <div class="plate-row">
+            <div class="plate-label"><span class="silk">Port</span></div>
+            <div class="readout readout-short" id="nsPort" data-value="4857">4857</div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="nsPort">Copy</button>
+            </div>
+          </div>
+
+          <div class="plate-row">
+            <div class="plate-label"><span class="silk">Companion token</span></div>
+            <div class="readout-stack">
+              <div class="readout readout-token" id="nsToken" data-value="">—</div>
+              <small class="hint hidden" id="nsTokenHint">Type it without the spaces.</small>
+            </div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="nsToken">Copy</button>
+              <button class="chip" type="button" id="nsRegenToken">New token</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="silk">What the headset may control</p>
+          <label class="switch-row">
+            <span class="switch-text">
+              <strong>Mouse</strong>
+              <small>Move the pointer, click, scroll, and drag.</small>
+            </span>
+            <input id="nsMouse" class="switch" type="checkbox" />
+          </label>
+          <label class="switch-row">
+            <span class="switch-text">
+              <strong>Keyboard</strong>
+              <small>Type into whatever is focused on this PC.</small>
+            </span>
+            <input id="nsKeyboard" class="switch" type="checkbox" />
+          </label>
+        </section>
+      </section>
+
+      <!-- ───────────────────────────── Wi-Fi hotspot ─────────────────────── -->
+      <section id="hotspotView" class="view hidden" role="tabpanel" aria-labelledby="hotspotTab">
+        <header class="view-head">
+          <div>
+            <p class="silk">Optional direct link</p>
+            <h2>Wi-Fi hotspot</h2>
+          </div>
+          <p class="lede">Puts the headset on its own network with this PC, when the network
+            you are on blocks the two from seeing each other.</p>
+        </header>
+
+        <div id="capabilityBanner" class="banner hidden"></div>
+
+        <div id="apTransmit" class="transmit" data-state="off">
+          <span class="lamp lamp-lg" id="apLamp" data-state="off" aria-hidden="true"></span>
+          <div class="transmit-text">
+            <strong id="apHeadline">Hotspot is off</strong>
+            <span id="apDetail">Windows may ask for administrator approval when it starts.</span>
+          </div>
+          <button id="startBtn" class="key" type="button">Start hotspot</button>
+          <button id="stopBtn" class="key key-stop hidden" type="button">Stop hotspot</button>
         </div>
-        <div class="join-item">
-          <span class="join-label">Password</span>
-          <div class="join-value" id="joinPass">—</div>
-          <button class="copy" data-copy="joinPass">Copy</button>
-        </div>
-        <div class="join-item highlight">
-          <span class="join-label">Gateway IP (type into VisionVNC)</span>
-          <div class="join-value" id="joinGateway">—</div>
-          <button class="copy" data-copy="joinGateway">Copy</button>
-        </div>
-      </div>
-      <div class="join-stats">
-        <span>Connected clients: <strong id="clientCount">0</strong> / <span id="maxClients">—</span></span>
-        <span>Upstream: <strong id="upstreamName">—</strong></span>
-      </div>
-    </section>
-  </main>
+
+        <p id="opMsg" class="note hidden" aria-live="polite"></p>
+        <button id="fixAdapterBtn" class="chip chip-wide hidden" type="button">
+          Turn off the conflicting adapter and try again
+        </button>
+
+        <section id="joinPanel" class="plate hidden" aria-labelledby="apPlateTitle">
+          <p class="silk plate-title" id="apPlateTitle">Join this network from the headset</p>
+
+          <div class="plate-row">
+            <div class="plate-label"><span class="silk">Network name</span></div>
+            <div class="readout" id="joinSsid" data-value="">—</div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="joinSsid">Copy</button>
+            </div>
+          </div>
+          <div class="plate-row">
+            <div class="plate-label"><span class="silk">Password</span></div>
+            <div class="readout-stack">
+              <div class="readout readout-token" id="joinPass" data-value="">—</div>
+              <small class="hint hidden" id="joinPassHint">Type it without the spaces.</small>
+            </div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="joinPass">Copy</button>
+            </div>
+          </div>
+          <div class="plate-row">
+            <div class="plate-label"><span class="silk">Gateway IP</span></div>
+            <div class="readout-stack">
+              <div class="readout" id="joinGateway" data-value="">—</div>
+              <small class="hint">Use this as the hostname in VisionVNC once the headset has joined.</small>
+            </div>
+            <div class="plate-actions">
+              <button class="chip" type="button" data-copy="joinGateway">Copy</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="silk">Network settings</p>
+          <p id="apSettingsHint" class="hint hidden">Stop the hotspot to change these.</p>
+          <div class="fields">
+            <label class="field">
+              <span>Network name</span>
+              <input id="ssid" type="text" maxlength="32" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <span class="field-row">
+                <input id="passphrase" type="text" maxlength="63" autocomplete="off" spellcheck="false" />
+                <button id="regen" class="chip" type="button" title="Generate a new password">New</button>
+              </span>
+            </label>
+            <label class="field">
+              <span>Band</span>
+              <select id="band">
+                <option value="auto" selected>Automatic</option>
+                <option value="2.4">2.4 GHz</option>
+                <option value="5">5 GHz</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Share internet from</span>
+              <select id="upstream"></select>
+            </label>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="renderer.js"></script>
 </body>

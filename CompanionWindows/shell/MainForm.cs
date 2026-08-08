@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -24,14 +25,32 @@ internal sealed class MainForm : Form
     {
         _client = client;
 
-        Text = "VisionVNC Hotspot";
-        ClientSize = new Size(780, 980);
-        MinimumSize = new Size(640 + (Width - ClientSize.Width), 700 + (Height - ClientSize.Height));
+        Text = "VisionVNC Companion";
+        ClientSize = new Size(1000, 720);
+        MinimumSize = new Size(860 + (Width - ClientSize.Width), 620 + (Height - ClientSize.Height));
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(0x0F, 0x11, 0x17);
+        BackColor = Color.FromArgb(0x1B, 0x1A, 0x18);
         Icon = AppIcon.Load();
 
         Controls.Add(_web);
+    }
+
+    // DWMWA_USE_IMMERSIVE_DARK_MODE. Windows paints the caption light unless a
+    // window asks otherwise, which reads badly above a dark page.
+    private const int DwmUseImmersiveDarkMode = 20;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        try
+        {
+            var enabled = 1;
+            DwmSetWindowAttribute(Handle, DwmUseImmersiveDarkMode, ref enabled, sizeof(int));
+        }
+        catch (DllNotFoundException) { /* pre-Windows-10 builds have no dwmapi */ }
     }
 
     protected override async void OnLoad(EventArgs e)

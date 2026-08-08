@@ -124,7 +124,45 @@ public sealed class NativeStreamingService : BackgroundService
         MouseControlEnabled = MouseControlEnabled,
         KeyboardControlEnabled = KeyboardControlEnabled,
         CaptureSupported = CaptureInterop.IsSupported(),
+        Addresses = LocalAddresses(),
     };
+
+    /// <summary>
+    /// The IPv4 addresses a headset could point at, best candidate first. There
+    /// is no copy-paste between this PC and the headset, so the UI has to show
+    /// the address rather than expect anyone to go looking for it.
+    /// </summary>
+    private static IReadOnlyList<string> LocalAddresses()
+    {
+        try
+        {
+            var found = new List<(int Rank, string Address)>();
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+
+                // Physical links first: a virtual switch or VPN address usually
+                // is not the one the headset on the same Wi-Fi can reach.
+                var rank = ni.NetworkInterfaceType switch
+                {
+                    System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 => 0,
+                    System.Net.NetworkInformation.NetworkInterfaceType.Ethernet => 1,
+                    _ => 2,
+                };
+
+                foreach (var ip in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ip.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                    var text = ip.Address.ToString();
+                    if (text.StartsWith("169.254.")) continue; // link-local; nothing routes here
+                    found.Add((rank, text));
+                }
+            }
+            return found.OrderBy(x => x.Rank).Select(x => x.Address).Distinct().ToList();
+        }
+        catch { return Array.Empty<string>(); }
+    }
 
     public void SetEnabled(bool enabled)
     {
@@ -596,4 +634,5 @@ public sealed record NativeStreamStatus
     [JsonPropertyName("mouseControlEnabled")] public bool MouseControlEnabled { get; init; }
     [JsonPropertyName("keyboardControlEnabled")] public bool KeyboardControlEnabled { get; init; }
     [JsonPropertyName("captureSupported")] public bool CaptureSupported { get; init; }
+    [JsonPropertyName("addresses")] public IReadOnlyList<string> Addresses { get; init; } = Array.Empty<string>();
 }

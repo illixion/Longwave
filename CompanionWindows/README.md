@@ -1,4 +1,4 @@
-# VisionVNC Windows Hotspot Companion (PoC)
+# VisionVNC Windows Companion
 
 Turns a **Windows host into a NAT'd Wi-Fi access point** that a Vision Pro joins directly,
 so the headset and host get a direct, low-latency link **even on networks with client-to-client
@@ -6,10 +6,12 @@ so the headset and host get a direct, low-latency link **even on networks with c
 client (the Windows PC); the Vision Pro rides behind the PC's NAT, keeping internet **and**
 gaining a path to the local Sunshine/VNC server at the AP gateway (`192.168.137.1`).
 
-This is the Windows analogue of Apple's Mac Virtual Display P2P link. It is a
-**network-bring-up enabler**, not a streamer — Sunshine (Moonlight) and/or a VNC server are
-assumed to already run on the host. It's a **separate codebase** (Node + .NET) sibling to the
-macOS companion (`CompanionMac/`); it mirrors that companion's conventions but shares no compiled code.
+This is the Windows analogue of Apple's Mac Virtual Display P2P link, and it also hosts
+**native screen streaming** — the same encrypted protocol the macOS companion serves on
+port 4857, so VisionVNC's *Native* connection type works against a Windows host too
+(opaque desktop or individual windows as their own visionOS windows, with remote mouse
+and keyboard). It's a **separate codebase** (Node + .NET) sibling to the macOS companion
+(`CompanionMac/`); it mirrors that companion's conventions but shares no compiled code.
 
 > **Status: working PoC, validated end-to-end on real hardware.** A device joined the hotspot,
 > received a DHCP lease, and had working internet through the host's NAT (see
@@ -159,12 +161,43 @@ is privileged — an open pipe would be a local privilege-escalation vector).
 
 - **Requests** `{ "id", "method", "params"? }` → **responses** `{ "id", "result" | "error" }`
 - **Methods:** `GetStatus`, `ListUpstreamProfiles`, `StartHotspot{ssid?,passphrase?,band?,profileId?}`,
-  `StopHotspot`, `ListWifiAdapters`, `PrepareApAdapter`, `GetClients`, `Ping`
+  `StopHotspot`, `ListWifiAdapters`, `PrepareApAdapter`, `GetClients`, `NativeStreamStatus`,
+  `NativeStreamSetEnabled{enabled}`, `NativeStreamSetInput{mouse?,keyboard?}`,
+  `NativeStreamRegenerateToken`, `Ping`
 - **Push events** `{ "event":"state", "data": <HotspotStatus> }` on state/client-count changes
-  (driven by `MonitorService`, polling every 2 s)
+  (driven by `MonitorService`, polling every 2 s) and `{ "event":"nativeStream", "data":
+  <NativeStreamStatus> }` on streaming state changes
 
 `HotspotStatus` carries `state` (off/on/inTransition), `ssid`, `passphrase`, `band`, `gatewayIp`,
 `clientCount`/`maxClientCount`, `upstreamName`/`upstreamKind`, `canHostAp`, `capabilityDetail`.
+
+## Native screen streaming
+
+`backend/NativeStream/` serves VisionVNC's framed native-stream protocol (protocol v2) on
+TCP 4857 — the same wire format `CompanionMac` speaks, so the headset's *Native* connection
+type works unchanged against a Windows host:
+
+- **Transport:** TLS 1.2 external PSK (`TLS_PSK_WITH_AES_128_GCM_SHA256`), PSK derived
+  HKDF-SHA256 from the access token shown in the UI. SChannel exposes no PSK ciphersuites,
+  so the handshake runs on BouncyCastle. Newest authenticated viewer wins.
+- **Capture:** Windows.Graphics.Capture — the primary monitor is stream 0; every streamable
+  top-level window is published in a 1 s inventory and can be streamed individually
+  (Unity-style per-window visionOS scenes).
+- **Encode:** GPU-only — hardware HEVC MFT (async model), fed BGRA directly where the driver
+  allows (NVIDIA) or through the Video Processor MFT (BGRA→NV12) otherwise. Streams are
+  opaque (no alpha); the format rides the wire as Annex-B VPS/SPS/PPS
+  (`hevcParameterSets`), samples as 4-byte length-prefixed NALs. 60 fps cap, 1 s keyframes,
+  area-scaled bitrate, six concurrent streams max.
+- **Input:** SendInput — absolute mouse (physical pixels; the process is per-monitor-v2 DPI
+  aware), wheel, and keyboard from raw HID usages (the server negotiates
+  `keyCodeSpace: hidUsage`). Clicks on an occluded streamed window raise it first. Mouse and
+  keyboard control default **on** — the paired token is the consent gate — and can be
+  disabled in the UI.
+- **Settings** persist under `HKCU\SOFTWARE\VisionVNC\Companion` (token, enabled, input
+  toggles).
+
+Requires Windows 10 2004+ for Windows.Graphics.Capture and a hardware HEVC encoder
+(NVIDIA/Intel/AMD — there is no software fallback yet).
 
 ## Behavior notes
 

@@ -8,7 +8,7 @@ VisionVNC/
 ├── ViewModels/
 │   ├── VNCConnectionManager.swift      — VNC connection bridge, @Observable
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing)
-│   ├── MacNativeStreamManager.swift    — Native Mac stream lifecycle + transparent display layer
+│   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, transparent display layer
 │   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
 │   └── MoonlightConnectionManager.swift — Moonlight orchestrator, state machine, @Observable
 ├── Views/
@@ -18,7 +18,8 @@ VisionVNC/
 │   ├── SettingsView.swift              — New-connection defaults (@AppStorage)
 │   ├── ConsoleView.swift               — Log viewer (tab + "console" pop-out window)
 │   ├── AudioStreamView.swift           — Audio mini player (album art, transport, mute, utility row)
-│   ├── MacNativeStreamView.swift       — Transparent HEVC-alpha Mac stream scene
+│   ├── NativeStreamView.swift          — Transparent desktop scene + per-window controller (window picker)
+│   ├── NativeWindowStreamView.swift    — One chrome-free scene per streamed host window (Unity-style)
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
 │   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
 │   ├── VirtualKeyboardView.swift       — Our own on-screen key grid + modifier latches
@@ -60,7 +61,7 @@ VisionVNC/
 
 Shared/                                 — compiled into BOTH targets (visionOS app + macOS companion)
 ├── AudioStreamProtocol.swift           — Wire protocol v6 (int24 PCM via PCM24), NowPlayingInfo, MediaCommand
-├── MacNativeStreamProtocol.swift       — Native stream hello/format/video/replacement framing
+├── MacNativeStreamProtocol.swift       — Native stream framing: v2 capabilities, window inventory, multiplexed streams, input
 ├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
 └── BroadcastSetupURL.swift             — visionvnc://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 
@@ -82,6 +83,7 @@ CompanionMac/                           — macOS menu bar companion target (Vis
 ├── MacNativeStreamingController.swift  — Enable state, capture/server lifecycle, takeover notifications
 ├── MacNativeStreamServer.swift         — Single authenticated newest-viewer-wins server + Bonjour
 ├── MacNativeScreenCapture.swift        — Transparent ScreenCaptureKit window composition
+├── MacNativeWindowStreams.swift        — Per-window streamers + inventory coordinator (Unity-style)
 ├── MacHEVCAlphaEncoder.swift           — Realtime VideoToolbox HEVC-with-alpha encoder
 ├── MacNativeStreamNotifications.swift  — Foreground-capable connection/takeover notifications
 ├── SystemAudioTap.swift                — Core Audio process tap

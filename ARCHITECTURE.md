@@ -2,7 +2,7 @@
 
 ## Multi-Window Design
 
-Eleven `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
+Twelve `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 
 1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
@@ -10,7 +10,8 @@ Eleven `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 4. **Terminal** (`id: "ssh-terminal"`, value-typed by `SSHSessionID`) — `SSHTerminalView`, 900x640
 5. **Terminal Keyboard** (`id: "ssh-keyboard"`, value-typed by `SSHSessionID`) — `SSHKeyboardView`, 1180x780
 6. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
-7. **Native Mac Stream** (`id: "mac-native-stream"`, value-typed by `MacNativeWindowID.shared`) — transparent HEVC-alpha Mac desktop, 1440x900 default
+7. **Native** (`id: "mac-native-stream"`, value-typed by `MacNativeWindowID.shared`) — transparent HEVC-alpha host desktop and the per-window controller (window picker + audio + session controls), 1440x900 default
+7a. **Mac Window** (`id: "mac-native-window"`, value-typed by `MacNativeWindowStreamID`) — one chrome-free (no-ornament) scene per streamed host window (Unity-style), 960x720 default
 8. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
 9. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
 10. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
@@ -65,9 +66,12 @@ Eleven `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 | `MacNativeStreamingController` (macOS) | Starts capture only while an authenticated viewer is active, stops it on disconnect/failure, and posts a macOS notification naming the new and replaced devices. |
 | `MacNativeStreamClient` (visionOS) | Receives framed format/video/replacement messages and serializes renderer work onto the main queue. |
 | `MacNativeVideoRenderer` (visionOS) | Reconstructs the transported `hvc1` format with `ContainsAlphaChannel`, creates compressed `CMSampleBuffer`s, and submits them through `AVSampleBufferVideoRenderer`. |
-| `MacNativeStreamManager` / `MacNativeStreamView` (visionOS) | Own connection state and the single transparent plain-style visionOS window. Connection generations prevent stale callbacks from tearing down a replacement connection. |
+| `MacNativeStreamManager` / `NativeStreamView` (visionOS) | Own connection state, the transparent desktop window, and the per-window controller UI (inventory picker). Connection generations prevent stale callbacks from tearing down a replacement connection. |
+| `MacNativeWindowStreamCoordinator` (macOS) | Publishes the streamable-window inventory (1 s poll) and owns per-window `SCContentFilter(desktopIndependentWindow:)` streams + encoders for the active v2 viewer (6-stream cap, area-scaled bitrate, resize tracking). |
+| `MacNativeWindowSession` / `NativeWindowStreamView` (visionOS) | One subscribed per-window stream: its own display layer/renderer behind one chrome-free scene; self-dismisses on host-side close, resubscribes on scene reappearance and reconnect. |
+| `NativeStreamingService` + `NativeStream/*` (Windows, C#) | The same protocol served from the Windows companion backend: BouncyCastle TLS-PSK, Windows.Graphics.Capture sources, hardware HEVC MFT (opaque, `hevcParameterSets` format kind), SendInput injection from HID usages. |
 
-### Native Mac Video Pipeline
+### Native Video Pipeline (macOS host)
 
 ```
 SCShareableContent visible layer-zero application windows

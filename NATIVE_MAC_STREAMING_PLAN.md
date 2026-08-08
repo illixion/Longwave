@@ -1,12 +1,34 @@
-# Native Mac Streaming Roadmap
+# Native Streaming Roadmap
 
 ## Goal
 
 Replace Mac Virtual Display for LAN and optional Tailscale use with a native,
-encrypted Mac stream that supports transparent windows, remote input, and
-eventually VMware Unity-style per-window visionOS presentation.
+encrypted host stream that supports transparent windows, remote input, and
+Unity-style per-window visionOS presentation — on macOS and Windows hosts.
 
-## Current Milestone: Transparent Desktop
+## Status
+
+- Transparent desktop milestone: **implemented** (see below).
+- Phase 1 (mouse/keyboard control): **implemented** — pointer/scroll/key
+  frames, CGEvent injection behind Accessibility, independent mouse and
+  keyboard-shortcut toggles, drag synthesis, double/triple-click detection.
+- Phase 3 (per-window streaming): **implemented, v1 scope** — protocol v2
+  multiplexes a published window inventory and per-window HEVC-alpha streams
+  over the one authenticated session; each streamed window is its own
+  chrome-free visionOS scene; input routes through the window's live frame
+  with raise-before-click. Encoder budget is a flat 6-stream cap with
+  area-scaled bitrate (no focus-based FPS tiering yet); minimized/other-Space
+  windows end their stream rather than pausing it.
+- **Windows host: implemented** — the Windows companion backend serves the
+  same protocol on the same port (BouncyCastle TLS-PSK, Windows.Graphics.
+  Capture, hardware HEVC MFT, SendInput with HID-usage keycodes), integrated
+  into the Electron app with a Screen Streaming card (enable, token, input
+  toggles). Desktop is opaque (`hevcParameterSets` format kind); per-window
+  streams work the same way. Verified end-to-end against a Network.framework
+  client on the RTX 3080 host. Intended to double as Desktop View for PCVR
+  mode once merged into `appstore/pcvr`.
+
+## First Milestone: Transparent Desktop
 
 Implemented:
 
@@ -60,20 +82,44 @@ and takeover cleanup all work without stuck input.
 Acceptance: users can reach Dock/Menu Bar and choose full-fidelity opaque
 capture when transparency is not appropriate.
 
-## Phase 3: Unity-Style Per-Window Streaming
+## Phase 3: Unity-Style Per-Window Streaming — implemented (v1 scope)
 
-- Track ScreenCaptureKit windows by stable window identity and publish window
-  inventory, title, owning app, frame, visibility, and lifecycle changes.
-- Multiplex independent window streams over one authenticated session.
-- Create value-typed visionOS windows per Mac window and preserve aspect ratio.
-- Route focus and input to the correct Mac window.
-- Handle child windows, sheets, popovers, minimized windows, app termination,
-  Space changes, and display changes.
-- Budget encoders dynamically: prioritize focused/visible windows, reduce FPS
-  for background windows, and fall back to grouped composition when necessary.
+Done:
 
-Acceptance: opening, closing, moving, focusing, and interacting with common Mac
-application windows behaves like Unity mode without orphaned visionOS scenes.
+- Stable window identity (CGWindowID / HWND low 32 bits) with a 1 s inventory
+  publisher (title, owning app, point size, focus) pushed as `windowList`.
+- Independent window streams multiplexed over the one authenticated session
+  (`windowStreamStart/Stop`, per-stream format descriptions and video frames,
+  `windowClosed`, `focusWindow`, per-window mouse frames).
+- One chrome-free value-typed visionOS scene per streamed window (aspect-fit,
+  no ornament); the Native window doubles as the controller (window picker +
+  audio + session controls); scenes self-dismiss on host-side close and
+  resubscribe after transient scene teardowns and reconnects.
+- Focus/input routing to the correct host window, raising it first when a
+  click would land on an occluding window.
+- Sheets/child windows are captured into their parent stream
+  (`includeChildWindows`); app termination and Space changes end the stream
+  cleanly via the inventory poll.
+
+Remaining (follow-up):
+
+- Minimized windows end their stream instead of pausing/thumbnails.
+- Encoder budgeting is a flat 6-stream cap with area-scaled bitrate — no
+  focus-based FPS tiering or grouped-composition fallback yet.
+- No dedicated child-window/popover scenes.
+
+## Windows Host — implemented
+
+The Windows companion backend (`CompanionWindows/backend/NativeStream/`)
+serves the same wire protocol on port 4857: TLS 1.2 PSK via BouncyCastle
+(SChannel exposes no PSK suites), Windows.Graphics.Capture sources (primary
+monitor = stream 0, `CreateForWindow` per window), a GPU-only encode path
+(hardware HEVC MFT, ARGB32 direct input where the driver allows, Video
+Processor MFT fallback), Annex-B repacked to length-prefixed NALs with
+VPS/SPS/PPS as the `hevcParameterSets` format kind, and SendInput injection
+from raw HID usages. Opaque desktop (no alpha), remote control on by default
+(the token is the consent gate). Enable/token/input toggles live in the
+Electron app's Screen Streaming card and the `NativeStream*` pipe RPCs.
 
 ## Phase 4: Discovery and TLS 1.3 Identities
 

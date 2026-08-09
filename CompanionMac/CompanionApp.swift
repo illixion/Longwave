@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import os
 
-/// Menu bar companion app for VisionVNC (macOS side): streams system audio
+/// Menu bar companion app for Longwave (macOS side): streams system audio
 /// to the Vision Pro via a Core Audio process tap, relays Music.app now-playing
 /// metadata + transport, and offers keyboard text injection and SSH key setup.
 ///
@@ -18,7 +18,7 @@ struct CompanionApp: App {
         // waiting for the first stream — reading hostName performs a
         // local-network lookup, which is enough to trigger the dialog.
         let hostName = ProcessInfo.processInfo.hostName
-        Logger(subsystem: "com.illixion.VisionVNCCompanion", category: "App")
+        Logger(subsystem: "com.illixion.LongwaveCompanion", category: "App")
             .info("Local network access prompt triggered (host: \(hostName, privacy: .private))")
     }
 

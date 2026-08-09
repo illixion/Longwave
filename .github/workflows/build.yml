@@ -1,4 +1,4 @@
-name: Build VisionVNC
+name: Build Longwave
 
 on:
   push:
@@ -37,10 +37,10 @@ jobs:
           git clone https://github.com/royalapplications/royalvnc.git repos/royalvnc
           cd repos/royalvnc
           git checkout $ROYALVNC_REF
-          # Static linking (dyld embedding fix) + VisionVNC API additions:
+          # Static linking (dyld embedding fix) + Longwave API additions:
           # per-connection JPEG quality/compression settings and
           # pause/resumeFramebufferUpdates
-          git apply ../../ci/patches/royalvnc-visionvnc.patch
+          git apply ../../ci/patches/royalvnc-longwave.patch
 
       # The MIT build must not compile or link any Moonlight code, but the
       # project's local package references still need to resolve — stand in
@@ -70,16 +70,16 @@ jobs:
       - name: Resolve packages
         run: |
           xcodebuild -resolvePackageDependencies \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNC
+            -project Longwave.xcodeproj \
+            -scheme Longwave
 
       - name: Build archive (VNC + Audio, Moonlight disabled)
         run: |
           xcodebuild archive \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNC \
+            -project Longwave.xcodeproj \
+            -scheme Longwave \
             -destination 'generic/platform=visionOS' \
-            -archivePath $RUNNER_TEMP/VisionVNC.xcarchive \
+            -archivePath $RUNNER_TEMP/Longwave.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -87,22 +87,22 @@ jobs:
 
       - name: Create unsigned IPA
         run: |
-          cd $RUNNER_TEMP/VisionVNC.xcarchive/Products/Applications
+          cd $RUNNER_TEMP/Longwave.xcarchive/Products/Applications
           mkdir -p $RUNNER_TEMP/Payload
-          cp -R VisionVNC.app $RUNNER_TEMP/Payload/
+          cp -R Longwave.app $RUNNER_TEMP/Payload/
           cd $RUNNER_TEMP
-          zip -r VisionVNC-unsigned.ipa Payload
+          zip -r Longwave-unsigned.ipa Payload
 
-      # VisionVNCCompanion's ARCHS build setting is "arm64 x86_64" (project.pbxproj),
+      # LongwaveCompanion's ARCHS build setting is "arm64 x86_64" (project.pbxproj),
       # so this single archive command produces a universal binary covering both
       # Apple Silicon and Intel Macs — nothing extra needed on the command line.
       - name: Build Companion (macOS)
         run: |
           xcodebuild archive \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNCCompanion \
+            -project Longwave.xcodeproj \
+            -scheme LongwaveCompanion \
             -destination 'generic/platform=macOS' \
-            -archivePath $RUNNER_TEMP/VisionVNCCompanion.xcarchive \
+            -archivePath $RUNNER_TEMP/LongwaveCompanion.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
@@ -110,15 +110,15 @@ jobs:
       # Fail fast if a future project-settings change silently drops a slice.
       - name: Verify Companion is a universal binary
         run: |
-          ARCHS=$(lipo -archs "$RUNNER_TEMP/VisionVNCCompanion.xcarchive/Products/Applications/VisionVNCCompanion.app/Contents/MacOS/VisionVNCCompanion")
+          ARCHS=$(lipo -archs "$RUNNER_TEMP/LongwaveCompanion.xcarchive/Products/Applications/LongwaveCompanion.app/Contents/MacOS/LongwaveCompanion")
           echo "Architectures: $ARCHS"
-          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "::error::VisionVNCCompanion is not a universal arm64+x86_64 binary"; exit 1; }
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "::error::LongwaveCompanion is not a universal arm64+x86_64 binary"; exit 1; }
 
       - name: Zip Companion app
         run: |
-          cd $RUNNER_TEMP/VisionVNCCompanion.xcarchive/Products/Applications
+          cd $RUNNER_TEMP/LongwaveCompanion.xcarchive/Products/Applications
           # ditto preserves bundle structure/extended attributes
-          ditto -c -k --keepParent VisionVNCCompanion.app $RUNNER_TEMP/VisionVNCCompanion-unsigned.zip
+          ditto -c -k --keepParent LongwaveCompanion.app $RUNNER_TEMP/LongwaveCompanion-unsigned.zip
 
       # Real dependencies for the Moonlight-enabled archive: drop the two
       # stub packages and let setup-deps.sh re-clone + patch them
@@ -132,16 +132,16 @@ jobs:
       - name: Resolve packages (Moonlight)
         run: |
           xcodebuild -resolvePackageDependencies \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNC
+            -project Longwave.xcodeproj \
+            -scheme Longwave
 
       - name: Build archive (VNC + Audio + Moonlight)
         run: |
           xcodebuild archive \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNC \
+            -project Longwave.xcodeproj \
+            -scheme Longwave \
             -destination 'generic/platform=visionOS' \
-            -archivePath $RUNNER_TEMP/VisionVNC-moonlight.xcarchive \
+            -archivePath $RUNNER_TEMP/Longwave-moonlight.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -149,55 +149,55 @@ jobs:
 
       - name: Create unsigned Moonlight IPA
         run: |
-          cd $RUNNER_TEMP/VisionVNC-moonlight.xcarchive/Products/Applications
+          cd $RUNNER_TEMP/Longwave-moonlight.xcarchive/Products/Applications
           mkdir -p $RUNNER_TEMP/MoonlightPayload/Payload
-          cp -R VisionVNC.app $RUNNER_TEMP/MoonlightPayload/Payload/
+          cp -R Longwave.app $RUNNER_TEMP/MoonlightPayload/Payload/
           cd $RUNNER_TEMP/MoonlightPayload
-          zip -r $RUNNER_TEMP/VisionVNC-moonlight-unsigned.ipa Payload
+          zip -r $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa Payload
 
       # The full macOS client (VNC + Moonlight + Audio + SSH + host/companion
       # features). It links moonlight-common-c, so like the Moonlight IPA it is
       # GPLv3 — built here in the real-dependency phase, never in the MIT phase.
-      # MOONLIGHT_ENABLED is baked into the VisionVNCMac target's build settings,
+      # MOONLIGHT_ENABLED is baked into the LongwaveMac target's build settings,
       # so (unlike the visionOS scheme) we don't pass it on the command line.
       # ARCHS = "arm64 x86_64" is likewise baked in (project.pbxproj), so this
       # produces a universal binary covering Apple Silicon and Intel Macs. The
       # Opus dependency needs the ci/patches/opus-x86_64-universal.patch
       # (applied by setup-deps.sh above) to compile for x86_64 at all — it
       # guards the ARM NEON intrinsic sources to no-op on that arch.
-      - name: Build full macOS app (VisionVNCMac, Moonlight)
+      - name: Build full macOS app (LongwaveMac, Moonlight)
         run: |
           xcodebuild archive \
-            -project VisionVNC.xcodeproj \
-            -scheme VisionVNCMac \
+            -project Longwave.xcodeproj \
+            -scheme LongwaveMac \
             -destination 'generic/platform=macOS' \
-            -archivePath $RUNNER_TEMP/VisionVNCMac.xcarchive \
+            -archivePath $RUNNER_TEMP/LongwaveMac.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
       # Fail fast if a future project-settings or dependency-patch change
       # silently drops a slice.
-      - name: Verify VisionVNCMac is a universal binary
+      - name: Verify LongwaveMac is a universal binary
         run: |
-          ARCHS=$(lipo -archs "$RUNNER_TEMP/VisionVNCMac.xcarchive/Products/Applications/VisionVNCMac.app/Contents/MacOS/VisionVNCMac")
+          ARCHS=$(lipo -archs "$RUNNER_TEMP/LongwaveMac.xcarchive/Products/Applications/LongwaveMac.app/Contents/MacOS/LongwaveMac")
           echo "Architectures: $ARCHS"
-          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "::error::VisionVNCMac is not a universal arm64+x86_64 binary"; exit 1; }
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "::error::LongwaveMac is not a universal arm64+x86_64 binary"; exit 1; }
 
       - name: Zip full macOS app
         run: |
-          cd $RUNNER_TEMP/VisionVNCMac.xcarchive/Products/Applications
+          cd $RUNNER_TEMP/LongwaveMac.xcarchive/Products/Applications
           # ditto preserves bundle structure/extended attributes
-          ditto -c -k --keepParent VisionVNCMac.app $RUNNER_TEMP/VisionVNCMac-unsigned.zip
+          ditto -c -k --keepParent LongwaveMac.app $RUNNER_TEMP/LongwaveMac-unsigned.zip
 
       - name: Collect versioned artifacts
         run: |
           VERSION="0.1.0-${GITHUB_SHA::8}"
           mkdir -p dist
-          cp $RUNNER_TEMP/VisionVNC-unsigned.ipa "dist/VisionVNC-${VERSION}-unsigned.ipa"
-          cp $RUNNER_TEMP/VisionVNC-moonlight-unsigned.ipa "dist/VisionVNC-${VERSION}-moonlight-unsigned.ipa"
-          cp $RUNNER_TEMP/VisionVNCCompanion-unsigned.zip "dist/VisionVNCCompanion-${VERSION}-unsigned.zip"
-          cp $RUNNER_TEMP/VisionVNCMac-unsigned.zip "dist/VisionVNCMac-${VERSION}-unsigned.zip"
+          cp $RUNNER_TEMP/Longwave-unsigned.ipa "dist/Longwave-${VERSION}-unsigned.ipa"
+          cp $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa "dist/Longwave-${VERSION}-moonlight-unsigned.ipa"
+          cp $RUNNER_TEMP/LongwaveCompanion-unsigned.zip "dist/LongwaveCompanion-${VERSION}-unsigned.zip"
+          cp $RUNNER_TEMP/LongwaveMac-unsigned.zip "dist/LongwaveMac-${VERSION}-unsigned.zip"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -206,7 +206,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # VisionVNC Windows Companion (Beta) installers — built natively per architecture:
+  # Longwave Windows Companion (Beta) installers — built natively per architecture:
   # x64 on windows-latest, arm64 on windows-11-arm (Snapdragon X-class laptops are
   # increasingly common). Self-contained .NET backend + Electron/NSIS installer.
   # Each emits a signed build-provenance attestation so anyone can prove the
@@ -281,7 +281,7 @@ jobs:
           VERSION="0.1.0-${GITHUB_SHA::8}"
           SRC=$(ls CompanionWindows/app/dist/*.exe | head -n1)
           mkdir -p dist-out
-          DEST="dist-out/VisionVNCWindowsCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
+          DEST="dist-out/LongwaveWindowsCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
           cp "$SRC" "$DEST"
           echo "installer=$DEST" >> "$GITHUB_OUTPUT"
 
@@ -337,21 +337,21 @@ jobs:
           Built from \`$VERSION\`.
 
           **Assets**
-          - \`VisionVNC-…-unsigned.ipa\` — VNC + Audio only (Moonlight disabled). All MIT-compatible.
-          - \`VisionVNC-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
-          - \`VisionVNCCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
-          - \`VisionVNCMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
-          - \`VisionVNCWindowsCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the VisionVNC Windows Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
+          - \`Longwave-…-unsigned.ipa\` — VNC + Audio only (Moonlight disabled). All MIT-compatible.
+          - \`Longwave-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
+          - \`LongwaveCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
+          - \`LongwaveMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
+          - \`LongwaveWindowsCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Longwave Windows Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
 
           **Running the macOS apps**
 
           The macOS \`.zip\`s are unsigned, so Gatekeeper blocks them on first launch
           ("damaged / can't be opened"). After unzipping into \`/Applications\`,
           clear the quarantine flag and re-sign ad-hoc (substitute the app you
-          downloaded — \`VisionVNCCompanion.app\` or \`VisionVNCMac.app\`):
+          downloaded — \`LongwaveCompanion.app\` or \`LongwaveMac.app\`):
 
           \`\`\`sh
-          APP=/Applications/VisionVNCMac.app   # or VisionVNCCompanion.app
+          APP=/Applications/LongwaveMac.app   # or LongwaveCompanion.app
           xattr -dr com.apple.quarantine "\$APP"
           codesign --force --deep --sign - "\$APP"
           \`\`\`
@@ -360,7 +360,7 @@ jobs:
           Development identity, you can skip this.)
 
           ⚠️ **Licensing note:** the Moonlight-enabled IPA and the full macOS app
-          (\`VisionVNCMac\`) link
+          (\`LongwaveMac\`) link
           [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c),
           which is **GPLv3**. Those artifacts are therefore distributed under the GPLv3,
           not the project's MIT terms. The VNC-only IPA and the small Companion contain

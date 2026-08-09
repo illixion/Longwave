@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 /// <summary>
 /// Polls the tethering controller on a fixed cadence so state changes, client-count changes,

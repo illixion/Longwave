@@ -14,7 +14,7 @@ import os
 final class MusicAppBridge {
 
     private static let log = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.illixion.VisionVNCCompanion",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.illixion.LongwaveCompanion",
         category: "MusicBridge"
     )
     private static let musicBundleID = "com.apple.Music"

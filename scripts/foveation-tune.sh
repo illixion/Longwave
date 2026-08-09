@@ -34,7 +34,7 @@ set -euo pipefail
 
 HOST=pc
 SSH_EXEC="$HOME/.claude/bin/ssh-exec"
-YAML='C:\dev\VisionVNC-companion\backend\bin\Release\net8.0-windows10.0.22621.0\publish\Server\cloudxr-runtime.yaml'
+YAML='C:\dev\Longwave-companion\backend\bin\Release\net8.0-windows10.0.22621.0\publish\Server\cloudxr-runtime.yaml'
 
 ps() { "$SSH_EXEC" exec --host "$HOST" -P --timeout "${2:-180}" --desc "$3" --command "$1"; }
 

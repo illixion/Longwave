@@ -5,7 +5,7 @@ import CoreMedia
 /// ("Mirror My View" / View Sharing) plus optional mic audio from ReplayKit
 /// and publishes it over RTSP via the shared BroadcastCore pipeline.
 ///
-/// Runs in its own process, so the stream keeps going while VisionVNC is
+/// Runs in its own process, so the stream keeps going while Longwave is
 /// backgrounded — server settings come from the app-group defaults/keychain
 /// written by the app's Broadcast tab. Started from the system View Sharing
 /// menu or the picker in the Broadcast tab.
@@ -24,13 +24,13 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
         broadcastLog("🔧 View broadcast config: group=\(BroadcastShared.appGroup) password=\(password == nil ? "MISSING" : "present")")
         guard let config = BroadcastShared.serverConfig(viewStream: true, password: password) else {
             finishBroadcastWithError(NSError(
-                domain: "VisionVNCBroadcast", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Set the server address in VisionVNC's Broadcast tab first."]))
+                domain: "LongwaveBroadcast", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Set the server address in Longwave's Broadcast tab first."]))
             return
         }
         if config.username != nil, config.password == nil {
             finishBroadcastWithError(NSError(
-                domain: "VisionVNCBroadcast", code: 3,
+                domain: "LongwaveBroadcast", code: 3,
                 userInfo: [NSLocalizedDescriptionKey: "Couldn't read the publish password — re-AirDrop the pairing link from the Mac companion."]))
             return
         }
@@ -61,7 +61,7 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     private func startPublisher(config: BroadcastShared.ServerConfig, sps: Data, pps: Data) {
-        let sdp = SDPBuilder.build(sessionName: "VisionVNC View", sps: sps, pps: pps, audioChannels: 1)
+        let sdp = SDPBuilder.build(sessionName: "Longwave View", sps: sps, pps: pps, audioChannels: 1)
         let publisher = RTSPPublisher(host: config.host, port: config.port, path: config.path,
                                       username: config.username, password: config.password, sdp: sdp,
                                       pinnedCertSHA256: config.pinnedCertSHA256)
@@ -118,7 +118,7 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
         teardown()
         broadcastLog("❌ View broadcast error: \(message)")
         finishBroadcastWithError(NSError(
-            domain: "VisionVNCBroadcast", code: 2,
+            domain: "LongwaveBroadcast", code: 2,
             userInfo: [NSLocalizedDescriptionKey: message]))
     }
 

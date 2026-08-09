@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 // ---------------------------------------------------------------------------
 // On-demand elevation for tethering.
@@ -54,7 +54,7 @@ public interface ITetheringService
 public static class TetherElevation
 {
     /// <summary>Pipe the elevated <c>--tether-host</c> serves and the proxy connects to.</summary>
-    public const string HostPipeName = "visionvnc-tether-host";
+    public const string HostPipeName = "longwave-tether-host";
 
     /// <summary>Argument that switches this executable into the elevated tethering host role.</summary>
     public const string HostRoleArg = "--tether-host";

@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// The whole shell: a WebView2 hosting the companion's web assets, bridged to the
@@ -13,7 +13,7 @@ namespace VisionVNC.Companion.Shell;
 /// </summary>
 internal sealed class MainForm : Form
 {
-    private const string VirtualHost = "companion.visionvnc.local";
+    private const string VirtualHost = "companion.longwave.local";
     private const string DownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
 
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
@@ -25,7 +25,7 @@ internal sealed class MainForm : Form
     {
         _client = client;
 
-        Text = "VisionVNC Companion";
+        Text = "Longwave Companion";
         ClientSize = new Size(1000, 720);
         MinimumSize = new Size(860 + (Width - ClientSize.Width), 620 + (Height - ClientSize.Height));
         StartPosition = FormStartPosition.CenterScreen;
@@ -63,7 +63,7 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Could not start the embedded browser.\n\n{ex.Message}",
-                "VisionVNC Companion", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                "Longwave Companion", MessageBoxButtons.OK, MessageBoxIcon.Error);
             Close();
             return;
         }
@@ -92,7 +92,7 @@ internal sealed class MainForm : Form
         var answer = MessageBox.Show(this,
             "The Microsoft Edge WebView2 Runtime is required and was not found on this PC.\n\n" +
             "Open the download page now?",
-            "VisionVNC Companion", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            "Longwave Companion", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
         if (answer == DialogResult.Yes)
         {
             try { Process.Start(new ProcessStartInfo(DownloadUrl) { UseShellExecute = true }); }
@@ -105,7 +105,7 @@ internal sealed class MainForm : Form
     {
         var userData = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "VisionVNC", "WebView2");
+            "Longwave", "WebView2");
         Directory.CreateDirectory(userData);
 
         var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
@@ -116,7 +116,7 @@ internal sealed class MainForm : Form
         core.Settings.IsStatusBarEnabled = false;
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
         core.Settings.IsSwipeNavigationEnabled = false;
-        core.Settings.AreDevToolsEnabled = Environment.GetEnvironmentVariable("VISIONVNC_DEVTOOLS") == "1";
+        core.Settings.AreDevToolsEnabled = Environment.GetEnvironmentVariable("LONGWAVE_DEVTOOLS") == "1";
         _web.DefaultBackgroundColor = Color.FromArgb(0x0F, 0x11, 0x17);
 
         // Serve the renderer from a virtual origin so the page's `default-src 'self'` CSP

@@ -17,12 +17,12 @@ final class CompanionInjectServer: @unchecked Sendable {
 
     private let port: UInt16
     private let token: String
-    private let queue = DispatchQueue(label: "com.illixion.VisionVNCCompanion.inject", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.illixion.LongwaveCompanion.inject", qos: .userInitiated)
     private nonisolated(unsafe) var listener: NWListener?
     private nonisolated(unsafe) var client: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     private nonisolated(unsafe) var availability = CompanionInjectProtocol.Status.disabled.rawValue
-    private let log = Logger(subsystem: "com.illixion.VisionVNCCompanion", category: "CompanionInjectServer")
+    private let log = Logger(subsystem: "com.illixion.LongwaveCompanion", category: "CompanionInjectServer")
 
     nonisolated init(port: UInt16, token: String) {
         self.port = port

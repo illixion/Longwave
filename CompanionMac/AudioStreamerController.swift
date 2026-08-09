@@ -60,13 +60,13 @@ final class AudioStreamerController {
 
     // MARK: - SSH authorized keys (remote control)
 
-    /// VisionVNC-added keys currently in ~/.ssh/authorized_keys.
+    /// Longwave-added keys currently in ~/.ssh/authorized_keys.
     var installedVisionKeys: [AuthorizedKey] = []
     var keyActionStatus: String?
     var macHostFingerprint: String?
 
     func refreshKeys() {
-        installedVisionKeys = AuthorizedKeysManager.read().filter { $0.comment.contains("visionvnc") }
+        installedVisionKeys = AuthorizedKeysManager.read().filter { $0.comment.contains("longwave") }
         if macHostFingerprint == nil {
             macHostFingerprint = AuthorizedKeysManager.macHostFingerprint()
         }
@@ -258,8 +258,8 @@ final class AudioStreamerController {
     var statusText: String {
         guard isRunning else { return "Not streaming" }
         switch clientCount {
-        case 0: return "Listening — waiting for VisionVNC to connect"
-        default: return "Streaming to VisionVNC"
+        case 0: return "Listening — waiting for Longwave to connect"
+        default: return "Streaming to Longwave"
         }
     }
 

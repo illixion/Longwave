@@ -2,7 +2,7 @@
 /**
  * Process supervision for the PCVR host, owned by this app rather than by Windows.
  *
- * It replaces the `VisionVNC-Broker` / `VisionVNC-Sidecar` scheduled tasks, each of which
+ * It replaces the `Longwave-Broker` / `Longwave-Sidecar` scheduled tasks, each of which
  * ran a `.bat` that redirected to a log file. That arrangement had three faults that cost
  * a whole afternoon on 2026-07-28:
  *
@@ -33,7 +33,7 @@ const { spawn, execFile, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const net = require('net');
 
-const BROKER_CONTROL_PIPE = '\\\\.\\pipe\\VisionVNC.SessionBroker.Control';
+const BROKER_CONTROL_PIPE = '\\\\.\\pipe\\Longwave.SessionBroker.Control';
 
 function requestBrokerControl(command, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -80,7 +80,7 @@ function isProcessRunning(imageName) {
     execFile('tasklist', ['/FI', `IMAGENAME eq ${imageName}`, '/NH', '/FO', 'CSV'], (err, stdout) => {
       if (err) return resolve(false);
       /* Judged by whether the filter matched anything, NOT by finding the name in the
-         output: tasklist truncates the image-name column, so "VisionVNCSessionBroker.exe"
+         output: tasklist truncates the image-name column, so "LongwaveSessionBroker.exe"
          never appears in full and a substring test silently always said "not running".
          When nothing matches, tasklist prints an INFO: line instead of rows. */
       const text = stdout.trim();
@@ -150,12 +150,12 @@ function resolveCloudXrRuntimeJson(backendExe) {
 const KHRONOS_KEY = 'HKLM\\SOFTWARE\\Khronos\\OpenXR\\1';
 
 /**
- * The runtime every app should get while we are hosting: VDXR. `VISIONVNC_VDXR_JSON`
+ * The runtime every app should get while we are hosting: VDXR. `LONGWAVE_VDXR_JSON`
  * overrides it for a non-standard install.
  */
 function resolveVdxrJson() {
   const candidates = [
-    process.env.VISIONVNC_VDXR_JSON,
+    process.env.LONGWAVE_VDXR_JSON,
     'C:\\dev\\vdxr\\bin\\x64\\Release\\virtualdesktop-openxr.json',
   ].filter(Boolean);
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -295,36 +295,36 @@ class Supervisor extends EventEmitter {
     return {
       broker: {
         title: 'Session broker',
-        image: 'VisionVNCSessionBroker.exe',
-        exe: () => firstExisting(bin('VisionVNCSessionBroker.exe')),
+        image: 'LongwaveSessionBroker.exe',
+        exe: () => firstExisting(bin('LongwaveSessionBroker.exe')),
         args: [],
         env: () => ({
-          VISIONVNC_CB_LAYER_LOG: path.join(this.logDirectory, 'cb_broker.log'),
+          LONGWAVE_CB_LAYER_LOG: path.join(this.logDirectory, 'cb_broker.log'),
           // Pushes the composited layer far enough away that it reads as a world rather
           // than a screen; matches the value the old start-broker.bat set.
-          VISIONVNC_BROKER_DEPTH_PLANE_M:
-            process.env.VISIONVNC_BROKER_DEPTH_PLANE_M ?? '50',
-          VISIONVNC_BROKER_TIMEWARP:
-            process.env.VISIONVNC_BROKER_TIMEWARP ?? '1',
+          LONGWAVE_BROKER_DEPTH_PLANE_M:
+            process.env.LONGWAVE_BROKER_DEPTH_PLANE_M ?? '50',
+          LONGWAVE_BROKER_TIMEWARP:
+            process.env.LONGWAVE_BROKER_TIMEWARP ?? '1',
           // Desktop-in-a-quad. Driven by the panel's own switch, because an environment
           // variable turned out to be a promise this app cannot keep: setting one at User
           // scope does not reach an Electron already launched from a shell that predates
           // it, so the toggle looked on while the broker never saw it and the desktop
           // simply failed to appear with nothing in any log to say why. The env var still
           // works for a headless run; the switch wins when it is on.
-          ...(this.brokerOptions.desktopQuad || process.env.VISIONVNC_BROKER_TEST_QUAD
-            ? { VISIONVNC_BROKER_TEST_QUAD: '1' }
+          ...(this.brokerOptions.desktopQuad || process.env.LONGWAVE_BROKER_TEST_QUAD
+            ? { LONGWAVE_BROKER_TEST_QUAD: '1' }
             : {}),
-          ...(process.env.VISIONVNC_BROKER_TEST_QUAD_SRGB
-            ? { VISIONVNC_BROKER_TEST_QUAD_SRGB: process.env.VISIONVNC_BROKER_TEST_QUAD_SRGB }
+          ...(process.env.LONGWAVE_BROKER_TEST_QUAD_SRGB
+            ? { LONGWAVE_BROKER_TEST_QUAD_SRGB: process.env.LONGWAVE_BROKER_TEST_QUAD_SRGB }
             : {}),
-          ...(process.env.VISIONVNC_BROKER_TEST_QUAD_DISTANCE_M
-            ? { VISIONVNC_BROKER_TEST_QUAD_DISTANCE_M:
-                  process.env.VISIONVNC_BROKER_TEST_QUAD_DISTANCE_M }
+          ...(process.env.LONGWAVE_BROKER_TEST_QUAD_DISTANCE_M
+            ? { LONGWAVE_BROKER_TEST_QUAD_DISTANCE_M:
+                  process.env.LONGWAVE_BROKER_TEST_QUAD_DISTANCE_M }
             : {}),
-          ...(process.env.VISIONVNC_BROKER_TEST_QUAD_HEIGHT_M
-            ? { VISIONVNC_BROKER_TEST_QUAD_HEIGHT_M:
-                  process.env.VISIONVNC_BROKER_TEST_QUAD_HEIGHT_M }
+          ...(process.env.LONGWAVE_BROKER_TEST_QUAD_HEIGHT_M
+            ? { LONGWAVE_BROKER_TEST_QUAD_HEIGHT_M:
+                  process.env.LONGWAVE_BROKER_TEST_QUAD_HEIGHT_M }
             : {}),
           ...(this.runtimeJson ? { XR_RUNTIME_JSON: this.runtimeJson } : {}),
         }),

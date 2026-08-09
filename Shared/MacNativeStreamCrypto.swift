@@ -6,8 +6,8 @@ import CryptoKit
 /// Keeping this behind one type allows the planned TLS 1.3 pinned-identity
 /// transport to replace it without changing the wire protocol.
 nonisolated enum MacNativeStreamCrypto {
-    private static let pskIdentity = Data("VisionVNCMacNative/v1".utf8)
-    private static let hkdfSalt = Data("VisionVNC-MacNative-PSK-v1".utf8)
+    private static let pskIdentity = Data("LongwaveMacNative/v1".utf8)
+    private static let hkdfSalt = Data("Longwave-MacNative-PSK-v1".utf8)
     private static let hkdfInfo = Data("psk".utf8)
     private static let pskCiphersuite = tls_ciphersuite_t(rawValue: 0x00A8)!
 

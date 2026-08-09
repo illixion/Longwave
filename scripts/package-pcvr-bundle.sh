@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the closed-source PCVR bundle (VisionVNCPCVRHost.exe + the SessionBroker/OpenXRLayer
+# Build the closed-source PCVR bundle (LongwavePCVRHost.exe + the SessionBroker/OpenXRLayer
 # native binaries + the CloudXR SDK redistributable) and attach it as an asset to a GitHub
 # release CI already created for the public app.
 #
@@ -26,23 +26,23 @@
 # half of that same key, committed at CompanionWindows/app/src/pcvr-signing-key.asc, so nobody
 # needs gpg installed to check it — see pcvr-installer.js's verifyGpgSignature().
 #
-# Requires: VisionVNC-PCVR-Host/, SessionBroker/, OpenXRLayer/ submodules checked out locally;
+# Requires: Longwave-PCVR-Host/, SessionBroker/, OpenXRLayer/ submodules checked out locally;
 # `gh` authenticated against this repo; SSH access to the RTX host (ssh-exec, see ~/CLAUDE.md);
 # the signing YubiKey plugged in.
 
 set -euo pipefail
 
-HOST="${VISIONVNC_PC_HOST:-pc}"
-BRIDGE_WIN='C:\dev\VisionVNC-bridge'
+HOST="${LONGWAVE_PC_HOST:-pc}"
+BRIDGE_WIN='C:\dev\Longwave-bridge'
 # Where the NGC-downloaded CloudXR SDK is hand-staged on the host (matches provision-pc.ps1's
 # own default) — third-party redistributable, not built, just copied along.
-CLOUDXR_SDK_WIN="${VISIONVNC_CLOUDXR_SDK:-C:\\Users\\Ixion\\cloudxr-stream-manager_v6.1.0\\extracted}"
+CLOUDXR_SDK_WIN="${LONGWAVE_CLOUDXR_SDK:-C:\\Users\\Ixion\\cloudxr-stream-manager_v6.1.0\\extracted}"
 # The signing key's fingerprint, not its secret material — the private key never leaves the
 # YubiKey. Matches CompanionWindows/app/src/pcvr-signing-key.asc.
-GPG_KEY="${VISIONVNC_GPG_KEY:-4C7C68975127BCF9}"
+GPG_KEY="${LONGWAVE_GPG_KEY:-4C7C68975127BCF9}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST_PROJ="$REPO_ROOT/VisionVNC-PCVR-Host/Host.csproj"
+HOST_PROJ="$REPO_ROOT/Longwave-PCVR-Host/Host.csproj"
 
 TAG=""
 NO_BUILD_NATIVE=0
@@ -66,7 +66,7 @@ ps_exec() {
   "$SSH_EXEC" exec --host "$HOST" --powershell --desc "$desc" --timeout "$timeout" --command "$script"
 }
 
-[[ -f "$HOST_PROJ" ]] || { echo "error: $HOST_PROJ not found — is the VisionVNC-PCVR-Host submodule checked out?" >&2; exit 1; }
+[[ -f "$HOST_PROJ" ]] || { echo "error: $HOST_PROJ not found — is the Longwave-PCVR-Host submodule checked out?" >&2; exit 1; }
 
 if [[ -z "$TAG" ]]; then
   echo "==> no --tag given, using the latest GitHub release"
@@ -75,12 +75,12 @@ if [[ -z "$TAG" ]]; then
 fi
 echo "==> targeting release tag: $TAG"
 
-STAGE="$(mktemp -d -t visionvnc-pcvr-bundle)"
+STAGE="$(mktemp -d -t longwave-pcvr-bundle)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/host" "$STAGE/bridge"
 
 # ------------------------------------------------------------------ .NET host (built locally)
-echo "==> publishing VisionVNCPCVRHost (win-x64, self-contained)"
+echo "==> publishing LongwavePCVRHost (win-x64, self-contained)"
 dotnet publish "$HOST_PROJ" -c Release -r win-x64 --self-contained true -o "$STAGE/host"
 
 # ------------------------------------------------------------------ native build (on the PC)
@@ -91,7 +91,7 @@ if [[ "$NO_BUILD_NATIVE" == 0 ]]; then
     COPYFILE_DISABLE=1 tar -cf "$TAR" -C "$REPO_ROOT" \
       --exclude='._*' --exclude='build' --exclude='build-hxr' --exclude='.git' \
       "$dir"
-    scp -q "$TAR" "$HOST:C:/Windows/Temp/visionvnc-$dir.tar"
+    scp -q "$TAR" "$HOST:C:/Windows/Temp/longwave-$dir.tar"
   done
 
   ps_exec 'unpack native source' 120 "
@@ -107,10 +107,10 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
   }
   New-Item -ItemType Directory -Force -Path \$target | Out-Null
   Push-Location \$target
-  tar.exe -xf \"C:/Windows/Temp/visionvnc-\$dir.tar\" --strip-components=1
+  tar.exe -xf \"C:/Windows/Temp/longwave-\$dir.tar\" --strip-components=1
   if (\$LASTEXITCODE -ne 0) { throw \"tar extract failed for \$dir\" }
   Pop-Location
-  Remove-Item \"C:/Windows/Temp/visionvnc-\$dir.tar\" -Force
+  Remove-Item \"C:/Windows/Temp/longwave-\$dir.tar\" -Force
 }
 'synced'
 "
@@ -121,8 +121,8 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
   echo "==> building SessionBroker + OpenXRLayer (Release) on $HOST"
   ps_exec 'build broker + layer' 900 "
 \$ErrorActionPreference = 'Stop'
-Remove-Item '$BRIDGE_WIN\\SessionBroker\\build\\Release\\VisionVNCSessionBroker.exe' -Force -ErrorAction SilentlyContinue
-Remove-Item '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\VisionVNCControllerBridgeLayer.dll' -Force -ErrorAction SilentlyContinue
+Remove-Item '$BRIDGE_WIN\\SessionBroker\\build\\Release\\LongwaveSessionBroker.exe' -Force -ErrorAction SilentlyContinue
+Remove-Item '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\LongwaveControllerBridgeLayer.dll' -Force -ErrorAction SilentlyContinue
 
 cmake --build '$BRIDGE_WIN\\SessionBroker\\build' --config Release
 if (\$LASTEXITCODE -ne 0) { throw 'SessionBroker build failed' }
@@ -130,8 +130,8 @@ cmake --build '$BRIDGE_WIN\\OpenXRLayer\\build' --config Release
 if (\$LASTEXITCODE -ne 0) { throw 'OpenXRLayer build failed' }
 
 foreach (\$f in @(
-  '$BRIDGE_WIN\\SessionBroker\\build\\Release\\VisionVNCSessionBroker.exe',
-  '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\VisionVNCControllerBridgeLayer.dll'
+  '$BRIDGE_WIN\\SessionBroker\\build\\Release\\LongwaveSessionBroker.exe',
+  '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\LongwaveControllerBridgeLayer.dll'
 )) {
   if (-not (Test-Path \$f)) { throw \"expected build output missing: \$f\" }
 }
@@ -149,10 +149,10 @@ CLOUDXR_SDK_FS="${CLOUDXR_SDK_WIN//\\//}"
 
 # ------------------------------------------------------------------ collect artifacts back
 echo "==> collecting artifacts from $HOST"
-for f in VisionVNCSessionBroker.exe LibOVRRT64_1.dll sidecar.dll sidecar_inject.exe; do
+for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll sidecar.dll sidecar_inject.exe; do
   scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/Release/$f" "$STAGE/bridge/$f"
 done
-for f in VisionVNCControllerBridgeLayer.dll XR_APILAYER_ILLIXION_controller_bridge.json; do
+for f in LongwaveControllerBridgeLayer.dll XR_APILAYER_ILLIXION_controller_bridge.json; do
   scp -q "$HOST:$BRIDGE_FS/OpenXRLayer/build/Release/$f" "$STAGE/bridge/$f"
 done
 
@@ -196,7 +196,7 @@ fi
 echo "    clean"
 
 # ------------------------------------------------------------------ zip + checksum + signature
-ASSET="VisionVNC-PCVR-Bundle-win-x64.zip"
+ASSET="Longwave-PCVR-Bundle-win-x64.zip"
 ZIP="$STAGE/$ASSET"
 echo "==> zipping bundle"
 (cd "$STAGE" && zip -qr "$ASSET" host bridge)

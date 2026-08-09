@@ -1,7 +1,7 @@
 // Named-pipe RPC smoke test using Node's net module — the same transport the Electron
 // main process will use. Sends Ping/ListUpstreamProfiles/GetStatus/StartHotspot/StopHotspot.
 const net = require('net');
-const PIPE = '\\\\.\\pipe\\visionvnc-hotspot';
+const PIPE = '\\\\.\\pipe\\longwave-hotspot';
 
 const sock = net.connect(PIPE);
 let buf = '';
@@ -15,7 +15,7 @@ sock.on('connect', async () => {
     console.log('Ping ->', JSON.stringify(await rpc('Ping')));
     console.log('ListUpstreamProfiles ->', JSON.stringify(await rpc('ListUpstreamProfiles')));
     console.log('GetStatus ->', JSON.stringify(await rpc('GetStatus')));
-    console.log('StartHotspot ->', JSON.stringify(await rpc('StartHotspot', { ssid: 'VisionVNC-Test', band: 'auto' })));
+    console.log('StartHotspot ->', JSON.stringify(await rpc('StartHotspot', { ssid: 'Longwave-Test', band: 'auto' })));
     console.log('StopHotspot ->', JSON.stringify(await rpc('StopHotspot')));
   } catch (e) {
     console.error('RPC error:', e.message);

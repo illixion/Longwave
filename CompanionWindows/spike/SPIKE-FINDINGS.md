@@ -23,7 +23,7 @@ printing the execution context (elevation, session id) and the live capability/s
   `🐈` also present (5 GHz, WPA3-Personal, ch 44).
 - `GetTetheringCapabilityFromConnectionProfile(Ethernet 2)` → **`Enabled`**.
 - `CreateFromConnectionProfile` → OK. `MaxClientCount = 8`.
-- `ConfigureAccessPointAsync(SSID=VisionVNC-xxxx, 8-char pass)` → **OK**.
+- `ConfigureAccessPointAsync(SSID=Longwave-xxxx, 8-char pass)` → **OK**.
 - `StartTetheringAsync` → **`WiFiDeviceOff`** (no exception; operation-result status).
 
 ### Root cause — `netsh wlan show wirelesscapabilities`

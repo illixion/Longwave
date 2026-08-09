@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CommitHash</key>
+	<string>$(COMMIT_HASH)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.illixion.Longwave.audioToken</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<!-- visionvnc is the pre-rename scheme, kept so a Companion that has
+			     not been updated yet can still hand off a token. Nothing emits it. -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>longwave</string>
+				<string>visionvnc</string>
+			</array>
+		</dict>
+	</array>
+	<key>GCSupportedGameControllers</key>
+	<array>
+		<dict>
+			<key>ProfileName</key>
+			<string>ExtendedGamepad</string>
+		</dict>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Longwave broadcasts your selected camera (such as Persona or Mirror My View) to your streaming server.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Longwave uses your microphone to dictate messages into terminal sessions, and can include it in the broadcast stream.</string>
+	<!-- Dictation transcribes on device via SpeechAnalyzer, which documents no
+	     authorization step of its own. The key is declared anyway: it is the same
+	     framework SFSpeechRecognizer gates on, and an API that asks for consent
+	     with no usage string in the bundle terminates the app rather than being
+	     denied. -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Longwave transcribes your speech on this device to type messages into terminal sessions.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Longwave connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network.</string>
+	<!-- Required by the controller bridge: ControllerBridgeSender calls
+	     ARKitSession.requestAuthorization(for: [.handTracking]) to drive emulated VR
+	     controllers from hand tracking. Without this key ARKit does not merely deny the
+	     request — it throws an uncaught ObjC exception from
+	     __ar_session_request_authorization_block_invoke and the app dies with SIGABRT the
+	     moment a foveated session starts with the bridge enabled. -->
+	<key>NSHandsTrackingUsageDescription</key>
+	<string>Longwave uses hand tracking to drive virtual VR controllers on your PC, so you can play PCVR games with pinch gestures instead of physical controllers.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_longwave-native._tcp</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
+		<string>UIWindowSceneSessionRoleApplication</string>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+		<key>UISceneConfigurations</key>
+		<dict/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+</dict>
+</plist>

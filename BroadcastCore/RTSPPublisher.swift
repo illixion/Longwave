@@ -33,7 +33,7 @@ final class RTSPPublisher: @unchecked Sendable {
     /// DER SHA-256 matches (self-signed + pinning, like the Moonlight side).
     private let pinnedCertSHA256: Data?
 
-    private let queue = DispatchQueue(label: "com.illixion.VisionVNC.rtsp-publish", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "com.illixion.Longwave.rtsp-publish", qos: .userInteractive)
 
     private nonisolated(unsafe) var connection: NWConnection?
     private nonisolated(unsafe) var stopped = false
@@ -300,7 +300,7 @@ final class RTSPPublisher: @unchecked Sendable {
         queue.async { [self] in
             guard !stopped, let connection else { return }
             cseq += 1
-            var lines = ["\(method) \(url) RTSP/1.0", "CSeq: \(cseq)", "User-Agent: VisionVNC"]
+            var lines = ["\(method) \(url) RTSP/1.0", "CSeq: \(cseq)", "User-Agent: Longwave"]
             if let sessionID { lines.append("Session: \(sessionID)") }
             if let authorizationHeader { lines.append("Authorization: \(authorizationHeader)") }
             for (key, value) in headers { lines.append("\(key): \(value)") }

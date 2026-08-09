@@ -11,8 +11,8 @@ import CryptoKit
 /// from `AudioCrypto` so the audio path's crypto is never touched by changes
 /// here.
 nonisolated enum CompanionInjectCrypto {
-    private static let pskIdentity = Data("VisionVNCInject/v1".utf8)
-    private static let hkdfSalt = Data("VisionVNC-Inject-PSK-v1".utf8)
+    private static let pskIdentity = Data("LongwaveInject/v1".utf8)
+    private static let hkdfSalt = Data("Longwave-Inject-PSK-v1".utf8)
     private static let hkdfInfo = Data("psk".utf8)
 
     private static func derivePSK(token: String) -> DispatchData {

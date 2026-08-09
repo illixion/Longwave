@@ -1,8 +1,8 @@
-# VisionVNC Architecture
+# Longwave Architecture
 
 ## Multi-Window Design
 
-Twelve `WindowGroup` scenes in `VisionVNCApp` (four conditionally compiled):
+Twelve `WindowGroup` scenes in `LongwaveApp` (four conditionally compiled):
 
 1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **PCVR** (`PCVRTabView`, foveated sessions — connect, help and every PCVR setting; `#if FOVEATED_ENABLED`), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
@@ -62,7 +62,7 @@ Twelve `WindowGroup` scenes in `VisionVNCApp` (four conditionally compiled):
 |------|------|
 | `MacNativeScreenCapture` (macOS) | ScreenCaptureKit display-sized composition of visible application windows over a clear background. Excludes desktop windows and the companion itself, preserves shadows, and refreshes the content filter as windows change. |
 | `MacHEVCAlphaEncoder` (macOS) | Realtime VideoToolbox HEVC-with-alpha encoder. Sends the exact big-endian CoreMedia image description before compressed frames so alpha-layer metadata survives transport. |
-| `MacNativeStreamServer` (macOS) | TLS-PSK `NWListener` on port 4857, advertised as `_visionvnc-native._tcp`. Exactly one authenticated viewer is active; a valid new hello replaces the old viewer and names it in the replacement frame. |
+| `MacNativeStreamServer` (macOS) | TLS-PSK `NWListener` on port 4857, advertised as `_longwave-native._tcp`. Exactly one authenticated viewer is active; a valid new hello replaces the old viewer and names it in the replacement frame. |
 | `MacNativeStreamingController` (macOS) | Starts capture only while an authenticated viewer is active, stops it on disconnect/failure, and posts a macOS notification naming the new and replaced devices. |
 | `MacNativeStreamClient` (visionOS) | Receives framed format/video/replacement messages and serializes renderer work onto the main queue. |
 | `MacNativeVideoRenderer` (visionOS) | Reconstructs the transported `hvc1` format with `ContainsAlphaChannel`, creates compressed `CMSampleBuffer`s, and submits them through `AVSampleBufferVideoRenderer`. |

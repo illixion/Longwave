@@ -1,7 +1,7 @@
 // Calls a single RPC (default PrepareApAdapter) and prints the result, leaving state as-is.
 const net = require('net');
 const method = process.argv[2] || 'PrepareApAdapter';
-const sock = net.connect('\\\\.\\pipe\\visionvnc-hotspot');
+const sock = net.connect('\\\\.\\pipe\\longwave-hotspot');
 let buf = '', nextId = 1; const pending = new Map();
 sock.setEncoding('utf8');
 sock.on('data', (c) => { buf += c; let nl;

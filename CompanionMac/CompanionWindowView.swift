@@ -55,7 +55,7 @@ struct NativePane: View {
                 Toggle("Screen", isOn: $controller.macNativeStreaming.enabled)
                 Toggle("Audio", isOn: $controller.isRunning)
             } footer: {
-                Text("Screen streams the Mac's visible windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Audio streams the Mac's system audio — playback on VisionVNC honors its own Spatial Audio setting (Mac Virtual Display forces it on). Both use the same host and token as shown in the Token tab; toggle either independently.")
+                Text("Screen streams the Mac's visible windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Audio streams the Mac's system audio — playback on Longwave honors its own Spatial Audio setting (Mac Virtual Display forces it on). Both use the same host and token as shown in the Token tab; toggle either independently.")
             }
 
             if controller.macNativeStreaming.enabled {
@@ -105,7 +105,7 @@ struct NativePane: View {
                         LabeledContent("Now Playing", value: "\(nowPlaying.title ?? "") — \(nowPlaying.artist ?? "")")
                     }
                     Toggle("Mute Mac output while streaming", isOn: $controller.muteWhileStreaming)
-                        .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the VisionVNC app.")
+                        .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the Longwave app.")
                     Toggle("Show track in menu bar", isOn: $controller.showTrackInMenuBar)
                         .help("Shows the current Music.app track as \"Artist – Title\" in the menu bar while streaming.")
                     if let error = controller.lastError {
@@ -116,7 +116,7 @@ struct NativePane: View {
             }
 
             Section {
-                Text("The Mac shows its system screen-capture indicator while Screen is on. VisionVNC Companion also posts a notification naming the connecting device and whether it replaced another viewer.")
+                Text("The Mac shows its system screen-capture indicator while Screen is on. Longwave Companion also posts a notification naming the connecting device and whether it replaced another viewer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -170,7 +170,7 @@ struct AccessTokenPane: View {
                     .help("Invalidates the current token — connected devices must re-pair.")
                 }
             } footer: {
-                Text("Enter this token in VisionVNC as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
+                Text("Enter this token in Longwave as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
             }
         }
     }
@@ -235,7 +235,7 @@ struct BroadcastPane: View {
                 Text("Server")
             } footer: {
                 Text(broadcastServer.mediamtxInstalled
-                     ? "Configures the local mediamtx server for encrypted ingest from the Vision Pro, then AirDrop the pairing link to auto-fill VisionVNC's Broadcast tab."
+                     ? "Configures the local mediamtx server for encrypted ingest from the Vision Pro, then AirDrop the pairing link to auto-fill Longwave's Broadcast tab."
                      : "Install the server first: brew install mediamtx")
             }
 
@@ -293,7 +293,7 @@ struct RemoteControlPane: View {
                         .foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("Copy the key from VisionVNC (Projects → Copy Public Key), then add it here. Enable Remote Login in System Settings → General → Sharing for SSH to work.")
+                Text("Copy the key from Longwave (Projects → Copy Public Key), then add it here. Enable Remote Login in System Settings → General → Sharing for SSH to work.")
             }
 
             if !controller.installedVisionKeys.isEmpty {
@@ -348,7 +348,7 @@ struct KeyboardPane: View {
                     LabeledContent("Status", value: "Ready — remote typing routes through this Mac.")
                 }
             } footer: {
-                Text("Text-only injection (no modifier keys) keeps remote typing from triggering shortcuts. In VisionVNC, link this companion to a VNC connection to use it.")
+                Text("Text-only injection (no modifier keys) keeps remote typing from triggering shortcuts. In Longwave, link this companion to a VNC connection to use it.")
             }
         }
     }

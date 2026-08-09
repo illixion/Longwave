@@ -7,7 +7,7 @@ import os
 /// One-button mediamtx management for the Vision Pro broadcast feature:
 /// generates a publish password + self-signed TLS cert, writes the mediamtx
 /// config (RTSPS ingest, localhost-only WHEP output), restarts the brew
-/// service, and produces the `visionvnc://…/setBroadcastServer` pairing URL
+/// service, and produces the `longwave://…/setBroadcastServer` pairing URL
 /// (host = this Mac's Tailscale IP, credentials, cert fingerprint) for
 /// AirDrop to the headset.
 ///
@@ -24,7 +24,7 @@ final class BroadcastServerManager {
     private(set) var certFingerprintHex: String?
     private(set) var configuredHost: String?
 
-    private let log = Logger(subsystem: "com.illixion.VisionVNCCompanion", category: "BroadcastServer")
+    private let log = Logger(subsystem: "com.illixion.LongwaveCompanion", category: "BroadcastServer")
 
     var password: String = BroadcastServerManager.loadOrCreatePassword() {
         didSet { UserDefaults.standard.set(password, forKey: "broadcastPublishPassword") }
@@ -144,7 +144,7 @@ final class BroadcastServerManager {
 
     // MARK: - Setup steps (background thread)
 
-    private nonisolated static let configMarker = "# Managed by VisionVNC Companion"
+    private nonisolated static let configMarker = "# Managed by Longwave Companion"
 
     enum SetupError: LocalizedError {
         case mediamtxMissing
@@ -176,7 +176,7 @@ final class BroadcastServerManager {
             try run("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048",
                                          "-keyout", keyPath, "-out", certPath,
                                          "-days", "3650", "-nodes",
-                                         "-subj", "/CN=VisionVNC Broadcast"])
+                                         "-subj", "/CN=Longwave Broadcast"])
         }
         guard let fingerprint = try certificateFingerprint(at: certDir) else {
             throw SetupError.certificateUnreadable
@@ -186,7 +186,7 @@ final class BroadcastServerManager {
         if let existing = try? String(contentsOf: configURL, encoding: .utf8),
            !existing.hasPrefix(configMarker) {
             // Preserve whatever was there before we first took over.
-            let backup = configURL.appendingPathExtension("pre-visionvnc")
+            let backup = configURL.appendingPathExtension("pre-longwave")
             if !FileManager.default.fileExists(atPath: backup.path) {
                 try? FileManager.default.copyItem(at: configURL, to: backup)
             }
@@ -203,7 +203,7 @@ final class BroadcastServerManager {
     private nonisolated static func configContents(password: String, keyPath: String, certPath: String) -> String {
         """
         \(configMarker) — the "Set Up Broadcast Server" button regenerates this file.
-        # Previous config (if any) was backed up as mediamtx.yml.pre-visionvnc.
+        # Previous config (if any) was backed up as mediamtx.yml.pre-longwave.
 
         logLevel: info
 
@@ -268,7 +268,7 @@ final class BroadcastServerManager {
 
     private nonisolated static func certDirectory() -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("VisionVNC Companion/broadcast", isDirectory: true)
+            .appendingPathComponent("Longwave Companion/broadcast", isDirectory: true)
     }
 
     /// SHA-256 (hex) of the certificate's DER bytes — what the headset pins.

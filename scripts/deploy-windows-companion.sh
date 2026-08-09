@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy the VisionVNC Windows Companion to the RTX/PCVR host and provision it.
+# Deploy the Longwave Windows Companion to the RTX/PCVR host and provision it.
 #
 # Sync source -> publish backend -> stage the CloudXR SDK -> write launch helpers ->
 # register the interactive-session scheduled tasks -> npm install the Electron UI.
@@ -22,22 +22,22 @@
 
 set -euo pipefail
 
-HOST="${VISIONVNC_PC_HOST:-pc}"
-ROOT_WIN='C:\dev\VisionVNC-companion'
+HOST="${LONGWAVE_PC_HOST:-pc}"
+ROOT_WIN='C:\dev\Longwave-companion'
 # Sibling of ROOT_WIN, exactly as main.js's resolvePcvrHostExe() expects to find it relative to
-# app/src (../../../VisionVNC-PCVR-Host). Not part of CompanionWindows/: it's a separate project
+# app/src (../../../Longwave-PCVR-Host). Not part of CompanionWindows/: it's a separate project
 # in this repo today, and will be a separate repo entirely once the split lands.
-PCVR_HOST_WIN='C:\dev\VisionVNC-PCVR-Host'
+PCVR_HOST_WIN='C:\dev\Longwave-PCVR-Host'
 # Forward slashes: scp will not take a Windows backslash path, and both tar.exe and
 # PowerShell accept them fine.
-REMOTE_TMP='C:/Windows/Temp/visionvnc-companion.tar'
-PCVR_HOST_REMOTE_TMP='C:/Windows/Temp/visionvnc-pcvr-host.tar'
-REMOTE_MANIFEST='C:/Windows/Temp/visionvnc-companion.manifest'
-PCVR_HOST_REMOTE_MANIFEST='C:/Windows/Temp/visionvnc-pcvr-host.manifest'
+REMOTE_TMP='C:/Windows/Temp/longwave-companion.tar'
+PCVR_HOST_REMOTE_TMP='C:/Windows/Temp/longwave-pcvr-host.tar'
+REMOTE_MANIFEST='C:/Windows/Temp/longwave-companion.manifest'
+PCVR_HOST_REMOTE_MANIFEST='C:/Windows/Temp/longwave-pcvr-host.manifest'
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO_ROOT/CompanionWindows"
-PCVR_HOST_SRC="$REPO_ROOT/VisionVNC-PCVR-Host"
+PCVR_HOST_SRC="$REPO_ROOT/Longwave-PCVR-Host"
 
 NO_UI=0
 NO_BUILD=0
@@ -81,7 +81,7 @@ fi
 [[ "$DO_DEPLOY" == 1 ]] || exit 0
 
 # ------------------------------------------------------------------ pack + ship
-STAGE="$(mktemp -d -t visionvnc-companion)"
+STAGE="$(mktemp -d -t longwave-companion)"
 TAR="$STAGE/companion.tar"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -228,7 +228,7 @@ Deployed to $ROOT_WIN on $HOST.
 
 Next:
   scripts/deploy-windows-companion.sh --session start     # CloudXR runtime + OpenComposite, Sunshine off
-  ssh $HOST "schtasks /run /tn VisionVNC-CompanionUI"     # Electron UI (spawns the backend) in session 1
+  ssh $HOST "schtasks /run /tn Longwave-CompanionUI"     # Electron UI (spawns the backend) in session 1
   # press Start host in the Foveated panel, launch the content app, connect the AVP
   scripts/deploy-windows-companion.sh --session stop      # restore SteamVR + Sunshine
 EOF

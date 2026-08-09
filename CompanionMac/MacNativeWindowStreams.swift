@@ -39,7 +39,7 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
     nonisolated init(windowID: UInt32) {
         self.windowID = windowID
         self.outputQueue = DispatchQueue(
-            label: "com.illixion.VisionVNCCompanion.mac-native.window-\(windowID)",
+            label: "com.illixion.LongwaveCompanion.mac-native.window-\(windowID)",
             qos: .userInteractive
         )
         super.init()

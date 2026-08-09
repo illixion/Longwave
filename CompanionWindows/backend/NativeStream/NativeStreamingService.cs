@@ -5,7 +5,7 @@ using Microsoft.Win32;
 using Vortice.Direct3D11;
 using Windows.Graphics.DirectX.Direct3D11;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Orchestrates native screen streaming on Windows: the TLS-PSK server, the
@@ -17,7 +17,7 @@ namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 public sealed class NativeStreamingService : BackgroundService
 {
     private const int MaxStreams = 6;
-    private const string RegistryPath = @"SOFTWARE\VisionVNC\Companion";
+    private const string RegistryPath = @"SOFTWARE\Longwave\Companion";
 
     private readonly ILogger<NativeStreamingService> _log;
     private readonly object _gate = new();

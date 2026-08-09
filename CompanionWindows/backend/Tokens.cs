@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 /// <summary>
 /// Generates the SSID suffix and the WPA2 passphrase. The passphrase is an 8-char
@@ -23,8 +23,8 @@ public static class Tokens
         return new string(chars);
     }
 
-    /// <summary>Default SSID, e.g. "VisionVNC-Gh7k".</summary>
-    public static string DefaultSsid() => $"VisionVNC-{Random(4)}";
+    /// <summary>Default SSID, e.g. "Longwave-Gh7k".</summary>
+    public static string DefaultSsid() => $"Longwave-{Random(4)}";
 
     /// <summary>Default 8-char WPA2 passphrase.</summary>
     public static string DefaultPassphrase() => Random(8);

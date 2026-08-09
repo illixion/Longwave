@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   The Electron UI is the normal way to press Start PCVR / read the pairing QR, but the PCVR
-  host's RPC is just newline-delimited JSON on \\.\pipe\visionvnc-pcvr-host (a separate
+  host's RPC is just newline-delimited JSON on \\.\pipe\longwave-pcvr-host (a separate
   process and pipe from the public backend) and the pipe accepts multiple clients - so the
   host can be started and polled headlessly (from SSH) while the UI stays up and renders the QR.
 
@@ -26,7 +26,7 @@ param(
   [ValidateSet('start', 'stop', 'restart', 'status', 'ping', 'runtime', 'launch', 'restart-launch',
     'host-start', 'host-stop')]
   [string] $Action,
-  [string] $BundleId = 'com.illixion.VisionVNC',
+  [string] $BundleId = 'com.illixion.Longwave',
   [int] $Port = 55000,
   # Advertise/bind a specific IPv4. Empty = the backend picks the first non-loopback
   # address (LAN mode; it also downs Tailscale). A 100.64/10 address = tailnet mode.
@@ -42,8 +42,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$pipeName = 'visionvnc-pcvr-host'
-$controlPipeName = 'visionvnc-companion-control'
+$pipeName = 'longwave-pcvr-host'
+$controlPipeName = 'longwave-companion-control'
 
 $enc    = New-Object System.Text.UTF8Encoding $false
 $pipe = $null

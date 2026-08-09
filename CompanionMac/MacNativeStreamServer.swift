@@ -62,11 +62,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private let port: UInt16
     private let token: String
     private let queue = DispatchQueue(
-        label: "com.illixion.VisionVNCCompanion.mac-native.server",
+        label: "com.illixion.LongwaveCompanion.mac-native.server",
         qos: .userInteractive
     )
     private let log = Logger(
-        subsystem: "com.illixion.VisionVNCCompanion",
+        subsystem: "com.illixion.LongwaveCompanion",
         category: "MacNativeStreamServer"
     )
 
@@ -97,8 +97,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         )
         self.listener = listener
         listener.service = NWListener.Service(
-            name: Host.current().localizedName ?? "VisionVNC Mac",
-            type: "_visionvnc-native._tcp"
+            name: Host.current().localizedName ?? "Longwave Mac",
+            type: "_longwave-native._tcp"
         )
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)

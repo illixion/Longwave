@@ -21,10 +21,10 @@
     "foveation data (a CloudXR-only extension).",
     "",
     "CONSEQUENCE TO BE AWARE OF. Launching through Steam means we cannot inject per-game environment",
-    "variables, so VISIONVNC_CB_LAYER_DISABLE can no longer be set per title and our API layer is",
+    "variables, so LONGWAVE_CB_LAYER_DISABLE can no longer be set per title and our API layer is",
     "always active. That is what gaze-driven foveation needs, but the ovrshim titles previously used",
     "that flag to avoid controller double-injection. The replacement must be a registry setting",
-    "(HKCU\\Software\\VisionVNC\\ControllerBridge already exists for calibration), not an env var."
+    "(HKCU\\Software\\Longwave\\ControllerBridge already exists for calibration), not an env var."
   ],
 
   "schemaVersion": 2,
@@ -40,12 +40,12 @@
   "steamOverrides": [
     {
       "steamAppId": 546560,
-      "notes": "Reduce in-game graphics quality rather than resolution when testing. VisionVNC's optimized profile launches Alyx directly with its measured fidelity and MSAA arguments.",
+      "notes": "Reduce in-game graphics quality rather than resolution when testing. Longwave's optimized profile launches Alyx directly with its measured fidelity and MSAA arguments.",
       "launchOptionsHint": "-vr -novid +vr_fidelity_level_auto 0 +vr_fidelity_level 3 %command%"
     },
     {
       "steamAppId": 1256230,
-      "notes": "Steam metadata has a separate Windows VR entry, Hyperbolica.exe startXR. VisionVNC selects it automatically instead of the desktop-default entry."
+      "notes": "Steam metadata has a separate Windows VR entry, Hyperbolica.exe startXR. Longwave selects it automatically instead of the desktop-default entry."
     },
     {
       "steamAppId": 250820,
@@ -67,7 +67,7 @@
     {
       "id": "hello-xr",
       "name": "hello_xr (diagnostic)",
-      "executable": "C:\\dev\\VisionVNC-bridge\\OpenXRLayer\\build-hxr\\src\\tests\\hello_xr\\Release\\hello_xr.exe",
+      "executable": "C:\\dev\\Longwave-bridge\\OpenXRLayer\\build-hxr\\src\\tests\\hello_xr\\Release\\hello_xr.exe",
       "arguments": ["-g", "D3D11"],
       "diagnostic": true,
       "notes": [
@@ -80,7 +80,7 @@
         "Two distinct uses, do not confuse them. As a CONTENT app (what the gallery launches) it takes",
         "VDXR like any game and renders through the broker — no environment, nothing special. As a",
         "SUBSTITUTE for the broker as the CloudXR application it needs XR_RUNTIME_JSON pointed at",
-        "CloudXR explicitly and must not run alongside a live broker; that is the VisionVNC-HelloXR",
+        "CloudXR explicitly and must not run alongside a live broker; that is the Longwave-HelloXR",
         "scheduled task, and it is the control that exonerated the broker during the pivot-dropout",
         "investigation."
       ]

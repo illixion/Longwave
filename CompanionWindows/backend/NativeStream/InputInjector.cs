@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// SendInput-based remote control for the native stream: absolute mouse

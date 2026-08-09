@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build a macOS VisionVNC app, install it to /Applications, and restart it —
+# Build a macOS Longwave app, install it to /Applications, and restart it —
 # quitting the running copy first and relaunching the freshly installed one. For
 # a fast local rebuild-test loop: TCC permissions (Accessibility, Screen/Audio
 # Recording, Automation) and the stored token live with the app in
@@ -9,11 +9,11 @@ set -euo pipefail
 # copy is what you actually test.
 #
 # Builds the small menu-bar **companion** by default, or the **full** macOS app
-# (VisionVNCMac — full client + companion host features) when passed "full".
+# (LongwaveMac — full client + companion host features) when passed "full".
 #
 # Usage:   scripts/install-companion.sh [companion|full]   (default: companion)
 #   companion  the lightweight menu-bar host app (MIT)
-#   full       the full VisionVNCMac client+host app (links Moonlight → GPLv3;
+#   full       the full LongwaveMac client+host app (links Moonlight → GPLv3;
 #              runs scripts/setup-deps.sh first to fetch the real dependencies)
 #
 # Why signing matters here: macOS ties TCC privacy grants (Accessibility,
@@ -35,23 +35,23 @@ set -euo pipefail
 #                         Development identity (falls back to "-", ad-hoc).
 #                         Pass "-" to force ad-hoc, or a name/hash to pin one.
 #
-# Note: the companion's bundle id is com.illixion.VisionVNCCompanion. After the
+# Note: the companion's bundle id is com.illixion.LongwaveCompanion. After the
 # rename from "Audio Sender" (a different bundle id), macOS treats this as a new
 # app — re-grant permissions on first launch and re-pair the token.
 
 # Which app to build/install: the small menu-bar "companion" (default), or the
-# "full" macOS app (VisionVNCMac — the VNC/Moonlight/Audio/SSH client *plus* the
+# "full" macOS app (LongwaveMac — the VNC/Moonlight/Audio/SSH client *plus* the
 # companion host features in one app). The full app links Moonlight (GPLv3), so
 # it needs the real dependencies cloned/patched into repos/ first (setup-deps.sh).
 KIND="${1:-companion}"
 case "$KIND" in
   companion)
-    SCHEME="VisionVNCCompanion"; APP_NAME="VisionVNCCompanion.app"
-    EXEC_NAME="VisionVNCCompanion"; BUNDLE_ID="com.illixion.VisionVNCCompanion"
+    SCHEME="LongwaveCompanion"; APP_NAME="LongwaveCompanion.app"
+    EXEC_NAME="LongwaveCompanion"; BUNDLE_ID="com.illixion.LongwaveCompanion"
     NEEDS_DEPS=0 ;;
-  full|mac|VisionVNCMac)
-    SCHEME="VisionVNCMac"; APP_NAME="VisionVNCMac.app"
-    EXEC_NAME="VisionVNCMac"; BUNDLE_ID="com.illixion.VisionVNCMac"
+  full|mac|LongwaveMac)
+    SCHEME="LongwaveMac"; APP_NAME="LongwaveMac.app"
+    EXEC_NAME="LongwaveMac"; BUNDLE_ID="com.illixion.LongwaveMac"
     NEEDS_DEPS=1 ;;
   -h|--help|help)
     echo "usage: $0 [companion|full]   (default: companion)"; exit 0 ;;
@@ -85,7 +85,7 @@ fi
 
 # The full app links Moonlight, so make sure the real (patched) dependencies are
 # present in repos/ before building (idempotent; no-op once cloned). MOONLIGHT_ENABLED
-# is baked into the VisionVNCMac target, so no extra build flag is needed.
+# is baked into the LongwaveMac target, so no extra build flag is needed.
 if [ "$NEEDS_DEPS" -eq 1 ]; then
   echo "▶ Ensuring Moonlight dependencies (setup-deps.sh)…"
   ./scripts/setup-deps.sh
@@ -100,7 +100,7 @@ if [ "$NEEDS_DEPS" -eq 1 ]; then
       && grep -RqsF "$REMOVED_OPUS_MODULEMAP" "$DERIVED/Build"; then
     echo "▶ Cleaning stale Opus package build plan…"
     xcodebuild \
-      -project VisionVNC.xcodeproj \
+      -project Longwave.xcodeproj \
       -scheme "$SCHEME" \
       -configuration "$CONFIG" \
       -destination 'generic/platform=macOS' \
@@ -114,7 +114,7 @@ fi
 # still requires CODE_SIGN_STYLE=Manual + a literal "-" identity.
 echo "▶ Building $SCHEME ($CONFIG, signing: $SIGN_IDENTITY)…"
 xcodebuild \
-  -project VisionVNC.xcodeproj \
+  -project Longwave.xcodeproj \
   -scheme "$SCHEME" \
   -configuration "$CONFIG" \
   -destination 'generic/platform=macOS' \
@@ -139,7 +139,7 @@ if pgrep -x "$EXEC_NAME" >/dev/null 2>&1; then
 fi
 # Also clear the pre-rename "Audio Sender" so you don't end up with two
 # menu-bar items the first time you run this after the rebrand.
-pkill -x "VisionVNCAudioSender" 2>/dev/null || true
+pkill -x "LongwaveAudioSender" 2>/dev/null || true
 # Wait for the menu-bar item / file handles to release, then force-stop if it
 # ignored the quit.
 for _ in $(seq 1 10); do

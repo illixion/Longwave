@@ -1,0 +1,20 @@
+diff --git a/virtualdesktop-openxr/vulkan_interop.cpp b/virtualdesktop-openxr/vulkan_interop.cpp
+index 5d8464e..04f88ba 100644
+--- a/virtualdesktop-openxr/vulkan_interop.cpp
++++ b/virtualdesktop-openxr/vulkan_interop.cpp
+@@ -436,7 +436,7 @@ namespace virtualdesktop_openxr {
+             return XR_ERROR_RUNTIME_FAILURE;
+         }
+ 
+-        const bool queueSupportsTimers = properties.properties.limits.timestampComputeAndGraphics;
++        const bool queueSupportsTimers = properties.properties.limits.timestampComputeAndGraphics && sizeof(void*) == 8; // Longwave: first timer vkQueueSubmit device-losts on 32-bit
+ 
+         ComPtr<IDXGIFactory1> dxgiFactory;
+         CHECK_HRCMD(CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory.ReleaseAndGetAddressOf())));
+@@ -848,4 +848,4 @@ namespace virtualdesktop_openxr {
+         waitOnSubmissionDevice();
+     }
+ 
+-} // namespace virtualdesktop_openxr
+\ No newline at end of file
++} // namespace virtualdesktop_openxr

@@ -2,8 +2,8 @@ using System.Runtime.InteropServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using VisionVNC.WindowsCompanion.Backend;
-using VisionVNC.WindowsCompanion.Backend.NativeStream;
+using Longwave.WindowsCompanion.Backend;
+using Longwave.WindowsCompanion.Backend.NativeStream;
 
 // Native streaming maps stream pixels straight onto screen coordinates —
 // per-monitor-v2 awareness keeps every win32 rect/metric in physical pixels.
@@ -57,18 +57,18 @@ if (args.Contains(TetherElevation.HostRoleArg))
 // loudly — they silently split clients between two independent hosts, each with its own
 // NvStreamManager. That happened by running the UI task (which spawns its own backend) next to
 // the standalone backend task. Fail fast and visibly instead.
-using var singleInstance = new Mutex(initiallyOwned: true, @"Global\VisionVNCWindowsCompanionBackend", out bool isOnlyInstance);
+using var singleInstance = new Mutex(initiallyOwned: true, @"Global\LongwaveWindowsCompanionBackend", out bool isOnlyInstance);
 if (!isOnlyInstance)
 {
     Console.Error.WriteLine(
-        "Another VisionVNC companion backend is already running (it owns the RPC pipe and CloudXR). " +
+        "Another Longwave companion backend is already running (it owns the RPC pipe and CloudXR). " +
         "Run either the Electron UI (which spawns its own backend) or the standalone backend — not both.");
     return 2;
 }
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddWindowsService(o => o.ServiceName = "VisionVNCWindowsCompanion");
+builder.Services.AddWindowsService(o => o.ServiceName = "LongwaveWindowsCompanion");
 builder.Services.AddSingleton<TetheringController>();
 // Tethering is the only administrator-gated feature, so it is the only thing that elevates, and
 // only when used. Already elevated (a Windows service, or the user started us elevated anyway)?
@@ -88,7 +88,7 @@ builder.Services.AddHostedService<PipeServer>();
 
 builder.Logging.AddSimpleConsole(o => o.SingleLine = true);
 if (OperatingSystem.IsWindows())
-    builder.Logging.AddEventLog(o => o.SourceName = "VisionVNCWindowsCompanion");
+    builder.Logging.AddEventLog(o => o.SourceName = "LongwaveWindowsCompanion");
 
 var host = builder.Build();
 await host.RunAsync();

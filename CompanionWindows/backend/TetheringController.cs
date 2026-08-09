@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 using Windows.Networking.Connectivity;
 using Windows.Networking.NetworkOperators;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 /// <summary>
 /// Wraps the Windows Mobile Hotspot API (<see cref="NetworkOperatorTetheringManager"/>):

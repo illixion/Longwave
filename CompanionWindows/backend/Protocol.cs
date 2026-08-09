@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC-ish line protocol. Every message is a single line of UTF-8 JSON

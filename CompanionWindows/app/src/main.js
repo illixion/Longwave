@@ -55,14 +55,14 @@ function withTimeout(promise, timeoutMs, label) {
  * Where the host-built PCVR binaries live: the broker, the gaze-fix injector, and the OpenXR
  * controller-bridge layer DLL. The on-demand download (pcvr-installer.js) is the path a real
  * user install takes; the dev-checkout path is only for building SessionBroker/OpenXRLayer by
- * hand with CMake. VISIONVNC_BRIDGE_ROOT overrides it for a non-standard checkout.
+ * hand with CMake. LONGWAVE_BRIDGE_ROOT overrides it for a non-standard checkout.
  */
 function resolveBridgeRoot() {
   const candidates = [
-    process.env.VISIONVNC_BRIDGE_ROOT,
+    process.env.LONGWAVE_BRIDGE_ROOT,
     pcvrInstaller.BRIDGE_DIR,
     app.isPackaged ? path.join(process.resourcesPath, 'bridge') : null,
-    'C:\\dev\\VisionVNC-bridge\\SessionBroker\\build\\Release',
+    'C:\\dev\\Longwave-bridge\\SessionBroker\\build\\Release',
   ].filter(Boolean);
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
@@ -78,7 +78,7 @@ function randomToken(len) {
 
 /** Locate the backend exe in packaged resources or the dev build output. */
 function resolveBackendExe() {
-  const name = 'VisionVNCWindowsCompanionBackend.exe';
+  const name = 'LongwaveWindowsCompanionBackend.exe';
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, 'backend', name)]
     : [
@@ -93,14 +93,14 @@ function resolveBackendExe() {
  * the expected, common case, not an error, so callers just skip starting it.
  */
 function resolvePcvrHostExe() {
-  const name = 'VisionVNCPCVRHost.exe';
+  const name = 'LongwavePCVRHost.exe';
   const candidates = [
     path.join(pcvrInstaller.HOST_DIR, name),
     ...(app.isPackaged
       ? [path.join(process.resourcesPath, 'pcvr-host', name)]
       : [
-          path.join(__dirname, '..', '..', '..', 'VisionVNC-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish', name),
-          path.join(__dirname, '..', '..', '..', 'VisionVNC-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', name),
+          path.join(__dirname, '..', '..', '..', 'Longwave-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish', name),
+          path.join(__dirname, '..', '..', '..', 'Longwave-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', name),
         ]),
   ];
   return candidates.find((p) => fs.existsSync(p)) || null;
@@ -112,7 +112,7 @@ function resolvePcvrHostExe() {
  * the spawn simply fails to bind the pipe and exits; we connect to whichever instance owns it.
  */
 function startBackend() {
-  if (process.env.VISIONVNC_NO_SPAWN === '1') return;
+  if (process.env.LONGWAVE_NO_SPAWN === '1') return;
   const exe = resolveBackendExe();
   if (!exe) {
     console.warn('[main] backend exe not found; expecting an externally-run backend/service.');
@@ -153,7 +153,7 @@ function startBackend() {
  * A no-op (not an error) when the exe isn't found: that's every public-only install.
  */
 function startPcvrHost() {
-  if (process.env.VISIONVNC_NO_SPAWN === '1') return;
+  if (process.env.LONGWAVE_NO_SPAWN === '1') return;
   const exe = resolvePcvrHostExe();
   if (!exe) {
     console.log('[main] PCVR host not installed; PCVR/game-library features stay hidden.');
@@ -189,7 +189,7 @@ function createWindow() {
     height: 760,
     minWidth: 880,
     minHeight: 640,
-    title: 'VisionVNC Companion',
+    title: 'Longwave Companion',
     icon: path.join(__dirname, '..', 'buildResources', 'icon.ico'),
     backgroundColor: '#1b1a18',
     autoHideMenuBar: true,
@@ -255,7 +255,7 @@ function createPairingWindow() {
     height: 760,
     minWidth: 600,
     minHeight: 660,
-    title: 'VisionVNC Pairing Code',
+    title: 'Longwave Pairing Code',
     icon: path.join(__dirname, '..', 'buildResources', 'icon.ico'),
     backgroundColor: '#0a080c',
     autoHideMenuBar: true,
@@ -527,7 +527,7 @@ ipcMain.handle('game-art', async (_e, artPath) => {
   }
 });
 
-// ---- PCVR service supervision (replaces the VisionVNC-Broker/Sidecar tasks) ----
+// ---- PCVR service supervision (replaces the Longwave-Broker/Sidecar tasks) ----
 ipcMain.handle('services-status', () => (supervisor ? supervisor.status() : {}));
 ipcMain.handle('services-start', (_e, name) =>
   runStackOperation(() => supervisor.startChecked(name)));
@@ -566,7 +566,7 @@ ipcMain.handle('pairing-toggle-reveal', (event) => {
 
 ipcMain.handle('get-connection', () => client.connected);
 ipcMain.handle('gen-passphrase', () => randomToken(8));
-ipcMain.handle('gen-ssid', () => `VisionVNC-${randomToken(4)}`);
+ipcMain.handle('gen-ssid', () => `Longwave-${randomToken(4)}`);
 
 // Tailscale helpers for the Foveated LAN/tailnet switch + DERP watchdog.
 ipcMain.handle('tailscale-status', () => tailscaleStatus());
@@ -616,7 +616,7 @@ async function requestQuit() {
   if (allowQuit || quitInProgress) return;
   quitInProgress = true;
 
-  if (!await confirmRunningGameShutdown('Quit VisionVNC?', 'Quit and stop PCVR')) {
+  if (!await confirmRunningGameShutdown('Quit Longwave?', 'Quit and stop PCVR')) {
     quitInProgress = false;
     return;
   }

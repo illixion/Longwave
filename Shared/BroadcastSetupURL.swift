@@ -2,7 +2,7 @@ import Foundation
 
 /// Broadcast server pairing payload, AirDropped from the macOS companion to
 /// the Vision Pro as an x-callback URL (same flow as `AudioTokenURL`):
-///   visionvnc://x-callback-url/setBroadcastServer?host=…&port=…&path=…&viewPath=…&user=…&pass=…&fp=…
+///   longwave://x-callback-url/setBroadcastServer?host=…&port=…&path=…&viewPath=…&user=…&pass=…&fp=…
 /// `fp` is the SHA-256 of the mediamtx TLS certificate (DER, hex) — when
 /// present the publisher connects with RTSPS and pins that certificate, so
 /// the stream is encrypted even off-VPN.
@@ -41,7 +41,7 @@ nonisolated enum BroadcastSetupURL {
     }
 
     static func parse(from url: URL) -> BroadcastSetup? {
-        guard url.scheme?.lowercased() == AudioTokenURL.scheme,
+        guard AudioTokenURL.accepts(scheme: url.scheme),
               url.host?.lowercased() == AudioTokenURL.host,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.path == "/" + action else { return nil }

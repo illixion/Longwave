@@ -9,14 +9,14 @@
 # is the app's identity on device.
 
 # --- Project ---
-PROJECT_PATH="VisionVNC.xcodeproj"
-SCHEME_NAME="VisionVNC"
-TARGET_NAME="VisionVNC"      # used for IPA/Payload naming
+PROJECT_PATH="Longwave.xcodeproj"
+SCHEME_NAME="Longwave"
+TARGET_NAME="Longwave"      # used for IPA/Payload naming
 PLATFORM="visionOS"          # passed as generic/platform=$PLATFORM
 
 # --- Identity ---
 TEAM_ID="XXXXXXXXXX"
-BUILD_BUNDLE_ID="com.example.visionvnc"
+BUILD_BUNDLE_ID="com.example.longwave"
 
 # --- Signing certificates (.p12 files) ---
 DEV_P12_PATH="$HOME/Downloads/Development.p12"

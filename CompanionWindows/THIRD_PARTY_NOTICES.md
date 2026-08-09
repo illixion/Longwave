@@ -1,4 +1,4 @@
-# Third-Party Notices — VisionVNC Windows Companion
+# Third-Party Notices — Longwave Windows Companion
 
 The Windows companion is a separate codebase from the visionOS app, with its own
 dependencies, so it has its own notices. For the visionOS app see
@@ -47,7 +47,7 @@ beyond attribution.** They are met as follows:
 - **Right to relink** (LGPL §4d) — the library is loaded with `require` at runtime from an
   `app.asar` archive, which `npx asar extract` unpacks and repacks. Beyond that, the complete
   corresponding source of *this* application is published under the MIT License at
-  <https://github.com/illixion/VisionVNC>, so replacing OpenPGP.js with a modified version
+  <https://github.com/illixion/Longwave>, so replacing OpenPGP.js with a modified version
   needs no permission and no reverse engineering — clone, swap, `npm run dist`.
 
 **Rule this creates, worth stating plainly:** OpenPGP.js must stay in the open-source
@@ -86,7 +86,7 @@ repository's MIT license.
 ### NVIDIA CloudXR SDK redistributable
 
 Subject to the NVIDIA CloudXR SDK License Agreement. Redistribution is permitted for
-applications providing material additional functionality (§1.1(c)); VisionVNC is such an
+applications providing material additional functionality (§1.1(c)); Longwave is such an
 application. NVIDIA and CloudXR are trademarks of NVIDIA Corporation.
 
 ### `LibOVRRT64_1.dll` / `LibOVRRT32_1.dll` — our code, Oculus PC SDK headers
@@ -117,13 +117,13 @@ runtime binaries and nothing is reverse-engineered from them.
 Copyright (c) 2022-2024 Matthieu Bucchianeri.
 <https://github.com/mbucchia/VirtualDesktop-OpenXR>
 
-The OpenXR runtime games talk to on a PCVR host. VisionVNC builds against it unmodified
-except for a single-line change published as `ci/patches/vdxr-visionvnc.patch`, which
+The OpenXR runtime games talk to on a PCVR host. Longwave builds against it unmodified
+except for a single-line change published as `ci/patches/vdxr-longwave.patch`, which
 disables Vulkan timestamp queries in 32-bit processes where the first timer submission
 device-losts. There is no fork: the broker is reached through VDXR's ordinary
 `LIBOVR_DLL_DIR` search path, with no patching of VDXR's shipped binaries.
 
-*Virtual Desktop* is a trademark of Guy Godin. VisionVNC is not affiliated with, endorsed
+*Virtual Desktop* is a trademark of Guy Godin. Longwave is not affiliated with, endorsed
 by, or a product of Virtual Desktop or its author, and does not require Virtual Desktop
 itself.
 
@@ -140,7 +140,7 @@ happens rather than after.
 
 Translates OpenVR calls into OpenXR so an OpenVR-only title can reach a CloudXR session.
 `CompanionWindows/scripts/install-opencomposite.ps1` downloads it from upstream onto the
-user's own machine; we publish a patch (`CompanionWindows/patches/opencomposite-visionvnc.patch`)
+user's own machine; we publish a patch (`CompanionWindows/patches/opencomposite-longwave.patch`)
 and a build script, and we convey no binary.
 
 **This is a load-bearing boundary, not an accident.** OpenComposite is GPL-3.0. Bundling

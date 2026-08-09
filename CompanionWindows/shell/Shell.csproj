@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>VisionVNC.Companion.Shell</RootNamespace>
-    <AssemblyName>VisionVNCCompanion</AssemblyName>
+    <RootNamespace>Longwave.Companion.Shell</RootNamespace>
+    <AssemblyName>LongwaveCompanion</AssemblyName>
     <!-- The shell is the *unprivileged* half: it only talks to the backend over the
          named pipe. The backend elevates on its own when tethering needs it. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>

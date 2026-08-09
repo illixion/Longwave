@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// Unambiguous WPA2 alphabet — mirrors the backend's Tokens.cs (no 0/O/1/l/I), so a
@@ -21,5 +21,5 @@ internal static class Tokens
 
     public static string Passphrase() => Random(8);
 
-    public static string Ssid() => $"VisionVNC-{Random(4)}";
+    public static string Ssid() => $"Longwave-{Random(4)}";
 }

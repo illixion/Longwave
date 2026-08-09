@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>VisionVNC.HotspotSpike</RootNamespace>
+    <RootNamespace>Longwave.HotspotSpike</RootNamespace>
     <AssemblyName>HotspotSpike</AssemblyName>
     <!-- Honor the project-wide manifest so we can mark requireAdministrator. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>

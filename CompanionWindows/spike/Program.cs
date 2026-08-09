@@ -1,4 +1,4 @@
-// VisionVNC Windows Hotspot Companion — Step-1 spike.
+// Longwave Windows Hotspot Companion — Step-1 spike.
 //
 // Goal (from plan.md): a minimal console that walks the Mobile Hotspot API end to
 // end so we can answer three questions BEFORE building the real service:
@@ -27,7 +27,7 @@ if (durIdx >= 0 && durIdx + 1 < args.Length && int.TryParse(args[durIdx + 1], ou
     doStart = true; // --duration implies --start
 }
 
-Log("=== VisionVNC Hotspot Spike ===");
+Log("=== Longwave Hotspot Spike ===");
 
 // --- Context: are we elevated? what session are we in? ---
 bool isAdmin;
@@ -114,8 +114,8 @@ if (!doStart)
     return capableDry ? 0 : 1;
 }
 
-// --- Step 4: configure a fresh AP (VisionVNC SSID + 8-char alphanumeric WPA2 pass) ---
-string ssid = $"VisionVNC-{RandomToken(4)}";
+// --- Step 4: configure a fresh AP (Longwave SSID + 8-char alphanumeric WPA2 pass) ---
+string ssid = $"Longwave-{RandomToken(4)}";
 string passphrase = RandomToken(8); // WPA2 minimum is 8 chars
 var cfg = new NetworkOperatorTetheringAccessPointConfiguration
 {

@@ -1,7 +1,7 @@
 'use strict';
 const net = require('net');
 
-const PIPE_PATH = '\\\\.\\pipe\\visionvnc-companion-control';
+const PIPE_PATH = '\\\\.\\pipe\\longwave-companion-control';
 const MAX_REQUEST_BYTES = 64 * 1024;
 
 /**

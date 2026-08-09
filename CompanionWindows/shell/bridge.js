@@ -49,7 +49,7 @@
     listWifiAdapters: () => rpc('ListWifiAdapters'),
     prepareApAdapter: () => rpc('PrepareApAdapter'),
 
-    // Native screen streaming (VisionVNC "Native" protocol on port 4857).
+    // Native screen streaming (Longwave "Native" protocol on port 4857).
     nativeStreamStatus: () => rpc('NativeStreamStatus'),
     nativeStreamSetEnabled: (enabled) => rpc('NativeStreamSetEnabled', { enabled }),
     nativeStreamSetInput: (params) => rpc('NativeStreamSetInput', params),

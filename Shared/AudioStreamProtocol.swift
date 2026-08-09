@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Wire protocol for streaming uncompressed system audio from the macOS
-/// sender (VisionVNC Companion) to the visionOS receiver, plus
+/// sender (Longwave Companion) to the visionOS receiver, plus
 /// now-playing metadata (sender → receiver) and media transport commands
 /// (receiver → sender) for controlling Music.app on the Mac.
 ///
@@ -228,12 +228,21 @@ nonisolated enum AudioToken {
 
 /// x-callback-style URL the macOS sender shares (via AirDrop) so the
 /// visionOS app can auto-fill the token without manual copy/paste:
-///   visionvnc://x-callback-url/setAudioToken?token=<token>
+///   longwave://x-callback-url/setAudioToken?token=<token>
 /// Registered as a custom URL scheme in the visionOS app's Info.plist.
 nonisolated enum AudioTokenURL {
-    static let scheme = "visionvnc"
+    static let scheme = "longwave"
+    /// The scheme this app answered to before the rename. Still accepted on the
+    /// way in, so a Companion the user has not updated yet keeps working; never
+    /// produced by `make`.
+    static let legacyScheme = "visionvnc"
     static let host = "x-callback-url"
     static let action = "setAudioToken"
+
+    static func accepts(scheme candidate: String?) -> Bool {
+        guard let candidate = candidate?.lowercased() else { return false }
+        return candidate == scheme || candidate == legacyScheme
+    }
 
     static func make(token: String) -> URL? {
         var components = URLComponents()
@@ -246,7 +255,7 @@ nonisolated enum AudioTokenURL {
 
     /// Returns the token if `url` is a well-formed setAudioToken callback.
     static func parseToken(from url: URL) -> String? {
-        guard url.scheme?.lowercased() == scheme,
+        guard accepts(scheme: url.scheme),
               url.host?.lowercased() == host,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.path == "/" + action else { return nil }

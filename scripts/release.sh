@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build VisionVNC with Moonlight and attach the unsigned IPA to the GitHub
+# Build Longwave with Moonlight and attach the unsigned IPA to the GitHub
 # release CI created for the current commit (tag 0.1.0-<sha8>), or create
 # that release if CI hasn't.
 #
@@ -37,7 +37,7 @@ cd "$PROJECT_ROOT"
 # created for this commit.
 SHORT_SHA=$(git rev-parse --short=8 HEAD)
 VERSION="0.1.0-${SHORT_SHA}"
-IPA_NAME="VisionVNC-${VERSION}-moonlight-unsigned.ipa"
+IPA_NAME="Longwave-${VERSION}-moonlight-unsigned.ipa"
 
 BUILD_DIR="$PROJECT_ROOT/build"
 
@@ -48,8 +48,8 @@ BUILD_DIR="$PROJECT_ROOT/build"
 # --- Build ---
 echo "==> Building (Release + Moonlight)..."
 xcodebuild build \
-    -project VisionVNC.xcodeproj \
-    -scheme VisionVNC \
+    -project Longwave.xcodeproj \
+    -scheme Longwave \
     -configuration Release \
     -destination 'generic/platform=visionOS' \
     -derivedDataPath "$BUILD_DIR/DerivedData" \
@@ -62,7 +62,7 @@ xcodebuild build \
 
 # --- Package IPA ---
 echo "==> Packaging unsigned IPA..."
-APP_PATH=$(find "$BUILD_DIR/DerivedData" -name 'VisionVNC.app' -type d | head -1)
+APP_PATH=$(find "$BUILD_DIR/DerivedData" -name 'Longwave.app' -type d | head -1)
 if [[ -z "$APP_PATH" ]]; then
     echo "ERROR: No .app found in DerivedData" >&2
     exit 1

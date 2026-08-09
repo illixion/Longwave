@@ -1,4 +1,4 @@
-# VisionVNC Windows Companion
+# Longwave Windows Companion
 
 This companion is **multi-purpose**. It hosts several independent subsystems behind one
 .NET 8 backend and one window. Everything runs **unelevated**; only the hotspot elevates, and
@@ -14,7 +14,7 @@ only when you turn it on (see [Elevation](#elevation)):
    30-series card does work with less headroom (developed against a 3080). See
    [Foveated Streaming (CloudXR) host](#foveated-streaming-cloudxr-host).
 2. **Native screen streaming** — TLS-PSK server on port 4857 that sends the desktop, or
-   individual windows, to VisionVNC's Native connection type, with optional mouse and
+   individual windows, to Longwave's Native connection type, with optional mouse and
    keyboard control.
 3. **Wi-Fi Hotspot** (the original PoC) — turns the Windows host into a NAT'd Wi-Fi AP the
    Vision Pro joins directly. Documented in the bulk of this README below.
@@ -34,7 +34,7 @@ gaining a path to the local Sunshine/VNC server at the AP gateway (`192.168.137.
 
 This is the Windows analogue of Apple's Mac Virtual Display P2P link, and it also hosts
 **native screen streaming** — the same encrypted protocol the macOS companion serves on
-port 4857, so VisionVNC's *Native* connection type works against a Windows host too
+port 4857, so Longwave's *Native* connection type works against a Windows host too
 (opaque desktop or individual windows as their own visionOS windows, with remote mouse
 and keyboard). It's a **separate codebase** (Node + .NET) sibling to the macOS companion
 (`CompanionMac/`); it mirrors that companion's conventions but shares no compiled code.
@@ -50,7 +50,7 @@ and keyboard). It's a **separate codebase** (Node + .NET) sibling to the macOS c
 │  Electron app (asInvoker, interactive user)                             │
 │    renderer (UI)  ──contextBridge/IPC──  main process                   │
 │                                │                                         │
-│                  named pipe \\.\pipe\visionvnc-hotspot (ACL'd)           │
+│                  named pipe \\.\pipe\longwave-hotspot (ACL'd)           │
 │                                ▼                                         │
 │  ┌────────────────────────────────────────────────────────────┐        │
 │  │  Privileged backend  (C# / .NET 8, WinRT via CsWinRT)        │        │
@@ -58,7 +58,7 @@ and keyboard). It's a **separate codebase** (Node + .NET) sibling to the macOS c
 │  │       (SoftAP/Wi-Fi-Direct-GO + DHCP + NAT/ICS, bundled)     │        │
 │  │   • PipeServer (newline-delimited JSON-RPC + push events)    │        │
 │  └────────────────────────────────────────────────────────────┘        │
-│  Upstream: Ethernet or Wi-Fi (STA)  ──► NAT ──►  VisionVNC AP           │
+│  Upstream: Ethernet or Wi-Fi (STA)  ──► NAT ──►  Longwave AP           │
 └──────────────────────────────────────────────────────────────────────┬─┘
                                                                          │ Wi-Fi
                                             joins SSID + 8-char password │
@@ -66,7 +66,7 @@ and keyboard). It's a **separate codebase** (Node + .NET) sibling to the macOS c
                                                         ┌──────────────────────────┐
                                                         │  Vision Pro                │
                                                         │  gets 192.168.137.x lease  │
-                                                        │  → VisionVNC connects to    │
+                                                        │  → Longwave connects to    │
                                                         │    192.168.137.1 (gateway)  │
                                                         └──────────────────────────┘
 ```
@@ -89,7 +89,7 @@ CompanionWindows/
 ```
 
 The CloudXR/Foveated host is no longer part of `backend/`; it is a separate process built
-from the private `VisionVNC-PCVR-Host/` submodule and downloaded on demand at runtime.
+from the private `Longwave-PCVR-Host/` submodule and downloaded on demand at runtime.
 
 ## Licenses
 
@@ -140,14 +140,14 @@ Most people don't need to build this. Download the installer for your CPU from t
 [Releases](../../releases) page and run it — the .NET backend is bundled, so no
 toolchain or compilation is required. Both are built natively:
 
-- `VisionVNCWindowsCompanion-…-x64-Setup.exe` — Intel / AMD
-- `VisionVNCWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class)
+- `LongwaveWindowsCompanion-…-x64-Setup.exe` — Intel / AMD
+- `LongwaveWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class)
 
 CI builds the installers and emits a **signed build-provenance attestation**. Verify the
 download was produced by this repo's workflow and not tampered with:
 
 ```bash
-gh attestation verify VisionVNCWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/VisionVNC
+gh attestation verify LongwaveWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
 ```
 
 The installer is **unsigned** (no code-signing cert), so SmartScreen may warn on first run;
@@ -158,7 +158,7 @@ the attestation is the integrity guarantee. Still **Beta** — re-read the hardw
 Two things are easy to get wrong in a way that produces symptoms pointing somewhere else.
 Neither is currently done by the NSIS installer — the PCVR host is only provisioned by
 `scripts/provision-pc.ps1` — so both are **open work** for shipping PCVR to an end user.
-See `VisionVNC-PCVR-Host/docs/HOST_PROVISIONING.md` for the measurements behind them — it
+See `Longwave-PCVR-Host/docs/HOST_PROVISIONING.md` for the measurements behind them — it
 lives in the private PCVR submodule, so a public checkout will not have it.
 
 1. **Set the OpenXR machine default (`HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime`) to the
@@ -199,7 +199,7 @@ npm install
 npm start            # dev run (expects a backend; see below)
 
 # Installer (NSIS) — bundles the published backend under resources\backend
-npm run dist         # -> app\dist\VisionVNC Windows Companion Setup <ver>.exe
+npm run dist         # -> app\dist\Longwave Windows Companion Setup <ver>.exe
 ```
 
 ## Run
@@ -212,18 +212,18 @@ Two deployment shapes share one backend binary (`Microsoft.Extensions.Hosting`, 
    installed app.
 2. **Windows Service (optional, future).** The backend can be hosted by the SCM
    (`AddWindowsService`). Register it once Session-0 tethering is validated — see the commented
-   `sc.exe` lines in `app/build/installer.nsh`, and set `VISIONVNC_NO_SPAWN=1` for the app so it
+   `sc.exe` lines in `app/build/installer.nsh`, and set `LONGWAVE_NO_SPAWN=1` for the app so it
    connects to the service instead of spawning its own.
 
 Dev tips:
-- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.22621.0\VisionVNCWindowsCompanionBackend.exe`
-- Run the app against it without spawning: `setx`-free `$env:VISIONVNC_NO_SPAWN=1; npm start`
-- Capability check only: `VisionVNCWindowsCompanionBackend.exe --probe`
+- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.22621.0\LongwaveWindowsCompanionBackend.exe`
+- Run the app against it without spawning: `setx`-free `$env:LONGWAVE_NO_SPAWN=1; npm start`
+- Capability check only: `LongwaveWindowsCompanionBackend.exe --probe`
 - Handy pipe-client scripts: `backend\test-client.js`, `start-hold.js`, `stop.js` (Node).
 
 ## IPC protocol
 
-Newline-delimited JSON over `\\.\pipe\visionvnc-hotspot`. The pipe ACL grants the interactive
+Newline-delimited JSON over `\\.\pipe\longwave-hotspot`. The pipe ACL grants the interactive
 desktop user + the process owner + Administrators + SYSTEM, and denies everyone else (the backend
 is privileged — an open pipe would be a local privilege-escalation vector).
 
@@ -244,7 +244,7 @@ is privileged — an open pipe would be a local privilege-escalation vector).
 
 ## Native screen streaming
 
-`backend/NativeStream/` serves VisionVNC's framed native-stream protocol (protocol v2) on
+`backend/NativeStream/` serves Longwave's framed native-stream protocol (protocol v2) on
 TCP 4857 — the same wire format `CompanionMac` speaks, so the headset's *Native* connection
 type works unchanged against a Windows host:
 
@@ -264,7 +264,7 @@ type works unchanged against a Windows host:
   `keyCodeSpace: hidUsage`). Clicks on an occluded streamed window raise it first. Mouse and
   keyboard control default **on** — the paired token is the consent gate — and can be
   disabled in the UI.
-- **Settings** persist under `HKCU\SOFTWARE\VisionVNC\Companion` (token, enabled, input
+- **Settings** persist under `HKCU\SOFTWARE\Longwave\Companion` (token, enabled, input
   toggles).
 
 Requires Windows 10 2004+ for Windows.Graphics.Capture and a hardware HEVC encoder
@@ -272,7 +272,7 @@ Requires Windows 10 2004+ for Windows.Graphics.Capture and a hardware HEVC encod
 
 ## Behavior notes
 
-- **SSID/passphrase:** SSID defaults to `VisionVNC-XXXX`; the passphrase is a freshly generated
+- **SSID/passphrase:** SSID defaults to `Longwave-XXXX`; the passphrase is a freshly generated
   **8-char** WPA2 string from an unambiguous alphabet (no `0/O/1/l/I`) for easy manual typing in
   visionOS Settings. Both are editable in the UI and shown large in the **Join from Vision Pro**
   panel alongside the gateway IP.
@@ -372,7 +372,7 @@ desktop OpenXR content to a Vision Pro over NVIDIA CloudXR.
 
 - **Discovery (Bonjour/mDNS):** advertises `_apple-foveated-streaming._tcp` with a TXT record
   `Application-Identifier=<bundle id>`. The headset only surfaces hosts advertising **its** bundle
-  id, so this defaults to the visionOS app id **`com.illixion.VisionVNC`** (overridable in the UI).
+  id, so this defaults to the visionOS app id **`com.illixion.Longwave`** (overridable in the UI).
 - **Session protocol (TCP, default port 55000, ProtocolVersion "1"):** a faithful port of the
   reference's length-prefixed-JSON server. Message dispatch + single-session state machine:
   `RequestConnection` → `AcknowledgeConnection` (carries `ServerID` + `CertificateFingerprint`;
@@ -453,7 +453,7 @@ Vision-Pro-specific and isn't exercised by a Quest):
    the service appears with the `Application-Identifier` TXT — that proves Bonjour + the TCP server
    are live independent of any headset.
 
-When the Vision Pro arrives, set the advertised bundle id to its VisionVNC build's id, and the
+When the Vision Pro arrives, set the advertised bundle id to its Longwave build's id, and the
 headset's discovery → RequestConnection → pairing-QR → MediaStreamIsReady flow drives CloudXR
 automatically.
 
@@ -475,7 +475,7 @@ npm start
 
 The app opens on **PCVR** with one **Start/Stop PCVR** action. The Options panel keeps PCVR services
 enabled by default and contains the Local network/Tailscale choice plus advanced bundle id
-(`com.illixion.VisionVNC`), port (`55000`), advertise IP, and QR settings. Technical state stays at
+(`com.illixion.Longwave`), port (`55000`), advertise IP, and QR settings. Technical state stays at
 the bottom of the page. Pairing requests surface the current QR automatically. Closing the app
 waits for the broker and CloudXR host to stop; if CloudXR reports an attached OpenXR game, the app
 asks for confirmation before ending the session.
@@ -492,15 +492,15 @@ scripts/deploy-windows-companion.sh --session start   # CloudXR runtime + OpenCo
 scripts/deploy-windows-companion.sh --session stop    # restore SteamVR + Sunshine
 ```
 
-It tars `CompanionWindows/` (no `bin`/`obj`/`node_modules`), scps it to `C:\dev\VisionVNC-companion`,
+It tars `CompanionWindows/` (no `bin`/`obj`/`node_modules`), scps it to `C:\dev\Longwave-companion`,
 and runs `scripts/provision-pc.ps1` there. Everything is idempotent. The PC-side scripts:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/provision-pc.ps1` | `dotnet publish`, stage the CloudXR `Server/` + `NvStreamManagerClient.dll`, `npm install`, write `tools/start-*.bat`, register the `VisionVNC-*` scheduled tasks, open the firewall ports. |
-| `scripts/pcvr-session.ps1` | Flip the host between desktop and PCVR mode: `ActiveRuntime`, `openvrpaths.vrpath`, `SunshineService`. Snapshots the previous values under `HKCU\Software\VisionVNC\PcvrSession` so `-Mode stop` restores them. |
+| `scripts/provision-pc.ps1` | `dotnet publish`, stage the CloudXR `Server/` + `NvStreamManagerClient.dll`, `npm install`, write `tools/start-*.bat`, register the `Longwave-*` scheduled tasks, open the firewall ports. |
+| `scripts/pcvr-session.ps1` | Flip the host between desktop and PCVR mode: `ActiveRuntime`, `openvrpaths.vrpath`, `SunshineService`. Snapshots the previous values under `HKCU\Software\Longwave\PcvrSession` so `-Mode stop` restores them. |
 | `scripts/install-opencomposite.ps1` | Install OpenComposite. Sniffs the payload — the mirror currently serves a raw `vrclient_x64.dll` (`MZ`), not a zip. |
-| `scripts/build-opencomposite.ps1` | Build the pinned OpenComposite source with VisionVNC's Index-trackpad action fix. Build x64, then pass its output to `install-opencomposite.ps1 -Arch x64 -Payload ...`; repeat for x86 when updating the 32-bit runtime. Requires the Visual C++ ATL component. |
+| `scripts/build-opencomposite.ps1` | Build the pinned OpenComposite source with Longwave's Index-trackpad action fix. Build x64, then pass its output to `install-opencomposite.ps1 -Arch x64 -Payload ...`; repeat for x86 when updating the 32-bit runtime. Requires the Visual C++ ATL component. |
 | `scripts/foveated-ctl.ps1` | Drive PCVR from SSH without giving the elevated SSH session ownership of desktop processes. `start`/`stop`/`restart` and `restart-launch` use the Electron companion's local control pipe, so its supervisor stops the broker before CloudXR and waits for CloudXR IPC before restarting it; `restart-launch` then waits for headset `CONNECTED` before launching the title through the medium-integrity backend. `host-start`/`host-stop` are backend-only diagnostics and must not be used while the desktop supervisor owns the broker. `status -WaitSeconds N` watches backend state and prints the QR payload. |
 | `scripts/capture-cloudxr-trace.ps1` | Capture WPR CPU stacks, scheduling, GPU activity, NVIDIA utilization, and matching broker metadata during a live Alyx session. |
 
@@ -513,7 +513,7 @@ real problem. Cost an on-device debugging session once (2026-07-26).
 Work is launched through **scheduled tasks**, not SSH: NvStreamManager's RPC TLS key pair is
 DPAPI-protected, and a pubkey-auth SSH session has no unlocked DPAPI master key, so launching it
 from SSH crash-loops on "Failed to load key pair". The tasks run in the logged-on interactive
-session. Run **either** `VisionVNC-CompanionUI` (spawns its own backend) **or** `VisionVNC-Backend`
+session. Run **either** `Longwave-CompanionUI` (spawns its own backend) **or** `Longwave-Backend`
 — never both; the backend now takes a `Global\` mutex and exits with code 2 if a second one starts.
 
 #### Defects this shook out (2026-07-26)
@@ -554,10 +554,10 @@ postinstall downloads its zip fine here but its unzip dies partway and still exi
 
 ## Companion to the visionOS app
 
-To remove manual gateway entry, the visionOS VisionVNC app now **auto-pre-fills `192.168.137.1`**
+To remove manual gateway entry, the visionOS Longwave app now **auto-pre-fills `192.168.137.1`**
 in the connection form when it detects it's on a Windows ICS subnet (`192.168.137.0/24`) — a
-lightweight alternative to mDNS. See `VisionVNC/Utilities/LocalNetwork.swift` and
-`VisionVNCTests/LocalNetworkTests.swift` (build/test on macOS with Xcode).
+lightweight alternative to mDNS. See `Longwave/Utilities/LocalNetwork.swift` and
+`LongwaveTests/LocalNetworkTests.swift` (build/test on macOS with Xcode).
 
 ## Deferred (post-PoC)
 

@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// The resident half of the shell: a tray icon and the pipe connection, and nothing else.
@@ -23,7 +23,7 @@ internal sealed class TrayContext : ApplicationContext
         _tray = new NotifyIcon
         {
             Icon = AppIcon.Load() ?? SystemIcons.Application,
-            Text = "VisionVNC Companion",
+            Text = "Longwave Companion",
             Visible = true,
             ContextMenuStrip = BuildMenu(),
         };
@@ -39,7 +39,7 @@ internal sealed class TrayContext : ApplicationContext
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("&Open VisionVNC Companion", null, (_, _) => ShowWindow());
+        menu.Items.Add("&Open Longwave Companion", null, (_, _) => ShowWindow());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("&Quit", null, (_, _) => Quit());
         return menu;
@@ -77,7 +77,7 @@ internal sealed class TrayContext : ApplicationContext
     private void OnConnectionChanged(bool connected)
     {
         // NotifyIcon.Text is capped at 63 chars; ours is nowhere near it.
-        var text = connected ? "VisionVNC Companion — backend connected" : "VisionVNC Companion — backend offline";
+        var text = connected ? "Longwave Companion — backend connected" : "Longwave Companion — backend offline";
         try { _tray.Text = text; }
         catch (Exception ex) { Debug.WriteLine($"[shell] tray text failed: {ex.Message}"); }
     }
@@ -110,7 +110,7 @@ internal static class AppIcon
     {
         try
         {
-            var path = Path.Combine(AppContext.BaseDirectory, "VisionVNCCompanion.exe");
+            var path = Path.Combine(AppContext.BaseDirectory, "LongwaveCompanion.exe");
             return File.Exists(path) ? Icon.ExtractAssociatedIcon(path) : null;
         }
         catch { return null; }

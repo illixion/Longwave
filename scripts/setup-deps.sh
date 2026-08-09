@@ -37,10 +37,10 @@ else
     (
         cd repos/royalvnc
         git checkout "$ROYALVNC_REF"
-        # Static linking (dyld embedding fix) + VisionVNC API additions:
+        # Static linking (dyld embedding fix) + Longwave API additions:
         # per-connection JPEG quality/compression settings and
         # pause/resumeFramebufferUpdates
-        git apply ../../ci/patches/royalvnc-visionvnc.patch
+        git apply ../../ci/patches/royalvnc-longwave.patch
     )
 fi
 

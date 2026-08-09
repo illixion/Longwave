@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// Starts the backend as an interactive-session helper, mirroring what the Electron
@@ -9,7 +9,7 @@ namespace VisionVNC.Companion.Shell;
 /// </summary>
 internal static class BackendLauncher
 {
-    private const string ExeName = "VisionVNCWindowsCompanionBackend.exe";
+    private const string ExeName = "LongwaveWindowsCompanionBackend.exe";
     private const string Tfm = "net8.0-windows10.0.22621.0";
 
     private static Process? _process;
@@ -37,7 +37,7 @@ internal static class BackendLauncher
 
     public static void Start()
     {
-        if (Environment.GetEnvironmentVariable("VISIONVNC_NO_SPAWN") == "1") return;
+        if (Environment.GetEnvironmentVariable("LONGWAVE_NO_SPAWN") == "1") return;
 
         var exe = Resolve();
         if (exe is null)

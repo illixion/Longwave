@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// Newline-delimited JSON-RPC client over the backend's named pipe — the C# twin of the
@@ -13,7 +13,7 @@ namespace VisionVNC.Companion.Shell;
 /// </summary>
 internal sealed class PipeClient : IAsyncDisposable
 {
-    private const string PipeName = "visionvnc-hotspot";
+    private const string PipeName = "longwave-hotspot";
     private static readonly TimeSpan RpcTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
 

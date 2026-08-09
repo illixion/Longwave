@@ -1,11 +1,11 @@
 using System.Threading;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 internal static class Program
 {
-    private const string InstanceMutex = @"Local\VisionVNC.Companion.Shell";
-    private const string ShowWindowEvent = @"Local\VisionVNC.Companion.Shell.Show";
+    private const string InstanceMutex = @"Local\Longwave.Companion.Shell";
+    private const string ShowWindowEvent = @"Local\Longwave.Companion.Shell.Show";
 
     [STAThread]
     private static void Main(string[] args)

@@ -372,7 +372,7 @@ function renderPcvrSummary() {
     el.pcvrStatusDetail.textContent = f.sessionStatus || 'The headset is connected to this PC.';
   } else if (active) {
     el.pcvrStatusTitle.textContent = 'Waiting for the headset';
-    el.pcvrStatusDetail.textContent = 'Open VisionVNC on the headset to connect.';
+    el.pcvrStatusDetail.textContent = 'Open Longwave on the headset to connect.';
   } else {
     el.pcvrStatusTitle.textContent = 'PCVR is off';
     el.pcvrStatusDetail.textContent = 'Start when you are ready to connect from Vision Pro.';
@@ -410,7 +410,7 @@ function renderNativeStream(s) {
     el.nsViewer.textContent = 'The desktop and any windows the headset picks are going out now.';
   } else if (running) {
     el.nsHeadline.textContent = 'Waiting for the headset';
-    el.nsViewer.textContent = 'Add a Native connection in VisionVNC using the details below.';
+    el.nsViewer.textContent = 'Add a Native connection in Longwave using the details below.';
   } else {
     el.nsHeadline.textContent = 'Streaming is off';
     el.nsViewer.textContent = 'Start it, then connect from the headset.';
@@ -942,7 +942,7 @@ async function stopPcvr() {
   }
 }
 
-const PCVR_OPTIONS_KEY = 'visionvnc.pcvr.options.v1';
+const PCVR_OPTIONS_KEY = 'longwave.pcvr.options.v1';
 
 function restorePcvrOptions() {
   let saved;

@@ -2,9 +2,9 @@
 // count, so a phone / Vision Pro can join for an end-to-end test. Auto-stops after the hold.
 //   node start-hold.js [ssid] [passphrase] [holdSeconds]
 const net = require('net');
-const PIPE = '\\\\.\\pipe\\visionvnc-hotspot';
+const PIPE = '\\\\.\\pipe\\longwave-hotspot';
 
-const ssid = process.argv[2] || 'VisionVNC-Demo';
+const ssid = process.argv[2] || 'Longwave-Demo';
 const pass = process.argv[3] || 'vnc4Kxyz';
 const hold = parseInt(process.argv[4] || '180', 10);
 
@@ -46,7 +46,7 @@ sock.on('connect', async () => {
   console.log('\n==================== JOIN FROM A DEVICE ====================');
   console.log(`  Wi-Fi network : ${s.ssid}`);
   console.log(`  Password      : ${s.passphrase}`);
-  console.log(`  Gateway IP    : ${s.gatewayIp}   <-- type this into VisionVNC`);
+  console.log(`  Gateway IP    : ${s.gatewayIp}   <-- type this into Longwave`);
   console.log(`  Upstream      : ${s.upstreamName} (${s.upstreamKind})`);
   console.log(`  Clients       : ${s.clientCount}/${s.maxClientCount}`);
   console.log('============================================================\n');

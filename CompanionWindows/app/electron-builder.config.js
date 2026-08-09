@@ -5,12 +5,12 @@ const path = require('path');
 // This file is committed to the public repo and runs the same way in CI and in a local
 // build. It only *decides* whether to stage the closed-source PCVR host's publish output
 // alongside the public backend's — it never assumes that output exists. CI's checkout has
-// no VisionVNC-PCVR-Host submodule content built (the submodule reference is present in
+// no Longwave-PCVR-Host submodule content built (the submodule reference is present in
 // history but nothing initializes/builds it there), so hasPcvrHost is false and the CI
 // installer is exactly what it always was: hotspot + native streaming, nothing closed-source.
 // A local build with the submodule checked out and published picks it up automatically.
 const pcvrHostPublish = path.join(
-  __dirname, '..', 'VisionVNC-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish');
+  __dirname, '..', 'Longwave-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish');
 const hasPcvrHost = fs.existsSync(pcvrHostPublish);
 
 const extraResources = [
@@ -31,15 +31,15 @@ const extraResources = [
 
 if (hasPcvrHost) {
   extraResources.push({
-    from: '../VisionVNC-PCVR-Host/bin/Release/net8.0-windows10.0.22621.0/publish',
+    from: '../Longwave-PCVR-Host/bin/Release/net8.0-windows10.0.22621.0/publish',
     to: 'pcvr-host',
     filter: ['**/*'],
   });
 }
 
 module.exports = {
-  appId: 'com.illixion.VisionVNCWindowsCompanion',
-  productName: 'VisionVNC Windows Companion',
+  appId: 'com.illixion.LongwaveWindowsCompanion',
+  productName: 'Longwave Windows Companion',
   directories: {
     output: 'dist',
     buildResources: 'buildResources',

@@ -8,7 +8,7 @@ using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// One Windows.Graphics.Capture source (a monitor for the desktop stream or

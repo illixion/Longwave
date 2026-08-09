@@ -65,7 +65,7 @@ final class SystemAudioTap: @unchecked Sendable {
 
         // 1. System-wide stereo mixdown tap of all processes
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-        description.name = "VisionVNC Audio Tap"
+        description.name = "Longwave Audio Tap"
         description.isPrivate = true
         description.muteBehavior = muteSystemOutput ? .muted : .unmuted
 
@@ -98,8 +98,8 @@ final class SystemAudioTap: @unchecked Sendable {
 
         // 3. Private aggregate device hosting the tap
         let aggregateDescription: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "VisionVNC Companion",
-            kAudioAggregateDeviceUIDKey: "com.illixion.VisionVNCCompanion.aggregate",
+            kAudioAggregateDeviceNameKey: "Longwave Companion",
+            kAudioAggregateDeviceUIDKey: "com.illixion.LongwaveCompanion.aggregate",
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceTapListKey: [

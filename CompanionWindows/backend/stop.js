@@ -1,7 +1,7 @@
 // GetStatus then StopHotspot — verifies a fresh backend can observe + stop an AP left
 // running by a previous process (the EnsureManager lazy-bind fix).
 const net = require('net');
-const sock = net.connect('\\\\.\\pipe\\visionvnc-hotspot');
+const sock = net.connect('\\\\.\\pipe\\longwave-hotspot');
 let buf = '', nextId = 1; const pending = new Map();
 sock.setEncoding('utf8');
 sock.on('data', (c) => { buf += c; let nl;

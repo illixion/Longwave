@@ -1,4 +1,4 @@
-; Custom NSIS hooks for the VisionVNC Windows Companion installer.
+; Custom NSIS hooks for the Longwave Windows Companion installer.
 ;
 ; Deployment model (decided by the Step-1 spike): the backend runs as an INTERACTIVE-SESSION
 ; HELPER that the Electron app spawns on launch — NOT a Session-0 Windows Service. The spike
@@ -15,14 +15,14 @@
 ;
 ; To switch to the service model later (once Session-0 tethering is validated on capable
 ; hardware), register the bundled exe here, e.g.:
-;   nsExec::Exec '"$SYSDIR\sc.exe" create VisionVNCWindowsCompanion binPath= "$INSTDIR\resources\backend\VisionVNCWindowsCompanionBackend.exe" start= auto'
-;   nsExec::Exec '"$SYSDIR\sc.exe" start VisionVNCWindowsCompanion'
-; and set VISIONVNC_NO_SPAWN=1 for the app so it connects to the service instead of spawning.
+;   nsExec::Exec '"$SYSDIR\sc.exe" create LongwaveWindowsCompanion binPath= "$INSTDIR\resources\backend\LongwaveWindowsCompanionBackend.exe" start= auto'
+;   nsExec::Exec '"$SYSDIR\sc.exe" start LongwaveWindowsCompanion'
+; and set LONGWAVE_NO_SPAWN=1 for the app so it connects to the service instead of spawning.
 
 !macro customInstall
 !macroend
 
 !macro customUnInstall
   ; Best-effort: stop a running backend so its files aren't locked during uninstall.
-  nsExec::Exec 'taskkill /F /IM VisionVNCWindowsCompanionBackend.exe'
+  nsExec::Exec 'taskkill /F /IM LongwaveWindowsCompanionBackend.exe'
 !macroend

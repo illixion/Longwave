@@ -26,8 +26,8 @@ import CryptoKit
 nonisolated enum AudioCrypto {
     /// PSK identity exchanged in the clear during the handshake. Versioned so a
     /// future key-schedule change can't silently interop with an old peer.
-    private static let pskIdentity = Data("VisionVNCAudio/v5".utf8)
-    private static let hkdfSalt = Data("VisionVNC-Audio-PSK-v5".utf8)
+    private static let pskIdentity = Data("LongwaveAudio/v5".utf8)
+    private static let hkdfSalt = Data("Longwave-Audio-PSK-v5".utf8)
     private static let hkdfInfo = Data("psk".utf8)
 
     /// Derives a stable 32-byte PSK from the pairing token via HKDF-SHA256.

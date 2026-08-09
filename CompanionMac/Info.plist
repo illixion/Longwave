@@ -3,18 +3,18 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>VisionVNC Companion</string>
+	<string>Longwave Companion</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>VisionVNC Companion controls Music and reads the current track so you can see and control playback from your Apple Vision Pro.</string>
+	<string>Longwave Companion controls Music and reads the current track so you can see and control playback from your Apple Vision Pro.</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>VisionVNC Companion captures system audio to stream it to the VisionVNC app on your Apple Vision Pro.</string>
+	<string>Longwave Companion captures system audio to stream it to the Longwave app on your Apple Vision Pro.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>This app serves audio and native Mac screen streams to VisionVNC clients on your local network.</string>
+	<string>This app serves audio and native Mac screen streams to Longwave clients on your local network.</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_visionvnc-native._tcp</string>
+		<string>_longwave-native._tcp</string>
 	</array>
 </dict>
 </plist>

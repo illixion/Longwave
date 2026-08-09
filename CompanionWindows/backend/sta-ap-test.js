@@ -2,7 +2,7 @@
 // so the single adapter must stay connected as a station AND host the AP. Leaves the AP up so
 // the STA link can be inspected separately.
 const net = require('net');
-const sock = net.connect('\\\\.\\pipe\\visionvnc-hotspot');
+const sock = net.connect('\\\\.\\pipe\\longwave-hotspot');
 let buf = '', nextId = 1; const pending = new Map();
 sock.setEncoding('utf8');
 sock.on('data', (c) => { buf += c; let nl;
@@ -19,7 +19,7 @@ sock.on('connect', async () => {
   if (!wifi) { console.error('No Wi-Fi upstream with internet found'); sock.end(); process.exit(2); }
   console.log(`Sharing Wi-Fi upstream: ${wifi.name} (${wifi.id})`);
   const band = process.argv[2] || 'auto';
-  const r = await rpc('StartHotspot', { ssid: 'VisionVNC-STAAP', passphrase: 'staap123', band, profileId: wifi.id });
+  const r = await rpc('StartHotspot', { ssid: 'Longwave-STAAP', passphrase: 'staap123', band, profileId: wifi.id });
   console.log('StartHotspot ->', JSON.stringify(r));
   sock.end(); process.exit(r.ok ? 0 : 3);
 });

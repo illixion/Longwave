@@ -6,7 +6,7 @@ import os
 /// broadcast extension (where `AppLog` isn't available). Public privacy,
 /// same caveat as `Logger.line()`: never log secrets.
 nonisolated let broadcastLogger = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "com.illixion.VisionVNC",
+    subsystem: Bundle.main.bundleIdentifier ?? "com.illixion.Longwave",
     category: "Broadcast")
 
 nonisolated func broadcastLog(_ message: String) {
@@ -19,12 +19,12 @@ nonisolated func broadcastLog(_ message: String) {
 nonisolated enum BroadcastShared {
     /// Preferred App Group (what the checked-in entitlements declare —
     /// granted on Xcode-signed builds).
-    static let preferredAppGroup = "group.com.illixion.VisionVNC"
-    static let keychainService = "com.illixion.VisionVNC.broadcast"
+    static let preferredAppGroup = "group.com.illixion.Longwave"
+    static let keychainService = "com.illixion.Longwave.broadcast"
     static let keychainAccount = "publish-password"
     /// The extension's bundle identifier (must stay in sync with the
-    /// `VisionVNCBroadcast` target and `RPSystemBroadcastPickerView`).
-    static let extensionBundleID = "com.illixion.VisionVNC.broadcast"
+    /// `LongwaveBroadcast` target and `RPSystemBroadcastPickerView`).
+    static let extensionBundleID = "com.illixion.Longwave.broadcast"
 
     /// The App Group both processes actually share. Sideload re-signing
     /// (scripts/build-and-sign.sh) replaces our entitlements with the

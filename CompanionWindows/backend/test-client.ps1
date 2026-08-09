@@ -1,7 +1,7 @@
-# Quick named-pipe RPC smoke test for the VisionVNC hotspot backend.
+# Quick named-pipe RPC smoke test for the Longwave hotspot backend.
 # Connects, then exercises Ping / GetStatus / ListUpstreamProfiles / StartHotspot / StopHotspot.
 $ErrorActionPreference = 'Stop'
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'visionvnc-hotspot',
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'longwave-hotspot',
     [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
 $pipe.Connect(5000)
 $enc = New-Object System.Text.UTF8Encoding($false)
@@ -37,8 +37,8 @@ Write-Host "`n== ListUpstreamProfiles =="
 Write-Host "`n== GetStatus =="
 (Send-Rpc 3 'GetStatus' $null).result | ConvertTo-Json -Compress
 
-Write-Host "`n== StartHotspot (ssid=VisionVNC-Test, auto pass) =="
-$start = Send-Rpc 4 'StartHotspot' @{ ssid = 'VisionVNC-Test'; band = 'auto' }
+Write-Host "`n== StartHotspot (ssid=Longwave-Test, auto pass) =="
+$start = Send-Rpc 4 'StartHotspot' @{ ssid = 'Longwave-Test'; band = 'auto' }
 $start.result | ConvertTo-Json -Compress
 
 Write-Host "`n== StopHotspot =="

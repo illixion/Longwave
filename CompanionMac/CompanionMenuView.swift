@@ -8,7 +8,7 @@ import os
 struct CompanionMenuView: View {
     @Bindable var controller: AudioStreamerController
     @Bindable var broadcastServer: BroadcastServerManager
-    /// When set (the full VisionVNC app), the primary button opens the main app
+    /// When set (the full Longwave app), the primary button opens the main app
     /// window instead of the companion/settings window. The small menu-bar
     /// companion leaves this nil and opens its Settings window.
     var openMainAction: (() -> Void)? = nil
@@ -16,7 +16,7 @@ struct CompanionMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("VisionVNC Companion")
+            Text("Longwave Companion")
                 .font(.headline)
 
             Toggle("Stream system audio", isOn: $controller.isRunning)
@@ -24,7 +24,7 @@ struct CompanionMenuView: View {
 
             Toggle("Mute Mac output while streaming", isOn: $controller.muteWhileStreaming)
                 .toggleStyle(.checkbox)
-                .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the VisionVNC app.")
+                .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the Longwave app.")
 
             Toggle("Show track in menu bar", isOn: $controller.showTrackInMenuBar)
                 .toggleStyle(.checkbox)
@@ -52,11 +52,11 @@ struct CompanionMenuView: View {
             Divider()
 
             if let openMainAction {
-                Button("Open VisionVNC") {
+                Button("Open Longwave") {
                     openMainAction()
                     NSApp.activate(ignoringOtherApps: true)
                 }
-                .help("Open the main VisionVNC window.")
+                .help("Open the main Longwave window.")
             } else {
                 Button("Open Companion Window…") {
                     openSettings()

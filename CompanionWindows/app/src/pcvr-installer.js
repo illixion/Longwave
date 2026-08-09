@@ -14,7 +14,7 @@ const buildInfo = require('./build-info.json');
 const SIGNING_PUBLIC_KEY = fs.readFileSync(path.join(__dirname, 'pcvr-signing-key.asc'), 'utf8');
 
 /**
- * The closed-source PCVR bundle (VisionVNCPCVRHost.exe + the SessionBroker/OpenXRLayer native
+ * The closed-source PCVR bundle (LongwavePCVRHost.exe + the SessionBroker/OpenXRLayer native
  * binaries + the CloudXR SDK redistributable) is never shipped in the public installer. It is
  * downloaded on demand from a GitHub Release asset attached to *this exact build's own release
  * tag* — never `/releases/latest` — because the tag is the only thing that guarantees the pipe
@@ -28,7 +28,7 @@ const BRIDGE_DIR = path.join(INSTALL_ROOT, 'bridge');
 const VERSION_FILE = path.join(INSTALL_ROOT, 'installed-version.json');
 
 function assetNameForArch() {
-  return `VisionVNC-PCVR-Bundle-${process.arch === 'arm64' ? 'win-arm64' : 'win-x64'}.zip`;
+  return `Longwave-PCVR-Bundle-${process.arch === 'arm64' ? 'win-arm64' : 'win-x64'}.zip`;
 }
 
 function installedVersion() {
@@ -36,7 +36,7 @@ function installedVersion() {
 }
 
 function isInstalled() {
-  return fs.existsSync(path.join(HOST_DIR, 'VisionVNCPCVRHost.exe'));
+  return fs.existsSync(path.join(HOST_DIR, 'LongwavePCVRHost.exe'));
 }
 
 /**
@@ -51,7 +51,7 @@ async function checkAvailability() {
   try {
     res = await net.fetch(
       `https://api.github.com/repos/${buildInfo.repo}/releases/tags/${buildInfo.version}`,
-      { headers: { 'User-Agent': 'VisionVNC-Companion', Accept: 'application/vnd.github+json' } },
+      { headers: { 'User-Agent': 'Longwave-Companion', Accept: 'application/vnd.github+json' } },
     );
   } catch (e) {
     return { available: false, reason: 'network-error', message: e.message, installedVersion: installedVersion() };
@@ -179,7 +179,7 @@ async function downloadAndInstall(onProgress) {
   const info = await checkAvailability();
   if (!info.available) throw new Error(`PCVR bundle unavailable: ${info.reason}`);
 
-  const tmpZip = path.join(app.getPath('temp'), `visionvnc-pcvr-${process.pid}.zip`);
+  const tmpZip = path.join(app.getPath('temp'), `longwave-pcvr-${process.pid}.zip`);
   onProgress?.({ phase: 'downloading', received: 0, total: info.size });
   await downloadToFile(info.downloadUrl, tmpZip, onProgress);
 

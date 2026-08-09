@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('hotspot', {
   confirmPcvrStop: () => ipcRenderer.invoke('confirm-pcvr-stop'),
   openPairingWindow: () => ipcRenderer.invoke('open-pairing-window'),
   openNoticesWindow: () => ipcRenderer.invoke('open-notices-window'),
-  // Native screen streaming (VisionVNC "Native" protocol on port 4857).
+  // Native screen streaming (Longwave "Native" protocol on port 4857).
   nativeStreamStatus: () => ipcRenderer.invoke('rpc', 'NativeStreamStatus'),
   nativeStreamSetEnabled: (enabled) => ipcRenderer.invoke('rpc', 'NativeStreamSetEnabled', { enabled }),
   nativeStreamSetInput: (params) => ipcRenderer.invoke('rpc', 'NativeStreamSetInput', params),

@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// C# port of <c>Shared/MacNativeStreamProtocol.swift</c> — the framed wire

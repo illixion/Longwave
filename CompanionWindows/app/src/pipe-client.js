@@ -2,8 +2,8 @@
 const net = require('net');
 const { EventEmitter } = require('events');
 
-const PIPE_PATH = '\\\\.\\pipe\\visionvnc-hotspot';
-const PCVR_PIPE_PATH = '\\\\.\\pipe\\visionvnc-pcvr-host';
+const PIPE_PATH = '\\\\.\\pipe\\longwave-hotspot';
+const PCVR_PIPE_PATH = '\\\\.\\pipe\\longwave-pcvr-host';
 const RPC_TIMEOUT_MS = 20000;
 
 /**

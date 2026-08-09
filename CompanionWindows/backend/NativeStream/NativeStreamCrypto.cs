@@ -4,20 +4,20 @@ using Org.BouncyCastle.Tls;
 using Org.BouncyCastle.Tls.Crypto;
 using Org.BouncyCastle.Tls.Crypto.Impl.BC;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// The Windows counterpart of <c>Shared/MacNativeStreamCrypto.swift</c>: the
 /// viewer connects with TLS 1.2 external PSK, ciphersuite
 /// TLS_PSK_WITH_AES_128_GCM_SHA256 (0x00A8), PSK identity
-/// "VisionVNCMacNative/v1", PSK = HKDF-SHA256(token,
-/// salt "VisionVNC-MacNative-PSK-v1", info "psk", 32 bytes). SChannel exposes
+/// "LongwaveMacNative/v1", PSK = HKDF-SHA256(token,
+/// salt "Longwave-MacNative-PSK-v1", info "psk", 32 bytes). SChannel exposes
 /// no PSK ciphersuites at all, so the handshake runs on BouncyCastle.
 /// </summary>
 public static class NativeStreamCrypto
 {
-    private const string PskIdentity = "VisionVNCMacNative/v1";
-    private static readonly byte[] HkdfSalt = Encoding.UTF8.GetBytes("VisionVNC-MacNative-PSK-v1");
+    private const string PskIdentity = "LongwaveMacNative/v1";
+    private static readonly byte[] HkdfSalt = Encoding.UTF8.GetBytes("Longwave-MacNative-PSK-v1");
     private static readonly byte[] HkdfInfo = Encoding.UTF8.GetBytes("psk");
 
     public static byte[] DerivePsk(string token) =>

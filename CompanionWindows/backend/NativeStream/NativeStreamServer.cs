@@ -4,7 +4,7 @@ using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Org.BouncyCastle.Tls;
 
-namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
+namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Authenticated newest-client-wins TCP server for the native stream — the
@@ -273,7 +273,7 @@ public sealed class NativeStreamServer : IDisposable
                 if ((hello.Version ?? 1) < 2)
                 {
                     Enqueue(client, NativeStreamProtocol.EncodeError(
-                        "This host requires a newer VisionVNC (protocol v2)."));
+                        "This host requires a newer Longwave (protocol v2)."));
                     return;
                 }
                 Promote(client, hello.DeviceName);

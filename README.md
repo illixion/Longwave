@@ -1,11 +1,11 @@
-# VisionVNC
+# Longwave
 
 A native remote desktop and game streaming app for Apple Vision Pro, built in Swift with SwiftUI.
 
-VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game streaming** client in a single visionOS app. Connect to any VNC server for remote desktop access, or stream games and applications from a [Sunshine](https://github.com/LizardByte/Sunshine) / NVIDIA GameStream host with hardware-accelerated video decoding and low-latency input.
+Longwave combines a full-featured **VNC viewer** with a **Moonlight game streaming** client in a single visionOS app. Connect to any VNC server for remote desktop access, or stream games and applications from a [Sunshine](https://github.com/LizardByte/Sunshine) / NVIDIA GameStream host with hardware-accelerated video decoding and low-latency input.
 
 > [!TIP]
-> **New: VisionVNC Windows Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#visionvnc-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
+> **New: Longwave Windows Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#longwave-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
 
 ## Features
 
@@ -43,13 +43,13 @@ VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game stream
 - **Remote play over Tailscale** — the companion can advertise its tailnet address instead of a LAN one, for a PC at home or a cloud GPU host; the headset connects by IP over Tailscale. Needs a direct WireGuard path (the companion warns when the connection is being relayed, which can't carry this much video)
 - Game library browsed and launched from the headset
 
-Requires the [VisionVNC Windows Companion](#visionvnc-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
+Requires the [Longwave Windows Companion](#longwave-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
 
 **On GPUs:** NVIDIA lists RTX 40-series or newer as supported for CloudXR, and it will tell you so if you have less. A 30-series card genuinely works — this was developed against a 3080 — with less headroom, so expect to sit a stream-quality step lower than a supported card would.
 
 ### Audio Streaming
-- Stream bit-exact, uncompressed system audio from your Mac via the bundled **VisionVNC Companion** menu bar app (separate macOS target in this project)
-- Works around macOS forcing Spatial Audio on for Mac Virtual Display audio — playback through VisionVNC honors the per-app Spatial Audio setting
+- Stream bit-exact, uncompressed system audio from your Mac via the bundled **Longwave Companion** menu bar app (separate macOS target in this project)
+- Works around macOS forcing Spatial Audio on for Mac Virtual Display audio — playback through Longwave honors the per-app Spatial Audio setting
 - Captures system audio with a Core Audio process tap — no virtual audio driver (BlackHole etc.) required
 - Optional "Mute Mac output while streaming" so audio plays only through the Vision Pro
 - Float32 PCM over TCP on the local network (~3 Mbps for stereo 48 kHz), no lossy codec in the chain
@@ -76,12 +76,12 @@ Requires the [VisionVNC Windows Companion](#visionvnc-windows-companion-beta) on
 
 ### VNC Dependencies
 
-VisionVNC uses [RoyalVNCKit](https://github.com/royalapplications/royalvnc) for the VNC protocol implementation.
+Longwave uses [RoyalVNCKit](https://github.com/royalapplications/royalvnc) for the VNC protocol implementation.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/Illixion/VisionVNC.git
-   cd VisionVNC
+   git clone https://github.com/Illixion/Longwave.git
+   cd Longwave
    ```
 
 2. Clone the RoyalVNCKit dependency:
@@ -137,29 +137,29 @@ Moonlight streaming requires [moonlight-common-c](https://github.com/moonlight-s
 
 ### Building
 
-Open `VisionVNC.xcodeproj` in Xcode, then add the local packages as described above. Build and run on Apple Vision Pro or the visionOS Simulator.
+Open `Longwave.xcodeproj` in Xcode, then add the local packages as described above. Build and run on Apple Vision Pro or the visionOS Simulator.
 
 The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple deprecated x86_64 with macOS Tahoe. When building for the simulator from the command line, use a concrete destination (e.g. `-destination 'platform=visionOS Simulator,name=Apple Vision Pro'`) rather than a generic one.
 
 ### Building the Companion (macOS)
 
-> Looking for the Windows side? See [VisionVNC Windows Companion (Beta)](#visionvnc-windows-companion-beta) below.
+> Looking for the Windows side? See [Longwave Windows Companion (Beta)](#longwave-windows-companion-beta) below.
 
-The **VisionVNCCompanion** scheme builds the macOS menu bar app that streams system audio to VisionVNC. It has no external dependencies, so it builds even without the `repos/` setup above. Select the `VisionVNCCompanion` scheme in Xcode and run, or from the command line:
+The **LongwaveCompanion** scheme builds the macOS menu bar app that streams system audio to Longwave. It has no external dependencies, so it builds even without the `repos/` setup above. Select the `LongwaveCompanion` scheme in Xcode and run, or from the command line:
 
 ```bash
-xcodebuild -project VisionVNC.xcodeproj -scheme VisionVNCCompanion -configuration Release build
+xcodebuild -project Longwave.xcodeproj -scheme LongwaveCompanion -configuration Release build
 # Built product:
-# ~/Library/Developer/Xcode/DerivedData/VisionVNC-*/Build/Products/Release/VisionVNCCompanion.app
+# ~/Library/Developer/Xcode/DerivedData/Longwave-*/Build/Products/Release/LongwaveCompanion.app
 ```
 
-(Add `-derivedDataPath build/dd` to get the app at `build/dd/Build/Products/Release/VisionVNCCompanion.app` instead.)
+(Add `-derivedDataPath build/dd` to get the app at `build/dd/Build/Products/Release/LongwaveCompanion.app` instead.)
 
 Requires macOS 14.2+. On first start of streaming, grant the **System Audio Recording** permission prompt (System Settings → Privacy & Security → Screen & System Audio Recording).
 
 **Usage:**
-1. Launch VisionVNCCompanion on the Mac (speaker icon in the menu bar) and enable **Stream system audio**
-2. In VisionVNC on the Vision Pro, add an **Audio** connection pointing at your Mac's IP, port 4855
+1. Launch LongwaveCompanion on the Mac (speaker icon in the menu bar) and enable **Stream system audio**
+2. In Longwave on the Vision Pro, add an **Audio** connection pointing at your Mac's IP, port 4855
 3. Spatialized Stereo will be off by default, since the Mac Virtual Display's audio stream is always forced into Spatialized Stereo, so if you ever need to stream 5.1/7.1 surround just use Mac VD audio streaming instead.
 
 ### Broadcast Setup (Vision Pro → OBS)
@@ -170,7 +170,7 @@ The Broadcast feature streams the Vision Pro's Persona camera or your full view 
    ```bash
    brew install mediamtx
    ```
-2. **Configure it** from the VisionVNC Companion: click the menu bar icon → **Open Companion Window…** → **Broadcast (OBS)**, and press **Set Up Broadcast Server**. This generates publish credentials and a TLS certificate, writes the mediamtx config (encrypted RTSPS ingest on port 8322; any pre-existing config is backed up as `mediamtx.yml.pre-visionvnc`), and restarts the service. Then press **AirDrop** next to it to send the pairing link to your Vision Pro — it auto-fills the server address (your Tailscale IP), credentials, and the pinned certificate in VisionVNC's Broadcast tab.
+2. **Configure it** from the Longwave Companion: click the menu bar icon → **Open Companion Window…** → **Broadcast (OBS)**, and press **Set Up Broadcast Server**. This generates publish credentials and a TLS certificate, writes the mediamtx config (encrypted RTSPS ingest on port 8322; any pre-existing config is backed up as `mediamtx.yml.pre-longwave`), and restarts the service. Then press **AirDrop** next to it to send the pairing link to your Vision Pro — it auto-fills the server address (your Tailscale IP), credentials, and the pinned certificate in Longwave's Broadcast tab.
 3. **Add the streams to OBS** — easiest automatically: in OBS, enable **Tools → WebSocket Server Settings → Enable WebSocket server** (Apply), press **Show Connect Info → Copy Password**, then press **Add Sources to OBS** in the same companion pane — it picks the password up from the clipboard (and remembers it; you can also paste it into the field manually). This creates "Vision Pro Camera" and "Vision Pro View" Browser Sources in the current scene with audio already routed into the OBS mixer — camera visible on top, view hidden (both are full-canvas, and an idle stream's error page would cover the other source; toggle the eye icons to switch). Pressing the button again resets this layout.
 
    Or manually, as Browser Sources:
@@ -181,11 +181,11 @@ The Broadcast feature streams the Vision Pro's Persona camera or your full view 
 
    Use **Start Virtual Camera** in OBS to feed the result into Google Meet, Zoom, etc.
 
-On the headset, the Broadcast tab starts the camera stream; the **Mirror My View** button opens the system View Sharing picker, which streams everything you see — including while VisionVNC is in the background.
+On the headset, the Broadcast tab starts the camera stream; the **Mirror My View** button opens the system View Sharing picker, which streams everything you see — including while Longwave is in the background.
 
 **Security:** the stream is end-to-end encrypted (RTSPS; the headset pins the companion-generated certificate, so no CA and no VPN are required), publishing requires the generated credentials, and playback is restricted to the Mac itself (`127.0.0.1`). Tailscale is still the recommended transport — the companion advertises the Mac's Tailscale IP in the pairing link — but with TLS active, any network path works.
 
-## VisionVNC Windows Companion (Beta)
+## Longwave Windows Companion (Beta)
 
 `CompanionWindows/` is a general-purpose Windows companion app with one Electron UI and elevated .NET backend. It currently provides two features:
 
@@ -197,13 +197,13 @@ For Hotspot, normally VNC and Moonlight need both devices on the same LAN, and m
 It's a standalone **Node + .NET** project (Electron UI over an elevated .NET backend using the Windows Mobile Hotspot API and CloudXR host components).
 
 **Install:** download the latest installer for your CPU from the [Releases](../../releases) page and run it — no need to install toolchains or compile anything (which is a pain on Windows). Both architectures are built natively:
-- `VisionVNCWindowsCompanion-…-x64-Setup.exe` — Intel / AMD PCs
-- `VisionVNCWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
+- `LongwaveWindowsCompanion-…-x64-Setup.exe` — Intel / AMD PCs
+- `LongwaveWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
 
 The installers are built by CI and ship with a **signed build-provenance attestation**, so you can prove the download was produced by this repo's workflow from a specific commit and wasn't tampered with:
 
 ```bash
-gh attestation verify VisionVNCWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/VisionVNC
+gh attestation verify LongwaveWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
 ```
 
 Prefer to build it yourself? See [`CompanionWindows/README.md`](CompanionWindows/README.md).
@@ -218,7 +218,7 @@ Prefer to build it yourself? See [`CompanionWindows/README.md`](CompanionWindows
 The app uses a multi-window SwiftUI architecture with two independent protocol paths sharing a common connection list and persistence layer:
 
 ```
-VisionVNCApp
+LongwaveApp
 ├── VNC Path
 │   ├── VNCConnectionManager      — RoyalVNCKit bridge, @Observable
 │   ├── RemoteDesktopView         — Framebuffer display + gesture input
@@ -252,7 +252,7 @@ VisionVNCApp
     ├── ConnectionListView        — Unified server list, routes by type
     └── ConnectionFormView        — Per-connection settings form
 
-CompanionMac/ → VisionVNCCompanion (macOS menu bar app)
+CompanionMac/ → LongwaveCompanion (macOS menu bar app)
 ├── SystemAudioTap                — Core Audio process tap + aggregate device
 ├── AudioStreamServer             — TCP server, int24 PCM frames
 ├── BroadcastServerManager        — One-button mediamtx setup + pairing link + OBS provisioning
@@ -260,12 +260,12 @@ CompanionMac/ → VisionVNCCompanion (macOS menu bar app)
 ├── CompanionApp                  — Menu bar popover (quick audio controls)
 └── CompanionWindowView           — Multi-pane companion window (token / broadcast / SSH / keyboard)
 
-CompanionWindows/ (PoC, Node + .NET) — VisionVNC Windows Companion
+CompanionWindows/ (PoC, Node + .NET) — Longwave Windows Companion
 ├── backend/                      — .NET 8 worker: Hotspot AP+NAT, named-pipe RPC (open source, built by CI)
 └── app/                          — Electron UI (Hotspot, Foveated Streaming, and Game library panels);
                                      downloads the closed-source Foveated Streaming (CloudXR) host on demand
 
-VisionVNC-PCVR-Host/, SessionBroker/, OpenXRLayer/ — closed-source, private git submodules (no
+Longwave-PCVR-Host/, SessionBroker/, OpenXRLayer/ — closed-source, private git submodules (no
                                      public source); the Foveated Streaming/CloudXR host + native
                                      OpenXR bridge the Electron UI fetches on demand, never bundled
 
@@ -274,7 +274,7 @@ Shared/AudioStreamProtocol.swift  — wire format, compiled into both visionOS +
 
 ### How Moonlight Streaming Works
 
-This app integrates the **moonlight-common-c** protocol library — the same C core used by [Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt), [Moonlight iOS](https://github.com/moonlight-stream/moonlight-ios), and [Moonlight Android](https://github.com/moonlight-stream/moonlight-android). Rather than porting one of the full Moonlight client apps to visionOS (which would require rewriting their entire UI layer), VisionVNC embeds only the protocol library and provides native visionOS implementations of:
+This app integrates the **moonlight-common-c** protocol library — the same C core used by [Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt), [Moonlight iOS](https://github.com/moonlight-stream/moonlight-ios), and [Moonlight Android](https://github.com/moonlight-stream/moonlight-android). Rather than porting one of the full Moonlight client apps to visionOS (which would require rewriting their entire UI layer), Longwave embeds only the protocol library and provides native visionOS implementations of:
 
 - **Video decoding** — `AVSampleBufferDisplayLayer` for hardware H.264/HEVC/AV1 decoding with native HDR10 support. Compressed video frames are enqueued directly to the display layer as `CMSampleBuffer`s — the layer handles decoding, HDR tone mapping, and rendering. AV1 bitstream parsing uses a custom OBU parser for sequence header extraction.
 - **Audio decoding** — `opus_multistream_decode()` feeding `AVAudioEngine` with `AVAudioPlayerNode`

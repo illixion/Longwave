@@ -6,7 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace VisionVNC.WindowsCompanion.Backend;
+namespace Longwave.WindowsCompanion.Backend;
 
 /// <summary>
 /// Named-pipe JSON-RPC server for the public backend (hotspot, native screen streaming).
@@ -15,7 +15,7 @@ namespace VisionVNC.WindowsCompanion.Backend;
 /// every connected client.
 ///
 /// The CloudXR / Foveated-Streaming host and the game library are a separate process on their
-/// own pipe (PcvrPipeServer, in the closed-source VisionVNC-PCVR-Host project) — this backend
+/// own pipe (PcvrPipeServer, in the closed-source Longwave-PCVR-Host project) — this backend
 /// has no reference to that assembly and no idea whether it's even installed.
 ///
 /// Clients are served <b>concurrently</b>. That matters operationally: the Electron UI holds
@@ -28,7 +28,7 @@ namespace VisionVNC.WindowsCompanion.Backend;
 /// </summary>
 public sealed class PipeServer : BackgroundService
 {
-    public const string PipeName = "visionvnc-hotspot";
+    public const string PipeName = "longwave-hotspot";
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

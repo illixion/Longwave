@@ -82,7 +82,7 @@ print("CLIENT_TO_HOST " + sealed.map { String(format: "%02x", \$0) }.joined())
 SWIFT
 
 swiftc -O -DFOVEATED_ENABLED \
-    "$repo_root/VisionVNC/ControllerBridge/BridgeSeal.swift" \
+    "$repo_root/Longwave/ControllerBridge/BridgeSeal.swift" \
     "$work/stub.swift" "$work/main.swift" \
     -o "$work/sealcheck"
 

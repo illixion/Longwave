@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-VisionVNC uses the following open source software:
+Longwave uses the following open source software:
 
 ---
 
@@ -219,7 +219,7 @@ packages.
 Copyright The SwiftCrypto Project Authors.
 
 Licensed under the Apache License, Version 2.0 (full text below). swift-crypto
-itself incorporates BoringSSL; on Apple platforms VisionVNC uses the system
+itself incorporates BoringSSL; on Apple platforms Longwave uses the system
 CryptoKit-backed implementation.
 
 ---

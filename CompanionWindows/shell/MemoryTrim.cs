@@ -1,7 +1,7 @@
 using System.Runtime;
 using System.Runtime.InteropServices;
 
-namespace VisionVNC.Companion.Shell;
+namespace Longwave.Companion.Shell;
 
 /// <summary>
 /// After the window closes, the tray is all that's left — but the process still holds the

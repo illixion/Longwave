@@ -27,9 +27,9 @@ so `renderer.js` runs unmodified.
 
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained false -o out
-$env:VISIONVNC_NO_SPAWN = "1"   # talk to an already-running backend instead of spawning one
-$env:VISIONVNC_DEVTOOLS = "1"   # F12 in the window
-out\VisionVNCCompanion.exe
+$env:LONGWAVE_NO_SPAWN = "1"   # talk to an already-running backend instead of spawning one
+$env:LONGWAVE_DEVTOOLS = "1"   # F12 in the window
+out\LongwaveCompanion.exe
 ```
 
 The shell is `asInvoker` on purpose — it is the unprivileged half. The backend keeps the
@@ -41,7 +41,7 @@ privileged surface and elevates for tethering on its own. The pipe's ACL grants
 Against a live backend, with the renderer unmodified:
 
 - The window renders identically to Electron's, including the page's
-  `default-src 'self'` CSP — a virtual host mapping (`https://companion.visionvnc.local/`)
+  `default-src 'self'` CSP — a virtual host mapping (`https://companion.longwave.local/`)
   keeps `'self'` meaningful, and the injected bridge is not subject to the page CSP.
 - Read RPCs (`GetStatus`, `ListUpstreamProfiles`, `NativeStreamStatus`), write RPCs
   (`NativeStreamRegenerateToken` — clicked, token changed in the UI *and* the registry),

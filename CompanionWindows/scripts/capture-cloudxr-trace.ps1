@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
   [ValidateRange(5, 120)] [int] $DurationSeconds = 30,
-  [string] $OutputDirectory = 'C:\Temp\VisionVNC-Traces',
+  [string] $OutputDirectory = 'C:\Temp\Longwave-Traces',
   [switch] $VerboseGpu
 )
 
@@ -33,7 +33,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
   throw 'Run this script from an elevated shell.'
 }
 
-$required = @('CloudXrService', 'VisionVNCSessionBroker', 'hlvr')
+$required = @('CloudXrService', 'LongwaveSessionBroker', 'hlvr')
 $processes = foreach ($name in $required) {
   $process = Get-Process $name -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $process) { throw "$name is not running; start PCVR and Alyx before tracing." }
@@ -64,7 +64,7 @@ $metadata = [ordered]@{
 }
 $metadata | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $metadataPath
 
-$brokerLog = 'C:\dev\VisionVNC-companion\logs\broker.log'
+$brokerLog = 'C:\dev\Longwave-companion\logs\broker.log'
 
 $cpuProfile = if ($VerboseGpu) { 'CPU.verbose' } else { 'CPU.light' }
 $gpuProfile = if ($VerboseGpu) { 'GPU.verbose' } else { 'GPU.light' }
@@ -89,7 +89,7 @@ try {
   $completed = $true
 } finally {
   if ($completed) {
-    & $wpr -stop $tracePath 'VisionVNC CloudXR Alyx performance capture'
+    & $wpr -stop $tracePath 'Longwave CloudXR Alyx performance capture'
   } else {
     & $wpr -cancel
   }

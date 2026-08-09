@@ -1,8 +1,8 @@
-# VisionVNC File Structure
+# Longwave File Structure
 
 ```
-VisionVNC/
-├── VisionVNCApp.swift                  — App entry and multi-window scene registration
+Longwave/
+├── LongwaveApp.swift                  — App entry and multi-window scene registration
 ├── Models/
 │   └── SavedConnection.swift           — SwiftData model, ConnectionType, Moonlight settings enums
 ├── ViewModels/
@@ -63,7 +63,7 @@ Shared/                                 — compiled into BOTH targets (visionOS
 ├── AudioStreamProtocol.swift           — Wire protocol v6 (int24 PCM via PCM24), NowPlayingInfo, MediaCommand
 ├── MacNativeStreamProtocol.swift       — Native stream framing: v2 capabilities, window inventory, multiplexed streams, input
 ├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
-└── BroadcastSetupURL.swift             — visionvnc://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
+└── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
 ├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLog (AppLog is app-only)
@@ -73,10 +73,10 @@ BroadcastCore/                          — compiled into BOTH the app and the b
 ├── BroadcastVideoEncoder.swift         — VTCompressionSession H.264 (realtime, no B-frames, 1 s GOP)
 └── BroadcastAudioEncoder.swift         — AVAudioConverter → native Opus (PCM-buffer + CMSampleBuffer entry points)
 
-BroadcastExtension/                     — VisionVNCBroadcast target (ReplayKit broadcast upload extension)
+BroadcastExtension/                     — LongwaveBroadcast target (ReplayKit broadcast upload extension)
 └── SampleHandler.swift                 — Mirror My View + mic → BroadcastCore pipeline → mediamtx
 
-CompanionMac/                           — macOS menu bar companion target (VisionVNCCompanion)
+CompanionMac/                           — macOS menu bar companion target (LongwaveCompanion)
 ├── CompanionApp.swift                  — MenuBarExtra (slim quick-controls popover) + Settings scene + AudioStreamerController
 ├── CompanionWindowView.swift           — multi-pane companion window (sidebar + grouped forms: audio/token/broadcast/SSH/keyboard); Settings scene keeps the app menu-bar-only (no auto-open at launch), activation policy flips .regular↔.accessory with the window
 ├── AudioStreamServer.swift             — Single-client TCP server, metadata replay, command rx
@@ -92,13 +92,13 @@ CompanionMac/                           — macOS menu bar companion target (Vis
 ├── OBSWebSocketClient.swift            — minimal obs-websocket v5 client (Hello/Identify challenge auth, Browser Source create/update + visibility/stacking enforcement)
 └── Info.plist                          — NSAudioCaptureUsageDescription, NSAppleEventsUsageDescription
 
-CompanionWindows/                       — VisionVNC Windows Companion (PoC; separate Node + .NET codebase)
-├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see VisionVNC-PCVR-Host/)
+CompanionWindows/                       — Longwave Windows Companion (PoC; separate Node + .NET codebase)
+├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see Longwave-PCVR-Host/)
 ├── app/                                — Electron UI: Hotspot status / "Join from Vision Pro", plus PCVR and Game library panels that download the closed-source host on demand
 ├── spike/                              — Step-1 capability spike + SPIKE-FINDINGS.md (decision record)
 └── README.md                           — build/run/architecture/protocol
 
-VisionVNCTests/                         — app-hosted XCTest target (run locally, no CI)
+LongwaveTests/                         — app-hosted XCTest target (run locally, no CI)
 ├── TextDiffTests.swift                 — keyboard common-prefix diff
 ├── CompanionInjectProtocolTests.swift  — inject framing / drain / backspace
 ├── SavedConnectionEnvTests.swift       — SSH env parsing + name validation
@@ -119,7 +119,7 @@ ci/
 │       ├── include/module.modulemap    — Exposes multistream API
 │       └── spm-config/config.h         — Build configuration
 ├── patches/
-│   ├── royalvnc-visionvnc.patch              — Static linking + VisionVNC API additions (KEEP IN SYNC with repos/royalvnc)
+│   ├── royalvnc-longwave.patch              — Static linking + Longwave API additions (KEEP IN SYNC with repos/royalvnc)
 │   ├── moonlight-common-c-commoncrypto.patch — Replace OpenSSL with CommonCrypto
 │   ├── moonlight-common-c-fec-fix.patch      — Audio FEC crash fix
 │   ├── moonlight-common-c-audio-fec-fix.patch — Newer Sunshine compat

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Provision the VisionVNC Windows Companion on the RTX host (runs ON the PC).
+  Provision the Longwave Windows Companion on the RTX host (runs ON the PC).
 
 .DESCRIPTION
   Invoked by scripts/deploy-windows-companion.sh after the source tree has been
@@ -16,15 +16,15 @@
 #>
 [CmdletBinding()]
 param(
-  [string] $Root = 'C:\dev\VisionVNC-companion',
+  [string] $Root = 'C:\dev\Longwave-companion',
   # Sibling checkout of the closed-source PCVR host project - absent in a public-only checkout,
   # in which case the PCVR/game-library features simply stay uninstalled (the companion UI
   # already hides them when this pipe never comes up).
-  [string] $PcvrHostRoot = 'C:\dev\VisionVNC-PCVR-Host',
+  [string] $PcvrHostRoot = 'C:\dev\Longwave-PCVR-Host',
   # CloudXR Stream Manager extraction (Server/ + SampleClient/NvStreamManagerClient.dll).
   [string] $StreamManager = 'C:\Users\Ixion\cloudxr-stream-manager_v6.1.0\extracted',
   # Prebuilt hello_xr, kept from the PoC tree - the fallback OpenXR content app.
-  [string] $HelloXr = 'C:\dev\VisionVNC-bridge\OpenXRLayer\build-hxr\src\tests\hello_xr\Release\hello_xr.exe',
+  [string] $HelloXr = 'C:\dev\Longwave-bridge\OpenXRLayer\build-hxr\src\tests\hello_xr\Release\hello_xr.exe',
   # Half-Life 2: VR Mod install dir (OpenVR title, reached via OpenComposite).
   [string] $Hl2Vr = 'C:\Program Files (x86)\Steam\steamapps\common\Half-Life 2 VR',
   [switch] $NoUi,
@@ -40,10 +40,10 @@ $publish     = Join-Path $backend "bin\Release\$tfm\publish"
 $appDir      = Join-Path $Root 'app'
 $toolsDir    = Join-Path $Root 'tools'
 $logDir      = Join-Path $Root 'logs'
-$exeName     = 'VisionVNCWindowsCompanionBackend.exe'
+$exeName     = 'LongwaveWindowsCompanionBackend.exe'
 $pcvrHostHasSource = Test-Path (Join-Path $PcvrHostRoot 'Host.csproj')
 $pcvrHostPublish   = Join-Path $PcvrHostRoot "bin\Release\$tfm\publish"
-$pcvrHostExeName   = 'VisionVNCPCVRHost.exe'
+$pcvrHostExeName   = 'LongwavePCVRHost.exe'
 
 function Say([string] $m) { Write-Host "[provision] $m" }
 
@@ -54,7 +54,7 @@ New-Item -ItemType Directory -Force -Path $toolsDir, $logDir | Out-Null
 # lives user-local. Pick the first candidate that actually reports an installed SDK.
 function Resolve-DotnetSdk {
   $candidates = @(
-    $env:VISIONVNC_DOTNET,
+    $env:LONGWAVE_DOTNET,
     (Join-Path $env:USERPROFILE 'dotnet-sdk\dotnet.exe'),
     (Get-Command dotnet -ErrorAction SilentlyContinue).Source,
     'C:\Program Files\dotnet\dotnet.exe'
@@ -255,7 +255,7 @@ if (-not $NoUi) {
 $bats = @{
   'start-companion-ui.bat' = @"
 @echo off
-rem VisionVNC Windows Companion - Electron UI (spawns the backend itself).
+rem Longwave Windows Companion - Electron UI (spawns the backend itself).
 cd /d "$appDir"
 rem Windows redirect handles leak to every descendant of a run (Steam, launched
 rem de-elevated by the backend, is the long-lived one), and cmd opens the log
@@ -293,7 +293,7 @@ SampleNvStreamManagerClient.exe StartCxrService 6.2.1 > "$logDir\cxr-service.log
   'start-helloxr.bat' = @"
 @echo off
 rem Fallback native-OpenXR content app, rendered into whatever ActiveRuntime is.
-set VISIONVNC_CB_LAYER_LOG=$logDir\cb_layer.log
+set LONGWAVE_CB_LAYER_LOG=$logDir\cb_layer.log
 "$HelloXr" -g D3D11 > "$logDir\helloxr.log" 2>&1
 "@
 
@@ -352,7 +352,7 @@ function Register-Helper([string] $taskName, [string] $bat, [string] $runLevel) 
                  -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
   Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal `
     -Settings $settings -ErrorAction Stop `
-    -Description 'VisionVNC PCVR host helper (deployed by provision-pc.ps1)' -Force | Out-Null
+    -Description 'Longwave PCVR host helper (deployed by provision-pc.ps1)' -Force | Out-Null
   Say "task $taskName -> $bat ($runLevel)"
 }
 
@@ -364,18 +364,18 @@ function Register-Helper([string] $taskName, [string] $bat, [string] $runLevel) 
 # nothing here needs to start elevated. Measured unelevated on the RTX host 2026-07-28:
 # NvStreamManager, CloudXrService and the session broker all run at medium integrity, and the
 # broker picked CloudXR up through XR_RUNTIME_JSON.
-Register-Helper 'VisionVNC-CompanionUI'      'start-companion-ui.bat'      'Limited'
-Register-Helper 'VisionVNC-Backend'          'start-backend.bat'           'Limited'
-Register-Helper 'VisionVNC-CxrService'       'start-cxr-service.bat'       'Limited'
-Register-Helper 'VisionVNC-HelloXR'          'start-helloxr.bat'           'Limited'
+Register-Helper 'Longwave-CompanionUI'      'start-companion-ui.bat'      'Limited'
+Register-Helper 'Longwave-Backend'          'start-backend.bat'           'Limited'
+Register-Helper 'Longwave-CxrService'       'start-cxr-service.bat'       'Limited'
+Register-Helper 'Longwave-HelloXR'          'start-helloxr.bat'           'Limited'
 # Steam refuses to launch a game from an elevated process.
-Register-Helper 'VisionVNC-HL2VR'            'start-hl2vr.bat'             'Limited'
+Register-Helper 'Longwave-HL2VR'            'start-hl2vr.bat'             'Limited'
 
 if ($pcvrHostHasSource) {
-  Register-Helper 'VisionVNC-PCVRHost'          'start-pcvr-host.bat'          'Limited'
-  Register-Helper 'VisionVNC-FoveatedHeadless'  'start-foveated-headless.bat'  'Limited'
+  Register-Helper 'Longwave-PCVRHost'          'start-pcvr-host.bat'          'Limited'
+  Register-Helper 'Longwave-FoveatedHeadless'  'start-foveated-headless.bat'  'Limited'
 } else {
-  foreach ($obsolete in @('VisionVNC-PCVRHost', 'VisionVNC-FoveatedHeadless')) {
+  foreach ($obsolete in @('Longwave-PCVRHost', 'Longwave-FoveatedHeadless')) {
     if (Get-ScheduledTask -TaskName $obsolete -ErrorAction SilentlyContinue) {
       Unregister-ScheduledTask -TaskName $obsolete -Confirm:$false -ErrorAction SilentlyContinue
       Say ("removed $obsolete task (no PCVR host source checked out)")
@@ -388,7 +388,7 @@ if ($pcvrHostHasSource) {
 # mechanisms is not a fallback, it is a trap: a task-started broker holds logs\broker.log open,
 # so the app's attempt to start its own fails on the log, exits, gets restarted, and the restart
 # counter climbs while a perfectly good session carries on running behind it. Observed 2026-07-28.
-foreach ($obsolete in @('VisionVNC-Broker', 'VisionVNC-Sidecar')) {
+foreach ($obsolete in @('Longwave-Broker', 'Longwave-Sidecar')) {
   if (Get-ScheduledTask -TaskName $obsolete -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $obsolete -Confirm:$false -ErrorAction SilentlyContinue
     Say ("removed obsolete task " + $obsolete + " (the companion app supervises this now)")
@@ -398,26 +398,26 @@ foreach ($obsolete in @('VisionVNC-Broker', 'VisionVNC-Sidecar')) {
 # ------------------------------------------------------------------- firewall
 # WSS signaling + media, plus the Apple session-management port.
 foreach ($rule in @(
-  @{ Name = 'VisionVNC session management (TCP 55000)'; Proto = 'TCP'; Port = 55000 },
+  @{ Name = 'Longwave session management (TCP 55000)'; Proto = 'TCP'; Port = 55000 },
   @{ Name = 'CloudXR signaling (TCP 48322)';            Proto = 'TCP'; Port = 48322 },
   @{ Name = 'CloudXR media (UDP 47998)';                Proto = 'UDP'; Port = 47998 },
   # Controller bridge: the OpenXR API layer's UDP receiver. Without this the headset's
   # cb_input_state_t packets are dropped at the firewall and the layer never goes active -
   # the local feeder works regardless, which makes it an easy blocker to miss. The haptic
   # return path (UDP 9521 back to the sender) is outbound and needs no rule.
-  @{ Name = 'VisionVNC controller bridge (UDP 9520)';   Proto = 'UDP'; Port = 9520 },
+  @{ Name = 'Longwave controller bridge (UDP 9520)';   Proto = 'UDP'; Port = 9520 },
   # Game library RPC. The CloudXR message channel only carries the rendezvous (the host's
   # addresses plus a session token) because a channel connection lasts about twelve seconds;
   # the library itself runs here. Blocked, the headset gets the token, probes every announced
   # address, and reports the PC unreachable - with the session and video working fine.
-  @{ Name = 'VisionVNC game library (UDP 9522)';        Proto = 'UDP'; Port = 9522 },
+  @{ Name = 'Longwave game library (UDP 9522)';        Proto = 'UDP'; Port = 9522 },
   # The control stream: everything on the bridge except the poses (game library, perf feed,
   # telemetry, haptics, tuning). This one is inbound TCP, which no earlier rule covered, and
   # the failure it causes is quiet and misleading - the session, the video and the wrist HUD
   # all keep working (the HUD falls back to the UDP return path) while the Games tab simply
   # never loads and the broker logs a listener with nobody connected. Observed 2026-07-29,
   # within an hour of the port existing.
-  @{ Name = 'VisionVNC bridge control (TCP 9523)';      Proto = 'TCP'; Port = 9523 }
+  @{ Name = 'Longwave bridge control (TCP 9523)';      Proto = 'TCP'; Port = 9523 }
 )) {
   if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow `
@@ -444,7 +444,7 @@ foreach ($name in @('NV_CXR_ENABLE_FOVEATION_VISUALIZATION')) {
 
 # A desktop shortcut, since launching the companion by hand is the normal way in: the app
 # supervises the PCVR services itself, so starting it is the whole bring-up.
-$desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'VisionVNC Companion.lnk'
+$desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Longwave Companion.lnk'
 $electron = Join-Path $Root 'app\node_modules\electron\dist\electron.exe'
 if ((Test-Path $electron) -and -not (Test-Path $desktopLink)) {
   try {
@@ -453,7 +453,7 @@ if ((Test-Path $electron) -and -not (Test-Path $desktopLink)) {
     $link.TargetPath = $electron
     $link.Arguments = '.'
     $link.WorkingDirectory = Join-Path $Root 'app'
-    $link.Description = 'VisionVNC Windows Companion'
+    $link.Description = 'Longwave Windows Companion'
     $link.Save()
     Say 'created the desktop shortcut'
   } catch {
@@ -478,7 +478,7 @@ foreach ($desktop in @([Environment]::GetFolderPath('Desktop'), 'C:\Users\Public
       if ($bytes.Length -lt 22 -or -not ($bytes[21] -band 0x20)) { continue }
       $shell = New-Object -ComObject WScript.Shell
       $target = $shell.CreateShortcut($link.FullName).TargetPath
-      if ($target -notmatch 'VisionVNC|electron') { continue }
+      if ($target -notmatch 'Longwave|electron') { continue }
       $bytes[21] = $bytes[21] -band (-bnot 0x20)
       [System.IO.File]::WriteAllBytes($link.FullName, $bytes)
       Say ("cleared the run-as-administrator flag on " + $link.Name)

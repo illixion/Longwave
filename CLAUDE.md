@@ -1,27 +1,27 @@
-# VisionVNC — Claude Code Context
+# Longwave — Claude Code Context
 
 ## Overview
 
-VisionVNC is a remote desktop and game streaming app for **visionOS** built in Swift. It supports VNC, Moonlight game streaming, system audio streaming, SSH terminal + remote agents, RTSP broadcast, and foveated PCVR streaming:
+Longwave is a remote desktop and game streaming app for **visionOS** built in Swift. It supports VNC, Moonlight game streaming, system audio streaming, SSH terminal + remote agents, RTSP broadcast, and foveated PCVR streaming:
 
 1. **VNC** — Traditional remote desktop via [RoyalVNCKit](https://github.com/royalapplications/royalvnc) (MIT, pure Swift, local SPM)
 2. **Moonlight** — Low-latency game streaming via [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) (GPLv3, C library) with H.264/HEVC/AV1 hardware decoding, HDR10, Opus audio
-3. **Audio** — Uncompressed streaming from macOS Companion (`VisionVNCCompanion` target) with Music.app now-playing metadata + transport control
+3. **Audio** — Uncompressed streaming from macOS Companion (`LongwaveCompanion` target) with Music.app now-playing metadata + transport control
 4. **SSH / Remote Agents** — Built-in SSH terminal ([SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) MIT + [swift-nio-ssh](https://github.com/apple/swift-nio-ssh) Apache-2.0) plus a Projects tab that drives Claude Code / GitHub Copilot / custom CLI agents over SSH (tmux-backed). Tokens injected per agent, per connection, from Vision Pro keychain (macOS Keychain unreachable over SSH). Claude and Copilot both sign in **on the headset** — Claude through an in-app browser running its OAuth PKCE flow (`ClaudeOAuth`), Copilot through GitHub's device flow (`GitHubDeviceFlow`).
 5. **Broadcast** — H.264 + native Opus RTP/RTSP to mediamtx via tab (foreground) and ReplayKit extension (backgrounded). One-button server setup from companion, OBS provisioning via obs-websocket.
-6. **Foveated Streaming / PCVR** — receives immersive OpenXR content from an NVIDIA CloudXR host (Windows + RTX) via Apple's `FoveatedStreaming` framework (visionOS 26.4+). Foveation happens **on the host, driven by real gaze** — not on device: the game itself renders foveated (gaze-driven VRS), which stock CloudXR cannot do because it hands games no eye tracking at all. Say this correctly in user-facing copy; it is the feature's differentiator. Lives in its own **PCVR tab** (`PCVRTabView`, `PCVRHelpView`), not in the connection list — settings persist as one `ConnectionType.foveated` `SavedConnection` the tab owns. `FoveatedConnectionManager` + an `ImmersiveSpace(foveatedStreaming:)`. `FoveatedConnectionMode` offers Automatic (Bonjour) and By IP address only; Apple's `.remote` endpoint case is deliberately not exposed (its server list is baked into Info.plist at build time). Accompanied by a Windows CloudXR session-management host (`VisionVNC-PCVR-Host/`, closed-source, git submodule) and a Switch Pro + hand-gesture → controller bridge (`VisionVNC/ControllerBridge/` → `OpenXRLayer/`, an implicit OpenXR API layer on the host, also a closed-source git submodule alongside `SessionBroker/`) presenting emulated Valve Index controllers; transport is the session MessageChannel (opaque data channel), UDP `cb_input_state_t` as fallback. A physical controller's IMU is attributed to whichever hand is holding it (client-side correlation of angular speeds) and drives grip velocity plus dead-reckoning through hand-tracking dropouts. Real gaze — unreachable through any OpenXR API on this runtime, so read out of `CloudXrService` — drives gaze-driven VRS, reaches games as `XR_EXT_eye_gaze_interaction` (primarily by feeding VDXR's own implementation through Virtual Desktop's `BodyState`; the API layer publishes the extension itself as a fallback), and, opt-in, drives VRChat's OSC eye-look override. None of the three closed-source submodules ship in the public Windows Companion installer; the Electron UI downloads and installs the matching bundle on demand from a GitHub Release asset (`pcvr-installer.js`, `scripts/package-pcvr-bundle.sh`) so there is one public download, not two.
+6. **Foveated Streaming / PCVR** — receives immersive OpenXR content from an NVIDIA CloudXR host (Windows + RTX) via Apple's `FoveatedStreaming` framework (visionOS 26.4+). Foveation happens **on the host, driven by real gaze** — not on device: the game itself renders foveated (gaze-driven VRS), which stock CloudXR cannot do because it hands games no eye tracking at all. Say this correctly in user-facing copy; it is the feature's differentiator. Lives in its own **PCVR tab** (`PCVRTabView`, `PCVRHelpView`), not in the connection list — settings persist as one `ConnectionType.foveated` `SavedConnection` the tab owns. `FoveatedConnectionManager` + an `ImmersiveSpace(foveatedStreaming:)`. `FoveatedConnectionMode` offers Automatic (Bonjour) and By IP address only; Apple's `.remote` endpoint case is deliberately not exposed (its server list is baked into Info.plist at build time). Accompanied by a Windows CloudXR session-management host (`Longwave-PCVR-Host/`, closed-source, git submodule) and a Switch Pro + hand-gesture → controller bridge (`Longwave/ControllerBridge/` → `OpenXRLayer/`, an implicit OpenXR API layer on the host, also a closed-source git submodule alongside `SessionBroker/`) presenting emulated Valve Index controllers; transport is the session MessageChannel (opaque data channel), UDP `cb_input_state_t` as fallback. A physical controller's IMU is attributed to whichever hand is holding it (client-side correlation of angular speeds) and drives grip velocity plus dead-reckoning through hand-tracking dropouts. Real gaze — unreachable through any OpenXR API on this runtime, so read out of `CloudXrService` — drives gaze-driven VRS, reaches games as `XR_EXT_eye_gaze_interaction` (primarily by feeding VDXR's own implementation through Virtual Desktop's `BodyState`; the API layer publishes the extension itself as a fallback), and, opt-in, drives VRChat's OSC eye-look override. None of the three closed-source submodules ship in the public Windows Companion installer; the Electron UI downloads and installs the matching bundle on demand from a GitHub Release asset (`pcvr-installer.js`, `scripts/package-pcvr-bundle.sh`) so there is one public download, not two.
 
-**Companions** (host side): **macOS Companion** (`VisionVNCCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **VisionVNC Windows Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
+**Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **Longwave Windows Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
 
 **Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+).
 
-See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pipelines; `VisionVNC-PCVR-Host/docs/FOVEATED_STREAMING_ARCH.md` for the full PCVR design (CloudXR host, controller bridge, gesture input, OpenXR API layer, verification status). That document lives inside the private submodule along with `FOVEATED_STREAMING_PLAN.md` and `HOST_PROVISIONING.md` — a checkout without the submodule initialised simply won't have them.
+See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pipelines; `Longwave-PCVR-Host/docs/FOVEATED_STREAMING_ARCH.md` for the full PCVR design (CloudXR host, controller bridge, gesture input, OpenXR API layer, verification status). That document lives inside the private submodule along with `FOVEATED_STREAMING_PLAN.md` and `HOST_PROVISIONING.md` — a checkout without the submodule initialised simply won't have them.
 
 ## Build Configuration
 
 - **Platform:** visionOS 26.2+, Swift 5.0
 - **SWIFT_DEFAULT_ACTOR_ISOLATION:** MainActor (all types implicitly @MainActor)
-- **RoyalVNCKit:** Local SPM from `repos/royalvnc/` with local mods (static linking, JPEG quality/compression, framebuffer pause/resume). **Re-export the patch after edits** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-visionvnc.patch` — or CI builds fail.
+- **RoyalVNCKit:** Local SPM from `repos/royalvnc/` with local mods (static linking, JPEG quality/compression, framebuffer pause/resume). **Re-export the patch after edits** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-longwave.patch` — or CI builds fail.
 - **Dependencies:** moonlight-common-c, Opus (local SPM packages in `repos/`, wrapped in `ci/deps/`). `MOONLIGHT_ENABLED` compilation condition gates all Moonlight code.
 - **FOVEATED_ENABLED:** gates all Foveated/PCVR code (default off, device-only). Build with `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` + `XROS_DEPLOYMENT_TARGET=26.4` — **keep `$(inherited)`** or swift-crypto's BoringSSL exclusion breaks. Simulator uses `Foveated/FoveatedStreamingMock.swift`; runtime needs the `com.apple.developer.foveated-streaming-session` entitlement.
 - **CI:** Builds two IPAs on one runner (`.github/workflows/build.yml`): MIT IPA (moonlight/opus stubbed), then Moonlight IPA (with real deps + MOONLIGHT_ENABLED). Local builds use `scripts/setup-deps.sh` (idempotent, applies six CI patches).
@@ -30,17 +30,17 @@ See [[FILE_STRUCTURE.md]] for directory layout and [[KNOWN_CONSTRAINTS.md]] for 
 
 ## Testing
 
-Unit tests in `VisionVNCTests/` (XCTest, visionOS, run locally — no CI test job):
+Unit tests in `LongwaveTests/` (XCTest, visionOS, run locally — no CI test job):
 
 ```
-xcodebuild test -scheme VisionVNCTests -destination 'platform=visionOS Simulator,name=Apple Vision Pro,OS=26.5'
+xcodebuild test -scheme LongwaveTests -destination 'platform=visionOS Simulator,name=Apple Vision Pro,OS=26.5'
 ```
 
 Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsing + per-agent token resolution. `PBXFileSystemSynchronizedRootGroup`, so new `.swift` files auto-compile — no pbxproj edits needed.
 
 ## Critical Gotchas
 
-**RoyalVNCKit patch sync:** After editing `repos/royalvnc/`, **re-export the patch** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-visionvnc.patch` — or CI builds fail to compile.
+**RoyalVNCKit patch sync:** After editing `repos/royalvnc/`, **re-export the patch** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-longwave.patch` — or CI builds fail to compile.
 
 **SSH tokens:** macOS Keychain is unreachable over SSH. Solution: tokens stored in Vision Pro keychain (per-agent, per-connection) and injected inline into the tmux launch command. No `sshd_config` changes needed.
 

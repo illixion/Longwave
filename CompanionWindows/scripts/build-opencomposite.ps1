@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Build VisionVNC's patched OpenComposite runtime.
+  Build Longwave's patched OpenComposite runtime.
 
 .DESCRIPTION
   The upstream openxr binary aborts The Lab while loading its Valve Index bindings. Multiple dpad
@@ -18,7 +18,7 @@ param(
   [string] $Source = 'C:\dev\OpenComposite-src',
   [string] $Commit = 'cff07db75c4823afe93ed7027b03d5f7bc86f164',
   [string] $Repository = 'https://gitlab.com/znixian/OpenOVR.git',
-  [string] $Patch = (Join-Path $PSScriptRoot '..\patches\opencomposite-visionvnc.patch')
+  [string] $Patch = (Join-Path $PSScriptRoot '..\patches\opencomposite-longwave.patch')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +27,7 @@ $ProgressPreference = 'SilentlyContinue'
 function Say([string] $message) { Write-Host "[opencomposite-build] $message" }
 
 $Patch = [IO.Path]::GetFullPath($Patch)
-if (-not (Test-Path $Patch)) { throw "VisionVNC patch not found: $Patch" }
+if (-not (Test-Path $Patch)) { throw "Longwave patch not found: $Patch" }
 
 if (-not (Test-Path (Join-Path $Source '.git'))) {
   Say "cloning pinned source into $Source"
@@ -47,13 +47,13 @@ if ($dirty.Count -gt 0) {
   git -C $Source checkout --detach $Commit
   git -C $Source submodule update --init --recursive
   git -C $Source apply --check $Patch
-  if ($LASTEXITCODE -ne 0) { throw "VisionVNC patch does not apply to OpenComposite $Commit" }
+  if ($LASTEXITCODE -ne 0) { throw "Longwave patch does not apply to OpenComposite $Commit" }
   git -C $Source apply $Patch
 }
 
 $vulkan = Join-Path $Source 'libs\vulkan'
 if (-not (Test-Path (Join-Path $vulkan 'Lib\vulkan-1.lib'))) {
-  $cache = Join-Path $env:TEMP 'VisionVNC-OpenComposite'
+  $cache = Join-Path $env:TEMP 'Longwave-OpenComposite'
   New-Item -ItemType Directory -Force -Path $cache | Out-Null
   $archive = Join-Path $cache 'vulkan-minisdk.7z'
   $sevenZip = Join-Path $cache '7zr.exe'
@@ -80,7 +80,7 @@ if (-not $installation) {
 
 $platform = if ($Arch -eq 'x64') { 'x64' } else { 'Win32' }
 $build = Join-Path $Source "build-$Arch"
-cmake -S $Source -B $build -A $platform -DOC_VERSION="VisionVNC $Commit"
+cmake -S $Source -B $build -A $platform -DOC_VERSION="Longwave $Commit"
 if ($LASTEXITCODE -ne 0) { throw 'OpenComposite configure failed' }
 cmake --build $build --config Release --target OCOVR -- /nologo /verbosity:minimal
 if ($LASTEXITCODE -ne 0) { throw 'OpenComposite build failed' }

@@ -17,7 +17,7 @@
        concurrent sessions; CloudXR's four foveated streams + Sunshine exhaust it and
        the session dies ~3 s in with NVST_R_BUSY (Enqueued:4 Encoded:0).
 
-  `-Mode start` records the previous values under HKCU\Software\VisionVNC\PcvrSession
+  `-Mode start` records the previous values under HKCU\Software\Longwave\PcvrSession
   before changing anything; `-Mode stop` restores from that record (and falls back to
   the well-known SteamVR paths if the record is missing).
 
@@ -29,10 +29,10 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][ValidateSet('start', 'stop', 'status')] [string] $Mode,
-  [string] $Root = 'C:\dev\VisionVNC-companion',
+  [string] $Root = 'C:\dev\Longwave-companion',
   # Sibling checkout of the closed-source PCVR host - where CloudXR is staged now
   # (CloudXRController moved there with the rest of Foveated/).
-  [string] $PcvrHostRoot = 'C:\dev\VisionVNC-PCVR-Host',
+  [string] $PcvrHostRoot = 'C:\dev\Longwave-PCVR-Host',
   [string] $OpenComposite = 'C:\dev\OpenComposite',
   [string] $SteamVr = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR',
   # Leave OpenVR pointed at SteamVR (native-OpenXR content only, e.g. hello_xr).
@@ -45,7 +45,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $xrKey    = 'HKLM:\SOFTWARE\Khronos\OpenXR\1'
-$stateKey = 'HKCU:\Software\VisionVNC\PcvrSession'
+$stateKey = 'HKCU:\Software\Longwave\PcvrSession'
 $vrPath   = Join-Path $env:LOCALAPPDATA 'openvr\openvrpaths.vrpath'
 
 function Say([string] $m) { Write-Host "[pcvr] $m" }
@@ -133,7 +133,7 @@ switch ($Mode) {
       CloudXrRuntime   = Find-CloudXrRuntime
       OpenCompositeDll = Test-Path (Join-Path $OpenComposite 'bin\win64\vrclient_x64.dll')
       Saved            = if (Test-Path $stateKey) { Get-ItemProperty $stateKey } else { 'none' }
-      Backend          = @(Get-Process VisionVNCWindowsCompanionBackend, VisionVNCPCVRHost, NvStreamManager, electron -ErrorAction SilentlyContinue |
+      Backend          = @(Get-Process LongwaveWindowsCompanionBackend, LongwavePCVRHost, NvStreamManager, electron -ErrorAction SilentlyContinue |
                             Select-Object -ExpandProperty ProcessName)
     } | Format-List
   }

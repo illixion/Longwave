@@ -1,4 +1,4 @@
-# VisionVNC API Reference
+# Longwave API Reference
 
 ## RoyalVNCKit API Quick Reference
 

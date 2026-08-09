@@ -4,7 +4,7 @@ using Org.BouncyCastle.Tls;
 using Org.BouncyCastle.Tls.Crypto;
 using Org.BouncyCastle.Tls.Crypto.Impl.BC;
 
-namespace VisionVNC.Hotspot.Backend.NativeStream;
+namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// The Windows counterpart of <c>Shared/MacNativeStreamCrypto.swift</c>: the

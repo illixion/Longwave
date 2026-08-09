@@ -102,6 +102,9 @@ struct ConnectionFormView: View {
         #if MOONLIGHT_ENABLED
         case .moonlight: return true
         #endif
+        #if FOVEATED_ENABLED
+        case .foveated: return true
+        #endif
         default: return false
         }
     }
@@ -131,6 +134,12 @@ struct ConnectionFormView: View {
             #if MOONLIGHT_ENABLED
             case .moonlight:
                 moonlightSections
+            #endif
+            #if FOVEATED_ENABLED
+            case .foveated:
+                // PCVR settings live in the PCVR tab; this type can no longer be
+                // picked here, so nothing reaches this branch.
+                EmptyView()
             #endif
             }
 
@@ -191,11 +200,17 @@ struct ConnectionFormView: View {
         }
     }
 
+    /// PCVR is absent on purpose: it has no address to save and no list row, so
+    /// it owns its own tab rather than a connection.
     private var availableConnectionTypes: [ConnectionType] {
         #if os(macOS)
         ConnectionType.allCases.filter { $0 != .ssh }
         #else
+        #if FOVEATED_ENABLED
+        ConnectionType.allCases.filter { $0 != .foveated }
+        #else
         ConnectionType.allCases
+        #endif
         #endif
     }
 
@@ -678,6 +693,12 @@ struct ConnectionFormView: View {
             connection.moonlightSwapABXY = moonlightSwapABXY
             connection.moonlightOptimizeGameSettings = moonlightOptimizeGameSettings
             connection.moonlightShowStatsOverlay = moonlightShowStatsOverlay
+        #endif
+
+        #if FOVEATED_ENABLED
+        case .foveated:
+            // PCVR is not offered by this form; its settings live in the PCVR tab.
+            break
         #endif
 
         case .ssh:

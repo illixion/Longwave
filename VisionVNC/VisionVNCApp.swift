@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+#if FOVEATED_ENABLED && !targetEnvironment(simulator)
+import FoveatedStreaming
+#endif
 
 @main
 struct VisionVNCApp: App {
@@ -11,6 +14,9 @@ struct VisionVNCApp: App {
     @State private var broadcastManager = BroadcastManager()
     #if MOONLIGHT_ENABLED
     @State private var moonlightManager = MoonlightConnectionManager()
+    #endif
+    #if FOVEATED_ENABLED
+    @State private var foveatedManager = FoveatedConnectionManager()
     #endif
 
     var body: some Scene {
@@ -28,6 +34,9 @@ struct VisionVNCApp: App {
                 .environment(moonlightManager)
                 #endif
                 .trackMainWindow()
+                #if FOVEATED_ENABLED
+                .environment(foveatedManager)
+                #endif
                 .task {
                     // Let the VNC manager drive a companion audio stream in
                     // lockstep with its connection lifecycle.
@@ -162,6 +171,47 @@ struct VisionVNCApp: App {
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        #endif
+
+        #if FOVEATED_ENABLED
+        // Value-matched to a single identity (`PCVRWindowID.shared`), like the main
+        // window, so the three places that surface it reactivate the one panel instead
+        // of stacking copies. Open it through `WindowSessionRegistry.surface(_:using:)`.
+        WindowGroup("PCVR", id: "foveated-controls", for: PCVRWindowID.self) { _ in
+            FoveatedControlWindowView()
+                .environment(foveatedManager)
+        }
+        .defaultSize(width: 480, height: 520)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
+        // The streamed immersive content. On device this binds to the session
+        // so the system composites the foveated video; on the simulator the
+        // framework is absent, so a plain immersive space hosts the overlay
+        // widgets only (no video — the mock session can't stream).
+        #if targetEnvironment(simulator)
+        ImmersiveSpace(id: "foveated-immersive") {
+            FoveatedImmersiveView()
+                .environment(foveatedManager)
+                .persistentSystemOverlays(.hidden)
+        }
+        .immersionStyle(selection: .constant(.progressive), in: .progressive)
+        .upperLimbVisibility(.hidden)
+        #else
+        // Hide the passthrough hands/arms: PCVR titles render their own avatar hands
+        // from the bridge's tracking, and the system compositing the real ones on top
+        // shows two misaligned pairs at once.
+        ImmersiveSpace(foveatedStreaming: foveatedManager.session) {
+            FoveatedImmersiveView()
+                .environment(foveatedManager)
+                // Hide the Home indicator. It is summoned by raising a palm and looking
+                // at it, which is precisely the wrist HUD's gesture — leave it on and the
+                // two fight over the same intent.
+                .persistentSystemOverlays(.hidden)
+        }
+        .immersionStyle(selection: .constant(.progressive), in: .progressive)
+        .upperLimbVisibility(.hidden)
+        #endif
         #endif
     }
 }

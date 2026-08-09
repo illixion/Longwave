@@ -5,7 +5,7 @@ using Microsoft.Win32;
 using Vortice.Direct3D11;
 using Windows.Graphics.DirectX.Direct3D11;
 
-namespace VisionVNC.Hotspot.Backend.NativeStream;
+namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Orchestrates native screen streaming on Windows: the TLS-PSK server, the

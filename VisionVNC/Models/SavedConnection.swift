@@ -16,6 +16,9 @@ enum ConnectionType: String, CaseIterable, Codable {
     #if MOONLIGHT_ENABLED
     case moonlight
     #endif
+    #if FOVEATED_ENABLED
+    case foveated
+    #endif
 
     var label: String {
         switch self {
@@ -24,6 +27,9 @@ enum ConnectionType: String, CaseIterable, Codable {
         case .ssh: "SSH"
         #if MOONLIGHT_ENABLED
         case .moonlight: "Moonlight"
+        #endif
+        #if FOVEATED_ENABLED
+        case .foveated: "PCVR"
         #endif
         }
     }
@@ -35,6 +41,9 @@ enum ConnectionType: String, CaseIterable, Codable {
         case .ssh: "terminal"
         #if MOONLIGHT_ENABLED
         case .moonlight: "gamecontroller"
+        #endif
+        #if FOVEATED_ENABLED
+        case .foveated: "visionpro"
         #endif
         }
     }
@@ -50,6 +59,63 @@ enum ConnectionType: String, CaseIterable, Codable {
         #if MOONLIGHT_ENABLED
         case .moonlight: 47989
         #endif
+        #if FOVEATED_ENABLED
+        case .foveated: 55000  // session-management TCP port (Apple/CloudXR default)
+        #endif
+        }
+    }
+}
+
+// MARK: - Foveated Streaming Enums
+
+/// How a foveated (PCVR / CloudXR) connection locates its host. Mirrors
+/// `FoveatedStreamingSession.Endpoint`. Declared unconditionally (no framework
+/// dependency) so it stays unit-testable with the feature flag off.
+///
+/// `FoveatedStreamingSession.Endpoint` also has a `.remote` case, naming a server
+/// from the app's Info.plist `ApprovedStreamingEndpoints`. It is not offered:
+/// the list is baked into the binary at build time, so a shipping app can only
+/// ever reach servers *we* hardcoded, which is no use to anyone running their own
+/// PC. Rows that stored `"remote"` fall back to `.systemDiscovered`, which is
+/// what they wanted anyway.
+enum FoveatedConnectionMode: String, CaseIterable, Codable {
+    case systemDiscovered  // Bonjour _apple-foveated-streaming._tcp picker
+    case local             // explicit IP + port
+
+    var label: String {
+        switch self {
+        case .systemDiscovered: "Automatic"
+        case .local: "By IP address"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .systemDiscovered: "Finds PCs running the Windows Companion on your network"
+        case .local: "Connect to a host by IP address and port"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .systemDiscovered: "wifi"
+        case .local: "desktopcomputer"
+        }
+    }
+}
+
+/// Immersion style for the streamed PCVR scene. Maps to SwiftUI `ImmersionStyle`
+/// inside the gated code; kept flag-free here for testability.
+enum FoveatedImmersionStyle: String, CaseIterable, Codable {
+    case progressive  // recommended — passthrough blends in via the Digital Crown
+    case mixed
+    case full
+
+    var label: String {
+        switch self {
+        case .progressive: "Progressive"
+        case .mixed: "Mixed"
+        case .full: "Full"
         }
     }
 }
@@ -734,6 +800,50 @@ final class SavedConnection {
     var moonlightOptimizeGameSettingsStorage: Bool?
     @Attribute(originalName: "moonlightShowStatsOverlay")
     var moonlightShowStatsOverlayStorage: Bool?
+
+    // MARK: Foveated (PCVR / CloudXR) stored properties
+    // Same rule as Moonlight: @Model stored properties stay OUTSIDE #if and are
+    // Optional so lightweight migration is safe. The session-management host is
+    // `hostname` + `port`; these cover the extra foveated knobs. Connection
+    // host (IP) reuses `hostname`; control port reuses `port` (default 55000).
+
+    var foveatedConnectionModeStorage: String?
+    /// Unused since `FoveatedConnectionMode.remote` was retired. Kept so existing
+    /// stores don't need a migration for a column nothing reads.
+    var foveatedRemoteServerName: String?
+    var foveatedImmersionStyleStorage: String?
+    var foveatedMicEnabledStorage: Bool?
+    /// Whether to stream Switch Pro + hand-tracking input to the host's SteamVR
+    /// controller-bridge driver while this PCVR session is active.
+    var controllerBridgeEnabledStorage: Bool?
+
+    #if FOVEATED_ENABLED
+    // MARK: Foveated computed accessors (not persisted — safe inside #if)
+
+    var foveatedConnectionMode: FoveatedConnectionMode {
+        get { FoveatedConnectionMode(rawValue: foveatedConnectionModeStorage ?? "") ?? .systemDiscovered }
+        set { foveatedConnectionModeStorage = newValue.rawValue }
+    }
+
+    var foveatedImmersionStyle: FoveatedImmersionStyle {
+        get { FoveatedImmersionStyle(rawValue: foveatedImmersionStyleStorage ?? "") ?? .progressive }
+        set { foveatedImmersionStyleStorage = newValue.rawValue }
+    }
+
+    var foveatedMicEnabled: Bool {
+        get { foveatedMicEnabledStorage ?? false }
+        set { foveatedMicEnabledStorage = newValue }
+    }
+
+    /// Defaults to **on** for connections saved before the flag existed (storage nil): CloudXR
+    /// does not forward Vision Pro hands as OpenXR input on visionOS 27, so a PCVR session with
+    /// the bridge off has no input whatsoever. Only consulted for foveated sessions, so this is
+    /// inert for VNC/Moonlight connections.
+    var controllerBridgeEnabled: Bool {
+        get { controllerBridgeEnabledStorage ?? true }
+        set { controllerBridgeEnabledStorage = newValue }
+    }
+    #endif
 
     #if MOONLIGHT_ENABLED
     // MARK: Moonlight computed properties (not persisted — safe inside #if)

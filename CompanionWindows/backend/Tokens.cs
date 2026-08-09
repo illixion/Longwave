@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace VisionVNC.Hotspot.Backend;
+namespace VisionVNC.WindowsCompanion.Backend;
 
 /// <summary>
 /// Generates the SSID suffix and the WPA2 passphrase. The passphrase is an 8-char

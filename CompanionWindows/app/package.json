@@ -1,7 +1,7 @@
 {
-  "name": "visionvnc-hotspot-companion",
+  "name": "visionvnc-windows-companion",
   "version": "0.1.0",
-  "description": "VisionVNC Hotspot Companion (Windows) — turns the Windows host into a NAT'd Wi-Fi AP the Vision Pro joins directly.",
+  "description": "VisionVNC Windows Companion — PCVR foveated streaming, game library, screen streaming, and an optional hotspot for Vision Pro.",
   "main": "src/main.js",
   "author": "Ixion <illixion@illixion.com>",
   "license": "MIT",
@@ -11,38 +11,10 @@
     "dist": "electron-builder"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "^39.8.5",
     "electron-builder": "^25.1.8"
   },
-  "build": {
-    "appId": "com.illixion.VisionVNCHotspotCompanion",
-    "productName": "VisionVNC Hotspot Companion",
-    "directories": {
-      "output": "dist",
-      "buildResources": "buildResources"
-    },
-    "files": [
-      "src/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "../backend/bin/Release/net8.0-windows10.0.22621.0/publish",
-        "to": "backend",
-        "filter": ["**/*"]
-      }
-    ],
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "requestedExecutionLevel": "requireAdministrator"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": true,
-      "allowElevation": true,
-      "createDesktopShortcut": true,
-      "include": "buildResources/installer.nsh"
-    }
+  "dependencies": {
+    "openpgp": "^6.3.1"
   }
 }

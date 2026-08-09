@@ -2,9 +2,9 @@
 
 ## Multi-Window Design
 
-Twelve `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
+Twelve `WindowGroup` scenes in `VisionVNCApp` (four conditionally compiled):
 
-1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
+1. **Main window** (`id: "main"`) — `MainView` with a bottom-ornament tab bar: **Connections** (`ConnectionListView`, SwiftData-backed server list), **PCVR** (`PCVRTabView`, foveated sessions — connect, help and every PCVR setting; `#if FOVEATED_ENABLED`), **Settings** (`SettingsView`, new-connection defaults via `@AppStorage`/`ConnectionDefaults`), **Console** (`ConsoleView`, in-app log viewer)
 2. **Console** (`id: "console"`) — pop-out `ConsoleView`, 760x480
 3. **Audio Stream** (`id: "audio-stream"`) — `AudioStreamView` mini player, 400x540
 4. **Terminal** (`id: "ssh-terminal"`, value-typed by `SSHSessionID`) — `SSHTerminalView`, 900x640
@@ -15,7 +15,7 @@ Twelve `WindowGroup` scenes in `VisionVNCApp` (three conditionally compiled):
 8. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
 9. **Moonlight Stream** (`id: "moonlight-stream"`) — `MoonlightStreamView`, 1920x1080 default (`#if MOONLIGHT_ENABLED`)
 10. **Moonlight Keyboard** (`id: "moonlight-keyboard"`) — `MoonlightKeyboardView`, 1180x540 (`#if MOONLIGHT_ENABLED`)
-11. **PCVR** (`id: "foveated-controls"`, value-typed by `PCVRWindowID`) — foveated session controls (`#if FOVEATED_ENABLED`)
+11. **PCVR** (`id: "foveated-controls"`, value-typed by `PCVRWindowID`) — the small in-session panel summoned from the wrist HUD, so pausing a game doesn't mean going to find the main window. Connecting and settings live in the PCVR tab, not here (`#if FOVEATED_ENABLED`)
 
 `VNCConnectionManager`, `AudioStreamManager`, `MacNativeStreamManager`, and `MoonlightConnectionManager` are injected via `.environment()`. Connection type routing happens in `ConnectionListView` — VNC/audio/native-Mac connections open their windows as plain siblings, while Moonlight presents `MoonlightPairingView` as a sheet which opens the stream window on launch.
 

@@ -5,7 +5,7 @@ using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.MediaFoundation;
 
-namespace VisionVNC.Hotspot.Backend.NativeStream;
+namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Fixed-size GPU encode pipeline for one stream: BGRA capture textures →

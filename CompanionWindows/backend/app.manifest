@@ -1,13 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="VisionVNC.Hotspot.Backend"/>
+  <assemblyIdentity version="1.0.0.0" name="VisionVNC.WindowsCompanion.Backend"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <!-- Mobile Hotspot configuration/start requires elevation when run in an
-             interactive session. Harmless when the process is launched as a service
-             (the SCM grants the service account's token regardless of the manifest). -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <!-- asInvoker on purpose. Mobile Hotspot configuration/start is the ONLY thing here
+             that needs administrator rights, and it now elevates on demand: the hotspot panel
+             re-spawns this same executable in its tethering-host role via ShellExecute "runas",
+             so the consent prompt appears when the user turns tethering on and at no other
+             time. See TetheringElevation.cs.
+
+             The PCVR path must NOT be elevated, and that is not a preference: an elevated
+             process has XR_RUNTIME_JSON ignored by the OpenXR loader, which forced the whole
+             runtime-registration layout (the machine registry default had to be CloudXR because
+             it was the only way to steer an elevated broker). Unelevated, the env var works and
+             the registry default is free to belong to games. Verified on the RTX host on
+             2026-07-28: NvStreamManager, CloudXrService and the session broker all run at medium
+             integrity, the ipc_cloudxr pipe lands under the user's own AppData\Local\Temp, and
+             the broker selected CloudXR through XR_RUNTIME_JSON.
+
+             Note for future edits: a double hyphen cannot appear inside an XML comment, and a
+             manifest that fails to parse does not warn at build time. It fails at launch with
+             "side-by-side configuration is incorrect", which reads like a missing runtime.
+
+             Harmless when launched as a service (the SCM grants the service account's token
+             regardless of the manifest). -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

@@ -1,0 +1,49 @@
+diff --git a/DrvOpenXR/XrHMD.cpp b/DrvOpenXR/XrHMD.cpp
+index 0878af5..ab5a195 100644
+--- a/DrvOpenXR/XrHMD.cpp
++++ b/DrvOpenXR/XrHMD.cpp
+@@ -8,6 +8,7 @@
+ #include "../OpenOVR/Reimpl/BaseSystem.h"
+ #include "../OpenOVR/convert.h"
+ #include "generated/static_bases.gen.h"
++#include <chrono>
+ #include <thread>
+ #include <mutex>
+ 
+diff --git a/OpenOVR/Reimpl/BaseInput.cpp b/OpenOVR/Reimpl/BaseInput.cpp
+index 1ac62c2..d9facb5 100644
+--- a/OpenOVR/Reimpl/BaseInput.cpp
++++ b/OpenOVR/Reimpl/BaseInput.cpp
+@@ -1088,19 +1088,16 @@ void BaseInput::LoadDpadAction(const InteractionProfile& profile, const std::str
+ 
+ 	if (subMode == "click") {
+ 		dpad_info.click = true;
++		dpad_info.customClickThresholds = isKnuckles && importBasePath.ends_with("trackpad");
++		dpad_info.triggerHapticOnClick = dpad_info.customClickThresholds;
+ 		if (parent_iter->second.clickAction == XR_NULL_HANDLE) {
+-
+-			auto manualThreshold = isKnuckles && importBasePath.ends_with("trackpad");
+-			dpad_info.customClickThresholds = manualThreshold;
+-			dpad_info.triggerHapticOnClick = manualThreshold;
+-
+ 			std::string click_name = parentName + "-click";
+ 			strcpy_arr(info.actionName, click_name.c_str());
+-			info.actionType = manualThreshold ? XR_ACTION_TYPE_FLOAT_INPUT : XR_ACTION_TYPE_BOOLEAN_INPUT;
++			info.actionType = dpad_info.customClickThresholds ? XR_ACTION_TYPE_FLOAT_INPUT : XR_ACTION_TYPE_BOOLEAN_INPUT;
+ 			strcpy_arr(info.localizedActionName, click_name.c_str());
+ 			OOVR_FAILED_XR_ABORT(xrCreateAction(action->set->xr, &info, &parent_iter->second.clickAction));
+ 
+-			if (manualThreshold) {
++			if (dpad_info.customClickThresholds) {
+ 				// TODO: it's unclear what the actual threshold value used by SteamVR is, and it's not configurable in bindings json
+ 				action->perProfileData[&profile].click_activate_threshold = 0.33f;
+ 				action->perProfileData[&profile].click_deactivate_threshold = 0.2f;
+@@ -1108,7 +1105,7 @@ void BaseInput::LoadDpadAction(const InteractionProfile& profile, const std::str
+ 			}
+ 
+ 			XrPath suggested_path;
+-			OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, profile.TranslateAction(importBasePath + (manualThreshold ? "/force" : "/click")).c_str(), &suggested_path));
++			OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, profile.TranslateAction(importBasePath + (dpad_info.customClickThresholds ? "/force" : "/click")).c_str(), &suggested_path));
+ 			bindings.push_back(XrActionSuggestedBinding{ parent_iter->second.clickAction, suggested_path });
+ 		}
+ 	} else {

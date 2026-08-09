@@ -1,0 +1,89 @@
+{
+  "$comment": [
+    "Per-title OVERRIDES only. This is deliberately not a list of games.",
+    "",
+    "Steam titles need no entry here. The backend discovers them by reading",
+    "steamapps/libraryfolders.vdf and each library's appmanifest_<appid>.acf (29 installed apps",
+    "across 3 libraries on the reference host). At launch it reads Steam's local appinfo.vdf,",
+    "prefers the compatible Windows VR entry, and starts its executable directly with the declared",
+    "arguments, working directory, SteamAppId and SteamGameId. This avoids steam:// confirmation",
+    "dialogs while retaining Steam ownership and API context.",
+    "",
+    "WHY THERE IS NO LONGER A PER-TITLE 'chain'. An earlier version of this file gave every title a",
+    "runtime chain, because the broker had claimed CloudXR as the machine-wide 64-bit OpenXR runtime",
+    "and so every game had to redirect itself to VDXR with per-launch environment variables. That is",
+    "inverted as of 2026-07-27: the machine default is VDXR (as it is under Virtual Desktop, which is",
+    "why VD needs no per-game setup) and the BROKER carries the explicit override to CloudXR. One",
+    "process we control, rather than every game forever. Games now launch with no environment at all.",
+    "",
+    "Verified both directions simultaneously: an app with no override reports",
+    "'VirtualDesktopXR (Standalone)', while the broker still reports CloudXR and still receives PQW",
+    "foveation data (a CloudXR-only extension).",
+    "",
+    "CONSEQUENCE TO BE AWARE OF. Launching through Steam means we cannot inject per-game environment",
+    "variables, so VISIONVNC_CB_LAYER_DISABLE can no longer be set per title and our API layer is",
+    "always active. That is what gaze-driven foveation needs, but the ovrshim titles previously used",
+    "that flag to avoid controller double-injection. The replacement must be a registry setting",
+    "(HKCU\\Software\\VisionVNC\\ControllerBridge already exists for calibration), not an env var."
+  ],
+
+  "schemaVersion": 2,
+
+  "$overrideSchema": {
+    "steamAppId": "match a discovered Steam title by app id",
+    "name": "display name override, if the Steam manifest name is unhelpful",
+    "hidden": "keep out of the gallery",
+    "notes": "shown in the gallery as a caveat",
+    "launchOptionsHint": "what to paste into Steam's own launch options; we do not set these"
+  },
+
+  "steamOverrides": [
+    {
+      "steamAppId": 546560,
+      "notes": "Reduce in-game graphics quality rather than resolution when testing. VisionVNC's optimized profile launches Alyx directly with its measured fidelity and MSAA arguments.",
+      "launchOptionsHint": "-vr -novid +vr_fidelity_level_auto 0 +vr_fidelity_level 3 %command%"
+    },
+    {
+      "steamAppId": 1256230,
+      "notes": "Steam metadata has a separate Windows VR entry, Hyperbolica.exe startXR. VisionVNC selects it automatically instead of the desktop-default entry."
+    },
+    {
+      "steamAppId": 250820,
+      "hidden": true,
+      "notes": "SteamVR is a runtime, not streamable content. CloudXR 6.2 has no SteamVR headset driver; OpenVR titles use OpenComposite instead."
+    },
+    {
+      "steamAppId": 228980,
+      "hidden": true,
+      "notes": "Steamworks Common Redistributables is a shared prerequisite, not streamable content."
+    },
+    {
+      "steamAppId": 658920,
+      "notes": "32-bit OpenVR via the mod's own launcher; relies on the WOW6432Node ActiveRuntime pointing at VDXR-32. Launch from Steam normally."
+    }
+  ],
+
+  "nonSteamTitles": [
+    {
+      "id": "hello-xr",
+      "name": "hello_xr (diagnostic)",
+      "executable": "C:\\dev\\VisionVNC-bridge\\OpenXRLayer\\build-hxr\\src\\tests\\hello_xr\\Release\\hello_xr.exe",
+      "arguments": ["-g", "D3D11"],
+      "diagnostic": true,
+      "notes": [
+        "NOTHING READS THIS FILE. The launcher's list is the backend's discovered Steam titles plus",
+        "hand-added custom ones (GameLibrary's state file); this entry documents intent and does not",
+        "create a tile. hello_xr was added to the reference host as a custom title on 2026-07-28",
+        "(GamesAddCustom -> custom:f049dff7a5d7, exposed) so it can be launched from the headset as a",
+        "cheap content app for checking the wrist HUD before a real title.",
+        "",
+        "Two distinct uses, do not confuse them. As a CONTENT app (what the gallery launches) it takes",
+        "VDXR like any game and renders through the broker — no environment, nothing special. As a",
+        "SUBSTITUTE for the broker as the CloudXR application it needs XR_RUNTIME_JSON pointed at",
+        "CloudXR explicitly and must not run alongside a live broker; that is the VisionVNC-HelloXR",
+        "scheduled task, and it is the control that exonerated the broker during the pivot-dropout",
+        "investigation."
+      ]
+    }
+  ]
+}

@@ -3,17 +3,24 @@ const net = require('net');
 const { EventEmitter } = require('events');
 
 const PIPE_PATH = '\\\\.\\pipe\\visionvnc-hotspot';
+const PCVR_PIPE_PATH = '\\\\.\\pipe\\visionvnc-pcvr-host';
 const RPC_TIMEOUT_MS = 20000;
 
 /**
- * Newline-delimited JSON-RPC client over the backend's named pipe.
- * Auto-reconnects, surfaces server "event" notifications, and exposes rpc(method, params).
+ * Newline-delimited JSON-RPC client over a backend's named pipe. Auto-reconnects, surfaces
+ * server "event" notifications, and exposes rpc(method, params).
+ *
+ * One class, two independent instances in main.js: the public hotspot/native-stream backend
+ * (PIPE_PATH) and, when the closed-source PCVR host is installed, a second connection to its
+ * own pipe (PCVR_PIPE_PATH). Neither knows the other exists — each simply fails to connect
+ * (and stays disconnected) when its process isn't running.
  *
  * Events: 'connected', 'disconnected', 'notify' (server push), 'rpc-error'.
  */
 class HotspotClient extends EventEmitter {
-  constructor() {
+  constructor(pipePath = PIPE_PATH) {
     super();
+    this._pipePath = pipePath;
     this._sock = null;
     this._buf = '';
     this._nextId = 1;
@@ -40,7 +47,7 @@ class HotspotClient extends EventEmitter {
 
   _connect() {
     if (this._stopped) return;
-    const sock = net.connect(PIPE_PATH);
+    const sock = net.connect(this._pipePath);
     this._sock = sock;
     sock.setEncoding('utf8');
 
@@ -129,4 +136,4 @@ class HotspotClient extends EventEmitter {
   }
 }
 
-module.exports = { HotspotClient, PIPE_PATH };
+module.exports = { HotspotClient, PIPE_PATH, PCVR_PIPE_PATH };

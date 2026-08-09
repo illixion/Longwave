@@ -156,6 +156,23 @@ body {
   color: var(--faint);
 }
 
+/* The one piece of small print on the panel: where the licences are stamped. */
+.rail-link {
+  align-self: flex-start;
+  margin: 6px 0 0 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font: 400 11px var(--body);
+  letter-spacing: .02em;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: #3A3833;
+  cursor: pointer;
+}
+.rail-link:hover { color: var(--dim); text-decoration-color: var(--faint); }
+
 /* ── Tally lamp ──────────────────────────────────────────────────────────── */
 
 .lamp {
@@ -167,6 +184,8 @@ body {
   transition: background .3s ease, box-shadow .3s ease;
 }
 .lamp-sm { width: 7px; height: 7px; }
+/* The library has no live/idle state of its own — the slot keeps the rail aligned. */
+.lamp-blank { background: transparent; box-shadow: none; }
 .lamp-lg { width: 14px; height: 14px; }
 
 .lamp[data-state="live"] {
@@ -284,6 +303,7 @@ body {
 .plate-label { display: flex; flex-direction: column; gap: 8px; }
 .readout-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .hint { color: var(--faint); font-size: 11.5px; }
+.hint.is-fault { color: var(--fault); }
 
 .readout {
   padding: 11px 14px;
@@ -359,7 +379,7 @@ body {
 .field-row { display: flex; gap: 8px; }
 .field-row input { flex: 1; min-width: 0; }
 
-input[type="text"], select {
+input:not([type="checkbox"]), select {
   padding: 9px 11px;
   background: var(--inset);
   border: 1px solid var(--etch);
@@ -370,9 +390,9 @@ input[type="text"], select {
   -webkit-user-select: text;
   user-select: text;
 }
-input[type="text"] { font-family: var(--mono); font-size: 13px; }
-input[type="text"]:focus, select:focus { border-color: var(--tally); }
-input[type="text"]:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+input[type="text"], input[type="number"] { font-family: var(--mono); font-size: 13px; }
+input:not([type="checkbox"]):focus, select:focus { border-color: var(--tally); }
+input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 select { cursor: pointer; }
 
 .switch-row {
@@ -524,6 +544,7 @@ select { cursor: pointer; }
   .channel-text small { display: none; }
   .rail-foot { margin: 0; padding: 0; border: none; box-shadow: none; }
   .rail-foot span:last-child { display: none; }
+  .rail-link { display: none; }
   .stage { padding: 20px; }
   .plate-row { grid-template-columns: 1fr; }
   .plate-row .chip { justify-self: start; }
@@ -534,4 +555,345 @@ select { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .lamp[data-state="waiting"] { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PCVR and Game library
+
+   Two more channels on the same panel. They keep the vocabulary set above —
+   transmit bar for the one control that matters, silkscreen labels, amber only
+   for live — and add what they alone need: a disclosure for settings that are
+   locked while a session runs, a spec grid for host facts, and cover art.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Disclosure panels ───────────────────────────────────────────────────── */
+
+.drawer {
+  background: var(--face);
+  border: 1px solid var(--etch);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.drawer > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px;
+  cursor: pointer;
+  list-style: none;
+}
+.drawer > summary::-webkit-details-marker,
+.drawer-sub > summary::-webkit-details-marker { display: none; }
+.drawer-title { display: flex; flex-direction: column; gap: 2px; }
+.drawer-title strong { font-size: 13.5px; font-weight: 600; }
+.drawer-title small { color: var(--faint); font-size: 11.5px; }
+.drawer-chevron { color: var(--faint); font-size: 16px; transition: transform .15s ease; }
+.drawer[open] .drawer-chevron { transform: rotate(180deg); }
+.drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 22px 22px;
+  border-top: 1px solid #1E1D1A;
+}
+
+.drawer-sub { padding-top: 4px; border-top: 1px solid #1E1D1A; }
+.drawer-sub > summary {
+  padding: 13px 0 4px;
+  color: var(--dim);
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 600;
+  font-stretch: 87.5%;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.drawer-sub[open] > summary { color: var(--ink); margin-bottom: 12px; }
+
+.field > small { color: var(--faint); font-size: 11.5px; }
+.rule { height: 1px; background: #1E1D1A; }
+.inline-status { margin-top: -6px; color: var(--faint); font-size: 11.5px; }
+.inline-status strong { color: var(--dim); font-weight: 600; }
+
+/* ── Host facts: a spec grid, etched like a rating plate ─────────────────── */
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--etch);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.facts > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid var(--etch);
+  border-bottom: 1px solid var(--etch);
+}
+.facts > div:nth-child(3n) { border-right: 0; }
+.facts > div:nth-last-child(-n + 3) { border-bottom: 0; }
+.facts span {
+  display: block;
+  font-family: var(--display);
+  font-size: 10px;
+  font-weight: 600;
+  font-stretch: 87.5%;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.facts strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--lcd);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.services { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--faint); font-size: 11.5px; }
+.services strong { color: var(--dim); font-weight: 600; }
+
+/* ── Banners that carry a list or an action ──────────────────────────────── */
+
+.banner-good {
+  background: rgba(203, 224, 230, .07);
+  border-color: rgba(203, 224, 230, .25);
+  color: var(--lcd);
+}
+.banner-fault {
+  background: rgba(229, 72, 77, .09);
+  border-color: rgba(229, 72, 77, .38);
+  color: #F5C2C4;
+}
+.banner strong { display: block; margin-bottom: 6px; }
+.banner ul { margin: 0; padding-left: 18px; }
+.banner li + li { margin-top: 4px; }
+.banner .chip { margin-top: 10px; }
+.banner small { display: block; margin-top: 8px; opacity: .8; }
+.banner-inline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.banner-inline .chip { margin-top: 0; }
+.banner-actions { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+
+.progress {
+  height: 6px;
+  margin-top: 10px;
+  background: var(--inset);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--tally);
+  transition: width .2s ease;
+}
+
+/* ── Game library ────────────────────────────────────────────────────────── */
+
+.games-toolbar { display: flex; align-items: center; gap: 9px; }
+.games-toolbar input[type="search"] { flex: 1; font-family: var(--body); font-size: 13.5px; }
+
+.icon-button {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: var(--face-hi);
+  border: 1px solid var(--etch);
+  border-radius: 7px;
+  color: var(--dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+.icon-button:hover { color: var(--ink); border-color: var(--faint); }
+
+.games-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 11px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.games-list .games-empty { grid-column: 1 / -1; }
+.games-empty { padding: 40px 20px; color: var(--faint); text-align: center; font-size: 12.5px; }
+.games-footer { display: flex; justify-content: space-between; gap: 20px; }
+
+/* A tile is lit when the headset can see it — the same amber, the same meaning. */
+.game-tile {
+  position: relative;
+  aspect-ratio: 460 / 215;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--inset);
+  border: 2px solid transparent;
+  border-radius: 9px;
+  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+}
+.game-tile:hover { transform: translateY(-2px); }
+.game-tile.selected {
+  border-color: var(--tally);
+  box-shadow: 0 0 0 1px rgba(255, 138, 61, .3), 0 8px 20px rgba(0, 0, 0, .4);
+}
+.game-tile-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.game-tile:not(.selected) .game-tile-art { filter: saturate(.45) brightness(.55); }
+.game-tile:hover .game-tile-art { filter: none; }
+.game-tile.has-art .game-tile-placeholder { display: none; }
+.game-tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(140deg, #2A2823, #171613);
+  color: rgba(255, 255, 255, .14);
+  font-family: var(--display);
+  font-size: 38px;
+  font-weight: 600;
+  font-stretch: 87.5%;
+}
+.game-tile-check {
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  left: 7px;
+  width: 17px;
+  height: 17px;
+  cursor: pointer;
+  accent-color: var(--tally);
+}
+.game-tile-caption {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 18px 9px 7px;
+  background: linear-gradient(transparent, rgba(8, 8, 7, .94));
+}
+.game-tile-name { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.game-tile-actions {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.game-tile:hover .game-tile-actions, .game-tile:focus-within .game-tile-actions { opacity: 1; }
+.game-tile-btn {
+  padding: 3px 7px;
+  background: rgba(12, 11, 10, .88);
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 5px;
+  color: var(--ink);
+  font: 500 10px var(--body);
+  cursor: pointer;
+}
+.game-tile-opt.on { border-color: var(--tally); color: var(--tally); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Licences window
+
+   Same panel, different job: this one is read rather than operated, so it drops
+   the tally lamps and the inset wells and behaves like the documentation page
+   stapled inside the lid. Body text goes up to 13.5px and the measure is capped,
+   because the whole point of the window is that someone can actually read it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.notices-body {
+  display: flex;
+  flex-direction: column;
+  background: var(--void);
+  user-select: text;
+}
+
+.notices-head {
+  flex: none;
+  padding: 22px 34px 14px;
+  border-bottom: 1px solid #0C0B0A;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .03);
+}
+.notices-head h1 {
+  margin: 2px 0 0;
+  font: 600 25px/1.15 var(--display);
+  letter-spacing: .01em;
+}
+
+.notices-doc {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 34px 60px;
+  max-width: 78ch;
+  font-size: 13.5px;
+  color: #C9C3B9;
+}
+.notices-doc:focus-visible { outline-offset: -2px; }
+
+.notices-doc h2 {
+  margin: 34px 0 10px;
+  font: 600 17px/1.25 var(--display);
+  color: var(--ink);
+}
+.notices-doc h3 {
+  margin: 26px 0 6px;
+  font: 600 14px/1.3 var(--display);
+  color: var(--ink);
+}
+.notices-doc h1:first-child, .notices-doc h2:first-of-type { margin-top: 0; }
+.notices-doc h1 { display: none; }  /* the window title already says Licences */
+
+.notices-doc p, .notices-doc li { margin: 0 0 10px; }
+.notices-doc ul, .notices-doc ol { margin: 0 0 12px; padding-left: 20px; }
+.notices-doc li { margin-bottom: 6px; }
+.notices-doc strong { color: var(--ink); font-weight: 600; }
+.notices-doc em { color: var(--dim); }
+
+.notices-doc a { color: var(--lcd); text-decoration-color: rgba(203, 224, 230, .35); }
+.notices-doc a:hover { text-decoration-color: var(--lcd); }
+
+.notices-doc code {
+  padding: 1px 4px;
+  background: var(--inset);
+  border: 1px solid #201F1C;
+  border-radius: 3px;
+  font: 400 12px var(--mono);
+  color: var(--dim);
+}
+
+.notices-doc hr {
+  margin: 30px 0;
+  border: 0;
+  border-top: 1px solid var(--etch);
+}
+
+.notices-doc table {
+  width: 100%;
+  margin: 0 0 16px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.notices-doc th {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--etch);
+  color: var(--dim);
+  font: 600 10.5px/1 var(--display);
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  text-align: left;
+}
+.notices-doc td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid #232220;
+  vertical-align: top;
 }

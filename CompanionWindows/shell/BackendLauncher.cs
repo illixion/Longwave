@@ -9,7 +9,7 @@ namespace VisionVNC.Companion.Shell;
 /// </summary>
 internal static class BackendLauncher
 {
-    private const string ExeName = "VisionVNCHotspotBackend.exe";
+    private const string ExeName = "VisionVNCWindowsCompanionBackend.exe";
     private const string Tfm = "net8.0-windows10.0.22621.0";
 
     private static Process? _process;

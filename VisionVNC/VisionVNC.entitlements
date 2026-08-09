@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Shared by every target and every build, so it carries only what an ordinary
+  VNC-only build needs. The foveated-streaming capability deliberately lives in
+  VisionVNC-Foveated.entitlements instead: a team whose provisioning profile does
+  not grant it cannot sign an app that declares it, so putting it here would break
+  plain device builds for everyone but this one developer account.
+
+  build-and-sign.sh re-signs with the entitlements extracted from the provisioning
+  profile, so a FOVEATED_ENABLED sideload picks the capability up from the profile
+  without this file mentioning it.
+-->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.application-groups</key>

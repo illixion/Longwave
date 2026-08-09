@@ -37,6 +37,14 @@
 	<string>VisionVNC transcribes your speech on this device to type messages into terminal sessions.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>VisionVNC connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network.</string>
+	<!-- Required by the controller bridge: ControllerBridgeSender calls
+	     ARKitSession.requestAuthorization(for: [.handTracking]) to drive emulated VR
+	     controllers from hand tracking. Without this key ARKit does not merely deny the
+	     request — it throws an uncaught ObjC exception from
+	     __ar_session_request_authorization_block_invoke and the app dies with SIGABRT the
+	     moment a foveated session starts with the bridge enabled. -->
+	<key>NSHandsTrackingUsageDescription</key>
+	<string>VisionVNC uses hand tracking to drive virtual VR controllers on your PC, so you can play PCVR games with pinch gestures instead of physical controllers.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_visionvnc-native._tcp</string>

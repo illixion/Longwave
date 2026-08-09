@@ -25,6 +25,7 @@ struct SettingsView: View {
     @AppStorage(ConnectionDefaults.Keys.moonlightTouchMode) private var moonlightTouchModeRaw = TouchMode.relative.rawValue
     #endif
 
+
     var body: some View {
         // On macOS this is hosted in a Settings tab, which provides the title —
         // a NavigationStack would add a redundant header. visionOS needs the

@@ -6,12 +6,22 @@ using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace VisionVNC.Hotspot.Backend;
+namespace VisionVNC.WindowsCompanion.Backend;
 
 /// <summary>
-/// Named-pipe JSON-RPC server. One client (the Electron app) at a time; reconnections are
-/// accepted in a loop. Requests are newline-delimited JSON; responses echo the id; and the
-/// server pushes unsolicited "event" lines (state/clients/error) to the connected client.
+/// Named-pipe JSON-RPC server for the public backend (hotspot, native screen streaming).
+/// Requests are newline-delimited JSON; responses echo the id back to the client that asked;
+/// and the server broadcasts unsolicited "event" lines (state/nativeStream/clients/error) to
+/// every connected client.
+///
+/// The CloudXR / Foveated-Streaming host and the game library are a separate process on their
+/// own pipe (PcvrPipeServer, in the closed-source VisionVNC-PCVR-Host project) — this backend
+/// has no reference to that assembly and no idea whether it's even installed.
+///
+/// Clients are served <b>concurrently</b>. That matters operationally: the Electron UI holds
+/// a connection for its whole lifetime, so a serial accept loop would lock out every other
+/// client. Each accepted connection therefore gets its own pipe instance and its own task, and
+/// the loop goes straight back to waiting for the next one.
 ///
 /// The pipe ACL restricts access to the interactive desktop user + Administrators + SYSTEM —
 /// the backend is privileged, so an open pipe would be a local privilege-escalation vector.
@@ -26,16 +36,38 @@ public sealed class PipeServer : BackgroundService
     };
 
     private readonly ILogger<PipeServer> _log;
-    private readonly TetheringController _controller;
+    private readonly ITetheringService _controller;
     private readonly NativeStream.NativeStreamingService _nativeStream;
 
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private StreamWriter? _writer;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, ClientConnection> _clients = new();
 
-    public PipeServer(
-        ILogger<PipeServer> log,
-        TetheringController controller,
-        NativeStream.NativeStreamingService nativeStream)
+    /// <summary>One connected client. Owns its own write lock so a slow or dead client
+    /// cannot stall broadcasts to the others.</summary>
+    private sealed class ClientConnection
+    {
+        private readonly SemaphoreSlim _writeLock = new(1, 1);
+        private readonly StreamWriter _writer;
+
+        public Guid Id { get; } = Guid.NewGuid();
+
+        public ClientConnection(StreamWriter writer) => _writer = writer;
+
+        public async Task WriteLineAsync(string json)
+        {
+            await _writeLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await _writer.WriteLineAsync(json).ConfigureAwait(false);
+                await _writer.FlushAsync().ConfigureAwait(false);
+            }
+            catch (IOException) { /* client disconnected mid-write */ }
+            catch (ObjectDisposedException) { /* raced with teardown */ }
+            finally { _writeLock.Release(); }
+        }
+    }
+
+    public PipeServer(ILogger<PipeServer> log, ITetheringService controller,
+                     NativeStream.NativeStreamingService nativeStream)
     {
         _log = log;
         _controller = controller;
@@ -49,19 +81,25 @@ public sealed class PipeServer : BackgroundService
         _log.LogInformation("PipeServer listening on \\\\.\\pipe\\{Pipe}", PipeName);
         while (!stoppingToken.IsCancellationRequested)
         {
+            NamedPipeServerStream? accepted = null;
             try
             {
-                using var server = CreateSecuredPipe();
-                await server.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
-                _log.LogInformation("Client connected.");
-                await HandleConnectionAsync(server, stoppingToken).ConfigureAwait(false);
+                accepted = CreateSecuredPipe();
+                await accepted.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) { accepted?.Dispose(); break; }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Pipe accept/handle loop error; retrying shortly.");
+                accepted?.Dispose();
+                _log.LogError(ex, "Pipe accept error; retrying shortly.");
                 try { await Task.Delay(500, stoppingToken).ConfigureAwait(false); } catch { break; }
+                continue;
             }
+
+            // Serve on its own task and immediately loop back to create the next pipe
+            // instance, so additional clients are not blocked behind this one.
+            var stream = accepted;
+            _ = Task.Run(() => ServeClientAsync(stream, stoppingToken), CancellationToken.None);
         }
         _log.LogInformation("PipeServer stopped.");
     }
@@ -76,11 +114,22 @@ public sealed class PipeServer : BackgroundService
             PipeAccessRights.ReadWrite, AccessControlType.Allow));
 
         // The current process owner (covers the interactive-helper deployment, same user).
+        //
+        // CreateNewInstance is not optional and its absence is invisible while elevated. Adding an
+        // instance to an *existing* pipe requires FILE_CREATE_PIPE_INSTANCE on that pipe, and this
+        // server creates one instance per accepted client. An elevated process passes that check
+        // through the Administrators FullControl rule below; an unelevated one cannot, because
+        // Administrators is deny-only in a filtered token. The symptom is precise and misleading:
+        // the pipe is created, the first client connects and is served normally, and then every
+        // subsequent accept fails with UnauthorizedAccessException "Access to the path is denied"
+        // — which reads as a problem with the pipe's path or the ACL as a whole rather than as one
+        // missing right on one rule.
         using (var me = WindowsIdentity.GetCurrent())
         {
             if (me.User is { } user)
                 security.AddAccessRule(new PipeAccessRule(user,
-                    PipeAccessRights.ReadWrite, AccessControlType.Allow));
+                    PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+                    AccessControlType.Allow));
         }
 
         security.AddAccessRule(new PipeAccessRule(
@@ -90,47 +139,91 @@ public sealed class PipeServer : BackgroundService
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             PipeAccessRights.FullControl, AccessControlType.Allow));
 
+        // Real buffer sizes matter here. With 0/0 the kernel allocates no pipe buffer, so a
+        // client's write cannot complete until the server happens to be in a read — observed
+        // as a client connecting successfully, receiving the pushed snapshots, and then
+        // blocking forever on its first request. The out buffer is generous because pairing
+        // events carry the QR PNG as a base64 data URI (hundreds of KB), and a broadcast that
+        // blocks on one slow reader stalls that client's UI.
+        const int InBufferSize = 64 * 1024;
+        const int OutBufferSize = 1024 * 1024;
+
         return NamedPipeServerStreamAcl.Create(
             PipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous,
-            inBufferSize: 0, outBufferSize: 0, pipeSecurity: security);
+            inBufferSize: InBufferSize, outBufferSize: OutBufferSize, pipeSecurity: security);
     }
 
-    private async Task HandleConnectionAsync(NamedPipeServerStream server, CancellationToken ct)
+    private async Task ServeClientAsync(NamedPipeServerStream server, CancellationToken ct)
     {
         var utf8 = new UTF8Encoding(false);
-        using var reader = new StreamReader(server, utf8, false, 4096, leaveOpen: true);
-        var writer = new StreamWriter(server, utf8, 4096, leaveOpen: true) { AutoFlush = false, NewLine = "\n" };
-
-        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-        _writer = writer;
-        _writeLock.Release();
-
+        ClientConnection? client = null;
         try
         {
-            // Push an initial snapshot so the UI hydrates immediately.
-            await SendEventAsync(RpcEvent.Of("state", await _controller.GetStatusAsync())).ConfigureAwait(false);
+            using var reader = new StreamReader(server, utf8, false, 4096, leaveOpen: true);
+            var writer = new StreamWriter(server, utf8, 4096, leaveOpen: true) { AutoFlush = false, NewLine = "\n" };
+
+            client = new ClientConnection(writer);
+            _clients[client.Id] = client;
+            _log.LogInformation("Client connected ({Count} total).", _clients.Count);
+
+            // The hotspot status goes through WinRT tethering APIs that can block indefinitely
+            // on a box with no tetherable adapter. Hydrating it inline would mean a client
+            // never sees any frame at all — not even a Ping reply — because the read loop
+            // below has not started yet. Hydrate it out of band and let it fail without taking
+            // the connection down with it.
+            HydrateHotspotStateAsync(client, ct);
 
             while (!ct.IsCancellationRequested && server.IsConnected)
             {
                 string? line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
                 if (line is null) break;            // client closed
                 if (line.Length == 0) continue;
-                await DispatchAsync(line).ConfigureAwait(false);
+                // Dispatch without awaiting: responses carry their request id, so ordering is
+                // not required, and one slow method must not stall the client's other calls.
+                _ = DispatchAsync(line, client);
             }
         }
         catch (IOException) { /* client vanished */ }
         catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.LogError(ex, "Client handler failed."); }
         finally
         {
-            await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            _writer = null;
-            _writeLock.Release();
-            _log.LogInformation("Client disconnected.");
+            if (client is not null) _clients.TryRemove(client.Id, out _);
+            try { if (server.IsConnected) server.Disconnect(); } catch { /* already gone */ }
+            server.Dispose();
+            _log.LogInformation("Client disconnected ({Count} remain).", _clients.Count);
         }
     }
 
-    private async Task DispatchAsync(string line)
+    /// <summary>
+    /// Fire-and-forget hotspot-status hydration for a freshly connected client. Bounded,
+    /// because the underlying WinRT query has been observed to never return on a machine
+    /// with no tetherable Wi-Fi adapter (the PCVR host).
+    /// </summary>
+    private void HydrateHotspotStateAsync(ClientConnection client, CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var status = await _controller.GetStatusAsync().WaitAsync(TimeSpan.FromSeconds(10), ct)
+                                              .ConfigureAwait(false);
+                await SendEventAsync(client, RpcEvent.Of("state", status)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _log.LogWarning("Hotspot status query timed out; client hydrated without it.");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Hotspot status hydration failed.");
+            }
+        }, CancellationToken.None);
+    }
+
+    private async Task DispatchAsync(string line, ClientConnection client)
     {
         RpcRequest? req;
         try { req = JsonSerializer.Deserialize<RpcRequest>(line, JsonOpts); }
@@ -146,13 +239,16 @@ public sealed class PipeServer : BackgroundService
         {
             object? result = req.Method switch
             {
-                "GetStatus" => await _controller.GetStatusAsync(),
+                // Bounded: see HydrateHotspotStateAsync — these can hang on a host with no
+                // tetherable adapter, and a UI panel spinning forever is worse than an error.
+                "GetStatus" => await _controller.GetStatusAsync().WaitAsync(StatusQueryTimeout),
                 "ListUpstreamProfiles" => _controller.ListUpstreamProfiles(),
                 "StartHotspot" => await _controller.StartAsync(ParseParams<StartHotspotParams>(req) ?? new StartHotspotParams()),
                 "StopHotspot" => await _controller.StopAsync(),
                 "ListWifiAdapters" => _controller.ListWifiAdapters(),
                 "PrepareApAdapter" => await _controller.PrepareApAdapterAsync(),
                 "GetClients" => await GetClientsAsync(),
+                // ---- Native screen streaming ----
                 "NativeStreamStatus" => _nativeStream.GetStatus(),
                 "NativeStreamSetEnabled" => SetNativeStreamEnabled(ParseParams<NativeStreamEnableParams>(req)),
                 "NativeStreamSetInput" => SetNativeStreamInput(ParseParams<NativeStreamInputParams>(req)),
@@ -171,12 +267,14 @@ public sealed class PipeServer : BackgroundService
             response = RpcResponse.Fail(req.Id, "exception", ex.Message);
         }
 
-        await SendAsync(response).ConfigureAwait(false);
+        await SendAsync(client, response).ConfigureAwait(false);
     }
+
+    private static readonly TimeSpan StatusQueryTimeout = TimeSpan.FromSeconds(10);
 
     private async Task<object> GetClientsAsync()
     {
-        var s = await _controller.GetStatusAsync();
+        var s = await _controller.GetStatusAsync().WaitAsync(StatusQueryTimeout);
         return new { count = s.ClientCount, max = s.MaxClientCount };
     }
 
@@ -201,7 +299,7 @@ public sealed class PipeServer : BackgroundService
 
     private void OnNativeStreamChanged()
     {
-        _ = SendEventAsync(RpcEvent.Of("nativeStream", _nativeStream.GetStatus()));
+        _ = BroadcastAsync(RpcEvent.Of("nativeStream", _nativeStream.GetStatus()));
     }
 
     private sealed record NativeStreamEnableParams
@@ -224,25 +322,22 @@ public sealed class PipeServer : BackgroundService
 
     private void OnStatusChanged(HotspotStatus status)
     {
-        // Fire-and-forget; the write path is serialized by _writeLock.
-        _ = SendEventAsync(RpcEvent.Of("state", status));
+        // Fire-and-forget; each client serializes its own writes.
+        _ = BroadcastAsync(RpcEvent.Of("state", status));
     }
 
-    private Task SendAsync(RpcResponse response) => WriteLineAsync(response);
-    private Task SendEventAsync(RpcEvent evt) => WriteLineAsync(evt);
+    private static Task SendAsync(ClientConnection client, RpcResponse response) =>
+        client.WriteLineAsync(JsonSerializer.Serialize(response, JsonOpts));
 
-    private async Task WriteLineAsync(object message)
+    private static Task SendEventAsync(ClientConnection client, RpcEvent evt) =>
+        client.WriteLineAsync(JsonSerializer.Serialize(evt, JsonOpts));
+
+    /// <summary>Push an event to every connected client. Serialize once, fan out.</summary>
+    private async Task BroadcastAsync(RpcEvent evt)
     {
-        await _writeLock.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            var w = _writer;
-            if (w is null) return; // no client connected
-            await w.WriteLineAsync(JsonSerializer.Serialize(message, JsonOpts)).ConfigureAwait(false);
-            await w.FlushAsync().ConfigureAwait(false);
-        }
-        catch (IOException) { /* client disconnected mid-write */ }
-        finally { _writeLock.Release(); }
+        if (_clients.IsEmpty) return;
+        string json = JsonSerializer.Serialize(evt, JsonOpts);
+        await Task.WhenAll(_clients.Values.Select(c => c.WriteLineAsync(json))).ConfigureAwait(false);
     }
 
     public override void Dispose()

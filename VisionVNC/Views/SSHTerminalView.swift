@@ -24,6 +24,9 @@ struct SSHTerminalView: View {
     /// its input view; that must not disable direct input or trigger a focus race.
     @State private var keyboardFocus = TerminalKeyboardFocusState()
 
+    /// Drives the "close or force-restart" modal raised by the header's ✕ button.
+    @State private var showingSessionActions = false
+
     #if os(visionOS)
     /// In-app dictation, transcribed on device. Deliberately not the keyboard's
     /// dictation — see `DictationController` for why that one keeps dying.
@@ -32,10 +35,6 @@ struct SSHTerminalView: View {
     /// appended to it so a half-typed command isn't thrown away.
     @State private var composerBeforeDictation = ""
     #endif
-
-
-    /// Drives the "close or force-restart" modal raised by the header's ✕ button.
-    @State private var showingSessionActions = false
 
     /// Auto-hands keyboard focus to the terminal whenever a hardware keyboard is
     /// attached, so a Bluetooth keyboard drives the session without first tapping

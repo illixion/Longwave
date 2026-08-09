@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace VisionVNC.Hotspot.Backend.NativeStream;
+namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Enumerates streamable top-level windows (the Windows counterpart of the

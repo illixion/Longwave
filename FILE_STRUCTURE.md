@@ -92,9 +92,9 @@ CompanionMac/                           — macOS menu bar companion target (Vis
 ├── OBSWebSocketClient.swift            — minimal obs-websocket v5 client (Hello/Identify challenge auth, Browser Source create/update + visibility/stacking enforcement)
 └── Info.plist                          — NSAudioCaptureUsageDescription, NSAppleEventsUsageDescription
 
-CompanionWindows/                       — Windows "Hotspot Companion" (PoC; separate Node + .NET codebase)
-├── backend/                            — .NET 8 worker: TetheringController (Mobile Hotspot AP+NAT), PipeServer (ACL'd named-pipe JSON-RPC)
-├── app/                                — Electron UI: status + "Join from Vision Pro" panel (SSID / 8-char password / gateway IP)
+CompanionWindows/                       — VisionVNC Windows Companion (PoC; separate Node + .NET codebase)
+├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see VisionVNC-PCVR-Host/)
+├── app/                                — Electron UI: Hotspot status / "Join from Vision Pro", plus PCVR and Game library panels that download the closed-source host on demand
 ├── spike/                              — Step-1 capability spike + SPIKE-FINDINGS.md (decision record)
 └── README.md                           — build/run/architecture/protocol
 

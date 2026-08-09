@@ -10,6 +10,14 @@ enum MainWindowID: Int, Codable, Hashable {
     case shared = 0
 }
 
+/// The PCVR controls window, same trick. It was reachable from three places — the
+/// connection list, the wrist HUD, and the Sessions tab — and each plain
+/// `openWindow(id:)` minted another copy, so a session could end up with several
+/// stacked control panels arguing over one connection.
+enum PCVRWindowID: Int, Codable, Hashable {
+    case shared = 0
+}
+
 enum MacNativeWindowID: Int, Codable, Hashable {
     case shared = 0
 }
@@ -146,6 +154,19 @@ final class WindowSessionRegistry {
 
     /// Static description of each summonable window: id, label, and SF Symbol.
     /// Subtitles (connection names) are resolved live by the Sessions view.
+    /// Opens a window by id, using the value form for the ones whose `WindowGroup` is
+    /// value-matched to a single identity. Callers that only know an id string (the
+    /// Sessions tab iterates the catalog) must go through this: `openWindow(id:)` alone
+    /// against a `WindowGroup(for:)` does nothing at all, and a plain id against a
+    /// value-matched group is exactly the duplicate-window bug this exists to prevent.
+    static func surface(_ id: String, using openWindow: OpenWindowAction) {
+        switch id {
+        case "main": openWindow(id: id, value: MainWindowID.shared)
+        case "foveated-controls": openWindow(id: id, value: PCVRWindowID.shared)
+        default: openWindow(id: id)
+        }
+    }
+
     struct WindowKind: Identifiable {
         let id: String
         let title: String
@@ -158,6 +179,9 @@ final class WindowSessionRegistry {
         ]
         #if MOONLIGHT_ENABLED
         kinds.append(WindowKind(id: "moonlight-stream", title: "Game Stream", systemImage: "gamecontroller"))
+        #endif
+        #if FOVEATED_ENABLED
+        kinds.append(WindowKind(id: "foveated-controls", title: "PCVR Controls", systemImage: "visionpro"))
         #endif
         #if os(visionOS)
         kinds.append(WindowKind(id: "mac-native-stream", title: "Native", systemImage: "macwindow.on.rectangle"))

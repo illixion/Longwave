@@ -7,6 +7,11 @@ struct MainView: View {
 
     enum Tab: String, CaseIterable {
         case connections = "Connections"
+        #if FOVEATED_ENABLED
+        /// Second, not buried: PCVR is a headline feature, and it is the one
+        /// thing here that finds its own host instead of taking an address.
+        case pcvr = "PCVR"
+        #endif
         case projects = "Projects"
         case sessions = "Sessions"
         case broadcast = "Broadcast"
@@ -16,6 +21,9 @@ struct MainView: View {
         var systemImage: String {
             switch self {
             case .connections: "rectangle.connected.to.line.below"
+            #if FOVEATED_ENABLED
+            case .pcvr: "visionpro"
+            #endif
             case .projects: "sparkles"
             case .sessions: "macwindow.on.rectangle"
             case .broadcast: "dot.radiowaves.left.and.right"
@@ -34,6 +42,10 @@ struct MainView: View {
             switch selectedTab {
             case .connections:
                 ConnectionListView()
+            #if FOVEATED_ENABLED
+            case .pcvr:
+                PCVRTabView()
+            #endif
             case .projects:
                 ProjectsView()
             case .sessions:

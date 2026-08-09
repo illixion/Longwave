@@ -1,0 +1,65 @@
+:root {
+  color-scheme: dark;
+  --text: #faf5f8;
+  --muted: #aaa0aa;
+  --line: rgba(255, 255, 255, .12);
+  --accent: #c98cff;
+}
+
+* { box-sizing: border-box; }
+html, body { min-width: 560px; min-height: 620px; margin: 0; }
+body {
+  display: grid;
+  place-items: center;
+  padding: 34px;
+  background:
+    radial-gradient(circle at 50% 0, rgba(201, 140, 255, .18), transparent 42%),
+    #0a080c;
+  color: var(--text);
+  font: 15px/1.5 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  text-align: center;
+}
+
+main { width: min(100%, 590px); }
+.eyebrow {
+  margin: 0 0 7px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+h1 { margin: 0; font-size: 32px; letter-spacing: -.03em; }
+#instructions { margin: 7px 0 24px; color: var(--muted); }
+
+.code {
+  position: relative;
+  width: min(72vh, 500px);
+  height: min(72vh, 500px);
+  max-width: 100%;
+  max-height: 500px;
+  padding: 18px;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .42);
+  cursor: pointer;
+}
+.code:focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
+.code img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.code.masked { background: linear-gradient(145deg, #25182b, #141018); }
+.code.masked img { display: none; }
+#mask {
+  display: none;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  color: var(--text);
+}
+.code.masked #mask { display: flex; }
+#mask strong { font-size: 20px; letter-spacing: .08em; }
+#mask small { color: var(--muted); font-size: 14px; }
+.privacy { margin: 19px auto 0; max-width: 500px; color: var(--muted); font-size: 12px; }

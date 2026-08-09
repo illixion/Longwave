@@ -30,6 +30,7 @@ build/
 build/
 scripts/build-signing.conf
 Configuration/BuildInfo.xcconfig
+.pcvr-bundle-out/
 
 # Temp files
 spike/

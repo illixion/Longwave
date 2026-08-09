@@ -4,7 +4,7 @@ using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Org.BouncyCastle.Tls;
 
-namespace VisionVNC.Hotspot.Backend.NativeStream;
+namespace VisionVNC.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
 /// Authenticated newest-client-wins TCP server for the native stream — the

@@ -5,7 +5,7 @@ A native remote desktop and game streaming app for Apple Vision Pro, built in Sw
 VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game streaming** client in a single visionOS app. Connect to any VNC server for remote desktop access, or stream games and applications from a [Sunshine](https://github.com/LizardByte/Sunshine) / NVIDIA GameStream host with hardware-accelerated video decoding and low-latency input.
 
 > [!TIP]
-> **New: use your Vision Pro with a Windows PC in public — even on café/hotel Wi-Fi.** Public networks usually block device-to-device traffic, which breaks VNC and Moonlight. The new [Windows Hotspot Companion (Beta)](#windows-hotspot-companion-beta) turns the Windows host into its own NAT'd Wi-Fi access point the headset joins directly — so streaming works *and* the Vision Pro keeps internet. A long-standing pain point with no clean solution until now.
+> **New: VisionVNC Windows Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#visionvnc-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
 
 ## Features
 
@@ -29,6 +29,23 @@ VisionVNC combines a full-featured **VNC viewer** with a **Moonlight game stream
 - Live streaming statistics overlay (codec, FPS, RTT, decode time, dropped frames)
 - PIN-based pairing with Sunshine servers (SHA-256 and legacy SHA-1)
 - Session management — disconnect locally or quit the app on the server
+
+### PCVR — Foveated Streaming (CloudXR)
+
+- Play SteamVR and OpenXR titles from a Windows PC with an NVIDIA RTX card, in a fully immersive space on the Vision Pro
+- **Foveated on the host, by your real gaze.** Your eye tracking is carried to the PC and the *game* renders foveated — full detail where you look, less work in the periphery. Stock CloudXR hands games no eye tracking at all, so they render uniformly and the GPU pays for pixels you cannot resolve; supplying it is why a given card holds a higher frame rate here
+- **No IP to type** — the PC advertises itself over Bonjour and the headset finds it. Entering an address by hand is there as a fallback for networks that block discovery
+- **Hands are the controller.** Hand tracking and pinch gestures reach the PC as a pair of Valve Index controllers; a paired Switch Pro or Quest controller is optional, and its motion is attributed to whichever hand is actually holding it
+- **Your desktop, in VR** — put the PC's screen on a panel you can point at, click, and move like any other window, without leaving the game
+- Wrist HUD on a raised palm: quit the running title, show the desktop, or switch between emulated controllers and bare hands
+- **VRChat eye tracking** — opt in on the PC and the same gaze that foveates the render also drives your avatar's eyes, over VRChat's OSC eye-look override. Off by default, because it takes over the eye channel from any other OSC eye-tracking app
+- **Stream quality lever** — Performance / Balanced / Quality on the PC. Each step asks for more pixels to render and encode, so stepping down is the first thing to try when a heavy title stutters
+- **Remote play over Tailscale** — the companion can advertise its tailnet address instead of a LAN one, for a PC at home or a cloud GPU host; the headset connects by IP over Tailscale. Needs a direct WireGuard path (the companion warns when the connection is being relayed, which can't carry this much video)
+- Game library browsed and launched from the headset
+
+Requires the [VisionVNC Windows Companion](#visionvnc-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
+
+**On GPUs:** NVIDIA lists RTX 40-series or newer as supported for CloudXR, and it will tell you so if you have less. A 30-series card genuinely works — this was developed against a 3080 — with less headroom, so expect to sit a stream-quality step lower than a supported card would.
 
 ### Audio Streaming
 - Stream bit-exact, uncompressed system audio from your Mac via the bundled **VisionVNC Companion** menu bar app (separate macOS target in this project)
@@ -126,7 +143,7 @@ The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple d
 
 ### Building the Companion (macOS)
 
-> Looking for the Windows side? See [Windows Hotspot Companion (Beta)](#windows-hotspot-companion-beta) below.
+> Looking for the Windows side? See [VisionVNC Windows Companion (Beta)](#visionvnc-windows-companion-beta) below.
 
 The **VisionVNCCompanion** scheme builds the macOS menu bar app that streams system audio to VisionVNC. It has no external dependencies, so it builds even without the `repos/` setup above. Select the `VisionVNCCompanion` scheme in Xcode and run, or from the command line:
 
@@ -168,22 +185,25 @@ On the headset, the Broadcast tab starts the camera stream; the **Mirror My View
 
 **Security:** the stream is end-to-end encrypted (RTSPS; the headset pins the companion-generated certificate, so no CA and no VPN are required), publishing requires the generated credentials, and playback is restricted to the Mac itself (`127.0.0.1`). Tailscale is still the recommended transport — the companion advertises the Mac's Tailscale IP in the pairing link — but with TLS active, any network path works.
 
-## Windows Hotspot Companion (Beta)
+## VisionVNC Windows Companion (Beta)
 
-`CompanionWindows/` is a separate companion app for **using a Vision Pro with a Windows machine in public** — cafés, hotels, conference Wi-Fi, anywhere the two devices can't reach each other on the shared network.
+`CompanionWindows/` is a general-purpose Windows companion app with one Electron UI and elevated .NET backend. It currently provides two features:
 
-Normally VNC and Moonlight need both devices on the same LAN, and most public Wi-Fi blocks client-to-client traffic (AP isolation) — so streaming simply doesn't work. This companion turns the **Windows host into its own NAT'd Wi-Fi access point** that the Vision Pro joins directly. From the venue's perspective there's a single client (the Windows PC); the headset rides *behind the PC's NAT*, so it keeps internet **and** gets a direct, low-latency path to the local Sunshine/VNC server at the gateway (`192.168.137.1`). The visionOS app auto-fills that gateway as the host when it detects it's on such a network.
+- **Wi-Fi Hotspot** for **using a Vision Pro with a Windows machine in public** — cafés, hotels, conference Wi-Fi, anywhere the two devices can't reach each other on the shared network.
+- **Foveated Streaming (CloudXR) host** that advertises this PC to Vision Pro, manages the foveated-streaming session, and drives the NVIDIA CloudXR runtime for desktop OpenXR content — including carrying the headset's real gaze through to the game, so rendering is foveated on the PC rather than uniform.
 
-It's a standalone **Node + .NET** project (Electron UI over an elevated .NET backend using the Windows Mobile Hotspot API).
+For Hotspot, normally VNC and Moonlight need both devices on the same LAN, and most public Wi-Fi blocks client-to-client traffic (AP isolation) — so streaming simply doesn't work. The companion turns the **Windows host into its own NAT'd Wi-Fi access point** that the Vision Pro joins directly. From the venue's perspective there's a single client (the Windows PC); the headset rides *behind the PC's NAT*, so it keeps internet **and** gets a direct, low-latency path to the local Sunshine/VNC server at the gateway (`192.168.137.1`). The visionOS app auto-fills that gateway as the host when it detects it's on such a network.
+
+It's a standalone **Node + .NET** project (Electron UI over an elevated .NET backend using the Windows Mobile Hotspot API and CloudXR host components).
 
 **Install:** download the latest installer for your CPU from the [Releases](../../releases) page and run it — no need to install toolchains or compile anything (which is a pain on Windows). Both architectures are built natively:
-- `VisionVNCHotspotCompanion-…-x64-Setup.exe` — Intel / AMD PCs
-- `VisionVNCHotspotCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
+- `VisionVNCWindowsCompanion-…-x64-Setup.exe` — Intel / AMD PCs
+- `VisionVNCWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
 
 The installers are built by CI and ship with a **signed build-provenance attestation**, so you can prove the download was produced by this repo's workflow from a specific commit and wasn't tampered with:
 
 ```bash
-gh attestation verify VisionVNCHotspotCompanion-<version>-<arch>-Setup.exe --repo illixion/VisionVNC
+gh attestation verify VisionVNCWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/VisionVNC
 ```
 
 Prefer to build it yourself? See [`CompanionWindows/README.md`](CompanionWindows/README.md).
@@ -240,9 +260,14 @@ CompanionMac/ → VisionVNCCompanion (macOS menu bar app)
 ├── CompanionApp                  — Menu bar popover (quick audio controls)
 └── CompanionWindowView           — Multi-pane companion window (token / broadcast / SSH / keyboard)
 
-CompanionWindows/ (PoC, Node + .NET) — "VisionVNC Hotspot Companion"
-├── backend/                      — .NET 8 worker: Mobile Hotspot AP+NAT, named-pipe RPC
-└── app/                          — Electron UI ("Join from Vision Pro" panel)
+CompanionWindows/ (PoC, Node + .NET) — VisionVNC Windows Companion
+├── backend/                      — .NET 8 worker: Hotspot AP+NAT, named-pipe RPC (open source, built by CI)
+└── app/                          — Electron UI (Hotspot, Foveated Streaming, and Game library panels);
+                                     downloads the closed-source Foveated Streaming (CloudXR) host on demand
+
+VisionVNC-PCVR-Host/, SessionBroker/, OpenXRLayer/ — closed-source, private git submodules (no
+                                     public source); the Foveated Streaming/CloudXR host + native
+                                     OpenXR bridge the Electron UI fetches on demand, never bundled
 
 Shared/AudioStreamProtocol.swift  — wire format, compiled into both visionOS + macOS targets
 ```
@@ -292,6 +317,10 @@ This project uses the following open-source libraries:
 - [ENet](http://enet.bespin.org/) (bundled with moonlight-common-c) — MIT License
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for full license texts.
+
+The Windows companion is a separate codebase with its own dependencies and its own notices —
+see [CompanionWindows/THIRD_PARTY_NOTICES.md](CompanionWindows/THIRD_PARTY_NOTICES.md), which
+also records what the optional PCVR download contains and what it deliberately does not.
 
 ## License
 

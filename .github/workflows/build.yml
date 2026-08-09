@@ -206,7 +206,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Windows Hotspot Companion (Beta) installers — built natively per architecture:
+  # VisionVNC Windows Companion (Beta) installers — built natively per architecture:
   # x64 on windows-latest, arm64 on windows-11-arm (Snapdragon X-class laptops are
   # increasingly common). Self-contained .NET backend + Electron/NSIS installer.
   # Each emits a signed build-provenance attestation so anyone can prove the
@@ -255,6 +255,19 @@ jobs:
         working-directory: CompanionWindows/backend
         run: dotnet publish -c Release -r ${{ matrix.rid }} --self-contained true -o bin/Release/net8.0-windows10.0.22621.0/publish
 
+      # The running app reads this at startup to know which GitHub release to ask for the
+      # closed-source PCVR bundle (see src/pcvr-installer.js) — the tag is the only thing
+      # that guarantees the pipe protocol on both ends actually matches, so this has to be
+      # the exact same string the release job below tags the release with.
+      - name: Write build-info.json (release version + repo)
+        shell: bash
+        working-directory: CompanionWindows/app
+        run: |
+          VERSION="0.1.0-${GITHUB_SHA::8}"
+          cat > src/build-info.json <<EOF
+          { "version": "${VERSION}", "repo": "${{ github.repository }}" }
+          EOF
+
       - name: Build installer (Electron + NSIS, ${{ matrix.arch }})
         working-directory: CompanionWindows/app
         run: |
@@ -268,7 +281,7 @@ jobs:
           VERSION="0.1.0-${GITHUB_SHA::8}"
           SRC=$(ls CompanionWindows/app/dist/*.exe | head -n1)
           mkdir -p dist-out
-          DEST="dist-out/VisionVNCHotspotCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
+          DEST="dist-out/VisionVNCWindowsCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
           cp "$SRC" "$DEST"
           echo "installer=$DEST" >> "$GITHUB_OUTPUT"
 
@@ -328,7 +341,7 @@ jobs:
           - \`VisionVNC-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
           - \`VisionVNCCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
           - \`VisionVNCMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
-          - \`VisionVNCHotspotCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Windows Hotspot Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
+          - \`VisionVNCWindowsCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the VisionVNC Windows Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
 
           **Running the macOS apps**
 

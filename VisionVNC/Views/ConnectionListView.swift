@@ -25,11 +25,15 @@ struct ConnectionListView: View {
     @State private var moonlightConnection: SavedConnection?
     #endif
 
+    /// PCVR rows are hidden here: PCVR moved to its own tab, which owns the one
+    /// settings row it keeps (and adopts any left over from when this list was
+    /// where you started a session). Showing it in both places would give a
+    /// single session two sets of settings that disagree.
     private var visibleConnections: [SavedConnection] {
         #if os(macOS)
         savedConnections.filter { $0.connectionType != .ssh }
         #else
-        savedConnections
+        savedConnections.filter { $0.connectionTypeRawValue != "foveated" }
         #endif
     }
 
@@ -232,6 +236,12 @@ struct ConnectionListView: View {
         #if MOONLIGHT_ENABLED
         case .moonlight:
             connectMoonlight(connection)
+        #endif
+        #if FOVEATED_ENABLED
+        case .foveated:
+            // Unreachable — `visibleConnections` filters PCVR rows out, and the
+            // PCVR tab starts sessions now. The case stays for exhaustiveness.
+            break
         #endif
         }
     }

@@ -9,8 +9,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>VisionVNC.Hotspot.Backend</RootNamespace>
-    <AssemblyName>VisionVNCHotspotBackend</AssemblyName>
+    <RootNamespace>VisionVNC.WindowsCompanion.Backend</RootNamespace>
+    <AssemblyName>VisionVNCWindowsCompanionBackend</AssemblyName>
     <!-- The backend touches the privileged tethering API; require admin when launched
          as an interactive-session helper. (Ignored when hosted as a SYSTEM service.) -->
     <ApplicationManifest>app.manifest</ApplicationManifest>

@@ -1,0 +1,25 @@
+# The three closed-source halves of the PCVR feature. These URLs are private
+# repositories: a clone by anyone else fails here with an authentication error,
+# which is the correct and expected outcome — the public app never needs them
+# (see CompanionWindows/app/src/pcvr-installer.js for how it gets the built
+# bundle instead).
+#
+# They are deliberately NOT the local paths they are developed from. A local
+# path in a committed .gitmodules leaks one machine's directory layout and makes
+# `git clone --recursive` fail with a confusing "no such file" for everybody
+# else. Point the working copy at the local repos instead, which overrides these
+# without touching the file:
+#
+#   git config submodule.VisionVNC-PCVR-Host.url ~/Projects/visionvnc-pcvr-host
+#   git config submodule.SessionBroker.url       ~/Projects/visionvnc-session-broker
+#   git config submodule.OpenXRLayer.url         ~/Projects/visionvnc-openxr-layer
+#   git submodule sync
+[submodule "VisionVNC-PCVR-Host"]
+	path = VisionVNC-PCVR-Host
+	url = https://github.com/illixion/visionvnc-pcvr-host.git
+[submodule "SessionBroker"]
+	path = SessionBroker
+	url = https://github.com/illixion/visionvnc-session-broker.git
+[submodule "OpenXRLayer"]
+	path = OpenXRLayer
+	url = https://github.com/illixion/visionvnc-openxr-layer.git

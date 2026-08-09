@@ -4,15 +4,20 @@ using Microsoft.Extensions.Logging;
 using Windows.Networking.Connectivity;
 using Windows.Networking.NetworkOperators;
 
-namespace VisionVNC.Hotspot.Backend;
+namespace VisionVNC.WindowsCompanion.Backend;
 
 /// <summary>
 /// Wraps the Windows Mobile Hotspot API (<see cref="NetworkOperatorTetheringManager"/>):
 /// enumerate upstreams, configure/start/stop the AP, report live state + client count,
 /// and auto-restart if Windows idle-disables the hotspot. All public methods are safe to
 /// call from any thread; operations are serialized with an async gate.
+///
+/// <para>Elevation: the queries here work unelevated, but <see cref="StartAsync"/>,
+/// <see cref="StopAsync"/> and <see cref="PrepareApAdapterAsync"/> need administrator rights. An
+/// unelevated backend therefore reaches this class through <see cref="ElevatedTetheringProxy"/>,
+/// which runs it inside an elevated child; see TetheringElevation.cs.</para>
 /// </summary>
-public sealed class TetheringController
+public sealed class TetheringController : ITetheringService
 {
     private readonly ILogger<TetheringController> _log;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -170,6 +175,16 @@ public sealed class TetheringController
             _ssid = string.IsNullOrWhiteSpace(p.Ssid) ? Tokens.DefaultSsid() : p.Ssid!.Trim();
             _passphrase = string.IsNullOrWhiteSpace(p.Passphrase) ? Tokens.DefaultPassphrase() : p.Passphrase!.Trim();
             _band = NormalizeBand(p.Band);
+
+            // Say so when the radio cannot honour the requested band. Windows accepts the
+            // configuration either way and hosts on whatever the driver picks, so the alternative
+            // is a user who believes they are on 5 GHz and is not.
+            var supported = ProbeSupportedBands();
+            if (_band != "auto" && supported is not null && !supported.Contains(_band))
+                _log.LogWarning(
+                    "{Band} GHz was requested, but this radio reports supported bands [{Supported}]. " +
+                    "The request will be ignored and the AP will come up on whatever the driver chooses.",
+                    _band, supported.Count == 0 ? "none" : string.Join(", ", supported));
 
             var cfg = new NetworkOperatorTetheringAccessPointConfiguration
             {
@@ -341,10 +356,12 @@ public sealed class TetheringController
             CapabilityDetail = probe.detail,
             UpstreamName = profile?.ProfileName,
             UpstreamKind = profile is null ? null : KindOf(profile),
+            ElevationOnDemand = !TetherElevation.IsElevated,
         };
 
         if (_manager is not null)
         {
+            status.BandsSupported = ProbeSupportedBands();
             status.State = _manager.TetheringOperationalState switch
             {
                 TetheringOperationalState.On => "on",
@@ -404,6 +421,43 @@ public sealed class TetheringController
         "5" or "5ghz" or "fivegigahertz" => "5",
         _ => "auto",
     };
+
+    /// <summary>
+    /// Which bands the radio actually offers, via <c>IsBandSupported</c>. Returns null when the
+    /// query itself is unavailable, so "we could not ask" stays distinguishable from "the driver
+    /// says neither".
+    ///
+    /// <para>The distinction matters for the 5 GHz case: a Wi-Fi-Direct-GO-only adapter (the
+    /// TP-Link RTL8811AU with the inbox Microsoft driver, measured 2026-07-28) answers False for
+    /// both 2.4 and 5 GHz while still tethering happily at 2.4, and setting
+    /// <c>cfg.Band = FiveGigahertz</c> on it is accepted and then ignored. Without this the user
+    /// asks for 5 GHz, gets no error, and streams over 2.4 believing otherwise. Only Auto is
+    /// unqueryable — <c>IsBandSupported(Auto)</c> raises E_FAIL, which is why it is not asked.</para>
+    /// </summary>
+    private List<string>? ProbeSupportedBands()
+    {
+        try
+        {
+            var cfg = _manager?.GetCurrentAccessPointConfiguration();
+            if (cfg is null) return null;
+            var bands = new List<string>();
+            if (IsBandSupported(cfg, TetheringWiFiBand.TwoPointFourGigahertz)) bands.Add("2.4");
+            if (IsBandSupported(cfg, TetheringWiFiBand.FiveGigahertz)) bands.Add("5");
+            return bands;
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Band support query failed");
+            return null;
+        }
+    }
+
+    private static bool IsBandSupported(NetworkOperatorTetheringAccessPointConfiguration cfg,
+                                        TetheringWiFiBand band)
+    {
+        try { return cfg.IsBandSupported(band); }
+        catch { return false; }   // Pre-2004 Windows, or a driver that refuses the query.
+    }
 
     private void TrySetBand(NetworkOperatorTetheringAccessPointConfiguration cfg, string band)
     {

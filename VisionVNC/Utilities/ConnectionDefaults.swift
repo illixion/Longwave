@@ -27,6 +27,12 @@ enum ConnectionDefaults {
         static let moonlightAudioConfig = "default_ml_audio_config"
         static let moonlightTouchMode = "default_ml_touch_mode"
         #endif
+        #if FOVEATED_ENABLED
+        static let foveatedPort = "default_fov_port"
+        static let foveatedMode = "default_fov_mode"
+        static let foveatedImmersion = "default_fov_immersion"
+        static let foveatedControllerBridge = "default_fov_controller_bridge"
+        #endif
     }
 
     private static var defaults: UserDefaults { .standard }
@@ -57,6 +63,9 @@ enum ConnectionDefaults {
         #if MOONLIGHT_ENABLED
         case .moonlight: stored = defaults.integer(forKey: Keys.moonlightPort)
         #endif
+        #if FOVEATED_ENABLED
+        case .foveated: stored = defaults.integer(forKey: Keys.foveatedPort)
+        #endif
         }
         return stored > 0 ? stored : type.defaultPort
     }
@@ -86,6 +95,25 @@ enum ConnectionDefaults {
 
     static var moonlightTouchMode: TouchMode {
         TouchMode(rawValue: defaults.string(forKey: Keys.moonlightTouchMode) ?? "") ?? .relative
+    }
+    #endif
+
+    #if FOVEATED_ENABLED
+    static var foveatedMode: FoveatedConnectionMode {
+        FoveatedConnectionMode(rawValue: defaults.string(forKey: Keys.foveatedMode) ?? "") ?? .systemDiscovered
+    }
+
+    static var foveatedImmersion: FoveatedImmersionStyle {
+        FoveatedImmersionStyle(rawValue: defaults.string(forKey: Keys.foveatedImmersion) ?? "") ?? .progressive
+    }
+
+    /// Defaults to **on**: CloudXR does not forward Vision Pro hands as OpenXR input on
+    /// visionOS 27 (see the PCVR design notes in VisionVNC-PCVR-Host/docs/), so with the
+    /// bridge off a PCVR session has no input at all — the useful default is the one that
+    /// gives you hands.
+    /// `defaults.bool(forKey:)` returns false for an unset key, so check for absence.
+    static var foveatedControllerBridge: Bool {
+        defaults.object(forKey: Keys.foveatedControllerBridge) as? Bool ?? true
     }
     #endif
 }

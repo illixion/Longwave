@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace VisionVNC.Hotspot.Backend;
+namespace VisionVNC.WindowsCompanion.Backend;
 
 /// <summary>
 /// Polls the tethering controller on a fixed cadence so state changes, client-count changes,
@@ -12,9 +12,9 @@ public sealed class MonitorService : BackgroundService
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(2);
 
     private readonly ILogger<MonitorService> _log;
-    private readonly TetheringController _controller;
+    private readonly ITetheringService _controller;
 
-    public MonitorService(ILogger<MonitorService> log, TetheringController controller)
+    public MonitorService(ILogger<MonitorService> log, ITetheringService controller)
     {
         _log = log;
         _controller = controller;

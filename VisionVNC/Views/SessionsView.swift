@@ -78,9 +78,10 @@ struct SessionsView: View {
             Spacer()
 
             Button {
-                // Re-opening an already-open window by id makes visionOS
-                // bring it to the user's current position.
-                openWindow(id: kind.id)
+                // Re-opening an already-open window makes visionOS bring it to the
+                // user's current position. Via the registry, because some of these
+                // windows are value-matched and a bare id would open nothing.
+                WindowSessionRegistry.surface(kind.id, using: openWindow)
             } label: {
                 Label("Summon", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
             }

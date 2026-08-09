@@ -83,6 +83,18 @@ mkdir -p "$STAGE/host" "$STAGE/bridge"
 echo "==> publishing LongwavePCVRHost (win-x64, self-contained)"
 dotnet publish "$HOST_PROJ" -c Release -r win-x64 --self-contained true -o "$STAGE/host"
 
+# Symbols stay at home. A .NET assembly is IL and decompiles readably either way,
+# but the PDB is what turns that output back into something with the original
+# local variable names and line numbers — the difference between reading
+# generated code and reading ours. Not shipping it costs only the line numbers in
+# a stack trace from a user's machine, and the build that produced the assembly
+# still has the PDB if one ever needs symbolicating.
+#
+# The native side needs no equivalent: the bridge files are copied by name below,
+# and no .pdb is on that list.
+find "$STAGE/host" -name '*.pdb' -delete
+echo "    stripped $(find "$STAGE/host" -name '*.pdb' | wc -l | tr -d ' ') remaining .pdb (expect 0)"
+
 # ------------------------------------------------------------------ native build (on the PC)
 if [[ "$NO_BUILD_NATIVE" == 0 ]]; then
   echo "==> syncing SessionBroker/ + OpenXRLayer/ source to $HOST"

@@ -111,7 +111,6 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
 └── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)
 
-Website/                               — longwave.pro; static, no build step, deployed to Cloudflare Pages
 
 scripts/
 ├── edition-settings.sh                 — The ONLY definition of oss / oss-moonlight / pro

@@ -72,6 +72,8 @@ private struct PCVRSessionForm: View {
     @Bindable var connection: SavedConnection
 
     @Environment(FoveatedConnectionManager.self) private var manager
+    @Environment(PCVRStore.self) private var store
+    @Environment(PCVRSessionLimiter.self) private var limiter
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
@@ -83,6 +85,8 @@ private struct PCVRSessionForm: View {
     @State private var showGestureSettings = false
     @State private var showAlignmentDebug = false
     @State private var showHelp = false
+    @State private var showPaywall = false
+    @State private var paywallAfterSessionEnd = false
     @State private var showDisconnectAlert = false
     @State private var disconnectMessage = ""
 
@@ -105,6 +109,7 @@ private struct PCVRSessionForm: View {
                         .padding(.vertical, 8)
                 }
             }
+            accessSection
             connectionSection
             immersionSection
             controlsSection
@@ -132,6 +137,26 @@ private struct PCVRSessionForm: View {
                     }
             }
             .frame(minWidth: 620, minHeight: 640)
+        }
+        .sheet(isPresented: $showPaywall) {
+            NavigationStack {
+                PCVRPaywallView(afterSessionEnd: paywallAfterSessionEnd)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showPaywall = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 600, minHeight: 560)
+        }
+        // A session that stops on its own has to explain itself. The alert path
+        // below is for connections that broke; this one is for a limit that was
+        // reached, which is not an error and must not be dressed as one.
+        .onChange(of: limiter.didEndSession) { _, ended in
+            guard ended else { return }
+            limiter.didEndSession = false
+            paywallAfterSessionEnd = true
+            showPaywall = true
         }
         .sheet(isPresented: $showGestureSettings) {
             GestureMappingSettingsView()
@@ -213,6 +238,47 @@ private struct PCVRSessionForm: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity)
             .listRowBackground(Color.clear)
+    }
+
+    // MARK: Access
+
+    /// Present whether or not anything has been bought, because "why did my game
+    /// close" is a question the app should have already answered. Unlocked, it is
+    /// one quiet line; in trial, it says what the limit is before it is hit.
+    @ViewBuilder
+    private var accessSection: some View {
+        Section("PCVR access") {
+            if store.isUnlocked {
+                Label("Unlocked — sessions run as long as you like",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else if store.isTrial {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let remaining = limiter.remaining, !manager.isDisconnected {
+                        Text("This session ends in \(PCVRSessionLimiter.clock(remaining))")
+                            .monospacedDigit()
+                    } else {
+                        Text("Trial — each session runs 20 minutes")
+                    }
+                    Text("Start as many sessions as you like; each one ends after twenty minutes. Everything else in Longwave is free.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    paywallAfterSessionEnd = false
+                    showPaywall = true
+                } label: {
+                    Label("Remove the 20-minute limit", systemImage: "lock.open")
+                }
+            } else {
+                // StoreKit has not answered yet. Saying "trial" here would be a
+                // guess, and the wrong guess to show a paying customer.
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking your purchases…").foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: Settings

@@ -23,6 +23,7 @@ import UIKit
 
 struct FoveatedImmersiveView: View {
     @Environment(FoveatedConnectionManager.self) private var manager
+    @Environment(PCVRSessionLimiter.self) private var limiter
     @AppStorage("foveatedShowSentSkeleton") private var showSentSkeleton = false
     @AppStorage("foveatedWristHUD") private var wristHUDEnabled = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
@@ -34,6 +35,8 @@ struct FoveatedImmersiveView: View {
     private let wristEntity = Entity()
     private let wristDriver = WristHUDDriver()
     private let chargeEntity = Entity()
+    private let bannerEntity = Entity()
+    private let bannerDriver = TrialBannerDriver()
 
     var body: some View {
         RealityView { content in
@@ -43,6 +46,7 @@ struct FoveatedImmersiveView: View {
 
             buildWristHUD(content: content)
             buildGestureCharge(content: content)
+            buildTrialBanner(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -78,7 +82,7 @@ struct FoveatedImmersiveView: View {
     /// hologram held over the hand rather than a label pasted on the display.
     private func buildWristHUD(content: RealityViewContent) {
         wristEntity.components.set(ViewAttachmentComponent(
-            rootView: FoveatedHUDView().environment(manager)))
+            rootView: FoveatedHUDView().environment(manager).environment(limiter)))
         // Attachments are sized points→metres: the 380 pt panel is ~0.28 m at scale 1,
         // so half that is about a hand's width.
         wristEntity.scale = .init(repeating: 0.5)
@@ -134,6 +138,29 @@ struct FoveatedImmersiveView: View {
                 simd_quatf(simd_float3x3(x, simd_cross(z, x), z)), relativeTo: nil)
         })
         content.add(chargeEntity)
+    }
+
+    // MARK: Trial banner
+
+    /// The one thing here that appears without being asked for. Placed ahead of the
+    /// viewer and eased toward that spot rather than pinned to the head — a panel
+    /// rigidly locked to head motion is the standard way to make someone ill, and
+    /// this one is on screen for twenty-five seconds at a stretch.
+    private func buildTrialBanner(content: RealityViewContent) {
+        bannerEntity.components.set(ViewAttachmentComponent(
+            rootView: TrialBannerRoot(limiter: limiter)))
+        // 460 pt ≈ 0.34 m at scale 1. Slightly under half reads as a notice at
+        // arm's length rather than a wall.
+        bannerEntity.scale = .init(repeating: 0.45)
+        bannerEntity.isEnabled = false
+        bannerEntity.components.set(ClosureComponent { [weak bannerEntity] deltaTime in
+            guard let bannerEntity else { return }
+            bannerDriver.update(entity: bannerEntity,
+                                deltaTime: deltaTime,
+                                showing: limiter.bannerRemaining != nil,
+                                bridge: manager.controllerBridge)
+        })
+        content.add(bannerEntity)
     }
 
     // MARK: Sent-skeleton overlay
@@ -279,6 +306,66 @@ private final class WristHUDDriver {
         opacity = 0
         if let suppressedHand { bridge?.setGestureSuppressed(false, for: suppressedHand) }
         suppressedHand = nil
+    }
+}
+
+/// Placement for the trial banner. Same shape as `WristHUDDriver` — durable state
+/// for a per-frame closure — but anchored to the head instead of a palm, and with a
+/// far slower follow: this one has to be readable while the user is playing, and a
+/// panel that tracks head motion tightly is unpleasant to sit inside.
+@MainActor
+private final class TrialBannerDriver {
+    /// How far ahead of the viewer it sits. Comfortably beyond arm's reach, so it
+    /// never collides with hands that are busy holding something.
+    private static let distance: Float = 1.5
+    /// Below eye level: the centre of view belongs to the game.
+    private static let drop: Float = 0.28
+    private static let fade: TimeInterval = 0.35
+
+    private var opacity: Float = 0
+    /// Nil until the first frame it is shown, so it materialises where the viewer
+    /// is looking rather than sliding in from wherever the last one closed.
+    private var placed: (position: SIMD3<Float>, orientation: simd_quatf)?
+
+    func update(entity: Entity,
+                deltaTime: TimeInterval,
+                showing: Bool,
+                bridge: ControllerBridgeSender?) {
+        let step = Float(deltaTime / Self.fade)
+        opacity = showing ? min(1, opacity + step) : max(0, opacity - step)
+
+        guard opacity > 0 else {
+            if entity.isEnabled { entity.isEnabled = false }
+            placed = nil
+            return
+        }
+
+        // No head pose (world tracking not up yet) means no sensible place to put
+        // it. Keep whatever pose it already had rather than dropping it on the origin.
+        if let pose = bridge?.headWorldPose {
+            let target = SIMD3<Float>(pose.position.x + pose.forward.x * Self.distance,
+                                      pose.position.y - Self.drop,
+                                      pose.position.z + pose.forward.z * Self.distance)
+            let orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1),
+                                         to: SIMD3<Float>(-pose.forward.x, 0, -pose.forward.z))
+            if var current = placed {
+                // ~1.2 s time constant. Slow enough that turning your head does not
+                // drag it along, quick enough that it is back in front of you by the
+                // time you go looking for what the noise was.
+                let alpha = 1 - exp(-0.85 * Float(deltaTime))
+                current.position += (target - current.position) * alpha
+                current.orientation = simd_slerp(current.orientation, orientation, alpha)
+                placed = current
+            } else {
+                placed = (target, orientation)
+            }
+        }
+
+        guard let placed else { return }
+        entity.isEnabled = true
+        entity.setPosition(placed.position, relativeTo: nil)
+        entity.setOrientation(placed.orientation, relativeTo: nil)
+        entity.components.set(OpacityComponent(opacity: opacity))
     }
 }
 #endif

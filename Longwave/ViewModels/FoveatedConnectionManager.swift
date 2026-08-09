@@ -71,6 +71,16 @@ final class FoveatedConnectionManager {
         return connectTask != nil
     }
 
+    /// Actually streaming — not connecting, not paused, not on the way down.
+    /// Narrower than `!isDisconnected`, and the distinction is the point for the
+    /// trial clock: a paused session is not play, so it must not be charged for.
+    /// Exposed as a plain Bool so callers need no import of the framework that
+    /// defines `Status`.
+    var isStreaming: Bool {
+        if case .connected = session.status { return true }
+        return false
+    }
+
     /// True only in the states where the framework will accept `connect()`.
     /// Distinct from `isDisconnected`, which is a UI predicate and counts
     /// `.connecting` as "not up yet" — calling `connect()` in `.connecting` (or any

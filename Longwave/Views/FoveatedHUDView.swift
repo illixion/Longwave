@@ -21,6 +21,7 @@ import QuartzCore
 
 struct FoveatedHUDView: View {
     @Environment(FoveatedConnectionManager.self) private var manager
+    @Environment(PCVRSessionLimiter.self) private var limiter
     @Environment(\.openWindow) private var openWindow
     @AppStorage("foveatedShowSentSkeleton") private var showSentSkeleton = false
 
@@ -71,6 +72,7 @@ struct FoveatedHUDView: View {
             switchProSection
             questSection
             Divider()
+            trialRow
             actionRow
         }
         .padding(18)
@@ -81,6 +83,26 @@ struct FoveatedHUDView: View {
                 try? await Task.sleep(for: .milliseconds(100))
                 tick &+= 1
             }
+        }
+    }
+
+    // MARK: Trial
+
+    /// How long is left, for anyone who raised a palm to check rather than waiting
+    /// to be told. Absent entirely once PCVR is unlocked — a paid session has no
+    /// clock worth showing.
+    @ViewBuilder
+    private var trialRow: some View {
+        if let remaining = limiter.remaining {
+            HStack(spacing: 6) {
+                Image(systemName: "hourglass")
+                Text("Trial session")
+                Spacer()
+                Text(PCVRSessionLimiter.clock(remaining))
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(remaining <= 60 ? .orange : .secondary)
         }
     }
 

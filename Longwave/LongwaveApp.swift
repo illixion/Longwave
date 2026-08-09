@@ -17,6 +17,8 @@ struct LongwaveApp: App {
     #endif
     #if FOVEATED_ENABLED
     @State private var foveatedManager = FoveatedConnectionManager()
+    @State private var pcvrStore = PCVRStore()
+    @State private var pcvrLimiter = PCVRSessionLimiter()
     #endif
 
     var body: some Scene {
@@ -36,12 +38,26 @@ struct LongwaveApp: App {
                 .trackMainWindow()
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)
+                .environment(pcvrStore)
+                .environment(pcvrLimiter)
                 #endif
                 .task {
                     // Let the VNC manager drive a companion audio stream in
                     // lockstep with its connection lifecycle.
                     connectionManager.audioManager = audioManager
                 }
+                #if FOVEATED_ENABLED
+                .task {
+                    // Resolve entitlements before anything can start a session:
+                    // the limiter refuses to run its clock until StoreKit has
+                    // answered, so this is what lets a paying customer play.
+                    await pcvrStore.resolveEntitlements()
+                    // Started from the app, not a view. A trial clock hosted by
+                    // whatever happens to be on screen stops counting the moment
+                    // the user switches tabs or closes the window.
+                    pcvrLimiter.start(manager: foveatedManager, store: pcvrStore)
+                }
+                #endif
         } defaultValue: {
             .shared
         }
@@ -180,6 +196,8 @@ struct LongwaveApp: App {
         WindowGroup("PCVR", id: "foveated-controls", for: PCVRWindowID.self) { _ in
             FoveatedControlWindowView()
                 .environment(foveatedManager)
+                .environment(pcvrLimiter)
+                .environment(pcvrStore)
         }
         .defaultSize(width: 480, height: 520)
         .windowResizability(.contentSize)
@@ -193,6 +211,7 @@ struct LongwaveApp: App {
         ImmersiveSpace(id: "foveated-immersive") {
             FoveatedImmersiveView()
                 .environment(foveatedManager)
+                .environment(pcvrLimiter)
                 .persistentSystemOverlays(.hidden)
         }
         .immersionStyle(selection: .constant(.progressive), in: .progressive)
@@ -204,6 +223,7 @@ struct LongwaveApp: App {
         ImmersiveSpace(foveatedStreaming: foveatedManager.session) {
             FoveatedImmersiveView()
                 .environment(foveatedManager)
+                .environment(pcvrLimiter)
                 // Hide the Home indicator. It is summoned by raising a palm and looking
                 // at it, which is precisely the wrist HUD's gesture — leave it on and the
                 // two fight over the same intent.

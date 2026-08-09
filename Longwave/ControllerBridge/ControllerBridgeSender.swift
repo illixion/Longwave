@@ -1260,6 +1260,24 @@ final class ControllerBridgeSender {
         return SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
     }
 
+    /// Head position plus the direction it faces, for content that has to sit in front
+    /// of the viewer rather than beside a hand. Forward is -Z of the device anchor,
+    /// flattened to the horizontal plane: a banner placed along a downward-tilted gaze
+    /// would end up at the user's feet.
+    var headWorldPose: (position: SIMD3<Float>, forward: SIMD3<Float>)? {
+        guard worldProvider.state == .running,
+              let device = worldProvider.queryDeviceAnchor(atTimestamp: CACurrentMediaTime())
+        else { return nil }
+        let m = device.originFromAnchorTransform
+        let position = SIMD3<Float>(m.columns.3.x, m.columns.3.y, m.columns.3.z)
+        var forward = SIMD3<Float>(-m.columns.2.x, 0, -m.columns.2.z)
+        let length = simd_length(forward)
+        // Looking straight up or down leaves no horizontal component to normalise.
+        guard length > 1e-4 else { return nil }
+        forward /= length
+        return (position, forward)
+    }
+
     /// How squarely a palm faces the viewer — the wrist HUD's summon gesture.
     func palmFacing(_ hand: BridgeHand) -> Float? {
         guard let head = headWorldPosition else { return nil }

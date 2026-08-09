@@ -105,7 +105,7 @@ struct FoveatedGameLibraryView: View {
         ContentUnavailableView {
             Label("No Games Shared", systemImage: "gamecontroller")
         } description: {
-            Text("Choose which games to offer in the Longwave Windows Companion, on the PC. "
+            Text("Choose which games to offer in the Longwave Companion, on the PC. "
                  + "Only the games you tick there appear here.")
         } actions: {
             Button("Check Again") { library.refresh() }

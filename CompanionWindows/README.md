@@ -1,4 +1,4 @@
-# Longwave Windows Companion
+# Longwave Companion
 
 This companion is **multi-purpose**. It hosts several independent subsystems behind one
 .NET 8 backend and one window. Everything runs **unelevated**; only the hotspot elevates, and
@@ -140,14 +140,14 @@ Most people don't need to build this. Download the installer for your CPU from t
 [Releases](../../releases) page and run it — the .NET backend is bundled, so no
 toolchain or compilation is required. Both are built natively:
 
-- `LongwaveWindowsCompanion-…-x64-Setup.exe` — Intel / AMD
-- `LongwaveWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class)
+- `LongwaveCompanion-…-x64-Setup.exe` — Intel / AMD
+- `LongwaveCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class)
 
 CI builds the installers and emits a **signed build-provenance attestation**. Verify the
 download was produced by this repo's workflow and not tampered with:
 
 ```bash
-gh attestation verify LongwaveWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
+gh attestation verify LongwaveCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
 ```
 
 The installer is **unsigned** (no code-signing cert), so SmartScreen may warn on first run;
@@ -199,7 +199,7 @@ npm install
 npm start            # dev run (expects a backend; see below)
 
 # Installer (NSIS) — bundles the published backend under resources\backend
-npm run dist         # -> app\dist\Longwave Windows Companion Setup <ver>.exe
+npm run dist         # -> app\dist\Longwave Companion Setup <ver>.exe
 ```
 
 ## Run
@@ -216,9 +216,9 @@ Two deployment shapes share one backend binary (`Microsoft.Extensions.Hosting`, 
    connects to the service instead of spawning its own.
 
 Dev tips:
-- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.22621.0\LongwaveWindowsCompanionBackend.exe`
+- Run the backend standalone: `backend\bin\Release\net8.0-windows10.0.22621.0\LongwaveCompanionBackend.exe`
 - Run the app against it without spawning: `setx`-free `$env:LONGWAVE_NO_SPAWN=1; npm start`
-- Capability check only: `LongwaveWindowsCompanionBackend.exe --probe`
+- Capability check only: `LongwaveCompanionBackend.exe --probe`
 - Handy pipe-client scripts: `backend\test-client.js`, `start-hold.js`, `stop.js` (Node).
 
 ## IPC protocol

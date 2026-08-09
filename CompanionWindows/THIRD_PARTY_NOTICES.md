@@ -1,4 +1,4 @@
-# Third-Party Notices — Longwave Windows Companion
+# Third-Party Notices — Longwave Companion
 
 The Windows companion is a separate codebase from the visionOS app, with its own
 dependencies, so it has its own notices. For the visionOS app see

@@ -167,7 +167,7 @@ final class FoveatedGameLibrary {
         "The PC has not announced itself. The Longwave session broker has to be running on the "
         + "host — start it from the Windows companion, then try again."
     private static let noAnswerMessage =
-        "The PC did not answer. Check that the Longwave Windows Companion is running."
+        "The PC did not answer. Check that the Longwave Companion is running."
 
     /// Queue a title's box art. Safe to call from `onAppear` on every tile.
     ///

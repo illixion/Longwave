@@ -9,7 +9,7 @@ namespace Longwave.Companion.Shell;
 /// </summary>
 internal static class BackendLauncher
 {
-    private const string ExeName = "LongwaveWindowsCompanionBackend.exe";
+    private const string ExeName = "LongwaveCompanionBackend.exe";
     private const string Tfm = "net8.0-windows10.0.22621.0";
 
     private static Process? _process;

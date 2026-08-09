@@ -57,7 +57,7 @@ if (args.Contains(TetherElevation.HostRoleArg))
 // loudly — they silently split clients between two independent hosts, each with its own
 // NvStreamManager. That happened by running the UI task (which spawns its own backend) next to
 // the standalone backend task. Fail fast and visibly instead.
-using var singleInstance = new Mutex(initiallyOwned: true, @"Global\LongwaveWindowsCompanionBackend", out bool isOnlyInstance);
+using var singleInstance = new Mutex(initiallyOwned: true, @"Global\LongwaveCompanionBackend", out bool isOnlyInstance);
 if (!isOnlyInstance)
 {
     Console.Error.WriteLine(
@@ -68,7 +68,7 @@ if (!isOnlyInstance)
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddWindowsService(o => o.ServiceName = "LongwaveWindowsCompanion");
+builder.Services.AddWindowsService(o => o.ServiceName = "LongwaveCompanion");
 builder.Services.AddSingleton<TetheringController>();
 // Tethering is the only administrator-gated feature, so it is the only thing that elevates, and
 // only when used. Already elevated (a Windows service, or the user started us elevated anyway)?
@@ -88,7 +88,7 @@ builder.Services.AddHostedService<PipeServer>();
 
 builder.Logging.AddSimpleConsole(o => o.SingleLine = true);
 if (OperatingSystem.IsWindows())
-    builder.Logging.AddEventLog(o => o.SourceName = "LongwaveWindowsCompanion");
+    builder.Logging.AddEventLog(o => o.SourceName = "LongwaveCompanion");
 
 var host = builder.Build();
 await host.RunAsync();

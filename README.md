@@ -5,7 +5,7 @@ A native remote desktop and game streaming app for Apple Vision Pro, built in Sw
 Longwave combines a full-featured **VNC viewer** with a **Moonlight game streaming** client in a single visionOS app. Connect to any VNC server for remote desktop access, or stream games and applications from a [Sunshine](https://github.com/LizardByte/Sunshine) / NVIDIA GameStream host with hardware-accelerated video decoding and low-latency input.
 
 > [!TIP]
-> **New: Longwave Windows Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#longwave-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
+> **New: Longwave Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#longwave-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
 
 ## Features
 
@@ -43,7 +43,7 @@ Longwave combines a full-featured **VNC viewer** with a **Moonlight game streami
 - **Remote play over Tailscale** — the companion can advertise its tailnet address instead of a LAN one, for a PC at home or a cloud GPU host; the headset connects by IP over Tailscale. Needs a direct WireGuard path (the companion warns when the connection is being relayed, which can't carry this much video)
 - Game library browsed and launched from the headset
 
-Requires the [Longwave Windows Companion](#longwave-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
+Requires the [Longwave Companion](#longwave-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
 
 **On GPUs:** NVIDIA lists RTX 40-series or newer as supported for CloudXR, and it will tell you so if you have less. A 30-series card genuinely works — this was developed against a 3080 — with less headroom, so expect to sit a stream-quality step lower than a supported card would.
 
@@ -143,7 +143,7 @@ The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple d
 
 ### Building the Companion (macOS)
 
-> Looking for the Windows side? See [Longwave Windows Companion (Beta)](#longwave-windows-companion-beta) below.
+> Looking for the Windows side? See [Longwave Companion (Beta)](#longwave-windows-companion-beta) below.
 
 The **LongwaveCompanion** scheme builds the macOS menu bar app that streams system audio to Longwave. It has no external dependencies, so it builds even without the `repos/` setup above. Select the `LongwaveCompanion` scheme in Xcode and run, or from the command line:
 
@@ -185,7 +185,7 @@ On the headset, the Broadcast tab starts the camera stream; the **Mirror My View
 
 **Security:** the stream is end-to-end encrypted (RTSPS; the headset pins the companion-generated certificate, so no CA and no VPN are required), publishing requires the generated credentials, and playback is restricted to the Mac itself (`127.0.0.1`). Tailscale is still the recommended transport — the companion advertises the Mac's Tailscale IP in the pairing link — but with TLS active, any network path works.
 
-## Longwave Windows Companion (Beta)
+## Longwave Companion (Beta)
 
 `CompanionWindows/` is a general-purpose Windows companion app with one Electron UI and elevated .NET backend. It currently provides two features:
 
@@ -197,13 +197,13 @@ For Hotspot, normally VNC and Moonlight need both devices on the same LAN, and m
 It's a standalone **Node + .NET** project (Electron UI over an elevated .NET backend using the Windows Mobile Hotspot API and CloudXR host components).
 
 **Install:** download the latest installer for your CPU from the [Releases](../../releases) page and run it — no need to install toolchains or compile anything (which is a pain on Windows). Both architectures are built natively:
-- `LongwaveWindowsCompanion-…-x64-Setup.exe` — Intel / AMD PCs
-- `LongwaveWindowsCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
+- `LongwaveCompanion-…-x64-Setup.exe` — Intel / AMD PCs
+- `LongwaveCompanion-…-arm64-Setup.exe` — Windows on ARM (Snapdragon X-class laptops)
 
 The installers are built by CI and ship with a **signed build-provenance attestation**, so you can prove the download was produced by this repo's workflow from a specific commit and wasn't tampered with:
 
 ```bash
-gh attestation verify LongwaveWindowsCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
+gh attestation verify LongwaveCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
 ```
 
 Prefer to build it yourself? See [`CompanionWindows/README.md`](CompanionWindows/README.md).
@@ -260,7 +260,7 @@ CompanionMac/ → LongwaveCompanion (macOS menu bar app)
 ├── CompanionApp                  — Menu bar popover (quick audio controls)
 └── CompanionWindowView           — Multi-pane companion window (token / broadcast / SSH / keyboard)
 
-CompanionWindows/ (PoC, Node + .NET) — Longwave Windows Companion
+CompanionWindows/ (PoC, Node + .NET) — Longwave Companion
 ├── backend/                      — .NET 8 worker: Hotspot AP+NAT, named-pipe RPC (open source, built by CI)
 └── app/                          — Electron UI (Hotspot, Foveated Streaming, and Game library panels);
                                      downloads the closed-source Foveated Streaming (CloudXR) host on demand

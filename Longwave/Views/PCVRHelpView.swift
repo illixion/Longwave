@@ -16,7 +16,7 @@ struct PCVRHelpView: View {
                 foveation
                 topic("What you need", rows: [
                     Row("pc", "A Windows PC with an NVIDIA RTX card",
-                        "Running the Longwave Windows Companion, with PCVR started. It installs the streaming host for you the first time."),
+                        "Running the Longwave Companion, with PCVR started. It installs the streaming host for you the first time."),
                     Row("bolt.badge.checkmark", "40-series officially, 30-series in practice",
                         "NVIDIA lists RTX 40-series or newer as supported, and CloudXR will say so if you have less. A 30-series card does work — this was built on a 3080 — but with less headroom, so expect to sit a stream-quality step lower."),
                     Row("wifi", "Both on the same network",

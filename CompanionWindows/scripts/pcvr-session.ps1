@@ -133,7 +133,7 @@ switch ($Mode) {
       CloudXrRuntime   = Find-CloudXrRuntime
       OpenCompositeDll = Test-Path (Join-Path $OpenComposite 'bin\win64\vrclient_x64.dll')
       Saved            = if (Test-Path $stateKey) { Get-ItemProperty $stateKey } else { 'none' }
-      Backend          = @(Get-Process LongwaveWindowsCompanionBackend, LongwavePCVRHost, NvStreamManager, electron -ErrorAction SilentlyContinue |
+      Backend          = @(Get-Process LongwaveCompanionBackend, LongwavePCVRHost, NvStreamManager, electron -ErrorAction SilentlyContinue |
                             Select-Object -ExpandProperty ProcessName)
     } | Format-List
   }

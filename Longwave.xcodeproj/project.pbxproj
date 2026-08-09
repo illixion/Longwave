@@ -614,7 +614,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.illixion.Longwave;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(LONGWAVE_DISPLAY_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(LONGWAVE_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -647,7 +648,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.illixion.Longwave;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(LONGWAVE_DISPLAY_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(LONGWAVE_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -715,6 +717,8 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				LONGWAVE_BUNDLE_ID = com.illixion.Longwave;
+				LONGWAVE_DISPLAY_NAME = Longwave;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -774,6 +778,8 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				LONGWAVE_BUNDLE_ID = com.illixion.Longwave;
+				LONGWAVE_DISPLAY_NAME = Longwave;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = xros;
@@ -958,14 +964,14 @@
 				DEVELOPMENT_TEAM = 9T5F88VJFL;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BroadcastExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Longwave View";
+				INFOPLIST_KEY_CFBundleDisplayName = "$(LONGWAVE_DISPLAY_NAME) View";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.illixion.Longwave.broadcast;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(LONGWAVE_BUNDLE_ID).broadcast";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -987,14 +993,14 @@
 				DEVELOPMENT_TEAM = 9T5F88VJFL;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BroadcastExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Longwave View";
+				INFOPLIST_KEY_CFBundleDisplayName = "$(LONGWAVE_DISPLAY_NAME) View";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.illixion.Longwave.broadcast;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(LONGWAVE_BUNDLE_ID).broadcast";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "xros xrsimulator";

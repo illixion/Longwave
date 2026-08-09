@@ -78,7 +78,7 @@ function randomToken(len) {
 
 /** Locate the backend exe in packaged resources or the dev build output. */
 function resolveBackendExe() {
-  const name = 'LongwaveWindowsCompanionBackend.exe';
+  const name = 'LongwaveCompanionBackend.exe';
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, 'backend', name)]
     : [

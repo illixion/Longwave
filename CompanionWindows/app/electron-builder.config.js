@@ -38,8 +38,8 @@ if (hasPcvrHost) {
 }
 
 module.exports = {
-  appId: 'com.illixion.LongwaveWindowsCompanion',
-  productName: 'Longwave Windows Companion',
+  appId: 'com.illixion.LongwaveCompanion',
+  productName: 'Longwave Companion',
   directories: {
     output: 'dist',
     buildResources: 'buildResources',

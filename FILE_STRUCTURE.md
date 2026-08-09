@@ -92,7 +92,7 @@ CompanionMac/                           — macOS menu bar companion target (Lon
 ├── OBSWebSocketClient.swift            — minimal obs-websocket v5 client (Hello/Identify challenge auth, Browser Source create/update + visibility/stacking enforcement)
 └── Info.plist                          — NSAudioCaptureUsageDescription, NSAppleEventsUsageDescription
 
-CompanionWindows/                       — Longwave Windows Companion (PoC; separate Node + .NET codebase)
+CompanionWindows/                       — Longwave Companion (PoC; separate Node + .NET codebase)
 ├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see Longwave-PCVR-Host/)
 ├── app/                                — Electron UI: Hotspot status / "Join from Vision Pro", plus PCVR and Game library panels that download the closed-source host on demand
 ├── spike/                              — Step-1 capability spike + SPIKE-FINDINGS.md (decision record)

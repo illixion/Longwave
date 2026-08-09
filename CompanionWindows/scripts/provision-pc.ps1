@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Provision the Longwave Windows Companion on the RTX host (runs ON the PC).
+  Provision the Longwave Companion on the RTX host (runs ON the PC).
 
 .DESCRIPTION
   Invoked by scripts/deploy-windows-companion.sh after the source tree has been
@@ -40,7 +40,7 @@ $publish     = Join-Path $backend "bin\Release\$tfm\publish"
 $appDir      = Join-Path $Root 'app'
 $toolsDir    = Join-Path $Root 'tools'
 $logDir      = Join-Path $Root 'logs'
-$exeName     = 'LongwaveWindowsCompanionBackend.exe'
+$exeName     = 'LongwaveCompanionBackend.exe'
 $pcvrHostHasSource = Test-Path (Join-Path $PcvrHostRoot 'Host.csproj')
 $pcvrHostPublish   = Join-Path $PcvrHostRoot "bin\Release\$tfm\publish"
 $pcvrHostExeName   = 'LongwavePCVRHost.exe'
@@ -255,7 +255,7 @@ if (-not $NoUi) {
 $bats = @{
   'start-companion-ui.bat' = @"
 @echo off
-rem Longwave Windows Companion - Electron UI (spawns the backend itself).
+rem Longwave Companion - Electron UI (spawns the backend itself).
 cd /d "$appDir"
 rem Windows redirect handles leak to every descendant of a run (Steam, launched
 rem de-elevated by the backend, is the long-lived one), and cmd opens the log
@@ -453,7 +453,7 @@ if ((Test-Path $electron) -and -not (Test-Path $desktopLink)) {
     $link.TargetPath = $electron
     $link.Arguments = '.'
     $link.WorkingDirectory = Join-Path $Root 'app'
-    $link.Description = 'Longwave Windows Companion'
+    $link.Description = 'Longwave Companion'
     $link.Save()
     Say 'created the desktop shortcut'
   } catch {

@@ -1,4 +1,4 @@
-; Custom NSIS hooks for the Longwave Windows Companion installer.
+; Custom NSIS hooks for the Longwave Companion installer.
 ;
 ; Deployment model (decided by the Step-1 spike): the backend runs as an INTERACTIVE-SESSION
 ; HELPER that the Electron app spawns on launch — NOT a Session-0 Windows Service. The spike
@@ -15,8 +15,8 @@
 ;
 ; To switch to the service model later (once Session-0 tethering is validated on capable
 ; hardware), register the bundled exe here, e.g.:
-;   nsExec::Exec '"$SYSDIR\sc.exe" create LongwaveWindowsCompanion binPath= "$INSTDIR\resources\backend\LongwaveWindowsCompanionBackend.exe" start= auto'
-;   nsExec::Exec '"$SYSDIR\sc.exe" start LongwaveWindowsCompanion'
+;   nsExec::Exec '"$SYSDIR\sc.exe" create LongwaveCompanion binPath= "$INSTDIR\resources\backend\LongwaveCompanionBackend.exe" start= auto'
+;   nsExec::Exec '"$SYSDIR\sc.exe" start LongwaveCompanion'
 ; and set LONGWAVE_NO_SPAWN=1 for the app so it connects to the service instead of spawning.
 
 !macro customInstall
@@ -24,5 +24,5 @@
 
 !macro customUnInstall
   ; Best-effort: stop a running backend so its files aren't locked during uninstall.
-  nsExec::Exec 'taskkill /F /IM LongwaveWindowsCompanionBackend.exe'
+  nsExec::Exec 'taskkill /F /IM LongwaveCompanionBackend.exe'
 !macroend

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy the Longwave Windows Companion to the RTX/PCVR host and provision it.
+# Deploy the Longwave Companion to the RTX/PCVR host and provision it.
 #
 # Sync source -> publish backend -> stage the CloudXR SDK -> write launch helpers ->
 # register the interactive-session scheduled tasks -> npm install the Electron UI.

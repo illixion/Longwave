@@ -73,8 +73,11 @@ jobs:
             -project Longwave.xcodeproj \
             -scheme Longwave
 
-      - name: Build archive (VNC + Audio, Moonlight disabled)
+      - name: Build archive (Longwave, MIT edition)
         run: |
+          EDITION=()
+          while IFS= read -r line; do EDITION+=("$line"); done \
+            < <(./scripts/edition-settings.sh oss)
           xcodebuild archive \
             -project Longwave.xcodeproj \
             -scheme Longwave \
@@ -83,7 +86,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited)'
+            "${EDITION[@]}"
 
       - name: Create unsigned IPA
         run: |
@@ -92,6 +95,27 @@ jobs:
           cp -R Longwave.app $RUNNER_TEMP/Payload/
           cd $RUNNER_TEMP
           zip -r Longwave-unsigned.ipa Payload
+
+      # Longwave Pro is the App Store edition and is never published here — a
+      # sideloaded copy has no receipt, so its PCVR would be stuck in trial
+      # anyway. It is still compiled on every run: PCVR is a large body of code
+      # that no other edition builds, and without this a break in it would only
+      # surface at release time. The product is built and discarded.
+      - name: Compile-check Longwave Pro (App Store edition, not published)
+        run: |
+          EDITION=()
+          while IFS= read -r line; do EDITION+=("$line"); done \
+            < <(./scripts/edition-settings.sh pro)
+          xcodebuild build \
+            -project Longwave.xcodeproj \
+            -scheme Longwave \
+            -destination 'generic/platform=visionOS' \
+            -derivedDataPath $RUNNER_TEMP/pro-dd \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            "${EDITION[@]}"
+          rm -rf $RUNNER_TEMP/pro-dd
 
       # LongwaveCompanion's ARCHS build setting is "arm64 x86_64" (project.pbxproj),
       # so this single archive command produces a universal binary covering both
@@ -135,8 +159,11 @@ jobs:
             -project Longwave.xcodeproj \
             -scheme Longwave
 
-      - name: Build archive (VNC + Audio + Moonlight)
+      - name: Build archive (Longwave, GPL edition with Moonlight)
         run: |
+          EDITION=()
+          while IFS= read -r line; do EDITION+=("$line"); done \
+            < <(./scripts/edition-settings.sh oss-moonlight)
           xcodebuild archive \
             -project Longwave.xcodeproj \
             -scheme Longwave \
@@ -145,7 +172,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) MOONLIGHT_ENABLED'
+            "${EDITION[@]}"
 
       - name: Create unsigned Moonlight IPA
         run: |
@@ -206,7 +233,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Longwave Windows Companion (Beta) installers — built natively per architecture:
+  # Longwave Companion (Beta) installers — built natively per architecture:
   # x64 on windows-latest, arm64 on windows-11-arm (Snapdragon X-class laptops are
   # increasingly common). Self-contained .NET backend + Electron/NSIS installer.
   # Each emits a signed build-provenance attestation so anyone can prove the
@@ -281,7 +308,7 @@ jobs:
           VERSION="0.1.0-${GITHUB_SHA::8}"
           SRC=$(ls CompanionWindows/app/dist/*.exe | head -n1)
           mkdir -p dist-out
-          DEST="dist-out/LongwaveWindowsCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
+          DEST="dist-out/LongwaveCompanion-${VERSION}-${{ matrix.arch }}-Setup.exe"
           cp "$SRC" "$DEST"
           echo "installer=$DEST" >> "$GITHUB_OUTPUT"
 
@@ -341,7 +368,7 @@ jobs:
           - \`Longwave-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
           - \`LongwaveCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
           - \`LongwaveMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
-          - \`LongwaveWindowsCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Longwave Windows Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
+          - \`LongwaveCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Longwave Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
 
           **Running the macOS apps**
 

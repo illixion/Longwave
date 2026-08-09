@@ -1,7 +1,7 @@
 {
   "name": "longwave-windows-companion",
   "version": "0.1.0",
-  "description": "Longwave Windows Companion — PCVR foveated streaming, game library, screen streaming, and an optional hotspot for Vision Pro.",
+  "description": "Longwave Companion — PCVR foveated streaming, game library, screen streaming, and an optional hotspot for Vision Pro.",
   "main": "src/main.js",
   "author": "Ixion <illixion@illixion.com>",
   "license": "MIT",

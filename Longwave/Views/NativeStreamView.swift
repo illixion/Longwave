@@ -43,8 +43,9 @@ private struct MacNativeVideoView: UIViewRepresentable {
 /// independently and live (an `.onChange` on each manager's `liveEnabled`
 /// drives the actual connect/disconnect), with the layout adapting to
 /// what's currently on — full-bleed video with a compact audio overlay
-/// when both are on, the full audio mini-player when only Audio is on, or
-/// a placeholder when both are off.
+/// when both are on, the full audio mini-player when only Audio is on, the
+/// per-window picker when Screen and Audio are both off on a v2 host, or a
+/// placeholder when nothing is available at all.
 struct NativeStreamView: View {
     @Environment(MacNativeStreamManager.self) private var screenManager
     @Environment(AudioStreamManager.self) private var audioManager
@@ -74,22 +75,20 @@ struct NativeStreamView: View {
 
             if screenManager.liveEnabled {
                 screenContent
-            } else if windowsModeAvailable {
-                windowPickerContent
             } else if audioManager.liveEnabled {
                 if audioPoppedOut {
                     audioPoppedOutContent
                 } else {
                     audioOnlyContent
                 }
+            } else if windowsModeAvailable {
+                windowPickerContent
             } else {
                 emptyContent
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            if screenManager.liveEnabled || windowsModeAvailable {
-                controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
-            } else if audioManager.liveEnabled {
+            if audioManager.liveEnabled, !screenManager.liveEnabled {
                 // Audio-only (or popped out): the Screen/Audio toggles and
                 // Disconnect don't apply to this compact view — matches the
                 // old standalone Audio Stream window, which had no ornament
@@ -181,9 +180,11 @@ struct NativeStreamView: View {
         screenManager.isEnabled && screenManager.supportsWindowStreams
     }
 
-    /// The controller face of the Native window while the desktop stream is
-    /// off: connection status plus the host's window inventory, each row
-    /// opening (or closing) that window as its own chrome-free scene.
+    /// The controller face of the Native window while the desktop stream and
+    /// Audio are both off: connection status plus the host's window
+    /// inventory, each row opening (or closing) that window as its own
+    /// chrome-free scene. Audio being on takes over the whole window instead
+    /// (see `body`), so there's no inline audio row to show here.
     private var windowPickerContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -222,24 +223,6 @@ struct NativeStreamView: View {
                 Label(audioUnavailableText, systemImage: "speaker.slash")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if audioManager.liveEnabled {
-                Divider()
-                HStack(spacing: 16) {
-                    Text(compactAudioStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    AudioVolumeRow()
-                        .frame(width: 180)
-                    Button(action: popOutAudio) {
-                        Image(systemName: "arrow.up.forward.app")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Pop out to its own window")
-                }
             }
         }
         .padding(24)

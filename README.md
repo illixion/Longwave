@@ -6,20 +6,24 @@ Longwave puts your Mac and your PC in the headset: **native Mac streaming**, a f
 
 ## Editions
 
-Three pieces. Which headset build you want depends on whether you sideload, and the split between them is forced by licensing rather than chosen.
-
-All three are called **Longwave** — these are ways of distributing one app, not different products.
+All three are called **Longwave** — these are ways of distributing one app, not different products. **Every line of visionOS source in this repository is MIT, PCVR included.** What differs between builds is which parts are compiled in, not which parts you are allowed to see.
 
 | | **Sideload** | **App Store** |
 |---|---|---|
 | Where | Unsigned IPA on GitHub | App Store |
-| Licence | MIT, or GPLv3 for the Moonlight build | Proprietary |
+| Source | This repo, MIT | This repo, MIT |
+| Binary licence | MIT, or GPLv3 for the Moonlight build | MIT |
 | Moonlight | Yes, in the GPL build | **No** |
-| PCVR | **No** | Yes |
+| PCVR | Not enabled — see below | Yes |
 | Everything else | Yes | Yes |
 
-- **Moonlight is missing from the App Store build** because [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) is GPLv3, and the GPL's terms are incompatible with the App Store's. That is also why it is a separate IPA rather than a switch.
-- **PCVR is missing from the open-source build** for the mirror-image reason: its Windows host halves are closed-source (see [Architecture](#architecture)), so it cannot be part of an edition that calls itself MIT.
+- **Moonlight is absent from the App Store build** because [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) is GPLv3, and the GPL's terms are incompatible with the App Store's. That is also why it is a separate IPA rather than a build flag.
+
+- **PCVR is not enabled in the sideload build, and the reason is Apple's, not ours.** `FoveatedStreaming` requires the `com.apple.developer.foveated-streaming-session` entitlement, which is a capability on a **paid Apple Developer account**. A build signed with a free Apple ID cannot run the feature at all — it is not a matter of flipping a flag. Two smaller reasons follow from the same place: the framework needs visionOS 26.4, two versions above the floor the sideload build keeps for reach, and the in-app purchase needs an App Store receipt a sideloaded copy does not have.
+
+  The code is all here regardless — `Longwave/Foveated/`, `Longwave/ControllerBridge/`, and the `Foveated*` / `PCVR*` views, ~7,700 lines, compiled by CI on every push. If you have a paid account with that capability, `./scripts/edition-settings.sh appstore` builds it. Nothing in this repository is withheld from you.
+
+**Only the Windows host side of PCVR is closed-source** — the CloudXR session host, the session broker and the OpenXR API layer, carried as private submodules and installed on demand by the Companion (see [Architecture](#architecture)). None of it is needed to build the visionOS app: the Xcode project does not reference those directories at all.
 
 **[Longwave Companion](#longwave-companion-for-windows-beta)** is the host-side app, free on both platforms. On a Mac it serves the native desktop stream, system audio and keyboard injection; on Windows it is the PCVR streaming host and the Wi-Fi Hotspot.
 

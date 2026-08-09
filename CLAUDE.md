@@ -19,17 +19,23 @@ Three builds of one target, defined solely by `scripts/edition-settings.sh` — 
 
 | edition | identifier | conditions | ships |
 |---|---|---|---|
-| `oss` | `pro.longwave` | — | unsigned IPA on GitHub (MIT) |
-| `oss-moonlight` | `pro.longwave` | `MOONLIGHT_ENABLED` | unsigned IPA on GitHub (GPLv3) |
-| `pro` | `pro.longwave.app` | `FOVEATED_ENABLED`, 26.4 | App Store only |
+| `oss` | `pro.longwave.oss` | — | unsigned IPA on GitHub (MIT) |
+| `oss-moonlight` | `pro.longwave.oss` | `MOONLIGHT_ENABLED` | unsigned IPA on GitHub (GPLv3) |
+| `appstore` | `pro.longwave.app` | `FOVEATED_ENABLED`, 26.4 | App Store only |
 
-The split is licensing, not preference. moonlight-common-c is GPLv3, so a Moonlight build cannot be on the App Store; the PCVR host halves are closed-source, so PCVR cannot be in an MIT build. `oss` and `oss-moonlight` share an identifier because they are the same app built twice.
+All three are called "Longwave"; the edition is how it is distributed, not a different product. `oss` and `oss-moonlight` share an identifier because they are the same app built twice; `appstore` differs so a sideloaded copy and an App Store install coexist.
+
+**Every line of visionOS source here is MIT, PCVR included** — `Longwave/Foveated/`, `Longwave/ControllerBridge/` and the `Foveated*`/`PCVR*` views are public and compiled by public CI on every push. Do not describe PCVR as closed-source: only its **Windows host** halves are (the three private submodules), and the Xcode project does not reference them at all.
+
+Why the two builds differ:
+- Moonlight is absent from `appstore` because moonlight-common-c is GPLv3 and the GPL is incompatible with App Store terms.
+- PCVR is absent from `oss` because **`com.apple.developer.foveated-streaming-session` is a paid-Apple-Developer-account capability** — a free-Apple-ID sideload cannot run it whatever the flags say. Secondary: 26.4 vs the 26.2 floor, and StoreKit needing an App Store receipt.
 
 `LONGWAVE_BUNDLE_ID` and `LONGWAVE_DISPLAY_NAME` are **project-level** build settings that the app and the broadcast extension both derive from — override the one variable and the extension follows the app instead of being stranded under the old prefix.
 
 **PCVR is the only paid thing.** Trial sessions run 20 minutes (`PCVRSessionLimiter`), warned at 5 min and 1 min by a banner entity in the immersive space, then the running title is stopped and the stream ends. $1.99/month or $24.99 once, via StoreKit 2 (`PCVRStore`, `PCVRPaywallView`). Three rules the code depends on: only `.connected` time counts; pausing *holds* the clock rather than rewinding it; and the clock never runs until StoreKit has answered (`unlock` is a double Optional so "nothing owned" and "not known yet" cannot be confused). All of it is inside `FOVEATED_ENABLED`, so the open-source editions contain no purchase code at all.
 
-**Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+ — effectively "this is the Pro edition").
+**Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+ — effectively "this is the App Store edition").
 
 See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pipelines; `Longwave-PCVR-Host/docs/FOVEATED_STREAMING_ARCH.md` for the full PCVR design (CloudXR host, controller bridge, gesture input, OpenXR API layer, verification status). That document lives inside the private submodule along with `FOVEATED_STREAMING_PLAN.md` and `HOST_PROVISIONING.md` — a checkout without the submodule initialised simply won't have them.
 

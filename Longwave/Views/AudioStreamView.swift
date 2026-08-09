@@ -104,6 +104,16 @@ struct AudioStreamView: View {
                     .environment(audioManager)
             }
             .help("Equalizer")
+
+            Button {
+                audioManager.toggleSpatialAudio()
+            } label: {
+                Image(systemName: "person.spatialaudio.stereo.fill")
+            }
+            .tint(audioManager.spatialAudioEnabled ? .accentColor : nil)
+            .help(audioManager.spatialAudioEnabled
+                  ? "Spatial Audio On — head-tracked rendering"
+                  : "Spatial Audio Off — flat stereo playback")
         }
         .buttonStyle(.borderless)
         .font(.title3)

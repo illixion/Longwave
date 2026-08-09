@@ -369,6 +369,17 @@ struct MoonlightStreamView: View {
             .tint(showStats ? .accentColor : nil)
 
             Button {
+                manager.toggleSpatialAudio()
+            } label: {
+                Label("Spatial Audio", systemImage: "person.spatialaudio.stereo.fill")
+            }
+            .labelStyle(.iconOnly)
+            .tint(manager.spatialAudioEnabled ? .accentColor : nil)
+            .help(manager.spatialAudioEnabled
+                  ? "Spatial Audio On — head-tracked rendering"
+                  : "Spatial Audio Off — flat stereo playback")
+
+            Button {
                 openWindow(id: "main", value: MainWindowID.shared)
             } label: {
                 Label("Connections", systemImage: "house")

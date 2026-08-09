@@ -91,6 +91,23 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     /// Whether HDR is active for the current stream (set by server callback).
     var isHDRActive: Bool = false
 
+    /// Whether decoded game audio is spatialized (head-tracked) at the
+    /// session level, or bypassed (flat passthrough of the stream's own
+    /// mix — the default). Persisted; applied live to the running session
+    /// via the audio renderer, no reconnect needed.
+    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: "moonlightSpatialAudioEnabled") {
+        didSet {
+            guard spatialAudioEnabled != oldValue else { return }
+            UserDefaults.standard.set(spatialAudioEnabled, forKey: "moonlightSpatialAudioEnabled")
+            audioRenderer?.setSpatialAudioEnabled(spatialAudioEnabled)
+        }
+    }
+
+    /// Flips spatialization on/off (stream controls bar button).
+    func toggleSpatialAudio() {
+        spatialAudioEnabled.toggle()
+    }
+
     private var audioRenderer: MoonlightAudioRenderer?
     private var gamepadManager: MoonlightGamepadManager?
     private var mouseManager: MoonlightMouseManager?
@@ -358,6 +375,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 video.displayLayer = layer
                 let audio = MoonlightAudioRenderer()
                 audio.muted = noAudio
+                audio.spatialAudioEnabled = self.spatialAudioEnabled
 
                 // Determine codec name for stats display
                 let videoFormat10BitMask: Int32 = 0xAA00 // VIDEO_FORMAT_MASK_10BIT

@@ -21,6 +21,12 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// When true, audio is decoded but not played (no audio mode).
     nonisolated(unsafe) var muted: Bool = false
 
+    /// Whether decoded game audio is spatialized (head-tracked) at the
+    /// session level, or bypassed (flat passthrough of the stream's own
+    /// stereo/surround mix — the default). Set before `setup` runs and
+    /// flippable live afterward via `setSpatialAudioEnabled`.
+    nonisolated(unsafe) var spatialAudioEnabled: Bool = false
+
     nonisolated init() {}
 
     nonisolated func setup(audioConfig: Int32, opusConfig: UnsafeMutablePointer<OPUS_MULTISTREAM_CONFIGURATION>) -> Int32 {
@@ -56,6 +62,10 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         // Skip AVAudioEngine setup when muted — avoids activating the audio session
         // which would pause other media (music, podcasts, etc.)
         guard !muted else { return 0 }
+
+        #if canImport(UIKit)
+        configureAudioSession()
+        #endif
 
         // Set up AVAudioEngine
         let engine = AVAudioEngine()
@@ -112,6 +122,40 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         audioEngine = nil
         playerNode = nil
         audioFormat = nil
+    }
+
+    #if canImport(UIKit)
+    /// Mixable playback session so a game stream coexists with other audio;
+    /// spatial experience follows `spatialAudioEnabled`.
+    private nonisolated func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setIntendedSpatialExperience(
+                spatialAudioEnabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
+            )
+            try session.setActive(true)
+        } catch {
+            AppLog.moonlightAudio.line("Failed to configure audio session: \(error)")
+        }
+    }
+    #endif
+
+    /// Switches the session between head-tracked spatial rendering and flat
+    /// bypass live — safe to call whether or not the engine is currently
+    /// running (e.g. while muted, before any session has been configured).
+    nonisolated func setSpatialAudioEnabled(_ enabled: Bool) {
+        spatialAudioEnabled = enabled
+        #if canImport(UIKit)
+        guard !muted else { return }
+        do {
+            try AVAudioSession.sharedInstance().setIntendedSpatialExperience(
+                enabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
+            )
+        } catch {
+            AppLog.moonlightAudio.line("Failed to update spatial audio experience: \(error)")
+        }
+        #endif
     }
 
     /// Decode and play an Opus packet. Called from a background thread.

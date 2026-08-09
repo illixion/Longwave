@@ -32,6 +32,11 @@ Longwave/
 │   ├── MoonlightKeyboardView.swift     — Moonlight keyboard window (key grid, Ctrl+Alt+Del)
 │   ├── MoonlightHardwareKeyboardView.swift — Moonlight hardware keyboard capture
 │   └── StreamStatsOverlay.swift        — Live stats HUD (codec, FPS, RTT, decode time, drops)
+├── Foveated/                           — PCVR, all of it behind FOVEATED_ENABLED (= the Pro edition)
+│   ├── FoveatedEndpoint.swift          — Endpoint validation and mode → endpoint mapping
+│   ├── FoveatedStreamingMock.swift     — Stand-in session for the simulator (no framework there)
+│   ├── PCVRStore.swift                 — StoreKit 2 entitlements: $1.99/mo or $24.99 once
+│   └── PCVRSessionLimiter.swift        — 20-minute trial clock, warnings, and the cutoff
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver
 │   └── MacNativeVideoRenderer.swift    — hvc1+alpha format reconstruction and display
@@ -103,9 +108,13 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── CompanionInjectProtocolTests.swift  — inject framing / drain / backspace
 ├── SavedConnectionEnvTests.swift       — SSH env parsing + name validation
 ├── MacNativeStreamProtocolTests.swift  — Native hello/video framing and partial-frame draining
-└── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
+├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
+└── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)
+
+Website/                               — longwave.pro; static, no build step, deployed to Cloudflare Pages
 
 scripts/
+├── edition-settings.sh                 — The ONLY definition of oss / oss-moonlight / pro
 ├── setup-deps.sh                       — Clone+patch repos/ deps (local Moonlight builds)
 ├── build-and-sign.sh                   — Config-driven device build/sign/deploy (build-signing.conf, gitignored)
 ├── install-companion.sh                — Build the macOS companion + install to /Applications (quit/relaunch)

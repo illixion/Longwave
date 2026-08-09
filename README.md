@@ -1,11 +1,31 @@
 # Longwave
 
-A native remote desktop and game streaming app for Apple Vision Pro, built in Swift with SwiftUI.
+A native remote desktop and PC VR app for Apple Vision Pro, built in Swift with SwiftUI. — [longwave.pro](https://longwave.pro)
 
-Longwave combines a full-featured **VNC viewer** with a **Moonlight game streaming** client in a single visionOS app. Connect to any VNC server for remote desktop access, or stream games and applications from a [Sunshine](https://github.com/LizardByte/Sunshine) / NVIDIA GameStream host with hardware-accelerated video decoding and low-latency input.
+Longwave puts your Mac and your PC in the headset: **native Mac streaming**, a full **VNC viewer**, uncompressed **system audio**, an **SSH terminal** with Claude Code and Copilot agents, **RTSP broadcast**, **Moonlight** game streaming, and **PCVR** — SteamVR and OpenXR titles streamed from a Windows PC over NVIDIA CloudXR, rendered foveated on the host by your real gaze.
 
-> [!TIP]
-> **New: Longwave Companion (Beta).** This Electron + .NET app for Windows includes a [Wi-Fi Hotspot](#longwave-windows-companion-beta) that gives the Vision Pro a direct NAT'd link even on café/hotel Wi-Fi, plus a Foveated Streaming (CloudXR) host for PCVR.
+## Editions
+
+Three pieces. Which headset build you want depends on whether you sideload, and the split between them is forced by licensing rather than chosen.
+
+| | **Longwave** | **Longwave Pro** |
+|---|---|---|
+| Where | Unsigned IPA on GitHub, sideloaded | App Store |
+| Licence | MIT, or GPLv3 for the Moonlight build | Proprietary |
+| Moonlight | Yes, in the GPL build | **No** |
+| PCVR | **No** | Yes |
+| Everything else | Yes | Yes |
+
+- **Moonlight is missing from Pro** because [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) is GPLv3, and the GPL's terms are incompatible with the App Store's. That is also why it is a separate IPA rather than a switch.
+- **PCVR is missing from the open-source build** for the mirror-image reason: its Windows host halves are closed-source (see [Architecture](#architecture)), so it cannot be part of an edition that calls itself MIT.
+
+**[Longwave Companion](#longwave-companion-for-windows-beta)** is the host-side app, free on both platforms. On a Mac it serves the native desktop stream, system audio and keyboard injection; on Windows it is the PCVR streaming host and the Wi-Fi Hotspot.
+
+`scripts/edition-settings.sh` is the single definition of what separates the three builds — see [Building](#building).
+
+### What PCVR costs
+
+Everything in Longwave is free except one thing. PCVR is free to try with **unlimited sessions, each capped at 20 minutes**, with a warning five minutes before the cap and again at one minute. Removing the cap is an in-app purchase in Longwave Pro: **$1.99/month**, or **$24.99 once**, permanently. Nothing else is gated, reduced, or watermarked.
 
 ## Features
 
@@ -43,12 +63,12 @@ Longwave combines a full-featured **VNC viewer** with a **Moonlight game streami
 - **Remote play over Tailscale** — the companion can advertise its tailnet address instead of a LAN one, for a PC at home or a cloud GPU host; the headset connects by IP over Tailscale. Needs a direct WireGuard path (the companion warns when the connection is being relayed, which can't carry this much video)
 - Game library browsed and launched from the headset
 
-Requires the [Longwave Companion](#longwave-windows-companion-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
+Requires the [Longwave Companion](#longwave-companion-for-windows-beta) on the PC, and visionOS 26.4+. It's an optional build-time feature (`FOVEATED_ENABLED`), device-only.
 
 **On GPUs:** NVIDIA lists RTX 40-series or newer as supported for CloudXR, and it will tell you so if you have less. A 30-series card genuinely works — this was developed against a 3080 — with less headroom, so expect to sit a stream-quality step lower than a supported card would.
 
 ### Audio Streaming
-- Stream bit-exact, uncompressed system audio from your Mac via the bundled **Longwave Companion** menu bar app (separate macOS target in this project)
+- Stream bit-exact, uncompressed system audio from your Mac via the bundled **Longwave Companion for Mac** menu bar app (separate macOS target in this project)
 - Works around macOS forcing Spatial Audio on for Mac Virtual Display audio — playback through Longwave honors the per-app Spatial Audio setting
 - Captures system audio with a Core Audio process tap — no virtual audio driver (BlackHole etc.) required
 - Optional "Mute Mac output while streaming" so audio plays only through the Vision Pro
@@ -69,8 +89,9 @@ Requires the [Longwave Companion](#longwave-windows-companion-beta) on the PC, a
 ## Requirements
 
 - Apple Vision Pro or visionOS Simulator
-- visionOS 26.0+
+- visionOS 26.2+ — PCVR needs 26.4+, and a device: `FoveatedStreaming` has no simulator
 - Xcode 26.0+
+- For PCVR: a Windows PC with an NVIDIA RTX card, running Longwave Companion
 
 ## Setup
 
@@ -141,9 +162,24 @@ Open `Longwave.xcodeproj` in Xcode, then add the local packages as described abo
 
 The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple deprecated x86_64 with macOS Tahoe. When building for the simulator from the command line, use a concrete destination (e.g. `-destination 'platform=visionOS Simulator,name=Apple Vision Pro'`) rather than a generic one.
 
-### Building the Companion (macOS)
+#### Building a specific edition
 
-> Looking for the Windows side? See [Longwave Companion (Beta)](#longwave-windows-companion-beta) below.
+The project defaults to the open-source edition, so a plain build needs nothing extra. The other two are the same target with different settings, and `scripts/edition-settings.sh` is the only place those differences are written down — read it rather than assembling flags by hand, and add anything new there rather than beside it:
+
+```bash
+EDITION=()
+while IFS= read -r line; do EDITION+=("$line"); done < <(./scripts/edition-settings.sh pro)
+xcodebuild archive -project Longwave.xcodeproj -scheme Longwave \
+  -destination 'generic/platform=visionOS' "${EDITION[@]}"
+```
+
+`oss`, `oss-moonlight`, `pro`. Read the settings into an array as above — several contain spaces, and an unquoted `$(...)` splits them into fragments xcodebuild rejects.
+
+The identifier and display name come from `LONGWAVE_BUNDLE_ID` and `LONGWAVE_DISPLAY_NAME`, project-level variables the app and its broadcast extension both derive from — so the extension follows the app rather than being stranded under the old prefix. CI builds all three on every run and publishes two; Pro is compiled and discarded, because a sideloaded copy has no App Store receipt and its PCVR would sit in trial forever.
+
+### Building Longwave Companion for Mac
+
+> Looking for the Windows side? See [Longwave Companion (Beta)](#longwave-companion-for-windows-beta) below.
 
 The **LongwaveCompanion** scheme builds the macOS menu bar app that streams system audio to Longwave. It has no external dependencies, so it builds even without the `repos/` setup above. Select the `LongwaveCompanion` scheme in Xcode and run, or from the command line:
 
@@ -185,7 +221,7 @@ On the headset, the Broadcast tab starts the camera stream; the **Mirror My View
 
 **Security:** the stream is end-to-end encrypted (RTSPS; the headset pins the companion-generated certificate, so no CA and no VPN are required), publishing requires the generated credentials, and playback is restricted to the Mac itself (`127.0.0.1`). Tailscale is still the recommended transport — the companion advertises the Mac's Tailscale IP in the pairing link — but with TLS active, any network path works.
 
-## Longwave Companion (Beta)
+## Longwave Companion for Windows (Beta)
 
 `CompanionWindows/` is a general-purpose Windows companion app with one Electron UI and elevated .NET backend. It currently provides two features:
 

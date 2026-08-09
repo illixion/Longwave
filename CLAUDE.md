@@ -13,7 +13,23 @@ Longwave is a remote desktop and game streaming app for **visionOS** built in Sw
 
 **Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **Longwave Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
 
-**Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+).
+## Editions
+
+Three builds of one target, defined solely by `scripts/edition-settings.sh` — read it before assembling flags by hand, and put anything new in it rather than beside it:
+
+| edition | identifier | conditions | ships |
+|---|---|---|---|
+| `oss` | `com.illixion.Longwave` | — | unsigned IPA on GitHub (MIT) |
+| `oss-moonlight` | `com.illixion.Longwave` | `MOONLIGHT_ENABLED` | unsigned IPA on GitHub (GPLv3) |
+| `pro` | `com.illixion.LongwavePro` | `FOVEATED_ENABLED`, 26.4 | App Store only |
+
+The split is licensing, not preference. moonlight-common-c is GPLv3, so a Moonlight build cannot be on the App Store; the PCVR host halves are closed-source, so PCVR cannot be in an MIT build. `oss` and `oss-moonlight` share an identifier because they are the same app built twice.
+
+`LONGWAVE_BUNDLE_ID` and `LONGWAVE_DISPLAY_NAME` are **project-level** build settings that the app and the broadcast extension both derive from — override the one variable and the extension follows the app instead of being stranded under the old prefix.
+
+**PCVR is the only paid thing.** Trial sessions run 20 minutes (`PCVRSessionLimiter`), warned at 5 min and 1 min by a banner entity in the immersive space, then the running title is stopped and the stream ends. $1.99/month or $24.99 once, via StoreKit 2 (`PCVRStore`, `PCVRPaywallView`). Three rules the code depends on: only `.connected` time counts; pausing *holds* the clock rather than rewinding it; and the clock never runs until StoreKit has answered (`unlock` is a double Optional so "nothing owned" and "not known yet" cannot be confused). All of it is inside `FOVEATED_ENABLED`, so the open-source editions contain no purchase code at all.
+
+**Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+ — effectively "this is the Pro edition").
 
 See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pipelines; `Longwave-PCVR-Host/docs/FOVEATED_STREAMING_ARCH.md` for the full PCVR design (CloudXR host, controller bridge, gesture input, OpenXR API layer, verification status). That document lives inside the private submodule along with `FOVEATED_STREAMING_PLAN.md` and `HOST_PROVISIONING.md` — a checkout without the submodule initialised simply won't have them.
 
@@ -24,7 +40,8 @@ See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pi
 - **RoyalVNCKit:** Local SPM from `repos/royalvnc/` with local mods (static linking, JPEG quality/compression, framebuffer pause/resume). **Re-export the patch after edits** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-longwave.patch` — or CI builds fail.
 - **Dependencies:** moonlight-common-c, Opus (local SPM packages in `repos/`, wrapped in `ci/deps/`). `MOONLIGHT_ENABLED` compilation condition gates all Moonlight code.
 - **FOVEATED_ENABLED:** gates all Foveated/PCVR code (default off, device-only). Build with `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` + `XROS_DEPLOYMENT_TARGET=26.4` — **keep `$(inherited)`** or swift-crypto's BoringSSL exclusion breaks. Simulator uses `Foveated/FoveatedStreamingMock.swift`; runtime needs the `com.apple.developer.foveated-streaming-session` entitlement.
-- **CI:** Builds two IPAs on one runner (`.github/workflows/build.yml`): MIT IPA (moonlight/opus stubbed), then Moonlight IPA (with real deps + MOONLIGHT_ENABLED). Local builds use `scripts/setup-deps.sh` (idempotent, applies six CI patches).
+- **CI:** Builds all three editions on one runner (`.github/workflows/build.yml`) and publishes two: MIT IPA (moonlight/opus stubbed), Pro compile-check (built and discarded — a sideloaded Pro has no receipt, so its PCVR would sit in trial forever, but PCVR is a lot of code no other edition compiles), then Moonlight IPA (real deps). Local builds use `scripts/setup-deps.sh` (idempotent, applies six CI patches).
+- **bash 3.2 on the runners:** no `mapfile`. Read `edition-settings.sh` output with a `while IFS= read -r` loop, and into an array — several values contain spaces.
 
 See [[FILE_STRUCTURE.md]] for directory layout and [[KNOWN_CONSTRAINTS.md]] for build gotchas (arch settings, SwiftData migrations, window APIs).
 
@@ -36,7 +53,7 @@ Unit tests in `LongwaveTests/` (XCTest, visionOS, run locally — no CI test job
 xcodebuild test -scheme LongwaveTests -destination 'platform=visionOS Simulator,name=Apple Vision Pro,OS=26.5'
 ```
 
-Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsing + per-agent token resolution. `PBXFileSystemSynchronizedRootGroup`, so new `.swift` files auto-compile — no pbxproj edits needed.
+Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsing + per-agent token resolution, `PCVRSessionLimiter` (add `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` — its tests are gated with the feature). `PBXFileSystemSynchronizedRootGroup`, so new `.swift` files auto-compile — no pbxproj edits needed.
 
 ## Critical Gotchas
 

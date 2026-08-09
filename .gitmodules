@@ -13,7 +13,13 @@
 #   git config submodule.Longwave-PCVR-Host.url ~/Projects/longwave-pcvr-host
 #   git config submodule.SessionBroker.url       ~/Projects/longwave-session-broker
 #   git config submodule.OpenXRLayer.url         ~/Projects/longwave-openxr-layer
-#   git submodule sync
+#   git -C Longwave-PCVR-Host remote set-url origin ~/Projects/longwave-pcvr-host
+#   git -C SessionBroker      remote set-url origin ~/Projects/longwave-session-broker
+#   git -C OpenXRLayer        remote set-url origin ~/Projects/longwave-openxr-layer
+#
+# Set the module remotes directly, as above, and do NOT run `git submodule sync`
+# afterwards: sync copies the URLs *out of this file* into the config, which
+# undoes the override you just made rather than applying it.
 [submodule "Longwave-PCVR-Host"]
 	path = Longwave-PCVR-Host
 	url = https://github.com/illixion/longwave-pcvr-host.git

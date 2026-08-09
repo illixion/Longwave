@@ -79,8 +79,8 @@ struct SecureEnclaveSSHKey: @unchecked Sendable {
 
     // MARK: - Persistence
 
-    private static let service = "com.illixion.Longwave.sshDeviceKey"
-    private static let log = Logger(subsystem: "com.illixion.Longwave", category: "SSHKey")
+    private static let service = "pro.longwave.sshDeviceKey"
+    private static let log = Logger(subsystem: "pro.longwave", category: "SSHKey")
 
     /// Loads the persisted device key, generating one on first use.
     static func loadOrCreate() throws -> SecureEnclaveSSHKey {

@@ -22,7 +22,7 @@ enum GitHubDeviceFlow {
     private static let deviceCodePath = "/login/device/code"
     private static let tokenPath = "/login/oauth/access_token"
 
-    private static let log = Logger(subsystem: "com.illixion.Longwave", category: "GitHubDeviceFlow")
+    private static let log = Logger(subsystem: "pro.longwave", category: "GitHubDeviceFlow")
 
     /// The user-facing step of the flow: show `userCode`, send them to
     /// `verificationURI`, then poll with `deviceCode`.

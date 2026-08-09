@@ -7,7 +7,7 @@ import CommonCrypto
 actor CryptoManager {
     static let shared = CryptoManager()
 
-    private static let keyTag = "com.longwave.moonlight.clientkey"
+    private static let keyTag = "pro.longwave.moonlight.clientkey"
     private static let certDefaultsKey = "moonlight_client_cert_der"
     private static let p12DefaultsKey = "moonlight_client_p12"
     private static let p12Password = "limelight"

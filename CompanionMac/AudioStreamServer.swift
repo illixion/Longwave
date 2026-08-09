@@ -52,7 +52,7 @@ final class AudioStreamServer: @unchecked Sendable {
     /// the tap (and thus the format) doesn't exist while idle. Mutated only
     /// on `queue`.
     private nonisolated(unsafe) var header: AudioStreamHeader?
-    private let queue = DispatchQueue(label: "com.illixion.LongwaveCompanion.server", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "pro.longwave.companion.server", qos: .userInteractive)
     private nonisolated(unsafe) var listener: NWListener?
     private nonisolated(unsafe) var clients: [ObjectIdentifier: Client] = [:]
     /// Heartbeat for the UDP/DTLS path so the receiver sees liveness during
@@ -60,7 +60,7 @@ final class AudioStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var keepAliveTimer: DispatchSourceTimer?
     private static let keepAliveFrame = AudioStreamProtocol.encodeFrame(.keepAlive, Data())
 
-    private let log = Logger(subsystem: "com.illixion.LongwaveCompanion", category: "AudioStreamServer")
+    private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioStreamServer")
 
     /// Latest pre-encoded metadata frames, replayed to newly connected
     /// clients right after the header. Mutated only on `queue`.

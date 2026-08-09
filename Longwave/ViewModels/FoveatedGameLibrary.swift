@@ -53,7 +53,7 @@ final class FoveatedGameLibrary {
     /// close without hiding failures the user still needs to read.
     private(set) var lastSuccessfulLaunchID: String?
 
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "GameLibrary")
+    private let log = Logger(subsystem: "pro.longwave", category: "GameLibrary")
 
     private weak var bridge: ControllerBridgeSender?
     /// The sender's control link. Nil-safe via `bridge`, which owns it.

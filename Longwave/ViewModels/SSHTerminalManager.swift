@@ -384,7 +384,7 @@ final class SSHTerminalManager {
 
     private let group = NIOTSEventLoopGroup()
     private var cachedKey: SecureEnclaveSSHKey?
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "SSHManager")
+    private let log = Logger(subsystem: "pro.longwave", category: "SSHManager")
 
     /// The Vision Pro's SSH identity (Secure Enclave where available).
     func deviceKey() throws -> SecureEnclaveSSHKey {

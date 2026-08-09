@@ -24,8 +24,8 @@ final class PCVRStore {
     /// Must match App Store Connect exactly. `lifetime` is a non-consumable,
     /// `monthly` an auto-renewable subscription.
     enum ProductID {
-        static let lifetime = "com.illixion.LongwavePro.pcvr.lifetime"
-        static let monthly = "com.illixion.LongwavePro.pcvr.monthly"
+        static let lifetime = "pro.longwave.pcvr.lifetime"
+        static let monthly = "pro.longwave.pcvr.monthly"
         /// Lifetime first: it is the order the paywall lists them in, and the
         /// order `resolveEntitlements` prefers when someone holds both.
         static let all = [lifetime, monthly]
@@ -63,7 +63,7 @@ final class PCVRStore {
     var isResolved: Bool { unlock != nil }
 
     private var updatesTask: Task<Void, Never>?
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "PCVRStore")
+    private let log = Logger(subsystem: "pro.longwave", category: "PCVRStore")
 
     init() {
         // Transactions can arrive without the app asking: a renewal, a purchase

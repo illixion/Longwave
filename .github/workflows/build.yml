@@ -96,26 +96,26 @@ jobs:
           cd $RUNNER_TEMP
           zip -r Longwave-unsigned.ipa Payload
 
-      # Longwave Pro is the App Store edition and is never published here — a
-      # sideloaded copy has no receipt, so its PCVR would be stuck in trial
-      # anyway. It is still compiled on every run: PCVR is a large body of code
-      # that no other edition builds, and without this a break in it would only
-      # surface at release time. The product is built and discarded.
-      - name: Compile-check Longwave Pro (App Store edition, not published)
+      # The App Store edition is never published here — a sideloaded copy has no
+      # receipt, so its PCVR would be stuck in trial anyway. It is still compiled
+      # on every run: PCVR is a large body of code that no other edition builds,
+      # and without this a break in it would only surface at release time. The
+      # product is built and discarded.
+      - name: Compile-check the App Store edition (not published)
         run: |
           EDITION=()
           while IFS= read -r line; do EDITION+=("$line"); done \
-            < <(./scripts/edition-settings.sh pro)
+            < <(./scripts/edition-settings.sh appstore)
           xcodebuild build \
             -project Longwave.xcodeproj \
             -scheme Longwave \
             -destination 'generic/platform=visionOS' \
-            -derivedDataPath $RUNNER_TEMP/pro-dd \
+            -derivedDataPath $RUNNER_TEMP/appstore-dd \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             "${EDITION[@]}"
-          rm -rf $RUNNER_TEMP/pro-dd
+          rm -rf $RUNNER_TEMP/appstore-dd
 
       # LongwaveCompanion's ARCHS build setting is "arm64 x86_64" (project.pbxproj),
       # so this single archive command produces a universal binary covering both

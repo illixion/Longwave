@@ -62,11 +62,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private let port: UInt16
     private let token: String
     private let queue = DispatchQueue(
-        label: "com.illixion.LongwaveCompanion.mac-native.server",
+        label: "pro.longwave.companion.mac-native.server",
         qos: .userInteractive
     )
     private let log = Logger(
-        subsystem: "com.illixion.LongwaveCompanion",
+        subsystem: "pro.longwave.companion",
         category: "MacNativeStreamServer"
     )
 

@@ -605,7 +605,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private let lowLatency: Bool
     /// Speaker (mixable, auto-recover) vs Music (exclusive, pause-on-interrupt).
     private let mode: AudioMode
-    private let queue = DispatchQueue(label: "com.illixion.Longwave.audio-stream", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "pro.longwave.audio-stream", qos: .userInteractive)
 
     private nonisolated(unsafe) var connection: NWConnection?
     /// Low-latency PCM path. The receiver *listens* on an ephemeral UDP port

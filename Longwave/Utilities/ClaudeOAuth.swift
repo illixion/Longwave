@@ -99,7 +99,7 @@ enum ClaudeOAuth {
         // here without dropping scopes — `ClaudeOAuthTests` guards it.
     }
 
-    private static let log = Logger(subsystem: "com.illixion.Longwave", category: "ClaudeOAuth")
+    private static let log = Logger(subsystem: "pro.longwave", category: "ClaudeOAuth")
 
     // MARK: - Credential
 

@@ -53,7 +53,7 @@ final class FoveatedConnectionManager {
     private var bridgeSupervisorTask: Task<Void, Never>?
     private var pauseRequestInFlight = false
     private var disconnectInFlight = false
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "Foveated")
+    private let log = Logger(subsystem: "pro.longwave", category: "Foveated")
 
     // MARK: Derived state
 

@@ -47,7 +47,7 @@ final class PCVRSessionLimiter {
     private var lastTickAt: TimeInterval?
     private var cutoffInFlight = false
     private var task: Task<Void, Never>?
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "PCVRTrial")
+    private let log = Logger(subsystem: "pro.longwave", category: "PCVRTrial")
 
     /// Starts the 1 Hz supervisor. Called once, from the app, and left running:
     /// a timer that only exists while some view is on screen would stop counting

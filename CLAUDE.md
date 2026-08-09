@@ -19,9 +19,9 @@ Three builds of one target, defined solely by `scripts/edition-settings.sh` — 
 
 | edition | identifier | conditions | ships |
 |---|---|---|---|
-| `oss` | `com.illixion.Longwave` | — | unsigned IPA on GitHub (MIT) |
-| `oss-moonlight` | `com.illixion.Longwave` | `MOONLIGHT_ENABLED` | unsigned IPA on GitHub (GPLv3) |
-| `pro` | `com.illixion.LongwavePro` | `FOVEATED_ENABLED`, 26.4 | App Store only |
+| `oss` | `pro.longwave` | — | unsigned IPA on GitHub (MIT) |
+| `oss-moonlight` | `pro.longwave` | `MOONLIGHT_ENABLED` | unsigned IPA on GitHub (GPLv3) |
+| `pro` | `pro.longwave.app` | `FOVEATED_ENABLED`, 26.4 | App Store only |
 
 The split is licensing, not preference. moonlight-common-c is GPLv3, so a Moonlight build cannot be on the App Store; the PCVR host halves are closed-source, so PCVR cannot be in an MIT build. `oss` and `oss-moonlight` share an identifier because they are the same app built twice.
 

@@ -26,7 +26,7 @@ param(
   [ValidateSet('start', 'stop', 'restart', 'status', 'ping', 'runtime', 'launch', 'restart-launch',
     'host-start', 'host-stop')]
   [string] $Action,
-  [string] $BundleId = 'com.illixion.Longwave',
+  [string] $BundleId = 'pro.longwave',
   [int] $Port = 55000,
   # Advertise/bind a specific IPv4. Empty = the backend picks the first non-loopback
   # address (LAN mode; it also downs Tailscale). A 100.64/10 address = tailnet mode.

@@ -17,7 +17,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onDisplayFrame: (@Sendable (CGRect) -> Void)?
 
     private let outputQueue = DispatchQueue(
-        label: "com.illixion.LongwaveCompanion.mac-native.capture",
+        label: "pro.longwave.companion.mac-native.capture",
         qos: .userInteractive
     )
     // SCStream/display/refreshTask are only ever touched from start()/stop()/

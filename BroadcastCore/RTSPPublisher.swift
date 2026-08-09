@@ -33,7 +33,7 @@ final class RTSPPublisher: @unchecked Sendable {
     /// DER SHA-256 matches (self-signed + pinning, like the Moonlight side).
     private let pinnedCertSHA256: Data?
 
-    private let queue = DispatchQueue(label: "com.illixion.Longwave.rtsp-publish", qos: .userInteractive)
+    private let queue = DispatchQueue(label: "pro.longwave.rtsp-publish", qos: .userInteractive)
 
     private nonisolated(unsafe) var connection: NWConnection?
     private nonisolated(unsafe) var stopped = false

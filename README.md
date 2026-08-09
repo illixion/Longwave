@@ -8,15 +8,17 @@ Longwave puts your Mac and your PC in the headset: **native Mac streaming**, a f
 
 Three pieces. Which headset build you want depends on whether you sideload, and the split between them is forced by licensing rather than chosen.
 
-| | **Longwave** | **Longwave Pro** |
+All three are called **Longwave** — these are ways of distributing one app, not different products.
+
+| | **Sideload** | **App Store** |
 |---|---|---|
-| Where | Unsigned IPA on GitHub, sideloaded | App Store |
+| Where | Unsigned IPA on GitHub | App Store |
 | Licence | MIT, or GPLv3 for the Moonlight build | Proprietary |
 | Moonlight | Yes, in the GPL build | **No** |
 | PCVR | **No** | Yes |
 | Everything else | Yes | Yes |
 
-- **Moonlight is missing from Pro** because [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) is GPLv3, and the GPL's terms are incompatible with the App Store's. That is also why it is a separate IPA rather than a switch.
+- **Moonlight is missing from the App Store build** because [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c) is GPLv3, and the GPL's terms are incompatible with the App Store's. That is also why it is a separate IPA rather than a switch.
 - **PCVR is missing from the open-source build** for the mirror-image reason: its Windows host halves are closed-source (see [Architecture](#architecture)), so it cannot be part of an edition that calls itself MIT.
 
 **[Longwave Companion](#longwave-companion-for-windows-beta)** is the host-side app, free on both platforms. On a Mac it serves the native desktop stream, system audio and keyboard injection; on Windows it is the PCVR streaming host and the Wi-Fi Hotspot.
@@ -25,7 +27,7 @@ Three pieces. Which headset build you want depends on whether you sideload, and 
 
 ### What PCVR costs
 
-Everything in Longwave is free except one thing. PCVR is free to try with **unlimited sessions, each capped at 20 minutes**, with a warning five minutes before the cap and again at one minute. Removing the cap is an in-app purchase in Longwave Pro: **$1.99/month**, or **$24.99 once**, permanently. Nothing else is gated, reduced, or watermarked.
+Everything in Longwave is free except one thing. PCVR is free to try with **unlimited sessions, each capped at 20 minutes**, with a warning five minutes before the cap and again at one minute. Removing the cap is an in-app purchase in the App Store build: **$1.99/month**, or **$24.99 once**, permanently. Nothing else is gated, reduced, or watermarked.
 
 ## Features
 
@@ -168,7 +170,7 @@ The project defaults to the open-source edition, so a plain build needs nothing 
 
 ```bash
 EDITION=()
-while IFS= read -r line; do EDITION+=("$line"); done < <(./scripts/edition-settings.sh pro)
+while IFS= read -r line; do EDITION+=("$line"); done < <(./scripts/edition-settings.sh appstore)
 xcodebuild archive -project Longwave.xcodeproj -scheme Longwave \
   -destination 'generic/platform=visionOS' "${EDITION[@]}"
 ```

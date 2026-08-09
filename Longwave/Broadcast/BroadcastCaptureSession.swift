@@ -13,8 +13,8 @@ final class BroadcastCaptureSession: NSObject, @unchecked Sendable {
     /// through this class.
     let session = AVCaptureSession()
 
-    private let sessionQueue = DispatchQueue(label: "com.illixion.Longwave.broadcast-session")
-    private let videoQueue = DispatchQueue(label: "com.illixion.Longwave.broadcast-video", qos: .userInteractive)
+    private let sessionQueue = DispatchQueue(label: "pro.longwave.broadcast-session")
+    private let videoQueue = DispatchQueue(label: "pro.longwave.broadcast-video", qos: .userInteractive)
 
     /// Every video capture device visionOS will give us. The exact device
     /// types Persona / Mirror My View enumerate as are undocumented, so

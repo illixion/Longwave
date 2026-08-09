@@ -372,7 +372,7 @@ desktop OpenXR content to a Vision Pro over NVIDIA CloudXR.
 
 - **Discovery (Bonjour/mDNS):** advertises `_apple-foveated-streaming._tcp` with a TXT record
   `Application-Identifier=<bundle id>`. The headset only surfaces hosts advertising **its** bundle
-  id, so this defaults to the visionOS app id **`com.illixion.Longwave`** (overridable in the UI).
+  id, so this defaults to the visionOS app id **`pro.longwave`** (overridable in the UI).
 - **Session protocol (TCP, default port 55000, ProtocolVersion "1"):** a faithful port of the
   reference's length-prefixed-JSON server. Message dispatch + single-session state machine:
   `RequestConnection` → `AcknowledgeConnection` (carries `ServerID` + `CertificateFingerprint`;
@@ -475,7 +475,7 @@ npm start
 
 The app opens on **PCVR** with one **Start/Stop PCVR** action. The Options panel keeps PCVR services
 enabled by default and contains the Local network/Tailscale choice plus advanced bundle id
-(`com.illixion.Longwave`), port (`55000`), advertise IP, and QR settings. Technical state stays at
+(`pro.longwave`), port (`55000`), advertise IP, and QR settings. Technical state stays at
 the bottom of the page. Pairing requests surface the current QR automatically. Closing the app
 waits for the broker and CloudXR host to stop; if CloudXR reports an attached OpenXR game, the app
 asks for confirmation before ending the session.

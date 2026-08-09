@@ -43,7 +43,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
     private let config: Config
     private let renderer: MacNativeVideoRenderer
     private let queue = DispatchQueue(
-        label: "com.illixion.Longwave.mac-native.client",
+        label: "pro.longwave.mac-native.client",
         qos: .userInteractive
     )
     private nonisolated(unsafe) var connection: NWConnection?

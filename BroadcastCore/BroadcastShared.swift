@@ -6,7 +6,7 @@ import os
 /// broadcast extension (where `AppLog` isn't available). Public privacy,
 /// same caveat as `Logger.line()`: never log secrets.
 nonisolated let broadcastLogger = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "com.illixion.Longwave",
+    subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave",
     category: "Broadcast")
 
 nonisolated func broadcastLog(_ message: String) {
@@ -19,12 +19,29 @@ nonisolated func broadcastLog(_ message: String) {
 nonisolated enum BroadcastShared {
     /// Preferred App Group (what the checked-in entitlements declare —
     /// granted on Xcode-signed builds).
-    static let preferredAppGroup = "group.com.illixion.Longwave"
-    static let keychainService = "com.illixion.Longwave.broadcast"
+    static let preferredAppGroup = "group.pro.longwave"
+    /// A keychain service name, not an identifier of anything — it only has to
+    /// be the same string in both processes, so it stays a constant even though
+    /// it looks like a bundle id.
+    static let keychainService = "pro.longwave.broadcast"
     static let keychainAccount = "publish-password"
-    /// The extension's bundle identifier (must stay in sync with the
-    /// `LongwaveBroadcast` target and `RPSystemBroadcastPickerView`).
-    static let extensionBundleID = "com.illixion.Longwave.broadcast"
+
+    /// The extension's bundle identifier, for `RPSystemBroadcastPickerView`'s
+    /// `preferredExtension`.
+    ///
+    /// Derived, not written down. The app's identifier differs per edition
+    /// (`pro.longwave.oss` sideloaded, `pro.longwave.app` from the App Store) and
+    /// the extension is always `<app id>.broadcast`, so any literal here would be
+    /// correct for exactly one edition and silently wrong for the other — the
+    /// picker would open with nothing preselected and the user would be left
+    /// choosing from every broadcast extension on the device.
+    ///
+    /// Only meaningful in the app: inside the extension, `Bundle.main` *is* the
+    /// extension, and nothing there presents a picker.
+    static let extensionBundleID: String = {
+        guard let appID = Bundle.main.bundleIdentifier else { return "pro.longwave.app.broadcast" }
+        return appID + ".broadcast"
+    }()
 
     /// The App Group both processes actually share. Sideload re-signing
     /// (scripts/build-and-sign.sh) replaces our entitlements with the

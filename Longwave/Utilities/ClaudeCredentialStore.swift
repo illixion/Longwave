@@ -16,8 +16,8 @@ import os
 /// token, and only inside the SSH channel.
 enum ClaudeCredentialStore {
 
-    private static let service = "com.illixion.Longwave.claudeOAuthCredential"
-    private static let log = Logger(subsystem: "com.illixion.Longwave", category: "ClaudeCredentials")
+    private static let service = "pro.longwave.claudeOAuthCredential"
+    private static let log = Logger(subsystem: "pro.longwave", category: "ClaudeCredentials")
 
     // MARK: - Storage
 

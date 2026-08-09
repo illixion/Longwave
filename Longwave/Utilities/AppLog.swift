@@ -5,7 +5,7 @@ import os
 /// Logs are visible in Console.app/Xcode and surfaced in-app by the
 /// Console tab (`LogStore` polls OSLogStore for this subsystem).
 enum AppLog {
-    static let subsystem = Bundle.main.bundleIdentifier ?? "com.illixion.Longwave"
+    static let subsystem = Bundle.main.bundleIdentifier ?? "pro.longwave"
 
     static let audioStream = Logger(subsystem: subsystem, category: "AudioStream")
     static let broadcast = Logger(subsystem: subsystem, category: "Broadcast")

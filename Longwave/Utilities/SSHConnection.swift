@@ -52,7 +52,7 @@ final class SSHConnection: @unchecked Sendable {
     private let config: Config
     private let privateKey: NIOSSHPrivateKey
     private let group: NIOTSEventLoopGroup
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "SSH")
+    private let log = Logger(subsystem: "pro.longwave", category: "SSH")
 
     private nonisolated(unsafe) var channel: Channel?
     private nonisolated(unsafe) var sessionChannel: Channel?

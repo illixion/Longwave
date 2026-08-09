@@ -35,7 +35,7 @@ set -euo pipefail
 #                         Development identity (falls back to "-", ad-hoc).
 #                         Pass "-" to force ad-hoc, or a name/hash to pin one.
 #
-# Note: the companion's bundle id is com.illixion.LongwaveCompanion. After the
+# Note: the companion's bundle id is pro.longwave.companion. After the
 # rename from "Audio Sender" (a different bundle id), macOS treats this as a new
 # app — re-grant permissions on first launch and re-pair the token.
 
@@ -47,11 +47,11 @@ KIND="${1:-companion}"
 case "$KIND" in
   companion)
     SCHEME="LongwaveCompanion"; APP_NAME="LongwaveCompanion.app"
-    EXEC_NAME="LongwaveCompanion"; BUNDLE_ID="com.illixion.LongwaveCompanion"
+    EXEC_NAME="LongwaveCompanion"; BUNDLE_ID="pro.longwave.companion"
     NEEDS_DEPS=0 ;;
   full|mac|LongwaveMac)
     SCHEME="LongwaveMac"; APP_NAME="LongwaveMac.app"
-    EXEC_NAME="LongwaveMac"; BUNDLE_ID="com.illixion.LongwaveMac"
+    EXEC_NAME="LongwaveMac"; BUNDLE_ID="pro.longwave.mac"
     NEEDS_DEPS=1 ;;
   -h|--help|help)
     echo "usage: $0 [companion|full]   (default: companion)"; exit 0 ;;

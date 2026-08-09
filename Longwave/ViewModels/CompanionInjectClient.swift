@@ -26,11 +26,11 @@ final class CompanionInjectClient: @unchecked Sendable {
     nonisolated(unsafe) var onEvent: (@Sendable (Event) -> Void)?
 
     private let config: Config
-    private let queue = DispatchQueue(label: "com.illixion.Longwave.inject.client")
+    private let queue = DispatchQueue(label: "pro.longwave.inject.client")
     private nonisolated(unsafe) var connection: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     private nonisolated(unsafe) var closed = false
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "CompanionInject")
+    private let log = Logger(subsystem: "pro.longwave", category: "CompanionInject")
 
     init(config: Config) {
         self.config = config

@@ -52,8 +52,8 @@ final class BridgeControlLink {
     /// The endpoint currently in use, for the debug HUD.
     private(set) var activeEndpoint: String?
 
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "BridgeControlLink")
-    private let queue = DispatchQueue(label: "com.illixion.Longwave.bridge.control")
+    private let log = Logger(subsystem: "pro.longwave", category: "BridgeControlLink")
+    private let queue = DispatchQueue(label: "pro.longwave.bridge.control")
 
     private var rendezvous: ControllerBridgeRendezvous?
     /// Keys for this session's stream. Nil until a rendezvous arrives, and nothing is

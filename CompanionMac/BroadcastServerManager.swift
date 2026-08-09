@@ -24,7 +24,7 @@ final class BroadcastServerManager {
     private(set) var certFingerprintHex: String?
     private(set) var configuredHost: String?
 
-    private let log = Logger(subsystem: "com.illixion.LongwaveCompanion", category: "BroadcastServer")
+    private let log = Logger(subsystem: "pro.longwave.companion", category: "BroadcastServer")
 
     var password: String = BroadcastServerManager.loadOrCreatePassword() {
         didSet { UserDefaults.standard.set(password, forKey: "broadcastPublishPassword") }

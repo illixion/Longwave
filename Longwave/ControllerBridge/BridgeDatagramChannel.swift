@@ -22,8 +22,8 @@ import os
 
 nonisolated final class BridgeDatagramChannel: @unchecked Sendable {
     private let lock = NSLock()
-    private let queue = DispatchQueue(label: "com.illixion.Longwave.controllerbridge.net")
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "BridgeDatagram")
+    private let queue = DispatchQueue(label: "pro.longwave.controllerbridge.net")
+    private let log = Logger(subsystem: "pro.longwave", category: "BridgeDatagram")
 
     private var connection: NWConnection?
     private var seal: BridgeSeal?

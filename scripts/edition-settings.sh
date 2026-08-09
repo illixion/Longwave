@@ -9,7 +9,7 @@
 #
 #   EDITION=()
 #   while IFS= read -r line; do EDITION+=("$line"); done \
-#       < <(scripts/edition-settings.sh pro)
+#       < <(scripts/edition-settings.sh appstore)
 #   xcodebuild archive -scheme Longwave "${EDITION[@]}" ...
 #
 # The read loop rather than `mapfile` because GitHub's macOS runners still run
@@ -23,9 +23,13 @@
 #                  why this build can never go to the App Store, whose terms are
 #                  incompatible with the GPL's. Same identifier as `oss`: it is
 #                  the same app, built twice, and nobody installs both.
-#   pro            The App Store build: everything except Moonlight, plus PCVR.
-#                  Distinct identifier so it coexists with a sideloaded OSS
-#                  build rather than fighting it for the same slot.
+#   appstore       The App Store build: everything except Moonlight, plus PCVR.
+#
+# All three are called "Longwave" — the editions are how it is distributed, not
+# different products, and the paid part is one in-app purchase inside PCVR.
+# `oss` and `appstore` do carry distinct identifiers, so a sideloaded copy and an
+# App Store install coexist instead of fighting for the same slot; that is the
+# only reason they differ.
 #
 # PCVR is Pro-only for the mirror-image reason: its Windows host halves are
 # closed-source, so it cannot be part of an edition that claims to be MIT.
@@ -42,24 +46,24 @@ edition="${1:-}"
 # unrelated. See KNOWN_CONSTRAINTS.md.
 case "$edition" in
     oss)
-        echo 'LONGWAVE_BUNDLE_ID=com.illixion.Longwave'
+        echo 'LONGWAVE_BUNDLE_ID=pro.longwave.oss'
         echo 'LONGWAVE_DISPLAY_NAME=Longwave'
         ;;
     oss-moonlight)
-        echo 'LONGWAVE_BUNDLE_ID=com.illixion.Longwave'
+        echo 'LONGWAVE_BUNDLE_ID=pro.longwave.oss'
         echo 'LONGWAVE_DISPLAY_NAME=Longwave'
         echo 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) MOONLIGHT_ENABLED'
         ;;
-    pro)
-        echo 'LONGWAVE_BUNDLE_ID=com.illixion.LongwavePro'
-        echo 'LONGWAVE_DISPLAY_NAME=Longwave Pro'
+    appstore)
+        echo 'LONGWAVE_BUNDLE_ID=pro.longwave.app'
+        echo 'LONGWAVE_DISPLAY_NAME=Longwave'
         echo 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) FOVEATED_ENABLED'
         # FoveatedStreaming is 26.4+. Raising the floor for every edition would
         # cost the OSS build two OS versions of reach for a feature it lacks.
         echo 'XROS_DEPLOYMENT_TARGET=26.4'
         ;;
     *)
-        echo "usage: $(basename "$0") {oss|oss-moonlight|pro}" >&2
+        echo "usage: $(basename "$0") {oss|oss-moonlight|appstore}" >&2
         exit 2
         ;;
 esac

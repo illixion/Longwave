@@ -99,7 +99,7 @@ final class SystemAudioTap: @unchecked Sendable {
         // 3. Private aggregate device hosting the tap
         let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Longwave Companion",
-            kAudioAggregateDeviceUIDKey: "com.illixion.LongwaveCompanion.aggregate",
+            kAudioAggregateDeviceUIDKey: "pro.longwave.companion.aggregate",
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceTapListKey: [

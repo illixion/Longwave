@@ -537,7 +537,7 @@ final class SavedConnection {
 
     // MARK: SSH helpers
 
-    private static let sshAuthTokenService = "com.illixion.Longwave.sshAuthToken"
+    private static let sshAuthTokenService = "pro.longwave.sshAuthToken"
 
     /// The remembered default agent for managed (Projects-tab) sessions.
     var sshAgent: SSHAgent {

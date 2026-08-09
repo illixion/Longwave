@@ -65,7 +65,7 @@ import FoveatedStreaming
 final class ControllerBridgeSender {
 
     private let host: String
-    private let log = Logger(subsystem: "com.illixion.Longwave", category: "ControllerBridge")
+    private let log = Logger(subsystem: "pro.longwave", category: "ControllerBridge")
 
     /// Most recent tracked wrist poses, written by the ARKit update loop.
     private var leftHand: ControllerBridgeHandPose?

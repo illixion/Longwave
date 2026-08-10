@@ -382,6 +382,11 @@ struct NativeStreamView: View {
                 }
             }
         }
+        // Explicit flex range so this stays freely resizable under the
+        // window group's `.contentSize` resizability — without it, a plain
+        // ZStack reports no size preference of its own and the window would
+        // collapse to the fixed-size panels' dimensions instead.
+        .frame(minWidth: 400, idealWidth: 1440, maxWidth: .infinity, minHeight: 300, idealHeight: 900, maxHeight: .infinity)
     }
 
     // MARK: - Screen remote control (mouse + keyboard)
@@ -644,6 +649,7 @@ struct NativeStreamView: View {
 
             audioUtilityRow
                 .padding(.top, 22)
+                .padding(.bottom, 22)
         }
         .frame(width: Self.audioOnlyWidth)
         .glassBackgroundEffect()
@@ -762,15 +768,19 @@ struct NativeStreamView: View {
 
     /// Minimal ornament for the audio-only views — the old standalone Audio
     /// Stream window had no ornament at all, just a home button alongside its
-    /// own inline utility row (see `audioUtilityRow`'s Disconnect icon).
+    /// own inline utility row (see `audioUtilityRow`'s Disconnect icon). Icon
+    /// only and tightly padded, matching `HomeOrnament` (the shared home
+    /// button every other pop-out window uses), so it reads as a small badge
+    /// hugging the player rather than a second full-size control bar.
     private var homeOnlyControls: some View {
         Button {
             openWindow(id: "main", value: MainWindowID.shared)
         } label: {
             Label("Connections", systemImage: "house")
+                .labelStyle(.iconOnly)
         }
-        .buttonStyle(.bordered)
-        .padding(12)
+        .help("Open the connection manager")
+        .padding(8)
         .glassBackgroundEffect()
     }
 

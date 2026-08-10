@@ -133,7 +133,18 @@ struct LongwaveApp: App {
             .shared
         }
         .defaultSize(width: 1440, height: 900)
-        .windowResizability(.contentMinSize)
+        // .contentSize, not .contentMinSize: this one window group swaps
+        // between a freely resizable full-bleed video view and several
+        // fixed-size panels (the audio mini player, the window picker, the
+        // empty placeholder) depending on what's live. .contentMinSize would
+        // keep the window pinned at its oversized video default even for
+        // those fixed panels, leaving dead space below them and a resize
+        // handle that does nothing useful. .contentSize re-measures on every
+        // state change instead, so the window hugs whichever content is
+        // showing — screenContent stays freely resizable because it declares
+        // a wide min/max frame; the fixed-size panels get sized exactly to
+        // their content and stop being resizable.
+        .windowResizability(.contentSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
 

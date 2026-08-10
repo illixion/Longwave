@@ -71,8 +71,14 @@ struct NativeStreamView: View {
         @Bindable var audioManager = audioManager
 
         ZStack {
-            Color.clear
-
+            // No filler view here on purpose: a `Color.clear` sibling would
+            // report an unconstrained, always-flexible size, which under
+            // `.contentSize` would make every state resizable and pinned to
+            // the scene's oversized video default — the exact dead-space/
+            // stray-resize-handle bug this state machine is meant to avoid
+            // for the fixed-size panels (audio mini player, window picker,
+            // empty placeholder). Each branch below sizes the window by
+            // itself.
             if screenManager.liveEnabled {
                 screenContent
             } else if audioManager.liveEnabled {

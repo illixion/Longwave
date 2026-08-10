@@ -49,6 +49,7 @@
 #if FOVEATED_ENABLED
 import Foundation
 import Network
+import RAVEInput
 import simd
 import os
 import GameController
@@ -81,7 +82,11 @@ final class ControllerBridgeSender {
     private var sendJointsThisTick = false
 
     /// Hand-gesture controller emulation (makes the physical controller optional).
-    private let gestureEngine = HandGestureEngine()
+    ///
+    /// Fed rather than self-starting: this class already runs a `HandTrackingProvider`
+    /// for pose streaming and joint forwarding, so anchors are pushed in through
+    /// `ingest(_:)` and a second ARKit session is never opened.
+    private let gestureEngine = RAVEARKitHandSensor()
     private var gestureMapping = GestureControllerMappingStore.load()
 
     // MARK: Physical controller (Switch Pro)
@@ -728,7 +733,7 @@ final class ControllerBridgeSender {
 
     private func ingest(_ anchor: HandAnchor) {
         // Feed the gesture engine first (it tracks per-finger pinches + the joystick).
-        gestureEngine.update(anchor)
+        gestureEngine.ingest(anchor)
 
         let hand: BridgeHand = anchor.chirality == .left ? .left : .right
         guard anchor.isTracked else {
@@ -1086,21 +1091,21 @@ final class ControllerBridgeSender {
         // thumb+index → the locomotion stick. Applied first so a physical controller
         // (below) augments rather than is masked by it.
         let (forward, right) = headBasis()
-        let gestures = gestureEngine.tick(worldForward: forward, worldRight: right)
+        let gestures = gestureEngine.poll(worldForward: forward, worldRight: right)
         let mapping = activeGestureMapping
         var charge: GestureCharge?
-        if let finger = gestures.heldLeft {
+        if let finger = gestures.left.held {
             flags.insert(.leftPinch)
             apply(mapping.target(for: .left, finger: finger), hand: .left,
-                  heldFor: gestures.heldLeftFor, charge: &charge, to: &state)
+                  heldFor: gestures.left.heldDuration, charge: &charge, to: &state)
         }
-        if let finger = gestures.heldRight {
+        if let finger = gestures.right.held {
             flags.insert(.rightPinch)
             apply(mapping.target(for: .right, finger: finger), hand: .right,
-                  heldFor: gestures.heldRightFor, charge: &charge, to: &state)
+                  heldFor: gestures.right.heldDuration, charge: &charge, to: &state)
         }
         gestureCharge = charge
-        state.leftStick = gestures.joystick
+        state.leftStick = gestures.joystick.vector
 
         if let pad = controller?.extendedGamepad {
             flags.insert(.controllerPresent)
@@ -1279,12 +1284,18 @@ final class ControllerBridgeSender {
     }
 
     /// How squarely a palm faces the viewer — the wrist HUD's summon gesture.
+    ///
+    /// A plain dot product, deliberately, rather than the pitch-invariant variant
+    /// Spatialcraft's wrist HUD uses. Stripping the finger-axis component suits a game
+    /// that wants a forgiving trigger, but here it widens the engaging cone until the
+    /// panel shows up on almost any orientation with a sideways component. "Turn your
+    /// palm toward your face" should mean exactly that.
     func palmFacing(_ hand: BridgeHand) -> Float? {
         guard let head = headWorldPosition else { return nil }
         return gestureEngine.palmFacing(hand, towards: head)
     }
 
-    func palmPose(_ hand: BridgeHand) -> HandGestureEngine.PalmPose? {
+    func palmPose(_ hand: BridgeHand) -> RAVEPalmPose? {
         gestureEngine.palmPose(hand)
     }
 

@@ -1,35 +1,42 @@
 //  GestureControllerMapping.swift
 //
 //  Per-finger pinch → virtual-controller-input mapping for the Controller Bridge.
-//  Adapted from Spatialcraft's HandGestureMapping (which mapped pinches to game
-//  PlayerActions); here the targets are VR controller inputs so the headset's hand
-//  gestures can drive an emulated controller — making the physical Switch Pro
+//  The *targets* below are this app's — VR controller inputs, so headset hand
+//  gestures can drive an emulated controller and make the physical Switch Pro
 //  OPTIONAL. The host splits the resulting button mask across the two emulated
-//  controllers by identity (A/B → right, X/Y → left), so the physical pinching hand
-//  and the emulated controller side line up with the defaults below.
+//  controllers by identity (A/B → right, X/Y → left), so the physical pinching
+//  hand and the emulated controller side line up with the defaults below.
 //
-//  Deliberately flag-free (no ARKit / no FOVEATED_ENABLED, no protocol dependency)
-//  so it stays pure and unit-testable in the default build, mirroring FoveatedEndpoint.
-//  The engine that detects pinches (HandGestureEngine) and the packet wiring
+//  The table AROUND those targets is no longer this app's. It was adapted from
+//  Spatialcraft's HandGestureMapping (which bound pinches to game actions) and
+//  stayed a line-for-line copy of it: eight slots, one reserved for the
+//  locomotion joystick and rendered locked, Codable, persisted as one blob.
+//  That now lives in RAVE Engine as RAVEFingerBindingTable, shared by both.
+//
+//  The stored key and encoded field names are unchanged, so existing user
+//  bindings load exactly as before. This table never stored `leftIndex` — the
+//  reserved slot was not a value it kept — and the shared decoder treats it as
+//  optional for exactly that reason.
+//
+//  Still deliberately flag-free (no ARKit, no FOVEATED_ENABLED) so it stays
+//  pure and unit-testable in the default build, and so it compiles into the Mac
+//  target too. The engine that detects pinches and the packet wiring
 //  (ControllerBridgeSender) are the gated, ARKit-touching halves.
 
 import Foundation
+import RAVEInput
 
 /// Which hand a pinch comes from.
-enum BridgeHand: String, Codable, Sendable, CaseIterable {
-    case left, right
-}
+typealias BridgeHand = RAVEHandChirality
 
 /// Thumb-to-fingertip pinch fingers. Left + index is reserved as the locomotion
 /// joystick (mirrors a real controller's left stick) and never appears as a button.
-enum BridgeFinger: Int, Codable, Sendable, CaseIterable {
-    case index = 0, middle, ring, little
-}
+typealias BridgeFinger = RAVEHandFinger
 
 /// A virtual-controller input a finger pinch can drive. The side-dependent targets
 /// (`trigger`, `grip`, `stickClick`) resolve to the L or R variant by the pinching
 /// hand; face buttons / menu / system are absolute. `.none` = unassigned.
-enum BridgeGestureTarget: String, Codable, Sendable, CaseIterable {
+enum BridgeGestureTarget: String, Codable, Sendable, CaseIterable, RAVEBindableAction {
     case none
     case trigger        // this hand's trigger (analog full + ZL/ZR)
     case grip           // this hand's grip (L/R shoulder)
@@ -40,6 +47,8 @@ enum BridgeGestureTarget: String, Codable, Sendable, CaseIterable {
     case yButton
     case menu           // + / Start
     case system         // Home
+
+    static var unassigned: BridgeGestureTarget { .none }
 
     var displayName: String {
         switch self {
@@ -62,18 +71,9 @@ enum BridgeGestureTarget: String, Codable, Sendable, CaseIterable {
 /// set most games want — ABXY + both triggers + a menu button — mirrored to the
 /// correct controller sides: right hand drives the right controller (A/B/R-trigger/
 /// menu), left hand the left controller (X/Y/L-trigger), with left+index = movement.
-struct GestureControllerMapping: Codable, Equatable, Sendable {
-    // Right hand → right controller
-    var rightIndex: BridgeGestureTarget
-    var rightMiddle: BridgeGestureTarget
-    var rightRing: BridgeGestureTarget
-    var rightLittle: BridgeGestureTarget
+typealias GestureControllerMapping = RAVEFingerBindingTable<BridgeGestureTarget>
 
-    // Left hand → left controller (index reserved for the joystick — not stored)
-    var leftMiddle: BridgeGestureTarget
-    var leftRing: BridgeGestureTarget
-    var leftLittle: BridgeGestureTarget
-
+extension RAVEFingerBindingTable where Action == BridgeGestureTarget {
     static let defaults = GestureControllerMapping(
         rightIndex:  .trigger,   // right-hand tap = the primary trigger
         rightMiddle: .aButton,
@@ -86,46 +86,18 @@ struct GestureControllerMapping: Codable, Equatable, Sendable {
 
     /// Lookup by hand + finger. Left + index always returns `.none` (joystick reservation).
     func target(for hand: BridgeHand, finger: BridgeFinger) -> BridgeGestureTarget {
-        switch (hand, finger) {
-        case (.right, .index):  return rightIndex
-        case (.right, .middle): return rightMiddle
-        case (.right, .ring):   return rightRing
-        case (.right, .little): return rightLittle
-        case (.left,  .index):  return .none   // joystick reservation
-        case (.left,  .middle): return leftMiddle
-        case (.left,  .ring):   return leftRing
-        case (.left,  .little): return leftLittle
-        }
-    }
-
-    mutating func set(_ target: BridgeGestureTarget, for hand: BridgeHand, finger: BridgeFinger) {
-        switch (hand, finger) {
-        case (.right, .index):  rightIndex = target
-        case (.right, .middle): rightMiddle = target
-        case (.right, .ring):   rightRing = target
-        case (.right, .little): rightLittle = target
-        case (.left,  .index):  break          // locked — joystick reservation
-        case (.left,  .middle): leftMiddle = target
-        case (.left,  .ring):   leftRing = target
-        case (.left,  .little): leftLittle = target
-        }
+        action(for: hand, finger: finger)
     }
 }
 
 /// UserDefaults-backed persistence (one round-trip UI → storage → sender).
 @MainActor
 enum GestureControllerMappingStore {
-    private static let defaultsKey = "longwave.foveated.gestureControllerMapping.v1"
+    private static let store = RAVEFingerBindingStore<BridgeGestureTarget>(
+        key: "longwave.foveated.gestureControllerMapping.v1",
+        fallback: .defaults
+    )
 
-    static func load() -> GestureControllerMapping {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let mapping = try? JSONDecoder().decode(GestureControllerMapping.self, from: data)
-        else { return .defaults }
-        return mapping
-    }
-
-    static func save(_ mapping: GestureControllerMapping) {
-        guard let data = try? JSONEncoder().encode(mapping) else { return }
-        UserDefaults.standard.set(data, forKey: defaultsKey)
-    }
+    static func load() -> GestureControllerMapping { store.load() }
+    static func save(_ mapping: GestureControllerMapping) { store.save(mapping) }
 }

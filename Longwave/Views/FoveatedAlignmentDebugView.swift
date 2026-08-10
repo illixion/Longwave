@@ -16,6 +16,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import RAVEInput
 import SwiftUI
 import UIKit
 

@@ -7,6 +7,7 @@
 //  locked. Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import RAVEInput
 import SwiftUI
 
 struct GestureMappingSettingsView: View {

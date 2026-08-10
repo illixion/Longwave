@@ -12,6 +12,7 @@
 
 #if FOVEATED_ENABLED
 import Foundation
+import RAVEInput
 import simd
 
 enum ControllerBridgeProtocol {

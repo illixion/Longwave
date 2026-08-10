@@ -13,6 +13,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import RAVEInput
 import SwiftUI
 
 #if !targetEnvironment(simulator)
@@ -270,7 +271,7 @@ private final class WristHUDDriver {
               let palm = bridge.palmPose(hand),
               let head = bridge.headWorldPosition else { return }
 
-        let target = palm.position + palm.normalOut * Self.lift
+        let target = palm.position + palm.palmNormalOut * Self.lift
         // A basis with +Z toward the head (the direction a SwiftUI attachment faces) and
         // +Y world-up, so the panel stands upright facing the wearer however the hand is
         // rolled — rather than tumbling with the palm.

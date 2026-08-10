@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// Root of the main window: Connections / Settings / Console tabs,
@@ -5,7 +6,7 @@ import SwiftUI
 /// each tab keeps its own NavigationStack for visionOS navigation titles).
 struct MainView: View {
 
-    enum Tab: String, CaseIterable {
+    enum Tab: String, CaseIterable, RAVETabItem {
         case connections = "Connections"
         #if FOVEATED_ENABLED
         /// Second, not buried: PCVR is a headline feature, and it is the one
@@ -55,7 +56,7 @@ struct MainView: View {
             case .settings:
                 SettingsView()
             case .console:
-                ConsoleView()
+                ConsoleTabView()
             }
         }
         .onOpenURL { url in

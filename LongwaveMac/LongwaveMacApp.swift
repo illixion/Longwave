@@ -1,3 +1,4 @@
+import RAVEConsole
 import SwiftUI
 import SwiftData
 import AppKit
@@ -57,7 +58,7 @@ struct LongwaveMacApp: App {
         }
 
         WindowGroup("Console", id: "console") {
-            ConsoleView(isPopout: true)
+            RAVEConsoleScreen()
                 .trackWindowSession(id: "console")
         }
         .defaultSize(width: 760, height: 480)

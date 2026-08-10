@@ -10,6 +10,10 @@
 		113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = FEC92747F5953D917428BFA0 /* RoyalVNCKit */; };
 		AA03000000000000000000A3 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A2 /* RAVEInput */; };
 		AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B2 /* RAVEDiagnostics */; };
+		AA07000000000000000000D3 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D2 /* RAVEUI */; };
+		AA07000000000000000000D5 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D4 /* RAVEConsole */; };
+		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
+		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
@@ -208,6 +212,8 @@
 				5511C0DE0000000000000025 /* Crypto in Frameworks */,
 				AA03000000000000000000A3 /* RAVEInput in Frameworks */,
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
+				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
+				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -242,6 +248,8 @@
 				F8A70081F839F9E06B341A4E /* Opus in Frameworks */,
 				AA03000000000000000000A5 /* RAVEInput in Frameworks */,
 				AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */,
+				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
+				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,6 +352,8 @@
 				5511C0DE0000000000000015 /* Crypto */,
 				AA03000000000000000000A2 /* RAVEInput */,
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
+				AA07000000000000000000D2 /* RAVEUI */,
+				AA07000000000000000000D4 /* RAVEConsole */,
 			);
 			productName = Longwave;
 			productReference = 1DC83C272F74524200BF0482 /* Longwave.app */;
@@ -374,6 +384,8 @@
 				BCF95F097C7D2DFE3EF72400 /* Opus */,
 				AA03000000000000000000A4 /* RAVEInput */,
 				AA03000000000000000000B4 /* RAVEDiagnostics */,
+				AA07000000000000000000D6 /* RAVEUI */,
+				AA07000000000000000000D8 /* RAVEConsole */,
 			);
 			productName = LongwaveMac;
 			productReference = A5B135754F5FB6AA031143FD /* LongwaveMac.app */;
@@ -477,6 +489,7 @@
 				1D8097B02F7FCBED00C67700 /* XCLocalSwiftPackageReference "moonlight-common-c" */,
 				1D8097B32F7FCBFA00C67700 /* XCLocalSwiftPackageReference "opus" */,
 				AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */,
+				AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */,
 				5511C0DE0000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */,
@@ -1098,6 +1111,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = repos/royalvnc;
 		};
+		AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../RAVESDK;
+		};
 		AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../RAVEEngine;
@@ -1149,6 +1166,26 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA07000000000000000000D6 /* RAVEUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEUI;
+		};
+		AA07000000000000000000D8 /* RAVEConsole */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEConsole;
+		};
+		AA07000000000000000000D2 /* RAVEUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEUI;
+		};
+		AA07000000000000000000D4 /* RAVEConsole */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEConsole;
+		};
 		AA03000000000000000000B2 /* RAVEDiagnostics */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;

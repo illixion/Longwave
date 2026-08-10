@@ -64,7 +64,7 @@ struct LongwaveApp: App {
         .modelContainer(for: SavedConnection.self)
 
         WindowGroup("Console", id: "console") {
-            ConsoleView(isPopout: true)
+            ConsoleWindowView()
                 .homeOrnament()
                 .trackWindowSession(id: "console")
         }

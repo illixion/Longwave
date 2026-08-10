@@ -1,3 +1,4 @@
+import RAVEConsole
 import SwiftUI
 
 /// Root of the macOS main window: a sidebar (`NavigationSplitView`) replacing
@@ -33,7 +34,7 @@ struct MacMainView: View {
             switch selectedTab ?? .connections {
             case .connections: ConnectionListView()
             case .sessions:    SessionsView()
-            case .console:     ConsoleView()
+            case .console:     RAVEConsoleScreen()
             }
         }
         .onOpenURL { url in

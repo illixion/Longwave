@@ -1,4 +1,5 @@
 import Foundation
+import RAVEConsole
 import os
 
 /// Central os.Logger instances, one category per subsystem component.
@@ -24,5 +25,16 @@ extension Logger {
     /// in OSLogStore. Only use for messages with no sensitive content.
     func line(_ message: String) {
         self.log("\(message, privacy: .public)")
+    }
+
+    /// A verbose line that should reach the in-app console when one is open and
+    /// cost nothing when it is not.
+    ///
+    /// The unified log keeps `.debug` in a memory ring buffer only — OSLogStore
+    /// never returns it — so a plain `.debug` call is invisible in the console
+    /// no matter how the level filter is set. Promoting to `.info` while a
+    /// viewer is registered is the way around that.
+    func detail(_ message: String) {
+        self.log(level: RAVELogStore.effectiveDebugLevel, "\(message, privacy: .public)")
     }
 }

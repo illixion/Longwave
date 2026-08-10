@@ -89,12 +89,15 @@ struct NativeStreamView: View {
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
             if audioManager.liveEnabled, !screenManager.liveEnabled {
-                // Audio-only (or popped out): the Screen/Audio toggles and
-                // Disconnect don't apply to this compact view — matches the
-                // old standalone Audio Stream window, which had no ornament
-                // at all beyond a home button (Disconnect lives inline in
-                // `audioUtilityRow` instead, as it did there).
-                homeOnlyControls
+                if audioPoppedOut {
+                    // Just a "Bring Back" reminder card — give it a way home.
+                    homeOnlyControls
+                }
+                // Else: the full mini player is showing, which has its own
+                // inline Home button in `audioUtilityRow` — matches the old
+                // standalone Audio Stream window, which had no ornament at
+                // all (an ornament here floats separately from the glass
+                // panel above, and used to overlap the transport controls).
             } else {
                 controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
             }
@@ -644,6 +647,7 @@ struct NativeStreamView: View {
 
             audioUtilityRow
                 .padding(.top, 22)
+                .padding(.bottom, 22)
         }
         .frame(width: Self.audioOnlyWidth)
         .glassBackgroundEffect()
@@ -659,6 +663,13 @@ struct NativeStreamView: View {
                 Image(systemName: "xmark.circle")
             }
             .help("Disconnect")
+
+            Button {
+                openWindow(id: "main", value: MainWindowID.shared)
+            } label: {
+                Image(systemName: "house")
+            }
+            .help("Open the connection manager")
 
             Button {
                 audioManager.reconnectLast()

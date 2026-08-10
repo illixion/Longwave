@@ -16,6 +16,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import RAVEDiagnostics
 import SwiftUI
 import QuartzCore
 
@@ -40,10 +41,18 @@ struct FoveatedHUDView: View {
     /// gated on the packet being recent — the point of the panel is to be trusted at a
     /// glance, and "no data" is a thing it must be able to say.
     private var perf: ControllerBridgePerf? {
-        guard let bridge, let perf = bridge.perf,
-              CACurrentMediaTime() - bridge.perfReceivedAt < Self.feedTimeout
-        else { return nil }
-        return perf
+        guard let bridge else { return nil }
+        return feedGate.gated(bridge.perf, now: CACurrentMediaTime())
+    }
+
+    /// The staleness rule, as the shared type. Every other HUD in the family
+    /// wanted this and only this one had it.
+    private var feedGate: RAVEFeedGate {
+        var gate = RAVEFeedGate(timeout: Self.feedTimeout)
+        if let receivedAt = bridge?.perfReceivedAt, receivedAt > 0 {
+            gate.markUpdated(at: receivedAt)
+        }
+        return gate
     }
     private var telemetry: ControllerBridgeTelemetry? { bridge?.telemetry }
     /// Emptied with the feed, so the graph cannot keep plotting a dead session.
@@ -52,20 +61,29 @@ struct FoveatedHUDView: View {
     /// Perf arrives at 10 Hz, so this is several missed packets rather than one late one.
     private static let feedTimeout: CFTimeInterval = 1.5
 
-    private var everHadPerf: Bool { (bridge?.perfReceivedAt ?? 0) > 0 }
+    private var everHadPerf: Bool { feedGate.hasEverReceived }
 
     private var feedStatusText: String {
         guard bridge?.isRunning == true else { return "Bridge not running" }
-        guard everHadPerf else { return "Waiting for the host's perf packet…" }
-        let age = CACurrentMediaTime() - (bridge?.perfReceivedAt ?? 0)
-        return String(format: "Host data stopped %.0fs ago", age)
+        switch feedGate.status(now: CACurrentMediaTime()) {
+        case .neverStarted:
+            return "Waiting for the host's perf packet…"
+        case .stopped(let secondsAgo):
+            return String(format: "Host data stopped %.0fs ago", secondsAgo)
+        case .live:
+            return "Host data live"
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            FrameTimeGraph(periodsMs: history)
-                .frame(height: 66)
+            RAVEFrameTimeGraph(
+                periodsMs: history.map(Double.init),
+                slots: ControllerBridgeSender.framePeriodHistoryLength,
+                emptyLabel: "no frames yet"
+            )
+            .frame(height: 66)
             pacingRow
             Divider()
             trackingSection
@@ -168,18 +186,22 @@ struct FoveatedHUDView: View {
         return client < composite * 0.9
     }
 
+    /// The frame-period window as the shared series, so the reductions below are
+    /// the same arithmetic every other HUD in the family uses.
+    private var periodSeries: RAVESampleSeries {
+        var series = RAVESampleSeries(capacity: ControllerBridgeSender.framePeriodHistoryLength)
+        for period in history { series.append(Double(period)) }
+        return series
+    }
+
     /// Mean over the last ~half second, so the headline number settles enough to read.
     private var meanPeriod: Float? {
-        let recent = history.suffix(45)
-        guard !recent.isEmpty else { return nil }
-        return recent.reduce(0, +) / Float(recent.count)
+        periodSeries.mean(overLast: 45).map(Float.init)
     }
 
     /// The 99th percentile period — the stutter, which an average never shows.
     private var worstPeriod: Float? {
-        guard !history.isEmpty else { return nil }
-        let sorted = history.sorted()
-        return sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.99))]
+        periodSeries.p99.map(Float.init)
     }
 
     @ViewBuilder
@@ -496,72 +518,11 @@ struct FoveatedHUDView: View {
 
     // MARK: Plumbing
 
+    /// The stat cell itself lives in RAVEDiagnostics now; this keeps the call
+    /// spelling the thirteen sites above already use.
     private func stat(_ label: String, value: String, tint: Color? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(value)
-                .font(.system(size: 15, weight: .medium, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(tint ?? .primary)
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
+        RAVEStatView(label, value: value, tint: tint)
     }
 }
 
-/// Scrolling frame-period graph. Bars rather than a line: a single 40 ms spike in a line
-/// chart reads as a slope between two good frames, and the spike is the whole point.
-private struct FrameTimeGraph: View {
-    let periodsMs: [Float]
-
-    /// Guides at the rates a host might be pacing to. Whichever ones fit the current
-    /// ceiling are drawn, so the graph annotates itself instead of needing a legend.
-    private static let guides: [(ms: Float, label: String)] = [
-        (8.33, "120"), (11.11, "90"), (16.67, "60")
-    ]
-
-    var body: some View {
-        Canvas { context, size in
-            guard !periodsMs.isEmpty else { return }
-            // Scaled to the 95th percentile, not the maximum: a single 65 ms hitch set the
-            // ceiling so high that every guide line collapsed onto the baseline and the
-            // graph became one spike over an empty box. Outliers clip to the top instead,
-            // where they are still perfectly visible as a full-height bar.
-            let sorted = periodsMs.sorted()
-            let p95 = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.95))]
-            let ceiling = max(20, p95 * 1.3)
-            let y = { (ms: Float) in size.height * CGFloat(1 - min(ms, ceiling) / ceiling) }
-
-            for guide in Self.guides where guide.ms < ceiling {
-                let line = Path { p in
-                    p.move(to: CGPoint(x: 0, y: y(guide.ms)))
-                    p.addLine(to: CGPoint(x: size.width, y: y(guide.ms)))
-                }
-                context.stroke(line, with: .color(.white.opacity(0.18)),
-                               style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-                context.draw(Text(guide.label).font(.system(size: 8)).foregroundStyle(.tertiary),
-                             at: CGPoint(x: size.width - 8, y: y(guide.ms) - 5), anchor: .trailing)
-            }
-
-            // Right-aligned: the newest frame is always at the same edge, so the eye can
-            // track "now" without re-finding it as the buffer fills.
-            let slots = ControllerBridgeSender.framePeriodHistoryLength
-            let barWidth = size.width / CGFloat(slots)
-            let offset = slots - periodsMs.count
-            for (index, ms) in periodsMs.enumerated() {
-                let top = y(ms)
-                let rect = CGRect(x: CGFloat(index + offset) * barWidth, y: top,
-                                  width: max(barWidth - 0.5, 0.5), height: size.height - top)
-                // Coloured by severity, not by index: 90 Hz is fine, 60 is a compromise,
-                // below that is a stutter the user felt.
-                let color: Color = ms <= 12 ? .green : ms <= 17 ? .yellow : .orange
-                context.fill(Path(rect), with: .color(color.opacity(0.85)))
-            }
-        }
-        .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(alignment: .center) {
-            if periodsMs.isEmpty {
-                Text("no frames yet").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
-}
 #endif

@@ -136,6 +136,38 @@ final class ControllerBridgeSender {
     /// True when a controller is attached and reporting motion.
     var controllerHasMotion: Bool { motion != nil }
 
+    /// Battery readouts for the wrist HUD — one per physical device the bridge is
+    /// reading (the adopted gamepad plus any spatial controllers). Polled rather
+    /// than observed: the HUD redraws on its own 10 Hz clock and a battery moves
+    /// on the order of minutes, so nothing here is worth a KVO subscription.
+    struct BatteryReadout: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let level: Float          // 0…1
+        let charging: Bool
+    }
+
+    var batteryReadouts: [BatteryReadout] {
+        var readouts: [BatteryReadout] = []
+        func append(_ device: GCController, id: String, label: String) {
+            // No battery object, unknown state, or a negative level all mean the
+            // same thing to a reader: nothing trustworthy to show, so show nothing.
+            guard let battery = device.battery, battery.batteryLevel >= 0,
+                  battery.batteryState != .unknown else { return }
+            readouts.append(BatteryReadout(id: id, label: label,
+                                           level: battery.batteryLevel,
+                                           charging: battery.batteryState == .charging))
+        }
+        if let controller { append(controller, id: "pad", label: "pad") }
+        if let left = spatialTracker.controllers[.left] {
+            append(left, id: "spatial-left", label: "left pad")
+        }
+        if let right = spatialTracker.controllers[.right] {
+            append(right, id: "spatial-right", label: "right pad")
+        }
+        return readouts
+    }
+
     func setHandPreference(_ preference: ControllerHandPreference) {
         guard preference != handPreference else { return }
         handPreference = preference

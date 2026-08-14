@@ -88,6 +88,7 @@ struct FoveatedHUDView: View {
             Divider()
             trackingSection
             switchProSection
+            batteryRow
             questSection
             Divider()
             trialRow
@@ -377,6 +378,27 @@ struct FoveatedHUDView: View {
                 text += " (set by you)"
             }
             return text + "."
+        }
+    }
+
+    // MARK: Battery
+
+    /// Every physical device's battery, in one glanceable row — the other reading you
+    /// cannot take from inside a headset. Appears only when something reports one;
+    /// charging is a glyph, and orange starts at 20% because that is roughly "finish
+    /// this round, then plug in" for both pad families.
+    @ViewBuilder
+    private var batteryRow: some View {
+        if let bridge, !bridge.batteryReadouts.isEmpty {
+            HStack(spacing: 18) {
+                ForEach(bridge.batteryReadouts) { readout in
+                    stat(readout.label + " batt",
+                         value: String(format: "%.0f%%", readout.level * 100)
+                             + (readout.charging ? " ⚡︎" : ""),
+                         tint: readout.level <= 0.2 && !readout.charging ? .orange : nil)
+                }
+                Spacer()
+            }
         }
     }
 

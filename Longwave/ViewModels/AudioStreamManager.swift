@@ -857,7 +857,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             forName: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance(),
             queue: nil
-        ) { notification in
+        ) { [weak self] notification in
             let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
             let reason = AVAudioSession.RouteChangeReason(rawValue: raw)
             let session = AVAudioSession.sharedInstance()
@@ -865,6 +865,23 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 .map { "\($0.portType.rawValue):\($0.portName)" }
                 .joined(separator: ",")
             AppLog.audioStream.line("Route change (\(reason.map(String.init(describing:)) ?? "?")) → outputs=[\(outs)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint)")
+            guard let self, reason == .categoryChange else { return }
+            // A category change we didn't cause — the broadcast pipeline's
+            // mic capture (`BroadcastMicCapture`) shares this process's one
+            // AVAudioSession and reasserts .playAndRecord to record, which
+            // resets the intended spatial experience to that category's own
+            // default (observed as forced head-tracked rendering: starting a
+            // broadcast while streaming audio silently re-spatialized it).
+            // Re-declaring our own spatial experience doesn't touch category
+            // or activation, so it can't fight Broadcast for the session —
+            // it only reclaims the one setting that got stomped.
+            if let experience = self.spatialAudioMode.avSpatialExperience {
+                do {
+                    try session.setIntendedSpatialExperience(experience)
+                } catch {
+                    AppLog.audioStream.line("Failed to reclaim spatial audio experience after category change: \(error)")
+                }
+            }
         })
         // visionOS doesn't always notify us via interruption/route-change
         // when Safari WebRTC takes the People channel — sometimes it just

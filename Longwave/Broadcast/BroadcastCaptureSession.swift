@@ -113,6 +113,15 @@ final class BroadcastMicCapture: @unchecked Sendable {
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers])
         try audioSession.setActive(true)
+        // .playAndRecord's own default spatial experience is head-tracked
+        // (built for calls), which silently re-spatializes whatever else is
+        // playing through this process's one shared session — notably the
+        // native audio streamer, whose bypass/on-off choice this category
+        // switch just stomped. Broadcasting a mic has no reason to want
+        // that; AudioStreamManager reclaims its own preference right after
+        // via the resulting category-change notification, but default to
+        // the non-surprising state ourselves too.
+        try? audioSession.setIntendedSpatialExperience(.bypassed)
 
         let engine = AVAudioEngine()
         let input = engine.inputNode

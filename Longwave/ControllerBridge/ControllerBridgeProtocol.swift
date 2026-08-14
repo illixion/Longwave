@@ -435,6 +435,8 @@ struct ControllerBridgeQuestStatus {
         /// The transform was restored from a previous run and fresh pairs have not
         /// confirmed it yet.
         static let warmStart = Flags(rawValue: 1 << 2)
+        /// The Quest is able to read its controller batteries — see `batteryLeft`.
+        static let battery = Flags(rawValue: 1 << 3)
     }
 
     var state: State
@@ -448,6 +450,13 @@ struct ControllerBridgeQuestStatus {
     /// RMS pair error after the solve; 0 until solved.
     var residualMm: Float
     var inputAgeMs: Float
+    /// Controller battery percentage, or nil when that side's level is unknown —
+    /// the controller is off, or the Quest app was never granted the permission it
+    /// needs to look (there is no OpenXR API for this; it scrapes `dumpsys`). Both
+    /// nil is therefore normal and means "show nothing", not "empty". Minutes stale
+    /// by design: the Quest polls every 30 s.
+    var batteryLeft: Int?
+    var batteryRight: Int?
 
     init?(_ data: Data) {
         guard data.count >= 28,
@@ -468,6 +477,12 @@ struct ControllerBridgeQuestStatus {
         spreadTargetMeters = f(16)
         residualMm = f(20)
         inputAgeMs = f(24)
+        func battery(_ o: Int) -> Int? {
+            guard flags.contains(.battery), b[o] <= 100 else { return nil }
+            return Int(b[o])
+        }
+        batteryLeft = battery(5)
+        batteryRight = battery(6)
     }
 }
 

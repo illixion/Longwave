@@ -389,17 +389,49 @@ struct FoveatedHUDView: View {
     /// this round, then plug in" for both pad families.
     @ViewBuilder
     private var batteryRow: some View {
-        if let bridge, !bridge.batteryReadouts.isEmpty {
-            HStack(spacing: 18) {
-                ForEach(bridge.batteryReadouts) { readout in
-                    stat(readout.label + " batt",
-                         value: String(format: "%.0f%%", readout.level * 100)
-                             + (readout.charging ? " ⚡︎" : ""),
-                         tint: readout.level <= 0.2 && !readout.charging ? .orange : nil)
+        if !batteryChips.isEmpty {
+            HStack(spacing: 14) {
+                ForEach(batteryChips) { chip in
+                    stat(chip.label + " batt",
+                         value: "\(chip.percent)%" + (chip.charging ? " ⚡︎" : ""),
+                         tint: chip.percent <= 20 && !chip.charging ? .orange : nil)
                 }
                 Spacer()
             }
         }
+    }
+
+    /// One chip per battery anyone can see: the locally paired pads (a fraction and
+    /// a charging state, from GameController) and the desk-Quest's controllers (a
+    /// whole percent off the 0x0D status, no charging state — the Quest cannot tell).
+    private struct BatteryChip: Identifiable {
+        let id: String
+        let label: String
+        let percent: Int
+        let charging: Bool
+    }
+
+    private var batteryChips: [BatteryChip] {
+        var chips = (bridge?.batteryReadouts ?? []).map {
+            BatteryChip(id: $0.id,
+                        label: $0.label,
+                        percent: Int(($0.level * 100).rounded()),
+                        charging: $0.charging)
+        }
+        /// nil is the norm rather than an error here: a controller that is off, or a
+        /// Quest app that was never granted the permission it needs to read the
+        /// levels, both simply contribute no chip.
+        if let quest {
+            if let left = quest.batteryLeft {
+                chips.append(BatteryChip(id: "quest-left", label: "quest L",
+                                         percent: left, charging: false))
+            }
+            if let right = quest.batteryRight {
+                chips.append(BatteryChip(id: "quest-right", label: "quest R",
+                                         percent: right, charging: false))
+            }
+        }
+        return chips
     }
 
     // MARK: Desk-Quest controllers

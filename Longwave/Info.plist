@@ -26,7 +26,19 @@
 			<key>ProfileName</key>
 			<string>ExtendedGamepad</string>
 		</dict>
+		<!-- Spatial controllers (PSVR2 Sense etc.) for the PCVR controller bridge —
+		     without this profile GameController never delivers them to the app. -->
+		<dict>
+			<key>ProfileName</key>
+			<string>SpatialGamepad</string>
+		</dict>
 	</array>
+	<!-- Same failure mode as NSHandsTrackingUsageDescription below: the bridge's
+	     SpatialAccessoryTracker requests .accessoryTracking authorization when a
+	     spatial controller connects, and ARKit SIGABRTs on a request whose usage
+	     string is missing rather than denying it. -->
+	<key>NSAccessoryTrackingUsageDescription</key>
+	<string>Longwave tracks the position of your spatial game controllers so they can drive VR controllers in PCVR games on your PC.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Longwave broadcasts your selected camera (such as Persona or Mirror My View) to your streaming server.</string>
 	<key>NSMicrophoneUsageDescription</key>

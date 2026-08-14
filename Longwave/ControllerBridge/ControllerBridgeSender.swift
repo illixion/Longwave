@@ -4,9 +4,9 @@
 //  session is live, this streams the user's hand-tracking wrist poses (ARKit
 //  `HandTrackingProvider`) plus controller inputs to the host
 //  (`cb_input_state_t`, packet 0x03 — see ControllerBridgeProtocol.swift). The
-//  host's OpenXR API layer presents emulated Valve Index controllers positioned
-//  at the hands, so PCVR titles without skeletal-hand support still get full
-//  controllers.
+//  host's OpenXR API layer presents emulated controllers (Oculus Touch profile
+//  preferred, Valve Index fallback) positioned at the hands, so PCVR titles
+//  without skeletal-hand support still get full controllers.
 //
 //  Transport: UDP :9520 for the poses, and the TCP control link (:9523,
 //  `BridgeControlLink`) for everything else — haptics, telemetry, perf, the game
@@ -20,7 +20,10 @@
 //  a session token on it (`cb_rendezvous_t`) every two seconds, and everything real
 //  runs on the direct link rather than depending on the channel surviving.
 //
-//  Two input sources fill the button/stick fields, and they coexist:
+//  Three input sources fill the button/stick fields, and they coexist:
+//    - Spatial controllers (PSVR2 Sense etc., `SpatialAccessoryTracker`): real
+//      per-hand 6DoF poses + gyros + buttons; a tracked one replaces the
+//      wrist-derived pose for its hand. Best-effort — dormant without hardware.
 //    - A physical Switch Pro controller (`GameController`), when connected.
 //    - Per-finger thumb pinches (`HandGestureEngine` + `GestureControllerMapping`),
 //      which make the physical controller OPTIONAL: right index tap = trigger,
@@ -103,6 +106,10 @@ final class ControllerBridgeSender {
     /// The controller we are reading, and its motion sensor if it has one.
     private(set) var controller: GCController?
     private var controllerObservers: [NSObjectProtocol] = []
+
+    /// Spatial controllers (PSVR2 Sense etc.) — their own discovery, their own
+    /// ARKit provider, per-hand rather than adopted-singular. See the class doc.
+    let spatialTracker = SpatialAccessoryTracker()
 
     /// Nil when no controller is attached or the attached one reports no rotation rate.
     /// A Switch Pro does report one; not every extended gamepad does, and reading
@@ -250,7 +257,10 @@ final class ControllerBridgeSender {
 
     // Haptics (driver → Switch Pro rumble), keyed by controller side (0 = left, 1 = right).
     private var hapticEngines: [UInt8: CHHapticEngine] = [:]
-    private var hapticEngineOwner: ObjectIdentifier?
+    /// Which device each side's cached engine was built against — per side, because
+    /// a Sense pair is two devices, and a single shared owner would tear down both
+    /// engines on every alternating left/right pulse.
+    private var hapticEngineOwners: [UInt8: ObjectIdentifier] = [:]
     private var lastHapticTime: [UInt8: CFTimeInterval] = [:]
 
     // Tasks
@@ -386,6 +396,7 @@ final class ControllerBridgeSender {
             debugTune = tune
         }
         startControllerWatch()
+        spatialTracker.start()
         startHandTracking()
         startSendLoop()
         log.notice("ControllerBridge sender started → \(self.host, privacy: .public)")
@@ -417,6 +428,9 @@ final class ControllerBridgeSender {
     }
 
     private func adopt(_ candidate: GCController) {
+        // Spatial controllers are per-hand devices with their own lifecycle; the
+        // tracker owns them (they carry no extended gamepad profile anyway).
+        guard candidate.productCategory != GCProductCategorySpatialController else { return }
         guard candidate.extendedGamepad != nil else {
             log.notice("Ignoring a controller with no extended gamepad profile.")
             return
@@ -477,9 +491,10 @@ final class ControllerBridgeSender {
         directHost = nil
         hapticEngines.values.forEach { $0.stop() }
         hapticEngines.removeAll()
-        hapticEngineOwner = nil
+        hapticEngineOwners.removeAll()
         controllerObservers.forEach { NotificationCenter.default.removeObserver($0) }
         controllerObservers.removeAll()
+        spatialTracker.stop()
         // Leave the IMU powered down: a sender that has stopped has no use for it, and the
         // sensor costs the controller battery for as long as it is active.
         motion?.sensorsActive = false
@@ -640,10 +655,13 @@ final class ControllerBridgeSender {
     }
 
     private func playHaptic(_ haptic: ControllerBridgeHaptic) {
-        // The controller we actually read input from, not whatever the framework lists
-        // first — rumbling a different device than the one in the user's hands was the
-        // same bug the input path had.
-        guard let controller, let deviceHaptics = controller.haptics else { return }
+        // The device actually occupying the pulsed hand: a spatial controller of that
+        // chirality if one is connected, else the adopted gamepad — not whatever the
+        // framework lists first; rumbling a different device than the one in the
+        // user's hands was the same bug the input path had.
+        let side: BridgeHand = haptic.controller == 0 ? .left : .right
+        guard let target = spatialTracker.controllers[side] ?? controller,
+              let deviceHaptics = target.haptics else { return }
 
         // Games spam short pulses at frame rate; per-side coalescing keeps us from
         // stacking a CoreHaptics player per packet.
@@ -651,11 +669,11 @@ final class ControllerBridgeSender {
         if now - (lastHapticTime[haptic.controller] ?? 0) < 0.010 { return }
         lastHapticTime[haptic.controller] = now
 
-        // Cached engines belong to one specific controller; rebuild on swap.
-        if hapticEngineOwner != ObjectIdentifier(controller) {
-            hapticEngines.values.forEach { $0.stop() }
-            hapticEngines.removeAll()
-            hapticEngineOwner = ObjectIdentifier(controller)
+        // Cached engines belong to one specific device; rebuild this side's on swap.
+        if hapticEngineOwners[haptic.controller] != ObjectIdentifier(target) {
+            hapticEngines[haptic.controller]?.stop()
+            hapticEngines[haptic.controller] = nil
+            hapticEngineOwners[haptic.controller] = ObjectIdentifier(target)
         }
 
         let engine: CHHapticEngine
@@ -1087,6 +1105,32 @@ final class ControllerBridgeSender {
             state.rightConfidence = gripConfidence[.right] ?? 128
         }
 
+        /* Spatial controllers: a tracked accessory pose replaces the wrist-derived
+           pose for its hand. It is rigid to the physical controller (no finger-motion
+           coupling, no grip-offset estimation) and carries its own gyro, so both the
+           pose and the per-hand gyro attribution are simply *known* for that side —
+           the Switch Pro IMU dance below skips any hand claimed here. An untracked or
+           stale accessory ages out in trackedPose() and the wrist pose (already set
+           above) carries the hand through the dropout. */
+        let spatialNow = CACurrentMediaTime()
+        var spatialClaims: (left: Bool, right: Bool) = (false, false)
+        if let pose = spatialTracker.trackedPose(for: .left, now: spatialNow) {
+            state.left = pose
+            state.leftConfidence = 255
+            flags.insert(.leftHandTracked)
+            flags.insert(.leftGyroValid)
+            flags.insert(.gyroValid)
+            spatialClaims.left = true
+        }
+        if let pose = spatialTracker.trackedPose(for: .right, now: spatialNow) {
+            state.right = pose
+            state.rightConfidence = 255
+            flags.insert(.rightHandTracked)
+            flags.insert(.rightGyroValid)
+            flags.insert(.gyroValid)
+            spatialClaims.right = true
+        }
+
         // Hand-gesture controller emulation. Held pinches → buttons/triggers, left
         // thumb+index → the locomotion stick. Applied first so a physical controller
         // (below) augments rather than is masked by it.
@@ -1111,6 +1155,12 @@ final class ControllerBridgeSender {
             flags.insert(.controllerPresent)
             applyGamepad(pad, to: &state)
         }
+        for hand in [BridgeHand.left, .right] {
+            if let spatial = spatialTracker.controllers[hand] {
+                flags.insert(.controllerPresent)
+                applySpatialController(spatial, hand: hand, to: &state)
+            }
+        }
         if let motion {
             let rr = motion.rotationRate
             let gyro = SIMD3<Float>(Float(rr.x), Float(rr.y), Float(rr.z))
@@ -1118,11 +1168,13 @@ final class ControllerBridgeSender {
                controller's angular SPEED, which is the magnitude of that rate — see
                ControllerHandAssignment for why speed rather than axes. */
             let holder = resolveHolder(controllerSpeed: simd_length(gyro))
-            if holder.claimsLeft {
+            // A hand a spatial controller claimed keeps that controller's own gyro —
+            // the gamepad IMU can only be describing some *other* hand (or a desk).
+            if holder.claimsLeft && !spatialClaims.left {
                 state.left.gyro = gyro
                 flags.insert(.leftGyroValid)
             }
-            if holder.claimsRight {
+            if holder.claimsRight && !spatialClaims.right {
                 state.right.gyro = gyro
                 flags.insert(.rightGyroValid)
             }
@@ -1177,6 +1229,49 @@ final class ControllerBridgeSender {
         state.rightStick = SIMD2<Float>(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
         state.leftTrigger = max(state.leftTrigger, pad.leftTrigger.value)
         state.rightTrigger = max(state.rightTrigger, pad.rightTrigger.value)
+    }
+
+    /// Map one spatial controller (a single-hand device, read through the live-input
+    /// element API — these are not extended gamepads) onto its side of the protocol's
+    /// Switch-Pro-shaped button set, mirroring the split controller_synth.h applies:
+    /// right = A/B + ZR/R + right stick + PLUS, left = X/Y + ZL/L + left stick + MINUS.
+    /// Merges like the gamepad path: union with gestures, max on triggers, deflection
+    /// wins on sticks.
+    private func applySpatialController(_ controller: GCController, hand: BridgeHand,
+                                        to state: inout ControllerBridgeInputState) {
+        let input = controller.input
+        func pressed(_ name: GCButtonElementName) -> Bool {
+            input.buttons[name]?.pressedInput.isPressed == true
+        }
+        var buttons: ControllerBridgeProtocol.Buttons = []
+        let trigger = input.buttons[.trigger]?.pressedInput.value ?? 0
+        let stick: SIMD2<Float> = input.dpads[.thumbstick].map {
+            SIMD2($0.xyAxes.value.x, $0.xyAxes.value.y)
+        } ?? .zero
+        if hand == .right {
+            // On the right Sense, `.a`/`.b` are Cross/Circle — the positions Touch
+            // bindings expect as a/b.
+            if pressed(.a) { buttons.insert(.a) }
+            if pressed(.b) { buttons.insert(.b) }
+            if pressed(.grip) { buttons.insert(.r) }
+            if pressed(.thumbstickButton) { buttons.insert(.rstick) }
+            if pressed(.menu) { buttons.insert(.plus) }
+            if trigger > 0.75 { buttons.insert(.zr) }
+            state.rightTrigger = max(state.rightTrigger, trigger)
+            if simd_length(stick) > 0.15 { state.rightStick = stick }
+        } else {
+            // On the left Sense the same element names are Square/Triangle — the
+            // left-hand x/y positions.
+            if pressed(.a) { buttons.insert(.x) }
+            if pressed(.b) { buttons.insert(.y) }
+            if pressed(.grip) { buttons.insert(.l) }
+            if pressed(.thumbstickButton) { buttons.insert(.lstick) }
+            if pressed(.menu) { buttons.insert(.minus) }
+            if trigger > 0.75 { buttons.insert(.zl) }
+            state.leftTrigger = max(state.leftTrigger, trigger)
+            if simd_length(stick) > 0.15 { state.leftStick = stick }
+        }
+        state.buttons.formUnion(buttons)
     }
 
     /// How long menu / system must be held before they are sent. See `GestureCharge`.

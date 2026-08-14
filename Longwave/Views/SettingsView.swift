@@ -8,6 +8,9 @@ struct SettingsView: View {
     @AppStorage(ConnectionDefaults.Keys.vncTouchMode) private var vncTouchModeRaw = TouchMode.relative.rawValue
     @AppStorage(ConnectionDefaults.Keys.vncPort) private var vncPort = ConnectionType.vnc.defaultPort
 
+    // Audio
+    @AppStorage(ConnectionDefaults.Keys.spatialAudioMode) private var spatialAudioModeRaw = SpatialAudioMode.auto.rawValue
+
     #if os(visionOS)
     // Terminal (applies live to open terminal windows, unlike the
     // new-connection defaults above)
@@ -61,6 +64,17 @@ struct SettingsView: View {
                         }
                     }
                     portField("Port", value: $vncPort)
+                }
+
+                Section("Audio") {
+                    Picker("Spatial Audio", selection: $spatialAudioModeRaw) {
+                        ForEach(SpatialAudioMode.allCases, id: \.rawValue) { spatialMode in
+                            Text(spatialMode.label).tag(spatialMode.rawValue)
+                        }
+                    }
+                    Text("Auto leaves the system's own spatial audio setting in place. On forces head-tracked rendering; Off forces flat stereo passthrough.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 #if os(visionOS)

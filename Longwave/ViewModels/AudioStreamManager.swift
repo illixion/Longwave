@@ -21,13 +21,44 @@ enum AudioMode: String, Sendable, CaseIterable {
     case speaker, music
 }
 
+/// How the stream's session declares its spatial experience.
+/// - `.auto`: never calls `setIntendedSpatialExperience` — the session is left
+///   at whatever the system's own default resolves to for this app/route.
+/// - `.on`: explicit head-tracked spatial rendering.
+/// - `.off`: explicit flat bypass (stereo/multichannel passthrough).
+enum SpatialAudioMode: String, Sendable, CaseIterable {
+    case auto, on, off
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto"
+        case .on: return "On"
+        case .off: return "Off"
+        }
+    }
+
+    #if canImport(UIKit)
+    /// `nil` for `.auto` — the caller should skip the `setIntendedSpatialExperience`
+    /// call entirely rather than pass this through, since there's no "system
+    /// default" case in that API.
+    var avSpatialExperience: (any AVAudioSessionSpatialExperience)? {
+        switch self {
+        case .auto: return nil
+        case .on: return .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic)
+        case .off: return .bypassed
+        }
+    }
+    #endif
+}
+
 /// Receives an uncompressed PCM audio stream from the Longwave Companion
 /// Mac menu bar app and plays it through AVAudioEngine.
 ///
 /// The stream arrives as an already-mixed stereo/multichannel signal, so
-/// spatializing it is a user choice rather than automatic — `spatialAudioEnabled`
-/// (mini-player button) switches the session between head-tracked spatial
-/// rendering and flat bypass, applied live with no reconnect needed.
+/// spatializing it is a user choice rather than automatic — `spatialAudioMode`
+/// (mini-player button, defaulting from Settings) switches the session
+/// between head-tracked spatial rendering, flat bypass, and the system
+/// default, applied live with no reconnect needed.
 @Observable
 final class AudioStreamManager {
 
@@ -61,20 +92,26 @@ final class AudioStreamManager {
     }
 
     /// Whether decoded audio is spatialized (head-tracked) at the session
-    /// level, or bypassed (flat stereo/multichannel passthrough — the
-    /// default, since the stream already arrives pre-mixed from the Mac).
-    /// Persisted; applied live to the running session, no rebuild needed.
-    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: "spatialAudioEnabled") {
+    /// level, bypassed (flat stereo/multichannel passthrough), or left on the
+    /// system's own default (the stream already arrives pre-mixed from the
+    /// Mac, so spatializing it is a user choice, not automatic). Seeded from
+    /// the Settings default the first time this launches; once the user
+    /// touches the mini-player button that explicit choice is persisted and
+    /// takes over. Applied live to the running session, no rebuild needed.
+    var spatialAudioMode: SpatialAudioMode = SpatialAudioMode(
+        rawValue: UserDefaults.standard.string(forKey: "spatialAudioMode") ?? ""
+    ) ?? ConnectionDefaults.spatialAudioMode {
         didSet {
-            guard spatialAudioEnabled != oldValue else { return }
-            UserDefaults.standard.set(spatialAudioEnabled, forKey: "spatialAudioEnabled")
-            receiver?.setSpatialAudioEnabled(spatialAudioEnabled)
+            guard spatialAudioMode != oldValue else { return }
+            UserDefaults.standard.set(spatialAudioMode.rawValue, forKey: "spatialAudioMode")
+            receiver?.setSpatialAudioMode(spatialAudioMode)
         }
     }
 
-    /// Flips spatialization on/off (mini-player button).
+    /// Flips between explicit on/off (mini-player button) — jumps out of
+    /// `.auto` the first time it's pressed.
     func toggleSpatialAudio() {
-        spatialAudioEnabled.toggle()
+        spatialAudioMode = (spatialAudioMode == .on) ? .off : .on
     }
 
     /// Whether Control Center remote-command targets have been installed yet
@@ -276,7 +313,7 @@ final class AudioStreamManager {
 
         rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
 
-        let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: audioMode, eq: eqSettings, spatialAudioEnabled: spatialAudioEnabled)
+        let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: audioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
         receiver.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handle(event)
@@ -666,11 +703,12 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// EQ configuration applied to `eqNode`; survives engine rebuilds.
     private nonisolated(unsafe) var eqSettings: EQSettings
     private nonisolated(unsafe) var eqNode: AVAudioUnitEQ?
-    /// Head-tracked spatial rendering vs flat bypass; survives engine
-    /// rebuilds and is re-applied to the session live via `setSpatialAudioEnabled`.
-    private nonisolated(unsafe) var spatialAudioEnabled: Bool
+    /// Head-tracked spatial rendering vs flat bypass vs system default;
+    /// survives engine rebuilds and is re-applied to the session live via
+    /// `setSpatialAudioMode`.
+    private nonisolated(unsafe) var spatialAudioMode: SpatialAudioMode
 
-    nonisolated init(hostname: String, port: UInt16, token: String, lowLatency: Bool = false, volume: Float = 1.0, mode: AudioMode = .speaker, eq: EQSettings = EQSettings(), spatialAudioEnabled: Bool = false) {
+    nonisolated init(hostname: String, port: UInt16, token: String, lowLatency: Bool = false, volume: Float = 1.0, mode: AudioMode = .speaker, eq: EQSettings = EQSettings(), spatialAudioMode: SpatialAudioMode = .auto) {
         self.hostname = hostname
         self.port = port
         self.token = token
@@ -679,7 +717,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         self.prebufferFrameCount = lowLatency ? 2 : 4
         self.volume = volume
         self.eqSettings = eq
-        self.spatialAudioEnabled = spatialAudioEnabled
+        self.spatialAudioMode = spatialAudioMode
     }
 
     /// Adjusts output gain live (and for subsequent engine rebuilds).
@@ -698,17 +736,19 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
     }
 
-    /// Switches the session between head-tracked spatial rendering and flat
-    /// bypass live — `setIntendedSpatialExperience` takes effect on an
-    /// already-active session, so no engine/session rebuild is needed.
-    nonisolated func setSpatialAudioEnabled(_ enabled: Bool) {
+    /// Switches the session between head-tracked spatial rendering, flat
+    /// bypass, and the system default live — `setIntendedSpatialExperience`
+    /// takes effect on an already-active session, so no engine/session
+    /// rebuild is needed. `.auto` is a no-op here: there's no API to revert
+    /// an already-explicit choice back to "system default" mid-session, so
+    /// switching into `.auto` only has effect on the *next* fresh connect.
+    nonisolated func setSpatialAudioMode(_ newMode: SpatialAudioMode) {
         queue.async { [self] in
-            spatialAudioEnabled = enabled
+            spatialAudioMode = newMode
             #if canImport(UIKit)
+            guard let experience = newMode.avSpatialExperience else { return }
             do {
-                try AVAudioSession.sharedInstance().setIntendedSpatialExperience(
-                    enabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
-                )
+                try AVAudioSession.sharedInstance().setIntendedSpatialExperience(experience)
             } catch {
                 AppLog.audioStream.line("Failed to update spatial audio experience: \(error)")
             }
@@ -1185,8 +1225,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
             sessionConfigured = true
             // AVAudioEngine isn't a Now Playing candidate so the per-app
             // Spatialize Stereo system setting doesn't apply here — the
-            // user's `spatialAudioEnabled` toggle is this stream's only
-            // control over head-tracked rendering vs flat bypass.
+            // user's `spatialAudioMode` toggle is this stream's only
+            // control over head-tracked rendering vs flat bypass. `.auto`
+            // skips the call outright and leaves the session at whatever the
+            // system resolves for an app that never states an opinion.
             // Speaker mode uses .mixWithOthers to coexist with other apps and
             // VoIP calls (ineligible for Now Playing as a trade-off). Music
             // mode takes exclusive focus (no mix) so it *is* a Now Playing /
@@ -1194,9 +1236,9 @@ final class AudioStreamReceiver: @unchecked Sendable {
             do {
                 let options: AVAudioSession.CategoryOptions = mode == .music ? [] : [.mixWithOthers]
                 try session.setCategory(.playback, mode: .default, options: options)
-                try session.setIntendedSpatialExperience(
-                    spatialAudioEnabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
-                )
+                if let experience = spatialAudioMode.avSpatialExperience {
+                    try session.setIntendedSpatialExperience(experience)
+                }
                 if mode == .speaker {
                     // Keep a mixable session running (un-ducked) when the user
                     // looks at other windows. Music mode is a real Now Playing

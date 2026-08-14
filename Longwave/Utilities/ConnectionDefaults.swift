@@ -18,6 +18,10 @@ enum ConnectionDefaults {
         static let terminalScrollPad = "terminal_scroll_pad"
         /// UUID of the SSH host last picked in the Projects tab.
         static let projectsLastHost = "projects_last_host"
+        /// Default spatial audio behavior for the native audio streamer,
+        /// seeding `AudioStreamManager.spatialAudioMode` the first time it
+        /// runs. Later, explicit mini-player toggling overrides it.
+        static let spatialAudioMode = "default_spatial_audio_mode"
         #if MOONLIGHT_ENABLED
         static let moonlightPort = "default_ml_port"
         static let moonlightResolution = "default_ml_resolution"
@@ -43,6 +47,10 @@ enum ConnectionDefaults {
 
     static var vncTouchMode: TouchMode {
         TouchMode(rawValue: defaults.string(forKey: Keys.vncTouchMode) ?? "") ?? .relative
+    }
+
+    static var spatialAudioMode: SpatialAudioMode {
+        SpatialAudioMode(rawValue: defaults.string(forKey: Keys.spatialAudioMode) ?? "") ?? .auto
     }
 
     /// SwiftTerm's default is 12 pt; stored 0/absent means "not customized".

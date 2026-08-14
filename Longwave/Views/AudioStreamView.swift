@@ -110,12 +110,18 @@ struct AudioStreamView: View {
             } label: {
                 Image(systemName: "person.spatialaudio.stereo.fill")
             }
-            .tint(audioManager.spatialAudioEnabled ? .accentColor : nil)
-            .help(audioManager.spatialAudioEnabled
-                  ? "Spatial Audio On — head-tracked rendering"
-                  : "Spatial Audio Off — flat stereo playback")
+            .tint(audioManager.spatialAudioMode == .on ? .accentColor : nil)
+            .help(spatialAudioHelp)
         }
         .buttonStyle(.borderless)
         .font(.title3)
+    }
+
+    private var spatialAudioHelp: String {
+        switch audioManager.spatialAudioMode {
+        case .auto: return "Spatial Audio: Auto — follows the system default"
+        case .on: return "Spatial Audio On — head-tracked rendering"
+        case .off: return "Spatial Audio Off — flat stereo playback"
+        }
     }
 }

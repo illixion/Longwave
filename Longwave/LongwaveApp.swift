@@ -240,7 +240,11 @@ struct LongwaveApp: App {
                 // two fight over the same intent.
                 .persistentSystemOverlays(.hidden)
         }
-        .immersionStyle(selection: .constant(.progressive), in: .progressive)
+        // Mixed, not progressive: the system only composites the stream's alpha as
+        // passthrough in .mixed — in .progressive the portal is backed with black, which
+        // defeats the host's ALPHA_BLEND / chroma-key cutouts. Opaque game frames cover
+        // the view either way, so games are unaffected.
+        .immersionStyle(selection: .constant(.mixed), in: .mixed, .progressive)
         .upperLimbVisibility(.hidden)
         #endif
         #endif

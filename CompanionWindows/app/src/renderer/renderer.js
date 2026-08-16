@@ -952,7 +952,12 @@ function restorePcvrOptions() {
   if (['lan', 'tailnet'].includes(saved.mode)) el.fovModeSelect.value = saved.mode;
   if (['performance', 'balanced', 'quality'].includes(saved.quality)) el.fovQuality.value = saved.quality;
   if (['on', 'off'].includes(saved.vrchatOsc)) el.fovVrchatOsc.value = saved.vrchatOsc;
-  if (typeof saved.bundleId === 'string' && saved.bundleId) el.fovBundleId.value = saved.bundleId;
+  // Edition select, formerly a free-text bundle id. Only the two editions are
+  // valid; anything else saved by an older build (e.g. the stale "pro.longwave"
+  // default that made discovery invisible to both real apps) resets to App Store.
+  if (['pro.longwave.app', 'pro.longwave.oss'].includes(saved.bundleId)) {
+    el.fovBundleId.value = saved.bundleId;
+  }
   if (Number.isInteger(saved.port) && saved.port > 0 && saved.port <= 65535) el.fovPort.value = String(saved.port);
   if (typeof saved.lanIpAddress === 'string') lanAdvertiseIp = saved.lanIpAddress;
   if (el.fovModeSelect.value === 'lan') el.fovIp.value = lanAdvertiseIp;

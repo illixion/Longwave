@@ -174,9 +174,15 @@
               <summary>Advanced host settings</summary>
               <div class="fields">
                 <label class="field">
-                  <span>visionOS bundle ID</span>
-                  <input id="fovBundleId" type="text" autocomplete="off" spellcheck="false"
-                         value="pro.longwave" />
+                  <span>Headset app edition</span>
+                  <select id="fovBundleId">
+                    <option value="pro.longwave.app" selected>App Store (pro.longwave.app)</option>
+                    <option value="pro.longwave.oss">Open source (pro.longwave.oss)</option>
+                  </select>
+                  <small>
+                    Discovery only shows this PC to the app it names — pick the edition
+                    installed on the headset. Applies on the next PCVR start.
+                  </small>
                 </label>
                 <label class="field">
                   <span>Session port</span>

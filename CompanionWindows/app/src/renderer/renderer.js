@@ -364,9 +364,13 @@ function renderPcvrSummary() {
   } else if (f.state === 'error' || partial) {
     el.pcvrStatusTitle.textContent = 'PCVR needs attention';
     el.pcvrStatusDetail.textContent = f.detail || 'One or more PCVR services did not start correctly.';
-  } else if (f.gameRunning) {
+  } else if (f.titleRunning) {
+    // Deliberately not f.gameRunning: the broker is itself an OpenXR app, so that bit is
+    // true for any live session. Only a launched title counts as "a game is running".
     el.pcvrStatusTitle.textContent = 'Game streaming';
-    el.pcvrStatusDetail.textContent = 'An OpenXR game is connected to the CloudXR runtime.';
+    el.pcvrStatusDetail.textContent = f.titleName
+      ? `${f.titleName} is connected to the CloudXR runtime.`
+      : 'An OpenXR game is connected to the CloudXR runtime.';
   } else if (f.clientConnected) {
     el.pcvrStatusTitle.textContent = 'Vision Pro connected';
     el.pcvrStatusDetail.textContent = f.sessionStatus || 'The headset is connected to this PC.';
@@ -768,7 +772,9 @@ function renderFoveated(f) {
     ? (f.runtimeRunning ? 'Runtime running' : 'Available')
     : (on ? 'Not installed' : 'Checked when PCVR starts');
   el.fovClient.textContent = f.clientConnected ? (f.clientAddress || 'Connected') : 'Not connected';
-  el.fovSession.textContent = f.gameRunning ? 'Game running' : (f.sessionStatus || 'Idle');
+  el.fovSession.textContent = f.titleRunning
+    ? (f.titleName || 'Game running')
+    : (f.sessionStatus || 'Idle');
 
   // The QR itself belongs to a large, masked-by-default window managed by the main process.
   if (f.pairingRequired && (f.qrPngDataUri || f.qrPayload)) {
@@ -922,7 +928,9 @@ async function onPcvrAction() {
 }
 
 async function stopPcvr() {
-  if (!await window.hotspot.confirmPcvrStop()) return;
+  // Confirm only when stopping would kill a running game. An idle session (the
+  // "OpenXR app" being merely the broker) stops with one click.
+  if (lastFoveated?.titleRunning && !await window.hotspot.confirmPcvrStop()) return;
   pcvrBusy = true;
   pcvrBusyOp = 'stop';
   setFovOpMsg('Stopping PCVR…');

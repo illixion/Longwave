@@ -39,24 +39,76 @@ enum FoveatedHostInfo {
         static let serviceType = "_apple-foveated-streaming._tcp"
     }
 
-    /// How long to wait for either route before giving up and using the fallback.
-    /// Short on purpose: this sits directly in front of "Start streaming", and a
-    /// PC that cannot answer in a second is not going to be worth waiting on.
-    private static let deadline: Duration = .seconds(2)
+    /// How long to wait for a discovery step. Five seconds, not the two it started as:
+    /// a cold Bonjour browse on device is routinely slower than a warm one on a Mac, and
+    /// the cost of being impatient here is not a slow connect — it is silently opening in
+    /// the wrong immersion, which is far more expensive than waiting.
+    private static let deadline: Duration = .seconds(5)
 
     private static let log = Logger(subsystem: "pro.longwave", category: "FoveatedHostInfo")
 
+    /// Where the PC was last reached, so discovery failing once does not mean starting
+    /// from nothing. Bonjour is the fragile step in the chain — a browse that comes back
+    /// empty is indistinguishable from having no PC — and the address of a machine that
+    /// answered a minute ago is the best guess available.
+    private static let lastAddressKey = "pcvr.hostInfo.lastAddress"
+    private static let lastPortKey = "pcvr.hostInfo.lastPort"
+
+    private static var lastKnownHost: DiscoveredHost? {
+        get {
+            let defaults = UserDefaults.standard
+            guard let address = defaults.string(forKey: lastAddressKey) else { return nil }
+            let port = defaults.integer(forKey: lastPortKey)
+            return port > 0 ? DiscoveredHost(address: address, port: port) : nil
+        }
+        set {
+            UserDefaults.standard.set(newValue?.address, forKey: lastAddressKey)
+            UserDefaults.standard.set(newValue?.port ?? 0, forKey: lastPortKey)
+        }
+    }
+
+    /// How the last answer was obtained, for the tab to report. Guessing wrong about
+    /// immersion is the failure that keeps recurring, so it is worth being able to see
+    /// which route answered rather than inferring it from the result.
+    enum Source: String {
+        case address = "the address you typed"
+        case discovered = "a PC found on the network"
+        case remembered = "the PC's last known address"
+        case none = "nothing"
+    }
+
+    private(set) static var lastSource: Source = .none
+
     /// The style the PC wants, or nil when nothing answered in time.
     static func immersionStyle(for connection: SavedConnection) async -> FoveatedImmersionStyle? {
-        let style: FoveatedImmersionStyle?
+        var style: FoveatedImmersionStyle?
         switch connection.foveatedConnectionMode {
         case .local:
             let host = connection.hostname.trimmingCharacters(in: .whitespaces)
             style = host.isEmpty ? nil : await overHTTP(host: host, sessionPort: connection.port)
+            if style != nil {
+                lastSource = .address
+                lastKnownHost = DiscoveredHost(address: host, port: connection.port)
+            }
         case .systemDiscovered:
             style = await overBonjour()
+            if style != nil { lastSource = .discovered }
         }
-        log.notice("Host immersion: \(style?.rawValue ?? "unknown — falling back", privacy: .public)")
+
+        /* Discovery failing is not the same as the PC being gone, and the difference
+           matters: an empty browse silently opens progressive against a host serving
+           mixed, and — worse — makes a reconnect give up on a PC that is merely
+           restarting. So fall back to wherever it answered last. */
+        if style == nil, let remembered = lastKnownHost {
+            style = await overHTTP(host: remembered.address, sessionPort: remembered.port)
+            if style != nil {
+                lastSource = .remembered
+                log.notice("Discovery found nothing; the PC answered at its last known address.")
+            }
+        }
+        if style == nil { lastSource = .none }
+
+        log.notice("Host immersion: \(style?.rawValue ?? "unknown — falling back", privacy: .public) via \(lastSource.rawValue, privacy: .public)")
         return style
     }
 
@@ -155,7 +207,9 @@ enum FoveatedHostInfo {
             }
         }
         guard let first = answers.first else { return nil }
-        return answers.allSatisfy { $0 == first } ? first : nil
+        guard answers.allSatisfy({ $0 == first }) else { return nil }
+        if hosts.count == 1 { lastKnownHost = hosts.first }
+        return first
     }
 
     private struct DiscoveredHost {

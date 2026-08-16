@@ -29,7 +29,7 @@ struct LongwaveApp: App {
     /// was opened with is the fact worth keeping, and the PC decided it before the
     /// space existed.
     private var foveatedImmersionBinding: Binding<any ImmersionStyle> {
-        Binding(get: { foveatedManager.immersionStyle.systemStyle }, set: { _ in })
+        Binding(get: { foveatedManager.effectiveImmersionStyle.systemStyle }, set: { _ in })
     }
     #endif
 

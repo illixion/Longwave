@@ -419,11 +419,34 @@ private struct PCVRSessionForm: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                if manager.immersionUnanswered {
+                if let disagreement = manager.alphaDisagreement {
+                    // The host's own telemetry contradicting the style we opened in. The
+                    // loudest thing this panel can say, because it is the one case where
+                    // the tiles above are describing something the PC is not doing.
+                    Label(disagreement, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if manager.immersionStyle == nil {
+                    Label("The PC decides this. It is read when you connect.",
+                          systemImage: "pc")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if manager.immersionUnanswered {
                     Label("The PC did not answer when this session started, so it opened in Progressive.",
                           systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !manager.isDisconnected {
+                    // Which route answered, not just what it said. Opening in the wrong
+                    // immersion is the failure that keeps coming back here, and every time
+                    // the first question has been "did it actually ask the PC, and how".
+                    Label("Read from \(FoveatedHostInfo.lastSource.rawValue) when this session started.",
+                          systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

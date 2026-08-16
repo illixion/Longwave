@@ -56,9 +56,45 @@ final class FoveatedConnectionManager {
     /// Restyling a live space was tried and does not hold: the Digital Crown
     /// force-fades to zero, the space can end up in a style that disagrees with
     /// the binding, and a space that flips to mixed against a stream with no alpha
-    /// shows the wearer a black void. It starts progressive and returns there when
-    /// a session ends, so nothing carries over from the last PC.
-    var immersionStyle: FoveatedImmersionStyle = .progressive
+    /// shows the wearer a black void.
+    ///
+    /// `nil` means *not settled* — no session has asked the PC yet. Distinct from
+    /// progressive on purpose: the tab must be able to say "the PC decides this when
+    /// you connect" instead of naming a style that nothing is serving, and every
+    /// past version of this bug has been the idle value being mistaken for a live one.
+    ///
+    /// **Written in exactly one place, `settleImmersion(_:)`, and only when no space
+    /// exists.** That is not tidiness — the bug being fixed here was a second writer.
+    /// `stopControllerBridge()` reset this to progressive, and because the bridge is
+    /// (re)started ~500 ms *into* a live session, a session that correctly opened mixed
+    /// had its style reset out from under it moments later: the space stayed mixed
+    /// (a live restyle does not take), the UI said progressive, and the two disagreed
+    /// for the rest of the session. Any new assignment reintroduces that class of bug.
+    private(set) var immersionStyle: FoveatedImmersionStyle?
+
+    /// Style for the scene binding, which needs a concrete value even before one is
+    /// settled. Progressive is the safe unsettled answer: an opaque stream in a portal
+    /// looks merely conservative, where mixed against a stream with no alpha is a
+    /// black void.
+    var effectiveImmersionStyle: FoveatedImmersionStyle { immersionStyle ?? .progressive }
+
+    /// Set the style for the session about to start. Call only while no immersive
+    /// space exists — before `connect()`, or after a teardown has completed.
+    private func settleImmersion(_ style: FoveatedImmersionStyle?) {
+        guard immersionStyle != style else { return }
+        log.notice("Immersion settled to \(style?.rawValue ?? "unsettled", privacy: .public).")
+        immersionStyle = style
+        alphaDisagreement = nil
+    }
+
+    /// Set when the host's own telemetry contradicts the style the space opened in.
+    ///
+    /// The pre-connect answer is what the PC *intended*; the blend mode the OpenXR
+    /// runtime accepted is what it is actually sending. They should never differ, and
+    /// when they do the wearer sees either a black void or a portal that was supposed
+    /// to be passthrough — so it is worth saying so plainly rather than leaving them
+    /// to guess which side is lying.
+    private(set) var alphaDisagreement: String?
 
     /// The active controller bridge (Switch Pro + hand tracking → SteamVR),
     /// non-nil only while a session with the bridge enabled is connected.
@@ -150,12 +186,10 @@ final class FoveatedConnectionManager {
                    but it is recorded rather than silent: an unanswered host and a host that
                    genuinely wants progressive look identical from inside the headset, and
                    the difference is exactly what someone debugging needs. */
-                if let answered = await FoveatedHostInfo.immersionStyle(for: connection) {
-                    self.immersionStyle = answered
-                    self.immersionUnanswered = false
-                } else {
-                    self.immersionStyle = .progressive
-                    self.immersionUnanswered = true
+                let answered = await FoveatedHostInfo.immersionStyle(for: connection)
+                self.settleImmersion(answered ?? .progressive)
+                self.immersionUnanswered = answered == nil
+                if answered == nil {
                     self.log.notice("No immersion answer from the PC; opening progressive.")
                 }
                 await self.settleForConnect()
@@ -314,6 +348,12 @@ final class FoveatedConnectionManager {
         bridgeSupervisorTask = nil
         stopControllerBridge()
         await session.disconnect()
+        /* Unsettled, not progressive, and only once the space is actually gone. The tab
+           then says the PC decides this at connect time instead of naming a style left
+           over from the last PC — and doing it after the teardown keeps the scene binding
+           from being changed while a space still exists. */
+        settleImmersion(nil)
+        immersionUnanswered = false
     }
 
     /// The immersive space can disappear independently of the framework session when the user
@@ -420,9 +460,21 @@ final class FoveatedConnectionManager {
            crown force-fading to zero and sessions opening mixed against a stream with no
            alpha. It stays because it is the strongest statement of what the host is
            actually doing: the blend mode the runtime *accepted*, where the pre-connect
-           answer is only what the PC intended. A disagreement is worth showing. */
+           answer is only what the PC intended. A disagreement is worth showing — it is
+           the only independent check on the whole chain, arriving over the session's own
+           channel rather than the plain-HTTP endpoint the style was read from. */
         bridge.onAlphaBlendChanged = { [weak self] alpha in
-            self?.log.notice("Host reports alpha blend \(alpha ? "on" : "off", privacy: .public); session opened in \(self?.immersionStyle.rawValue ?? "?", privacy: .public).")
+            guard let self else { return }
+            let opened = self.effectiveImmersionStyle
+            self.log.notice("Host reports alpha blend \(alpha ? "on" : "off", privacy: .public); session opened in \(opened.rawValue, privacy: .public).")
+            guard alpha != opened.needsHostAlpha else {
+                self.alphaDisagreement = nil
+                return
+            }
+            self.alphaDisagreement = alpha
+                ? "The PC is sending transparency but this session opened in \(opened.label), so the cutouts will not show. Reconnect to pick it up."
+                : "This session opened in \(opened.label), but the PC is not sending transparency. Turn passthrough cutouts on in the Windows Companion, or reconnect to fall back."
+            self.log.error("Immersion disagreement: opened \(opened.rawValue, privacy: .public), host alpha \(alpha ? "on" : "off", privacy: .public).")
         }
         bridge.start()
         controllerBridge = bridge
@@ -484,11 +536,14 @@ final class FoveatedConnectionManager {
         gameLibrary.detach()
         controllerBridge?.stop()
         controllerBridge = nil
-        // Nothing is reporting alpha any more, so stop claiming there is any. The
-        // bridge is the only source of that fact, and a stale `.mixed` would open
-        // the next session showing passthrough around a PC that is not sending
-        // transparency.
-        immersionStyle = .progressive
+        /* Deliberately does *not* touch `immersionStyle`. It used to reset it to
+           progressive, on the reasoning that the bridge was the only source of the
+           alpha fact — true once, false since the PC started answering before the
+           session. The damage was that this runs mid-session: the supervisor starts the
+           bridge about half a second after connect, and `startControllerBridgeIfNeeded`
+           calls this first for idempotency. So a session that opened mixed had its style
+           reset while the space was live, the space kept the style it opened with, and
+           the tab spent the rest of the session claiming progressive. */
     }
 }
 #endif

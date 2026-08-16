@@ -27,6 +27,8 @@ struct PCVRHelpView: View {
                 topic("On the PC", rows: [
                     Row("dial.medium", "Stream quality",
                         "Performance, Balanced or Quality, in the companion's PCVR options. Each step up asks the PC for more pixels to render and encode — if a heavy game stutters, this is the first lever to pull, and it applies from the next start."),
+                    Row("cube.transparent", "Passthrough cutouts",
+                        "Off by default. Turned on, anything a game paints pure green (00FF00) arrives as a hole and you see your real room through it — a green-screen world in VRChat, a cockpit with the canopy keyed out. The headset switches itself into Mixed immersion while it is on, which is the only mode that can show those holes, so the Digital Crown stops adjusting immersion until you turn it off again. It costs encoder time and bitrate on every frame, and changing it restarts PCVR."),
                     Row("eye.circle", "VRChat eye tracking",
                         "Off by default. Turned on, your real gaze drives your avatar's eyes over OSC — the same eye tracking that foveates the render, doing a second job. It takes over the eye channel, so leave it off if another OSC eye-tracking app is running on that PC."),
                     Row("network", "Remote play over Tailscale",

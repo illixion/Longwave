@@ -213,6 +213,12 @@ final class ControllerBridgeSender {
     /// state is a snapshot of the host, and the host may have changed.
     var onChannelAttached: (() -> Void)?
 
+    /// Called with the host's alpha-blend state on the first telemetry and whenever it
+    /// changes, so the immersive space can move between mixed and progressive to match.
+    /// A callback rather than something the views poll: the space has to restyle even
+    /// when nobody is looking at the PCVR tab.
+    var onAlphaBlendChanged: ((Bool) -> Void)?
+
     /// The TCP link carrying everything that is not hand tracking: the game library,
     /// the perf feed, telemetry, haptics and tuning. Owned here because the rendezvous
     /// and the session keys arrive here, and because the perf and haptic packets that
@@ -641,6 +647,16 @@ final class ControllerBridgeSender {
         return telemetry.flags.contains(.desktopQuad)
     }
 
+    /// Whether the host is submitting frames with an alpha channel, so the parts a game
+    /// (or the host's home scene) leaves transparent arrive as holes rather than as
+    /// black. Owned entirely by the PC — the switch is in the Windows Companion, since
+    /// the PC is what pays the encoder cost — and nil until the first telemetry, because
+    /// guessing wrong means either a black portal or passthrough nobody asked for.
+    var alphaBlendActive: Bool? {
+        guard let telemetry else { return nil }
+        return telemetry.flags.contains(.alphaBlend)
+    }
+
     /// Show or hide the desktop panel. Takes effect immediately; the host answers in its
     /// next telemetry, which is what the button then reflects.
     func setDesktopQuad(_ on: Bool) {
@@ -661,8 +677,14 @@ final class ControllerBridgeSender {
     }
 
     private func ingest(_ telemetry: ControllerBridgeTelemetry) {
+        let previousAlpha = self.telemetry?.flags.contains(.alphaBlend)
         self.telemetry = telemetry
         telemetryReceivedAt = CACurrentMediaTime()
+        // Fires on the first packet too (`previousAlpha` is nil then): the space opens
+        // before any telemetry arrives, so the first report is the one that decides
+        // whether it was opened in the right style.
+        let alpha = telemetry.flags.contains(.alphaBlend)
+        if previousAlpha != alpha { onAlphaBlendChanged?(alpha) }
         // Follow the host on the desktop panel. The bit we send is latched, and the host
         // acts only when it changes; if the desktop companion turned the panel off, our
         // stale "on" would be the next change it saw and would turn it straight back on.

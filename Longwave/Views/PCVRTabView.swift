@@ -10,6 +10,12 @@
 //  Bonjour and the system presents the picker. So it gets a tab, and the rest of
 //  the app stays about desktops and terminals.
 //
+//  Laid out as panels rather than a `Form`. Two of the settings here are choices
+//  that need explaining — how the PC is found, and how much of your room the game
+//  replaces — and a segmented control with three one-word labels explains
+//  nothing. Panels carry a drawing and a sentence per option; the settings that
+//  really are just switches stay switches.
+//
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
@@ -66,7 +72,7 @@ struct PCVRTabView: View {
     }
 }
 
-// MARK: - Form
+// MARK: - Page
 
 private struct PCVRSessionForm: View {
     @Bindable var connection: SavedConnection
@@ -99,23 +105,33 @@ private struct PCVRSessionForm: View {
     }
 
     var body: some View {
-        Form {
-            Section { header }
-            if manager.isDisconnected {
-                Section { connectRow }
-            } else {
-                Section("Session") {
-                    FoveatedControlsView(embedded: true)
-                        .padding(.vertical, 8)
-                }
+        ScrollView {
+            VStack(spacing: 20) {
+                header
+                sessionPanel
+                connectionPanel
+                immersionPanel
+                controlsPanel
             }
-            accessSection
-            connectionSection
-            immersionSection
-            controlsSection
+            .padding(28)
+            .frame(maxWidth: 780)
+            .frame(maxWidth: .infinity)
         }
         .animation(.spring, value: manager.isDisconnected)
         .toolbar {
+            // Access sits in the toolbar rather than in a panel of its own. It is
+            // status, not a setting — a seal you can glance at, and the one button
+            // that opens the one place this app asks for money.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    paywallAfterSessionEnd = false
+                    showPaywall = true
+                } label: {
+                    accessLabel
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(store.isUnlocked ? "PCVR unlocked" : "Unlock PCVR")
+            }
             // A question mark rather than the old Gesture Controls button: the
             // gestures are one part of learning PCVR, and the rest of it had
             // nowhere to go. Mapping still has its own row under Controls.
@@ -147,7 +163,7 @@ private struct PCVRSessionForm: View {
                         }
                     }
             }
-            .frame(minWidth: 600, minHeight: 560)
+            .frame(minWidth: 640, minHeight: 660)
         }
         // A session that stops on its own has to explain itself. The alert path
         // below is for connections that broke; this one is for a limit that was
@@ -187,7 +203,76 @@ private struct PCVRSessionForm: View {
         }
     }
 
-    // MARK: Header + connect
+    // MARK: Access
+
+    /// Sealed or unsealed, and during a trial session the clock that is running
+    /// down — the answer to "how long have I got" belongs where the answer to
+    /// "why is there a limit" already is.
+    ///
+    /// The word is carried, not just the seal: an unbroken-seal icon on its own is
+    /// only legible to someone who already knows what it means, and "Trial" in
+    /// orange is legible to everyone. Green for the unlocked state, which is the
+    /// state nobody needs to act on.
+    @ViewBuilder
+    private var accessLabel: some View {
+        if store.isUnlocked {
+            accessPill("Unlocked", systemImage: "checkmark.seal.fill", color: Self.unlockedGreen)
+        } else if store.isTrial {
+            if let remaining = limiter.remaining, !manager.isDisconnected {
+                accessPill("Trial · \(PCVRSessionLimiter.clock(remaining))",
+                           systemImage: "xmark.seal.fill", color: Self.trialOrange)
+                    .monospacedDigit()
+            } else {
+                accessPill("Trial", systemImage: "xmark.seal.fill", color: Self.trialOrange)
+            }
+        } else {
+            // StoreKit has not answered yet. A seal either way would be a guess,
+            // and the wrong guess to show a paying customer.
+            ProgressView().controlSize(.small)
+        }
+    }
+
+    /// A status pill: solid disc for the glyph at the leading edge, word beside
+    /// it, tinted capsule behind both. Drawn rather than left to the toolbar's own
+    /// glass capsule, because the state is the point — a plain button in the
+    /// toolbar's usual grey says "a control lives here", and what this has to say
+    /// is "you are on the trial".
+    /// Fixed rather than the system `.orange`, which is lighter and sits close
+    /// enough to the window's grey glass to read as a disabled control.
+    private static let trialOrange = Color(red: 0xF9 / 255, green: 0x72 / 255, blue: 0x0B / 255)
+    private static let unlockedGreen = Color(red: 0x2F / 255, green: 0xA9 / 255, blue: 0x4E / 255)
+
+    private func accessPill(_ text: String, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(color)
+                .frame(width: 32, height: 32)
+                // Close to the word beside it in weight, so the disc and the text
+                // read as one mark on the fill rather than two shades of orange —
+                // but grey rather than black, which at this size looked like a
+                // hole punched in the pill.
+                .background(Color(white: 0.28), in: Circle())
+            Text(text)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.black.opacity(0.85))
+        }
+        // Sized to the 44 pt circular button beside it — a toolbar reads as one
+        // row of controls or as a mistake, and there is no middle.
+        .padding(.leading, 6)
+        .padding(.trailing, 16)
+        .padding(.vertical, 6)
+        // Solid, not a tint: a translucent capsule over the window's glass leaves
+        // orange-on-grey at about the contrast of a disabled control, and this is
+        // the one thing in the toolbar that has something to say.
+        .background(color, in: Capsule())
+        .contentShape(Capsule())
+        // `.plain` drops the system's gaze highlight along with its capsule; this
+        // puts the gaze response back on the shape actually being drawn.
+        .hoverEffect(.highlight)
+    }
+
+    // MARK: Header + session
 
     private var header: some View {
         VStack(spacing: 8) {
@@ -202,154 +287,224 @@ private struct PCVRSessionForm: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
     }
 
-    @ViewBuilder
-    private var connectRow: some View {
-        if let error = manager.lastError {
-            Text(error)
-                .font(.footnote)
-                .foregroundStyle(.red)
-        }
-
-        Button {
-            if manager.isConnecting {
-                manager.cancelConnect()
-            } else {
-                connection.lastConnected = Date()
-                manager.beginConnect(connection)
-            }
-        } label: {
-            HStack(spacing: 10) {
-                if manager.isConnecting { ProgressView().controlSize(.small) }
-                Text(manager.isConnecting ? "Cancel" : "Start streaming")
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(manager.isConnecting ? .red : .accentColor)
-        .disabled(!manager.isConnecting && !canConnect)
-        .listRowBackground(Color.clear)
-
-        Text(connection.foveatedConnectionMode.detail)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .listRowBackground(Color.clear)
-    }
-
-    // MARK: Access
-
-    /// Present whether or not anything has been bought, because "why did my game
-    /// close" is a question the app should have already answered. Unlocked, it is
-    /// one quiet line; in trial, it says what the limit is before it is hit.
-    @ViewBuilder
-    private var accessSection: some View {
-        Section("PCVR access") {
-            if store.isUnlocked {
-                Label("Unlocked — sessions run as long as you like",
-                      systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else if store.isTrial {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let remaining = limiter.remaining, !manager.isDisconnected {
-                        Text("This session ends in \(PCVRSessionLimiter.clock(remaining))")
-                            .monospacedDigit()
-                    } else {
-                        Text("Trial — each session runs 20 minutes")
-                    }
-                    Text("Start as many sessions as you like; each one ends after twenty minutes. Everything else in Longwave is free.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    /// The panel that changes: the start button while disconnected, the live
+    /// session controls while streaming.
+    private var sessionPanel: some View {
+        VStack(spacing: 14) {
+            if manager.isDisconnected {
+                if let error = manager.lastError {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
                 }
+
                 Button {
-                    paywallAfterSessionEnd = false
-                    showPaywall = true
+                    if manager.isConnecting {
+                        manager.cancelConnect()
+                    } else {
+                        connection.lastConnected = Date()
+                        manager.beginConnect(connection)
+                    }
                 } label: {
-                    Label("Remove the 20-minute limit", systemImage: "lock.open")
+                    HStack(spacing: 10) {
+                        if manager.isConnecting { ProgressView().controlSize(.small) }
+                        Text(manager.isConnecting ? "Cancel" : "Start streaming")
+                    }
+                    .frame(maxWidth: 320)
+                    .padding(.vertical, 8)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(manager.isConnecting ? .red : .accentColor)
+                .disabled(!manager.isConnecting && !canConnect)
+
+                Text(startCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             } else {
-                // StoreKit has not answered yet. Saying "trial" here would be a
-                // guess, and the wrong guess to show a paying customer.
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Checking your purchases…").foregroundStyle(.secondary)
-                }
+                FoveatedControlsView(embedded: true)
             }
         }
+        .padding(24)
+        .frame(maxWidth: .infinity)
+        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
     }
 
-    // MARK: Settings
+    /// How the PC will be found, plus — while the limit still applies — what will
+    /// happen twenty minutes in. Said before the session starts rather than after,
+    /// which is the difference between a limit and a surprise.
+    private var startCaption: String {
+        let mode = connection.foveatedConnectionMode.detail
+        guard store.isTrial else { return mode }
+        return mode + " · Trial sessions end after 20 minutes."
+    }
+
+    // MARK: Panels
 
     /// Automatic first and selected by default; the IP fields only appear if you
     /// go looking for them. Discovery is the whole point — a PC running the
     /// companion announces itself, and typing an address is the fallback for a
     /// network where mDNS does not carry.
-    private var connectionSection: some View {
-        Section("Connection") {
-            Picker("Find the PC", selection: $connection.foveatedConnectionMode) {
+    private var connectionPanel: some View {
+        PCVRPanel(title: "Connection",
+                  systemImage: "antenna.radiowaves.left.and.right",
+                  subtitle: "How the headset finds your PC") {
+            HStack(alignment: .top, spacing: 14) {
                 ForEach(FoveatedConnectionMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
+                    PCVROptionTile(
+                        title: mode.label,
+                        detail: mode.detail,
+                        isSelected: connection.foveatedConnectionMode == mode,
+                        action: { connection.foveatedConnectionMode = mode }
+                    ) {
+                        Image(systemName: mode.systemImage)
+                            .font(.system(size: 30))
+                            .foregroundStyle(.tint)
+                            .frame(height: 40)
+                    }
                 }
             }
-            .pickerStyle(.segmented)
 
             if connection.foveatedConnectionMode == .local {
-                TextField("Host IP", text: $connection.hostname)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                TextField("Port", value: $connection.port, format: .number.grouping(.never))
+                VStack(spacing: 10) {
+                    LabeledContent("Host IP") {
+                        TextField("192.168.1.20", text: $connection.hostname)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    LabeledContent("Port") {
+                        TextField("Port", value: $connection.port, format: .number.grouping(.never))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(.easeOut(duration: 0.2), value: connection.foveatedConnectionMode)
         .disabled(!manager.isDisconnected)
     }
 
-    private var immersionSection: some View {
-        Section("Immersion") {
-            Picker("Style", selection: $connection.foveatedImmersionStyle) {
+    /// Status, not a chooser. Which style is in force follows from whether the PC
+    /// is sending an alpha channel, and that switch lives in the Windows Companion
+    /// because the PC is what pays for it — an encoder encoding transparency the
+    /// headset was never going to composite is pure waste. So the tab reports the
+    /// state and says where the switch is, rather than offering a choice it cannot
+    /// honour on its own.
+    private var immersionPanel: some View {
+        PCVRPanel(title: "Immersion",
+                  systemImage: "cube.transparent",
+                  subtitle: "How much of your room the game replaces") {
+            HStack(alignment: .top, spacing: 14) {
                 ForEach(FoveatedImmersionStyle.allCases, id: \.self) { style in
-                    Text(style.label).tag(style)
+                    PCVRStatusTile(
+                        title: style.label,
+                        detail: style.detail,
+                        isActive: manager.immersionStyle == style
+                    ) {
+                        ImmersionGlyph(style: style)
+                    }
                 }
             }
-            Toggle("Microphone", isOn: $connection.foveatedMicEnabled)
-        }
-        .disabled(!manager.isDisconnected)
-    }
 
-    private var controlsSection: some View {
-        Section("Controls") {
-            Toggle("Hands and controllers", isOn: $connection.controllerBridgeEnabled)
-                .disabled(!manager.isDisconnected)
-            Text("Sends your hand tracking, and a paired Switch Pro or Quest controller, to the PC as a pair of Valve Index controllers. A controller is optional — pinch gestures work on their own. Turn this off and a session has no input at all.")
+            Label(passthroughNote, systemImage: "pc")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Toggle("Wrist HUD", isOn: $wristHUD)
+            Divider()
+
+            Toggle(isOn: $connection.foveatedMicEnabled) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Microphone", systemImage: "mic")
+                    Text("Sends the headset microphone to the PC, where CloudXR presents it as the OpenXR runtime's audio input. SteamVR titles and voice chat pick it up from there; a Windows app that insists on an ordinary recording device may need a virtual audio cable to route it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            // The one setting in this panel that a session really does fix: the
+            // microphone is negotiated when the session opens.
+            .disabled(!manager.isDisconnected)
+        }
+    }
+
+    private var controlsPanel: some View {
+        PCVRPanel(title: "Controls",
+                  systemImage: "hand.point.up.left",
+                  subtitle: "Hands, controllers and the wrist HUD") {
+            Toggle(isOn: $connection.controllerBridgeEnabled) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Hands and controllers", systemImage: "gamecontroller")
+                    Text("Sends your hand tracking, and a paired Switch Pro or Quest controller, to the PC as a pair of Valve Index controllers. A controller is optional — pinch gestures work on their own. Turn this off and a session has no input at all.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .disabled(!manager.isDisconnected)
+
+            Divider()
+
+            Toggle(isOn: $wristHUD) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Wrist HUD", systemImage: "hand.raised")
+                    Text("Turn a palm toward your face to quit the running title, show the PC's desktop, or switch between controllers and bare hands.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if wristHUD {
-                Picker("HUD hand", selection: $wristHUDOnRight) {
-                    Text("Left").tag(false)
-                    Text("Right").tag(true)
+                Picker("Worn on", selection: $wristHUDOnRight) {
+                    Text("Left wrist").tag(false)
+                    Text("Right wrist").tag(true)
                 }
                 .pickerStyle(.segmented)
             }
 
-            Button {
-                showGestureSettings = true
-            } label: {
-                Label("Gesture mapping", systemImage: "hand.pinch")
-            }
+            Divider()
 
-            // Alignment is diagnosed against a live stream — offering it while
-            // disconnected would only show an empty graph.
-            if !manager.isDisconnected {
+            HStack(spacing: 14) {
                 Button {
-                    showAlignmentDebug = true
+                    showGestureSettings = true
                 } label: {
-                    Label("Hand alignment", systemImage: "hand.raised.fingers.spread")
+                    Label("Gesture mapping", systemImage: "hand.pinch")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+
+                // Alignment is diagnosed against a live stream — offering it while
+                // disconnected would only show an empty graph.
+                if !manager.isDisconnected {
+                    Button {
+                        showAlignmentDebug = true
+                    } label: {
+                        Label("Hand alignment", systemImage: "hand.raised.fingers.spread")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
+        }
+    }
+
+    /// Says where the switch is, and — once a session can answer — what it is set
+    /// to. Before that there is nothing to report but the location.
+    private var passthroughNote: String {
+        let base = "Turn on Passthrough cutouts in the Windows Companion to let games "
+            + "punch holes in the picture: anything the PC marks transparent becomes your "
+            + "room instead of black. Changing it restarts PCVR on the PC."
+        switch manager.controllerBridge?.alphaBlendActive {
+        case true:  return "Passthrough cutouts are on for this PC. " + base
+        case false: return "Passthrough cutouts are off for this PC. " + base
+        case nil:   return base
         }
     }
 

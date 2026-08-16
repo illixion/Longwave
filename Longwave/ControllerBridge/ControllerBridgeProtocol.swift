@@ -290,6 +290,11 @@ struct ControllerBridgeTelemetry {
         /// The desktop panel is wanted. Not the same as visible: a game holding the
         /// session hides it, and it returns with the home view.
         static let desktopQuad  = Flags(rawValue: 1 << 6)
+        /// The host is submitting ALPHA_BLEND: transparent pixels are arriving as holes
+        /// in the frame, and only `.mixed` immersion composites them against the room.
+        /// The PC owns this switch — it is the side that decides whether an alpha
+        /// channel is encoded at all — and the headset follows it.
+        static let alphaBlend   = Flags(rawValue: 1 << 7)
     }
 
     var flags: Flags

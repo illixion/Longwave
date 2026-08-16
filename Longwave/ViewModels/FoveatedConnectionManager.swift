@@ -38,6 +38,17 @@ final class FoveatedConnectionManager {
     /// Surfaced in the control window when a connect attempt fails.
     var lastError: String?
 
+    /// Immersion style the immersive space runs in, bound by the scene in
+    /// `LongwaveApp`. Held here rather than read off `pendingConnection` because
+    /// the scene needs a plain value settled *before* the space opens —
+    /// `beginConnect` writes it synchronously, on its first line, for that reason.
+    ///
+    /// Settable mid-session on purpose: SwiftUI's `immersionStyle(selection:)`
+    /// swaps the style of a space that is already open, so this does not have to
+    /// be a connect-time decision. That is what lets the PC's passthrough switch
+    /// move the headset between mixed and progressive without dropping a session.
+    var immersionStyle: FoveatedImmersionStyle = ConnectionDefaults.foveatedImmersion
+
     /// The active controller bridge (Switch Pro + hand tracking → SteamVR),
     /// non-nil only while a session with the bridge enabled is connected.
     private(set) var controllerBridge: ControllerBridgeSender?
@@ -115,6 +126,7 @@ final class FoveatedConnectionManager {
     /// `lastError`; the immersive space auto-opens via the presentation
     /// behaviors set by the control window.
     func beginConnect(_ connection: SavedConnection) {
+        immersionStyle = connection.foveatedImmersionStyle
         pendingConnection = connection
         lastError = nil
         connectTask?.cancel()
@@ -333,6 +345,16 @@ final class FoveatedConnectionManager {
         // additionally enables the UDP fallback (SteamVR-driver path).
         let host = connection.hostname.trimmingCharacters(in: .whitespaces)
         let bridge = ControllerBridgeSender(host: host)
+        // The PC owns passthrough: it decides whether an alpha channel is encoded at
+        // all, and only `.mixed` composites that alpha against the room. Following the
+        // host restyles the open space in place — no reconnect, no session dropped.
+        bridge.onAlphaBlendChanged = { [weak self] alpha in
+            guard let self else { return }
+            let wanted: FoveatedImmersionStyle = alpha ? .mixed : .progressive
+            guard self.immersionStyle != wanted else { return }
+            self.immersionStyle = wanted
+            self.log.notice("Host alpha blend \(alpha ? "on" : "off", privacy: .public) — immersion now \(wanted.rawValue, privacy: .public).")
+        }
         bridge.start()
         controllerBridge = bridge
         gameLibrary.attach(to: bridge)

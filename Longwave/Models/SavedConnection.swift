@@ -106,18 +106,41 @@ enum FoveatedConnectionMode: String, CaseIterable, Codable {
 
 /// Immersion style for the streamed PCVR scene. Maps to SwiftUI `ImmersionStyle`
 /// inside the gated code; kept flag-free here for testability.
+/// Two styles, not three. SwiftUI also has `.full`, and it is deliberately not
+/// offered: winding a progressive portal out to its maximum *is* full immersion —
+/// the portal covers the whole view and every property of the full style applies
+/// — so a third tile would have been the same experience under a second name,
+/// minus the Digital Crown.
+///
+/// Which of the two is in force is not the wearer's choice, it is the PC's: only
+/// `.mixed` composites the stream's alpha as passthrough, and whether there is an
+/// alpha channel to composite is decided on the host, where the encoder cost is
+/// paid. The headset follows `CB_TELEMETRY_FLAG_ALPHA_BLEND`.
 enum FoveatedImmersionStyle: String, CaseIterable, Codable {
-    case progressive  // recommended — passthrough blends in via the Digital Crown
-    case mixed
-    case full
+    case progressive  // Digital Crown portal — opaque inside, room around it
+    case mixed        // the stream's alpha composites as passthrough
 
     var label: String {
         switch self {
         case .progressive: "Progressive"
         case .mixed: "Mixed"
-        case .full: "Full"
         }
     }
+
+    /// Written for someone reading the tab to find out what is happening to their
+    /// view, not choosing between options — the choice is on the PC.
+    var detail: String {
+        switch self {
+        case .progressive:
+            "A portal into the game, widened and narrowed with the Digital Crown — all the way out to full immersion, and back to your room, without stopping the stream. Opaque behind the game."
+        case .mixed:
+            "The game is composited into your room: anything the PC marks transparent becomes passthrough rather than black. The Digital Crown does nothing in this mode."
+        }
+    }
+
+    /// Whether the host has to stream an alpha channel for this style to look
+    /// right — the thing the PC's Passthrough cutouts switch actually turns on.
+    var needsHostAlpha: Bool { self == .mixed }
 }
 
 // MARK: - Managed-session agent

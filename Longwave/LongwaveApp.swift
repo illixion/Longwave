@@ -19,6 +19,21 @@ struct LongwaveApp: App {
     @State private var foveatedManager = FoveatedConnectionManager()
     @State private var pcvrStore = PCVRStore()
     @State private var pcvrLimiter = PCVRSessionLimiter()
+
+    /// Bridges the manager's stored style to the scene's existential binding. The
+    /// setter is not a formality: SwiftUI writes back through this when the system
+    /// changes the style itself, and swallowing that would leave the manager's idea
+    /// of the current immersion quietly wrong.
+    private var foveatedImmersionBinding: Binding<any ImmersionStyle> {
+        Binding(
+            get: { foveatedManager.immersionStyle.systemStyle },
+            set: { style in
+                if let matched = FoveatedImmersionStyle(systemStyle: style) {
+                    foveatedManager.immersionStyle = matched
+                }
+            }
+        )
+    }
     #endif
 
     var body: some Scene {
@@ -240,11 +255,16 @@ struct LongwaveApp: App {
                 // two fight over the same intent.
                 .persistentSystemOverlays(.hidden)
         }
-        // Mixed, not progressive: the system only composites the stream's alpha as
-        // passthrough in .mixed — in .progressive the portal is backed with black, which
-        // defeats the host's ALPHA_BLEND / chroma-key cutouts. Opaque game frames cover
-        // the view either way, so games are unaffected.
-        .immersionStyle(selection: .constant(.mixed), in: .mixed, .progressive)
+        // A live binding, not a constant: writing to it restyles a space that is
+        // already open, which is what lets the PC's Passthrough cutouts switch move the
+        // headset between the two without dropping the session. Progressive is the
+        // default and the only one the Digital Crown answers — wound all the way out it
+        // *is* full immersion, which is why `.full` is not offered. `.mixed` is the only
+        // one where the system composites the stream's alpha as passthrough; in
+        // `.progressive` the portal is backed with black, which would turn the host's
+        // ALPHA_BLEND cut-outs into black holes. Opaque game frames cover the view in
+        // either, so games themselves are unaffected.
+        .immersionStyle(selection: foveatedImmersionBinding, in: .progressive, .mixed)
         .upperLimbVisibility(.hidden)
         #endif
         #endif

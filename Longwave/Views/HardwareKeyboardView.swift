@@ -28,6 +28,21 @@ final class KeyCaptureView: UIView {
 
     private var loggedFirstPress = false
 
+    // MARK: - Sticky Modifiers
+
+    /// Time of each modifier's most recent press, for double-tap detection.
+    /// Cleared once a double-tap is recognized so a third press starts fresh.
+    private var modifierLastPressAt: [UIKeyboardHIDUsage: Date] = [:]
+    /// Modifiers currently latched sticky — held down at the remote past
+    /// their physical key's release, until the same key is pressed again.
+    private var stickyModifiers: Set<UIKeyboardHIDUsage> = []
+    /// Keys whose sticky release was already sent by `pressesBegan` (the
+    /// unlatching tap), so the matching `pressesEnded` doesn't send it again.
+    private var pendingUnlatchRelease: Set<UIKeyboardHIDUsage> = []
+    /// Window under which two presses of the same modifier count as a
+    /// double-tap. Matches `DoubleClickCadence`'s pointer double-click window.
+    private let doubleTapInterval: TimeInterval = 0.4
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil {
@@ -58,6 +73,7 @@ final class KeyCaptureView: UIView {
         } else {
             observers.forEach(NotificationCenter.default.removeObserver)
             observers.removeAll()
+            releaseStickyModifiers()
         }
     }
 
@@ -92,6 +108,12 @@ final class KeyCaptureView: UIView {
         for press in presses {
             guard let key = press.key else { continue }
 
+            if isStickyEligibleModifier(key.keyCode), let vncKey = vncKeyCode(for: key) {
+                handleModifierPressBegan(key.keyCode, vncKey: vncKey)
+                handled = true
+                continue
+            }
+
             // Handle modifier flags that changed
             sendModifierChanges(for: key, isDown: true)
 
@@ -125,6 +147,12 @@ final class KeyCaptureView: UIView {
         for press in presses {
             guard let key = press.key else { continue }
 
+            if isStickyEligibleModifier(key.keyCode), let vncKey = vncKeyCode(for: key) {
+                handleModifierPressEnded(key.keyCode, vncKey: vncKey)
+                handled = true
+                continue
+            }
+
             // Handle modifier flags that changed
             sendModifierChanges(for: key, isDown: false)
 
@@ -153,6 +181,92 @@ final class KeyCaptureView: UIView {
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         // Treat cancellation as key up to avoid stuck keys
         pressesEnded(presses, with: event)
+    }
+
+    // MARK: - Sticky Modifiers
+
+    /// Shift/Ctrl/Alt/Cmd (both sides) — the modifiers a double-tap can latch.
+    /// Caps Lock is excluded: it's already a hardware toggle, not a held key.
+    private func isStickyEligibleModifier(_ keyCode: UIKeyboardHIDUsage) -> Bool {
+        switch keyCode {
+        case .keyboardLeftShift, .keyboardRightShift,
+             .keyboardLeftControl, .keyboardRightControl,
+             .keyboardLeftAlt, .keyboardRightAlt,
+             .keyboardLeftGUI, .keyboardRightGUI:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func virtualModifier(for keyCode: UIKeyboardHIDUsage) -> VirtualModifiers? {
+        switch keyCode {
+        case .keyboardLeftShift, .keyboardRightShift:     return .shift
+        case .keyboardLeftControl, .keyboardRightControl: return .control
+        case .keyboardLeftAlt, .keyboardRightAlt:         return .option
+        case .keyboardLeftGUI, .keyboardRightGUI:         return .command
+        default: return nil
+        }
+    }
+
+    /// A normal press/release of a modifier passes straight through (down on
+    /// press, up on release), so held combos like Ctrl+C keep working. A
+    /// second press within `doubleTapInterval` latches it sticky instead:
+    /// it stays down at the remote — applying to whatever is typed next —
+    /// until the same modifier key is pressed a third time.
+    private func handleModifierPressBegan(_ keyCode: UIKeyboardHIDUsage, vncKey: VNCKeyCode) {
+        if stickyModifiers.contains(keyCode) {
+            connectionManager?.sendKeyUp(vncKey)
+            stickyModifiers.remove(keyCode)
+            pendingUnlatchRelease.insert(keyCode)
+            modifierLastPressAt[keyCode] = nil
+            if let modifier = virtualModifier(for: keyCode) {
+                connectionManager?.stickyModifiers.remove(modifier)
+            }
+            return
+        }
+
+        connectionManager?.sendKeyDown(vncKey)
+
+        if let lastPress = modifierLastPressAt[keyCode],
+           Date().timeIntervalSince(lastPress) < doubleTapInterval {
+            stickyModifiers.insert(keyCode)
+            modifierLastPressAt[keyCode] = nil
+            if let modifier = virtualModifier(for: keyCode) {
+                connectionManager?.stickyModifiers.insert(modifier)
+            }
+        } else {
+            modifierLastPressAt[keyCode] = Date()
+        }
+    }
+
+    private func handleModifierPressEnded(_ keyCode: UIKeyboardHIDUsage, vncKey: VNCKeyCode) {
+        if pendingUnlatchRelease.remove(keyCode) != nil {
+            // Already released when the unlatching press began.
+            return
+        }
+        if stickyModifiers.contains(keyCode) {
+            // Stays down at the remote until the next press unlatches it.
+            return
+        }
+        connectionManager?.sendKeyUp(vncKey)
+    }
+
+    /// Force-releases any modifier still latched sticky, so tearing down this
+    /// view (disconnect, window close) can't leave it stuck down remotely.
+    private func releaseStickyModifiers() {
+        guard !stickyModifiers.isEmpty else { return }
+        for keyCode in stickyModifiers {
+            if let vncKey = vncKeyCode(forHIDUsage: keyCode) {
+                connectionManager?.sendKeyUp(vncKey)
+            }
+            if let modifier = virtualModifier(for: keyCode) {
+                connectionManager?.stickyModifiers.remove(modifier)
+            }
+        }
+        stickyModifiers.removeAll()
+        modifierLastPressAt.removeAll()
+        pendingUnlatchRelease.removeAll()
     }
 
     // MARK: - Modifier Handling
@@ -193,7 +307,11 @@ final class KeyCaptureView: UIView {
     /// Maps UIKeyboardHIDUsage to VNCKeyCode for non-printable/special keys.
     /// Returns nil for printable characters (handled via UIKey.characters).
     private func vncKeyCode(for key: UIKey) -> VNCKeyCode? {
-        switch key.keyCode {
+        vncKeyCode(forHIDUsage: key.keyCode)
+    }
+
+    private func vncKeyCode(forHIDUsage keyCode: UIKeyboardHIDUsage) -> VNCKeyCode? {
+        switch keyCode {
         // Modifier keys
         case .keyboardLeftShift:     return .shift
         case .keyboardRightShift:    return .rightShift
@@ -272,14 +390,7 @@ final class KeyCaptureView: UIView {
         case .keypadNumLock:         return VNCKeyCode(0xff7f) // XK_Num_Lock
 
         default:
-            // For printable characters, return nil so we fall through to UIKey.characters
-            if isModifierOnlyKey(key.keyCode) {
-                return nil
-            }
-            // Check if it's a printable key by looking at characters
-            if !key.charactersIgnoringModifiers.isEmpty {
-                return nil // Will be handled by the character path
-            }
+            // Printable characters: return nil so we fall through to UIKey.characters.
             return nil
         }
     }

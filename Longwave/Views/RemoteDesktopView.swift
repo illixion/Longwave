@@ -133,7 +133,10 @@ struct RemoteDesktopView: View {
             }
         }
         .overlay(alignment: .top) {
-            if dragLocked { dragLockBadge }
+            VStack(spacing: 8) {
+                if dragLocked { dragLockBadge }
+                if !connectionManager.stickyModifiers.isEmpty { stickyModifierBadge }
+            }
         }
     }
 
@@ -145,6 +148,32 @@ struct RemoteDesktopView: View {
             .padding(.vertical, 6)
             .glassBackgroundEffect()
             .padding(.top, 8)
+    }
+
+    /// Shown while a hardware modifier is latched sticky by a double-tap
+    /// (see `KeyCaptureView`) — held down at the remote past its own key's
+    /// release, until the same key is pressed again.
+    private var stickyModifierBadge: some View {
+        Label("\(stickyModifierGlyphs) held — press again to release", systemImage: "keyboard.badge.ellipsis")
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .glassBackgroundEffect()
+            .padding(.top, 8)
+    }
+
+    private var stickyModifierGlyphs: String {
+        connectionManager.stickyModifiers.ordered.map(modifierGlyph).joined(separator: " ")
+    }
+
+    private func modifierGlyph(_ modifier: VirtualModifiers) -> String {
+        switch modifier {
+        case .shift:   return "⇧"
+        case .control: return "⌃"
+        case .option:  return "⌥"
+        case .command: return "⌘"
+        default:       return ""
+        }
     }
 
     // MARK: - Status View
@@ -190,9 +219,10 @@ struct RemoteDesktopView: View {
                 Label("Right-click", systemImage: "cursorarrow.click.2")
             }
 
-            Button(action: { openWindow(id: "keyboard") }) {
-                Label("Keyboard", systemImage: "keyboard")
+            Button(action: toggleKeyboardWindow) {
+                Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
             }
+            .tint(isKeyboardWindowOpen ? .accentColor : nil)
 
             if connectionManager.hasCompanionAudio {
                 Button(action: { showAudioPanel.toggle() }) {
@@ -423,6 +453,23 @@ struct RemoteDesktopView: View {
             .stroke(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 3, lineCap: .round))
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Keyboard Window
+
+    /// True while the on-screen keyboard has been opened in its own window —
+    /// tracked live off `WindowSessionRegistry`, so the toolbar button reads
+    /// as a real toggle instead of only ever opening it.
+    private var isKeyboardWindowOpen: Bool {
+        WindowSessionRegistry.shared.sessions["keyboard"] != nil
+    }
+
+    private func toggleKeyboardWindow() {
+        if isKeyboardWindowOpen {
+            dismissWindow(id: "keyboard")
+        } else {
+            openWindow(id: "keyboard")
+        }
     }
 
     private func sendCtrlAltDel() {

@@ -61,6 +61,12 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
     // Trackpad-only mode (transparent overlay, no video)
     var isTrackpadOnly: Bool = false
 
+    /// Modifiers currently latched sticky by a hardware-keyboard double-tap
+    /// (see `KeyCaptureView`) — held down at the remote until tapped again.
+    /// Purely a UI signal for the stream view's badge; the actual down/up
+    /// state lives in `KeyCaptureView` itself.
+    var stickyModifiers: VirtualModifiers = []
+
     // Optional reference to the SavedConnection driving this session,
     // used by the credential prompt's "Remember Password" toggle.
     var pendingSavedConnection: SavedConnection?

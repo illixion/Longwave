@@ -89,6 +89,12 @@ final class PCVRStore {
     /// `currentEntitlements` already excludes expired subscriptions, refunded
     /// purchases and upgraded-away transactions, so no expiry arithmetic here.
     func resolveEntitlements() async {
+#if PCVR_UNLOCKED
+        // A sideloaded build has no App Store receipt, so StoreKit answers
+        // "nothing owned" forever and the build lives in trial. Dev builds
+        // pass PCVR_UNLOCKED to skip the store and own the lifetime unlock.
+        unlock = .some(.lifetime)
+#else
         var found: Unlock?
         for await entitlement in StoreKit.Transaction.currentEntitlements {
             guard let transaction = Self.verified(entitlement) else { continue }
@@ -104,6 +110,7 @@ final class PCVRStore {
             }
         }
         unlock = .some(found)
+#endif
     }
 
     /// A transaction whose signature the App Store did not vouch for is not a

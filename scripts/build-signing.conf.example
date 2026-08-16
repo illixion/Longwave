@@ -42,4 +42,8 @@ PRE_BUILD_HOOK="./scripts/setup-deps.sh && ./scripts/set-build-info.sh"
 
 # --- Extra xcodebuild settings (bash array) ---
 # Moonlight is an optional build-time feature; this enables it.
+# Other optional conditions: FOVEATED_ENABLED (PCVR; needs the entitlement and
+# XROS_DEPLOYMENT_TARGET=26.4) and PCVR_UNLOCKED (dev-only: sideloads have no
+# App Store receipt, so StoreKit would pin PCVR in 20-minute trial sessions —
+# this makes PCVRStore report the lifetime unlock instead; never ship it).
 EXTRA_BUILD_SETTINGS=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) MOONLIGHT_ENABLED')

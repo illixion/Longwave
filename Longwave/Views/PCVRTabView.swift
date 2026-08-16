@@ -302,7 +302,7 @@ private struct PCVRSessionForm: View {
                 }
 
                 Button {
-                    if manager.isConnecting {
+                    if manager.isConnecting || manager.isAutoReconnecting {
                         manager.cancelConnect()
                     } else {
                         connection.lastConnected = Date()
@@ -310,17 +310,25 @@ private struct PCVRSessionForm: View {
                     }
                 } label: {
                     HStack(spacing: 10) {
-                        if manager.isConnecting { ProgressView().controlSize(.small) }
-                        Text(manager.isConnecting ? "Cancel" : "Start streaming")
+                        if manager.isConnecting || manager.isAutoReconnecting {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(manager.isConnecting || manager.isAutoReconnecting
+                             ? "Cancel" : "Start streaming")
                     }
                     .frame(maxWidth: 320)
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(manager.isConnecting ? .red : .accentColor)
-                .disabled(!manager.isConnecting && !canConnect)
+                .tint(manager.isConnecting || manager.isAutoReconnecting ? .red : .accentColor)
+                .disabled(!manager.isConnecting && !manager.isAutoReconnecting && !canConnect)
 
-                Text(startCaption)
+                Text(manager.isAutoReconnecting
+                     // A wait, not a hang: the PC restarts to apply a setting change and is
+                     // gone for the better part of a minute. Saying nothing for that long
+                     // looks exactly like a session that quietly died.
+                     ? "The PC is not answering — probably restarting to apply a change. Reconnecting as soon as it is back."
+                     : startCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -526,7 +534,15 @@ private struct PCVRSessionForm: View {
     private func evaluateDisconnect() {
         guard case .disconnected(let reason) = manager.status else { return }
         // Suppress alerts for expected reasons (mirrors Apple's sample).
-        if reason == .appInitiatedDisconnect || reason == .unauthorized || reason == .endpointInitiatedDisconnect {
+        if reason == .appInitiatedDisconnect || reason == .unauthorized {
+            return
+        }
+        /* The host ending the session is usually the PC restarting PCVR to apply something
+           it can only read at start — the passthrough switch does exactly that. Still no
+           alert, but no longer nothing: the manager waits for the PC to come back and
+           reconnects if it does, and leaves it alone if the person simply stopped it. */
+        if reason == .endpointInitiatedDisconnect {
+            manager.handleHostEndedSession()
             return
         }
         // Wi-Fi blips are routine on the networks this must work on: the first

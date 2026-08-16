@@ -60,6 +60,22 @@ enum FoveatedHostInfo {
         return style
     }
 
+    /// Wait until the PC answers at all, whatever it answers.
+    ///
+    /// Used to time an automatic reconnect after a drop. The interesting case is the PC
+    /// restarting on purpose — to apply a passthrough change, say — which takes long
+    /// enough that a fixed pause always guessed wrong. Returns false on timeout, and the
+    /// caller reconnects anyway: being wrong about *when* is recoverable, refusing to try
+    /// is not.
+    static func waitForHost(_ connection: SavedConnection, timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline, !Task.isCancelled {
+            if await immersionStyle(for: connection) != nil { return true }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        return false
+    }
+
     // MARK: By IP
 
     private static func overHTTP(host: String, sessionPort: Int) async -> FoveatedImmersionStyle? {

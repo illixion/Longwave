@@ -213,11 +213,31 @@ final class FoveatedConnectionManager {
         beginConnect(pending)
     }
 
+    /// Called when the host ended the session itself.
+    ///
+    /// Usually that means the PC restarting PCVR to apply a setting it can only read at
+    /// start — the passthrough switch does exactly this — and the session coming back is
+    /// what the person expects. It used to be suppressed outright: no alert, which is
+    /// right, but also no reconnect, so a deliberate change on the PC left the headset
+    /// sitting on an idle tab.
+    ///
+    /// Unlike a network drop this only reconnects if the PC actually returns. A host that
+    /// ended the session and stayed down was stopped on purpose, and chasing it would be
+    /// arguing with the person who pressed the button.
+    @discardableResult
+    func handleHostEndedSession() -> Bool {
+        scheduleAutoReconnect(onlyIfHostReturns: true)
+    }
+
     /// Called when the session drops without the user asking for it. Returns true
     /// when an automatic reconnect has been scheduled — Wi-Fi blips are routine on
     /// the networks this has to work on, and the first response to one should not
     /// be a modal.
     func handleUnexpectedDisconnect() -> Bool {
+        scheduleAutoReconnect(onlyIfHostReturns: false)
+    }
+
+    private func scheduleAutoReconnect(onlyIfHostReturns: Bool) -> Bool {
         guard pendingConnection != nil,
               autoReconnectAttempts < Self.maxAutoReconnects else { return false }
         autoReconnectAttempts += 1
@@ -229,6 +249,31 @@ final class FoveatedConnectionManager {
             // streaming already" happens.
             try? await Task.sleep(for: .seconds(2))
             guard let self, !Task.isCancelled else { return }
+
+            /* Then wait for the PC to actually be there, rather than spending the single
+               retry on a fixed guess. The budget is one attempt on purpose — every session
+               start raises visionOS's own consent prompt, so retry storms are worse than
+               the drop — which makes *when* that attempt lands the whole game. A Wi-Fi blip
+               answers immediately and nothing is delayed; a PC restarting to apply a
+               setting takes twenty to forty seconds, and the old fixed 2 s meant the one
+               retry was always spent before the host was back, turning a deliberate restart
+               into a dead session and a modal.
+
+               Polling the info endpoint costs nothing on the session: it is a plain HTTP
+               GET, not a connect, so it raises no prompt and cannot half-open anything. */
+            let returned = if let connection = self.pendingConnection {
+                await FoveatedHostInfo.waitForHost(connection, timeout: .seconds(90))
+            } else {
+                false
+            }
+            self.log.notice("PC \(returned ? "answered again" : "did not answer", privacy: .public) after the drop.")
+
+            guard !Task.isCancelled else { return }
+            if onlyIfHostReturns, !returned {
+                // Stopped on purpose and still stopped. Leave it alone.
+                self.isAutoReconnecting = false
+                return
+            }
             self.isAutoReconnecting = false
             guard self.isDisconnected else { return }
             self.log.notice("Attempting automatic reconnect after an unexpected drop.")

@@ -63,6 +63,8 @@ const el = {
   fovQualitySub: $('fovQualitySub'),
   fovVrchatOsc: $('fovVrchatOsc'),
   fovVrchatOscSub: $('fovVrchatOscSub'),
+  fovPassthrough: $('fovPassthrough'),
+  fovPassthroughSub: $('fovPassthroughSub'),
   fovTsSub: $('fovTsSub'),
   fovTsStatus: $('fovTsStatus'),
   fovBundleId: $('fovBundleId'),
@@ -392,6 +394,9 @@ function renderPcvrSummary() {
      so this one stays live while a session runs. That is the point of it — you decide you
      want the desktop in the middle of a game, not before you start one. */
   el.pcvrDesktop.disabled = pcvrBusy;
+  /* Passthrough is the other exception, for the opposite reason: it cannot be changed
+     under a running stack at all, so instead of greying out it restarts PCVR for you. */
+  el.fovPassthrough.disabled = pcvrBusy;
 }
 
 // ── Screen streaming ───────────────────────────────────────────────────────
@@ -811,6 +816,21 @@ function renderFoveated(f) {
       : 'Off — VRChat uses its own automatic eye look.';
   }
 
+  /* Passthrough reconciles the same way, and matters more: this one costs bitrate on
+     every frame, so a panel showing "off" over a host that is streaming alpha would be
+     hiding a real cost. Unlike the others it restarts PCVR on change, so there is no
+     "applies next start" state to report — either it is on or the restart failed. */
+  const passthroughWanted = el.fovPassthrough.value === 'on';
+  if (typeof f.passthrough === 'boolean' && f.passthrough !== passthroughWanted) {
+    el.fovPassthroughSub.textContent = f.passthrough
+      ? 'Host is currently streaming alpha; restart PCVR to turn it off.'
+      : 'Host is not streaming alpha; restart PCVR to turn it on.';
+  } else {
+    el.fovPassthroughSub.textContent = passthroughWanted
+      ? 'Pure green (00FF00) in a game becomes your real room. Costs encoder time and bitrate on every frame.'
+      : 'Off — the game fills the whole picture, and no alpha channel is encoded.';
+  }
+
   renderPcvrSummary();
   refreshPath();
 }
@@ -851,6 +871,8 @@ function pcvrStartParams() {
     // Tri-state on the wire: only send a boolean, never undefined-as-false, so a host
     // configured by hand is not clobbered by a panel that happens to be showing "Off".
     vrchatOsc: el.fovVrchatOsc.value === 'on',
+    // Same tri-state reasoning: a boolean, never undefined-as-false.
+    passthrough: el.fovPassthrough.value === 'on',
     // Read by the supervisor and stripped before the host RPC — the broker shows the
     // desktop panel, and the foveated host has no opinion about it.
     desktopQuad: el.pcvrDesktop.checked,
@@ -927,18 +949,47 @@ async function onPcvrAction() {
   }
 }
 
+/**
+ * Passthrough cutouts, switched with a running PCVR.
+ *
+ * Both halves of the switch — the yaml's alpha channel and the broker's blend mode — are
+ * read once at start, so the only honest way to change it live is to take the stack down
+ * and bring it back up. That is done here rather than in the host because the safe order
+ * is a full stop and start: bouncing CloudXR under a live broker is the failure this
+ * codebase keeps warning about, and the stack scripts already sequence it correctly.
+ *
+ * The stop path asks before killing a running game, and a declined confirmation puts the
+ * switch back — a control that silently did nothing would be worse than one that reverts.
+ */
+async function onPassthroughToggled() {
+  savePcvrOptions();
+  if (!pcvrActive()) return;
+  const wanted = el.fovPassthrough.value === 'on';
+  setFovOpMsg(`Restarting PCVR to turn passthrough cutouts ${wanted ? 'on' : 'off'}…`);
+  const stopped = await stopPcvr();
+  if (!stopped) {
+    el.fovPassthrough.value = wanted ? 'off' : 'on';
+    savePcvrOptions();
+    return;
+  }
+  await onPcvrAction();
+}
+
+/** Returns whether PCVR actually stopped, so a caller restarting it can tell. */
 async function stopPcvr() {
   // Confirm only when stopping would kill a running game. An idle session (the
   // "OpenXR app" being merely the broker) stops with one click.
-  if (lastFoveated?.titleRunning && !await window.hotspot.confirmPcvrStop()) return;
+  if (lastFoveated?.titleRunning && !await window.hotspot.confirmPcvrStop()) return false;
   pcvrBusy = true;
   pcvrBusyOp = 'stop';
   setFovOpMsg('Stopping PCVR…');
   renderPcvrSummary();
+  let stopped = false;
   try {
     const result = await window.hotspot.stopPcvrStack();
     if (!result?.ok) throw new Error(result?.detail || 'PCVR stopped with an unknown error.');
     setFovOpMsg('PCVR stopped.', 'ok');
+    stopped = true;
   } catch (err) {
     setFovOpMsg(`Could not stop PCVR: ${err.message || err}`, 'error');
   } finally {
@@ -948,6 +999,7 @@ async function stopPcvr() {
     try { renderFoveated(await window.hotspot.foveatedStatus()); } catch { renderPcvrSummary(); }
     renderServices(lastServices);
   }
+  return stopped;
 }
 
 const PCVR_OPTIONS_KEY = 'longwave.pcvr.options.v1';
@@ -960,6 +1012,7 @@ function restorePcvrOptions() {
   if (['lan', 'tailnet'].includes(saved.mode)) el.fovModeSelect.value = saved.mode;
   if (['performance', 'balanced', 'quality'].includes(saved.quality)) el.fovQuality.value = saved.quality;
   if (['on', 'off'].includes(saved.vrchatOsc)) el.fovVrchatOsc.value = saved.vrchatOsc;
+  if (['on', 'off'].includes(saved.passthrough)) el.fovPassthrough.value = saved.passthrough;
   // Edition select, formerly a free-text bundle id. Only the two editions are
   // valid; anything else saved by an older build (e.g. the stale "pro.longwave"
   // default that made discovery invisible to both real apps) resets to App Store.
@@ -980,6 +1033,7 @@ function savePcvrOptions() {
     mode: fovMode(),
     quality: el.fovQuality.value,
     vrchatOsc: el.fovVrchatOsc.value,
+    passthrough: el.fovPassthrough.value,
     bundleId: el.fovBundleId.value.trim(),
     port: Number.isFinite(port) ? port : 55000,
     lanIpAddress: fovMode() === 'lan' ? el.fovIp.value.trim() : lanAdvertiseIp,
@@ -1361,6 +1415,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
   }
   el.pcvrDesktop.addEventListener('change', onDesktopQuadToggled);
+  el.fovPassthrough.addEventListener('change', onPassthroughToggled);
 
   el.gamesFilter.addEventListener('input', renderGames);
   el.gamesRefreshBtn.addEventListener('click', refreshGames);

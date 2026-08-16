@@ -157,6 +157,20 @@
               <small id="fovQualitySub">Applies when PCVR starts.</small>
             </label>
             <label class="field">
+              <span>Passthrough cutouts</span>
+              <select id="fovPassthrough">
+                <option value="off" selected>Off — the game fills the whole picture</option>
+                <option value="on">On — pure green in a game becomes your room</option>
+              </select>
+              <small id="fovPassthroughSub">
+                Paint a wall, a skybox or a whole world pure green (00FF00) in the game and
+                the headset shows your real room through it — a green-screen world in
+                VRChat, or a cockpit with the canopy keyed out. Costs encoder time and
+                bitrate on every frame, so leave it off unless a game is set up for it.
+                Changing this restarts PCVR.
+              </small>
+            </label>
+            <label class="field">
               <span>VRChat eye tracking</span>
               <select id="fovVrchatOsc">
                 <option value="off" selected>Off</option>

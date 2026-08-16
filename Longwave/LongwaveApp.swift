@@ -20,19 +20,16 @@ struct LongwaveApp: App {
     @State private var pcvrStore = PCVRStore()
     @State private var pcvrLimiter = PCVRSessionLimiter()
 
-    /// Bridges the manager's stored style to the scene's existential binding. The
-    /// setter is not a formality: SwiftUI writes back through this when the system
-    /// changes the style itself, and swallowing that would leave the manager's idea
-    /// of the current immersion quietly wrong.
+    /// Bridges the manager's style to the scene's existential binding.
+    ///
+    /// One-way, with the setter deliberately empty. SwiftUI writes back through this
+    /// as a space opens and closes, and those writes carry transitional and stale
+    /// values: recording them and preferring them over our own left the tab stuck
+    /// reporting progressive while the session was demonstrably mixed. What the space
+    /// was opened with is the fact worth keeping, and the PC decided it before the
+    /// space existed.
     private var foveatedImmersionBinding: Binding<any ImmersionStyle> {
-        Binding(
-            get: { foveatedManager.immersionStyle.systemStyle },
-            set: { style in
-                if let matched = FoveatedImmersionStyle(systemStyle: style) {
-                    foveatedManager.immersionStyle = matched
-                }
-            }
-        )
+        Binding(get: { foveatedManager.immersionStyle.systemStyle }, set: { _ in })
     }
     #endif
 

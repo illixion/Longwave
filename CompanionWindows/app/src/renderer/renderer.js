@@ -833,7 +833,26 @@ function renderFoveated(f) {
 
   renderPcvrSummary();
   refreshPath();
+
+  /* A headset asked for the other mode through the host's info endpoint. The host wrote
+     both halves and stopped there on purpose — it does not own the restart ordering, and
+     bouncing CloudXR under a live broker is the failure this codebase keeps warning about.
+     Doing it here also keeps the panel honest: the dropdown moves to what was asked for,
+     rather than silently disagreeing with the host from now on. */
+  if (f.passthroughRestartRequested && !pcvrBusy && !passthroughRestartInFlight) {
+    passthroughRestartInFlight = true;
+    const wanted = f.passthrough ? 'on' : 'off';
+    if (el.fovPassthrough.value !== wanted) {
+      el.fovPassthrough.value = wanted;
+      savePcvrOptions();
+    }
+    restartPcvrForPassthrough()
+      .finally(() => { passthroughRestartInFlight = false; });
+  }
 }
+
+/** Guards against re-entering the restart while a status event arrives mid-flight. */
+let passthroughRestartInFlight = false;
 
 /**
  * The desktop panel, switched while a session is live.
@@ -911,7 +930,15 @@ async function onPcvrAction() {
     await stopPcvr();
     return;
   }
+  await startPcvr();
+}
 
+/* Split out of the button handler so the passthrough restart can call it directly. Going
+   back through onPcvrAction() was a bug with teeth: it re-tests pcvrActive(), and a stack
+   that has not finished reporting itself down takes the *stop* branch instead — so the
+   restart stopped PCVR twice and never started it, which from the headset looks like the
+   PC disappearing off the network. */
+async function startPcvr() {
   if (fovMode() === 'tailnet' && (!tsInfo.selfIp || tsInfo.backendState !== 'Running')) {
     setFovOpMsg('Tailscale is not running or has no IPv4 address. Use Local network or start Tailscale.', 'error');
     el.pcvrOptions.open = true;
@@ -965,18 +992,59 @@ async function onPassthroughToggled() {
   savePcvrOptions();
   if (!pcvrActive()) return;
   const wanted = el.fovPassthrough.value === 'on';
-  setFovOpMsg(`Restarting PCVR to turn passthrough cutouts ${wanted ? 'on' : 'off'}…`);
-  const stopped = await stopPcvr();
-  if (!stopped) {
+  if (!await restartPcvrForPassthrough()) {
     el.fovPassthrough.value = wanted ? 'off' : 'on';
     savePcvrOptions();
-    return;
   }
-  await onPcvrAction();
+}
+
+/**
+ * Cycle the stack so a passthrough change takes effect, whichever side asked for it.
+ *
+ * Both halves — the yaml's alpha channel and the broker's blend mode — are read once at
+ * start, so there is no way to apply this to a running stack. Sequenced here rather than in
+ * the host because the safe order is a full stop and start, and the supervisor already
+ * knows it. The stop is flagged as a restart so the host keeps the machine-wide state it
+ * borrowed: handing Sunshine back needs elevation, and a UAC prompt for someone who changed
+ * a dropdown — followed by an offer to stop the service just started — is its own bug.
+ */
+async function restartPcvrForPassthrough() {
+  const wanted = el.fovPassthrough.value === 'on';
+  setFovOpMsg(`Restarting PCVR to turn passthrough cutouts ${wanted ? 'on' : 'off'}…`);
+  if (!await stopPcvr({ restarting: true })) return false;
+  if (!await waitForPcvrDown(15000)) {
+    setFovOpMsg('PCVR is still shutting down; start it again when it settles.', 'error');
+    return false;
+  }
+  await startPcvr();
+  return true;
+}
+
+/**
+ * Poll until the stack really is down, or give up.
+ *
+ * "Stopped" is asynchronous on the host side — NvStreamManager is killed and takes a moment
+ * to release the runtime pipe and its single-instance claim — and a start that overlaps a
+ * dying one exits immediately, taking the mDNS advertisement with it. The headset then
+ * cannot find the PC at all, which is a much worse symptom than waiting a second.
+ */
+async function waitForPcvrDown(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      lastFoveated = await window.hotspot.foveatedStatus();
+      lastServices = await window.hotspot.servicesStatus();
+      if (!pcvrActive()) return true;
+    } catch {
+      // A status call that fails mid-teardown says nothing either way; keep waiting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
 }
 
 /** Returns whether PCVR actually stopped, so a caller restarting it can tell. */
-async function stopPcvr() {
+async function stopPcvr(options = {}) {
   // Confirm only when stopping would kill a running game. An idle session (the
   // "OpenXR app" being merely the broker) stops with one click.
   if (lastFoveated?.titleRunning && !await window.hotspot.confirmPcvrStop()) return false;
@@ -986,7 +1054,7 @@ async function stopPcvr() {
   renderPcvrSummary();
   let stopped = false;
   try {
-    const result = await window.hotspot.stopPcvrStack();
+    const result = await window.hotspot.stopPcvrStack(options);
     if (!result?.ok) throw new Error(result?.detail || 'PCVR stopped with an unknown error.');
     setFovOpMsg('PCVR stopped.', 'ok');
     stopped = true;

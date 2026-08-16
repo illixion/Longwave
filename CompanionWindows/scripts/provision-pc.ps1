@@ -399,6 +399,9 @@ foreach ($obsolete in @('Longwave-Broker', 'Longwave-Sidecar')) {
 # WSS signaling + media, plus the Apple session-management port.
 foreach ($rule in @(
   @{ Name = 'Longwave session management (TCP 55000)'; Proto = 'TCP'; Port = 55000 },
+  # How the headset asks which immersion style to open in, before it connects. Must be
+  # reachable by a client that was typed an IP by hand and so never saw the mDNS TXT key.
+  @{ Name = 'Longwave host info (TCP 55001)'; Proto = 'TCP'; Port = 55001 },
   @{ Name = 'CloudXR signaling (TCP 48322)';            Proto = 'TCP'; Port = 48322 },
   @{ Name = 'CloudXR media (UDP 47998)';                Proto = 'UDP'; Port = 47998 },
   # Controller bridge: the OpenXR API layer's UDP receiver. Without this the headset's

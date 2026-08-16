@@ -638,7 +638,15 @@ class Supervisor extends EventEmitter {
    * Take the stack down in reverse. The broker must stop **before** CloudXR: bouncing
    * CloudXR under a live broker sends it into a log spin that has reached 12 GB.
    */
-  async stopStack(rpc) {
+  /**
+   * @param {object} [options]
+   * @param {boolean} [options.restarting] True when a start is coming straight after, so the
+   *   host keeps the machine-wide state it took (Sunshine, Tailscale) instead of handing it
+   *   back and taking it again a second later. Restoring Sunshine needs elevation, so the
+   *   round trip is not free: it puts a UAC prompt in front of someone who only changed a
+   *   dropdown, and then offers to stop the service it just started.
+   */
+  async stopStack(rpc, options = {}) {
     let brokerGameStopError = null;
     let brokerStoppedGame = false;
     if (this.status().broker.running) {
@@ -684,7 +692,7 @@ class Supervisor extends EventEmitter {
     for (const [name, definition] of Object.entries(this.definitions)) {
       if (definition.oneShot) this.exits.delete(name);
     }
-    await rpc('FoveatedStop', null).catch(() => null);
+    await rpc('FoveatedStop', { restarting: Boolean(options.restarting) }).catch(() => null);
     this.releaseRuntime();
     const gameStopError =
       launchedGameStopError && !brokerStoppedGame

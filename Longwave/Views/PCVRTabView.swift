@@ -410,10 +410,20 @@ private struct PCVRSessionForm: View {
                 }
             }
 
-            Label(passthroughNote, systemImage: "pc")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                if manager.immersionUnanswered {
+                    Label("The PC did not answer when this session started, so it opened in Progressive.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Label(passthroughNote, systemImage: "pc")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Divider()
 

@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('hotspot', {
   serviceStart: (name) => ipcRenderer.invoke('services-start', name),
   serviceStop: (name) => ipcRenderer.invoke('services-stop', name),
   startPcvrStack: (params) => ipcRenderer.invoke('services-start-stack', params),
-  stopPcvrStack: () => ipcRenderer.invoke('services-stop-stack'),
+  stopPcvrStack: (options) => ipcRenderer.invoke('services-stop-stack', options),
   setDesktopQuad: (enabled) => ipcRenderer.invoke('pcvr-desktop-quad', enabled),
   confirmPcvrStop: () => ipcRenderer.invoke('confirm-pcvr-stop'),
   openPairingWindow: () => ipcRenderer.invoke('open-pairing-window'),

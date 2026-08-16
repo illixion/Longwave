@@ -38,21 +38,26 @@ final class FoveatedConnectionManager {
     /// Surfaced in the control window when a connect attempt fails.
     var lastError: String?
 
+    /// True when the last connect could not reach the PC's info endpoint and fell back to
+    /// progressive. Worth surfacing: the fallback is indistinguishable from the PC actually
+    /// wanting progressive, and a session that quietly opened in the wrong style with no
+    /// explanation is how an evening gets lost.
+    private(set) var immersionUnanswered = false
+
     /// Immersion style the immersive space runs in, bound by the scene in
     /// `LongwaveApp`.
     ///
-    /// Not a preference, and deliberately not persisted: the only thing that
-    /// changes it is the host reporting whether it is sending an alpha channel
-    /// (`onAlphaBlendChanged`), because `.mixed` is worth being in only when
-    /// there is transparency to composite. It starts progressive and returns
-    /// there when a session ends — before any telemetry there is no alpha by
-    /// definition, and opening mixed on the strength of what the *last* PC was
-    /// doing would show the next one's opaque frames with passthrough around
-    /// them.
+    /// Not a preference, and deliberately not persisted. It is answered once per
+    /// session, before connecting, by asking the PC (`FoveatedHostInfo`) — the PC
+    /// decides whether an alpha channel is encoded at all, and `.mixed` is worth
+    /// being in only when there is transparency to composite.
     ///
-    /// Settable mid-session on purpose: SwiftUI's `immersionStyle(selection:)`
-    /// restyles a space that is already open, which is what lets the PC's switch
-    /// move the headset without dropping the session.
+    /// Settled *before* the space exists because it cannot be settled after.
+    /// Restyling a live space was tried and does not hold: the Digital Crown
+    /// force-fades to zero, the space can end up in a style that disagrees with
+    /// the binding, and a space that flips to mixed against a stream with no alpha
+    /// shows the wearer a black void. It starts progressive and returns there when
+    /// a session ends, so nothing carries over from the last PC.
     var immersionStyle: FoveatedImmersionStyle = .progressive
 
     /// The active controller bridge (Switch Pro + hand tracking → SteamVR),
@@ -139,6 +144,20 @@ final class FoveatedConnectionManager {
             defer { self.connectTask = nil }
             do {
                 let endpoint = try Self.endpoint(for: connection)
+                /* Before the session, never after: connecting is what creates the immersive
+                   space, and the style it is created with is the only one it reliably
+                   keeps. The fallback is progressive — the half that degrades gracefully —
+                   but it is recorded rather than silent: an unanswered host and a host that
+                   genuinely wants progressive look identical from inside the headset, and
+                   the difference is exactly what someone debugging needs. */
+                if let answered = await FoveatedHostInfo.immersionStyle(for: connection) {
+                    self.immersionStyle = answered
+                    self.immersionUnanswered = false
+                } else {
+                    self.immersionStyle = .progressive
+                    self.immersionUnanswered = true
+                    self.log.notice("No immersion answer from the PC; opening progressive.")
+                }
                 await self.settleForConnect()
                 try Task.checkCancellation()
                 try await self.session.connect(endpoint: endpoint)
@@ -350,15 +369,15 @@ final class FoveatedConnectionManager {
         // additionally enables the UDP fallback (SteamVR-driver path).
         let host = connection.hostname.trimmingCharacters(in: .whitespaces)
         let bridge = ControllerBridgeSender(host: host)
-        // The PC owns passthrough: it decides whether an alpha channel is encoded at
-        // all, and only `.mixed` composites that alpha against the room. Following the
-        // host restyles the open space in place — no reconnect, no session dropped.
+        /* Reported, not acted on. Immersion is settled before the session starts (see
+           `beginConnect`), because restyling a live space does not work — this arrives
+           long after the space exists, and using it to switch was what produced the
+           crown force-fading to zero and sessions opening mixed against a stream with no
+           alpha. It stays because it is the strongest statement of what the host is
+           actually doing: the blend mode the runtime *accepted*, where the pre-connect
+           answer is only what the PC intended. A disagreement is worth showing. */
         bridge.onAlphaBlendChanged = { [weak self] alpha in
-            guard let self else { return }
-            let wanted: FoveatedImmersionStyle = alpha ? .mixed : .progressive
-            guard self.immersionStyle != wanted else { return }
-            self.immersionStyle = wanted
-            self.log.notice("Host alpha blend \(alpha ? "on" : "off", privacy: .public) — immersion now \(wanted.rawValue, privacy: .public).")
+            self?.log.notice("Host reports alpha blend \(alpha ? "on" : "off", privacy: .public); session opened in \(self?.immersionStyle.rawValue ?? "?", privacy: .public).")
         }
         bridge.start()
         controllerBridge = bridge

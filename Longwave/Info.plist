@@ -63,6 +63,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_longwave-native._tcp</string>
+		<string>_apple-foveated-streaming._tcp</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

@@ -292,8 +292,10 @@ struct ControllerBridgeTelemetry {
         static let desktopQuad  = Flags(rawValue: 1 << 6)
         /// The host is submitting ALPHA_BLEND: transparent pixels are arriving as holes
         /// in the frame, and only `.mixed` immersion composites them against the room.
-        /// The PC owns this switch — it is the side that decides whether an alpha
-        /// channel is encoded at all — and the headset follows it.
+        /// Reported, not acted on — immersion is settled before the session starts (see
+        /// `FoveatedHostInfo`), and this arrives long after the space exists. It is the
+        /// strongest statement of what the host is actually doing, though: the blend mode
+        /// the runtime *accepted*, where the pre-connect answer is only what was intended.
         static let alphaBlend   = Flags(rawValue: 1 << 7)
     }
 

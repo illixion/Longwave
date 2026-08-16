@@ -535,8 +535,8 @@ ipcMain.handle('services-stop', (_e, name) =>
   runStackOperation(() => supervisor.stop(name)));
 ipcMain.handle('services-start-stack', (_e, params) =>
   runStackOperation(() => supervisor.startStack((m, p) => routeClientFor(m).rpc(m, p), params)));
-ipcMain.handle('services-stop-stack', () =>
-  runStackOperation(() => supervisor.stopStack((m, p) => routeClientFor(m).rpc(m, p))));
+ipcMain.handle('services-stop-stack', (_e, options) =>
+  runStackOperation(() => supervisor.stopStack((m, p) => routeClientFor(m).rpc(m, p), options)));
 ipcMain.handle('pcvr-desktop-quad', (_e, enabled) => supervisor.setDesktopQuad(enabled));
 ipcMain.handle('confirm-pcvr-stop', () =>
   confirmRunningGameShutdown('Stop PCVR?', 'Stop PCVR'));

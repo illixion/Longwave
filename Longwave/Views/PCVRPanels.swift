@@ -161,6 +161,7 @@ struct PCVRStatusTile<Graphic: View>: View {
                 .strokeBorder(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2)
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .animation(.easeOut(duration: 0.18), value: isActive)
         .accessibilityElement(children: .combine)
         .accessibilityValue(isActive ? "Active" : "Inactive")

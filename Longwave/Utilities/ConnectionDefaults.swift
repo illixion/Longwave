@@ -34,7 +34,6 @@ enum ConnectionDefaults {
         #if FOVEATED_ENABLED
         static let foveatedPort = "default_fov_port"
         static let foveatedMode = "default_fov_mode"
-        static let foveatedImmersion = "default_fov_immersion"
         static let foveatedControllerBridge = "default_fov_controller_bridge"
         #endif
     }
@@ -109,10 +108,6 @@ enum ConnectionDefaults {
     #if FOVEATED_ENABLED
     static var foveatedMode: FoveatedConnectionMode {
         FoveatedConnectionMode(rawValue: defaults.string(forKey: Keys.foveatedMode) ?? "") ?? .systemDiscovered
-    }
-
-    static var foveatedImmersion: FoveatedImmersionStyle {
-        FoveatedImmersionStyle(rawValue: defaults.string(forKey: Keys.foveatedImmersion) ?? "") ?? .progressive
     }
 
     /// Defaults to **on**: CloudXR does not forward Vision Pro hands as OpenXR input on

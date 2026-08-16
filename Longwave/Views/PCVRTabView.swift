@@ -66,7 +66,6 @@ struct PCVRTabView: View {
             connectionType: .foveated
         )
         connection.foveatedConnectionMode = ConnectionDefaults.foveatedMode
-        connection.foveatedImmersionStyle = ConnectionDefaults.foveatedImmersion
         connection.controllerBridgeEnabled = ConnectionDefaults.foveatedControllerBridge
         modelContext.insert(connection)
     }

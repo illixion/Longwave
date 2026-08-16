@@ -834,6 +834,10 @@ final class SavedConnection {
     /// Unused since `FoveatedConnectionMode.remote` was retired. Kept so existing
     /// stores don't need a migration for a column nothing reads.
     var foveatedRemoteServerName: String?
+    /// Unused since immersion became the PC's to decide — the headset follows the
+    /// host's alpha-blend telemetry instead of a stored preference, so there is
+    /// nothing to persist. Kept, like `foveatedRemoteServerName` above, so
+    /// existing stores don't need a migration for a column nothing reads.
     var foveatedImmersionStyleStorage: String?
     var foveatedMicEnabledStorage: Bool?
     /// Whether to stream Switch Pro + hand-tracking input to the host's SteamVR
@@ -846,11 +850,6 @@ final class SavedConnection {
     var foveatedConnectionMode: FoveatedConnectionMode {
         get { FoveatedConnectionMode(rawValue: foveatedConnectionModeStorage ?? "") ?? .systemDiscovered }
         set { foveatedConnectionModeStorage = newValue.rawValue }
-    }
-
-    var foveatedImmersionStyle: FoveatedImmersionStyle {
-        get { FoveatedImmersionStyle(rawValue: foveatedImmersionStyleStorage ?? "") ?? .progressive }
-        set { foveatedImmersionStyleStorage = newValue.rawValue }
     }
 
     var foveatedMicEnabled: Bool {

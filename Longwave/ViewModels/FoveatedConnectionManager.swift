@@ -39,15 +39,21 @@ final class FoveatedConnectionManager {
     var lastError: String?
 
     /// Immersion style the immersive space runs in, bound by the scene in
-    /// `LongwaveApp`. Held here rather than read off `pendingConnection` because
-    /// the scene needs a plain value settled *before* the space opens —
-    /// `beginConnect` writes it synchronously, on its first line, for that reason.
+    /// `LongwaveApp`.
+    ///
+    /// Not a preference, and deliberately not persisted: the only thing that
+    /// changes it is the host reporting whether it is sending an alpha channel
+    /// (`onAlphaBlendChanged`), because `.mixed` is worth being in only when
+    /// there is transparency to composite. It starts progressive and returns
+    /// there when a session ends — before any telemetry there is no alpha by
+    /// definition, and opening mixed on the strength of what the *last* PC was
+    /// doing would show the next one's opaque frames with passthrough around
+    /// them.
     ///
     /// Settable mid-session on purpose: SwiftUI's `immersionStyle(selection:)`
-    /// swaps the style of a space that is already open, so this does not have to
-    /// be a connect-time decision. That is what lets the PC's passthrough switch
-    /// move the headset between mixed and progressive without dropping a session.
-    var immersionStyle: FoveatedImmersionStyle = ConnectionDefaults.foveatedImmersion
+    /// restyles a space that is already open, which is what lets the PC's switch
+    /// move the headset without dropping the session.
+    var immersionStyle: FoveatedImmersionStyle = .progressive
 
     /// The active controller bridge (Switch Pro + hand tracking → SteamVR),
     /// non-nil only while a session with the bridge enabled is connected.
@@ -126,7 +132,6 @@ final class FoveatedConnectionManager {
     /// `lastError`; the immersive space auto-opens via the presentation
     /// behaviors set by the control window.
     func beginConnect(_ connection: SavedConnection) {
-        immersionStyle = connection.foveatedImmersionStyle
         pendingConnection = connection
         lastError = nil
         connectTask?.cancel()
@@ -415,6 +420,11 @@ final class FoveatedConnectionManager {
         gameLibrary.detach()
         controllerBridge?.stop()
         controllerBridge = nil
+        // Nothing is reporting alpha any more, so stop claiming there is any. The
+        // bridge is the only source of that fact, and a stale `.mixed` would open
+        // the next session showing passthrough around a PC that is not sending
+        // transparency.
+        immersionStyle = .progressive
     }
 }
 #endif

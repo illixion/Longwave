@@ -2,6 +2,7 @@
 import SwiftUI
 import UIKit
 import GameController
+import os
 @preconcurrency import MoonlightCommonC
 
 /// A UIViewRepresentable that captures hardware/Bluetooth keyboard events
@@ -16,70 +17,25 @@ struct MoonlightHardwareKeyboardView: UIViewRepresentable {
     func updateUIView(_ uiView: MoonlightKeyCaptureView, context: Context) {}
 }
 
-/// A UIView that becomes first responder to intercept hardware keyboard press events.
-final class MoonlightKeyCaptureView: UIView {
+/// A UIView that becomes first responder to intercept hardware keyboard press
+/// events. `KeyCaptureResponderView` owns when it may hold the responder at all.
+final class MoonlightKeyCaptureView: KeyCaptureResponderView {
 
     /// Tracks active modifier state as a bitmask (MODIFIER_SHIFT | MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_META).
     private var activeModifiers: Int8 = 0
 
-    private var observers: [NSObjectProtocol] = []
-
-    override var canBecomeFirstResponder: Bool { true }
-
     private var loggedFirstPress = false
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            if observers.isEmpty {
-                // Re-grab first responder whenever this window becomes key — e.g.
-                // after the keyboard window closes — so hardware keyboard input
-                // works without the keyboard window open, not just while focused.
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
-                ) { [weak self] note in
-                    guard let self, (note.object as? UIWindow) === self.window else { return }
-                    self.reclaimFirstResponder()
-                })
-                // And once text entry finishes, since a grab attempted during a
-                // typing/dictation session is declined rather than forced.
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: .textEntryDidEnd, object: nil, queue: .main
-                ) { [weak self] _ in
-                    self?.reclaimFirstResponder()
-                })
-            }
-            reclaimFirstResponder()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.reclaimFirstResponder()
-            }
-        } else {
-            observers.forEach(NotificationCenter.default.removeObserver)
-            observers.removeAll()
-        }
-    }
-
-    deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
-    }
-
-    /// Become first responder unless something is presented over our window, or
-    /// the user is entering text anywhere in the app — taking the responder out
-    /// from under a live session ends dictation. We do NOT gate on `isKeyWindow`
-    /// — on visionOS that can be false even for the window the user is looking
-    /// at, which would block capture entirely.
-    private func reclaimFirstResponder() {
-        guard let window = self.window else { return }
-        if window.rootViewController?.presentedViewController != nil { return }
-        if !TextInputActivity.shared.mayTakeFirstResponder() { return }
-        if isFirstResponder { return }
-        let ok = becomeFirstResponder()
-        AppLog.moonlightStream.line("MoonlightKeyCaptureView becomeFirstResponder -> \(ok) (isKeyWindow=\(window.isKeyWindow))")
-    }
+    override var captureLog: Logger { AppLog.moonlightStream }
+    override var captureLogName: String { "MoonlightKeyCaptureView" }
 
     // MARK: - Press Events
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard mayCaptureKeys else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
         // When a GCKeyboard is present, MoonlightKeyboardManager owns key input
         // (GameController captures the keyboard while streaming). Defer to it to
         // avoid double keystrokes; this UIPress path is only a fallback.

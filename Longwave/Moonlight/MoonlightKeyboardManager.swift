@@ -68,6 +68,13 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
 
     private func handle(keyCode: GCKeyCode, pressed: Bool) {
         guard let usage = UIKeyboardHIDUsage(rawValue: keyCode.rawValue) else { return }
+        // GameController hands us keys app-wide rather than through the responder
+        // chain, so a stream running in one window would otherwise also swallow
+        // what the user types into a text field in another (the connection form).
+        // Releases are always forwarded: text entry can start between a key going
+        // down and coming up, and dropping that release strands the key on the
+        // host. The handler queue is the main queue (see `startListening`).
+        if pressed, MainActor.assumeIsolated({ TextInputActivity.shared.isEntering }) { return }
 
         let modFlag = MoonlightKeyCodes.modifierFlag(for: usage)
         // Set the modifier before sending a press; clear after sending a release

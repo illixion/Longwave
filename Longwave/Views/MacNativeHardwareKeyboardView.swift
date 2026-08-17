@@ -22,50 +22,11 @@ struct MacNativeHardwareKeyboardView: UIViewRepresentable {
     }
 }
 
-final class MacNativeKeyCaptureView: UIView {
+/// `KeyCaptureResponderView` owns when this may hold first responder at all.
+final class MacNativeKeyCaptureView: KeyCaptureResponderView {
     var screenManager: MacNativeStreamManager?
 
-    private var observers: [NSObjectProtocol] = []
-
-    override var canBecomeFirstResponder: Bool { true }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            if observers.isEmpty {
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
-                ) { [weak self] note in
-                    guard let self, (note.object as? UIWindow) === self.window else { return }
-                    self.reclaimFirstResponder()
-                })
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: .textEntryDidEnd, object: nil, queue: .main
-                ) { [weak self] _ in
-                    self?.reclaimFirstResponder()
-                })
-            }
-            reclaimFirstResponder()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.reclaimFirstResponder()
-            }
-        } else {
-            observers.forEach(NotificationCenter.default.removeObserver)
-            observers.removeAll()
-        }
-    }
-
-    deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
-    }
-
-    private func reclaimFirstResponder() {
-        guard let window = self.window else { return }
-        if window.rootViewController?.presentedViewController != nil { return }
-        if !TextInputActivity.shared.mayTakeFirstResponder() { return }
-        if isFirstResponder { return }
-        _ = becomeFirstResponder()
-    }
+    override var captureLogName: String { "MacNativeKeyCaptureView" }
 
     // MARK: - Press Events
 
@@ -79,6 +40,10 @@ final class MacNativeKeyCaptureView: UIView {
     /// non-printable specials (arrows, F-keys, Escape, …) are simply dropped
     /// in that case — there's no way to express them as plain text.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard mayCaptureKeys else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
         var handled = false
         for press in presses {
             guard let key = press.key, let screenManager,
@@ -99,6 +64,10 @@ final class MacNativeKeyCaptureView: UIView {
 
     /// Only the full-shortcuts path needs a matching key-up — the text-only
     /// fallback above is a one-shot insertion on press, nothing to release.
+    ///
+    /// Deliberately not gated on `mayCaptureKeys`: text entry can start between a
+    /// key going down and coming up, and swallowing that release would leave the
+    /// key held on the Mac.
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
         for press in presses {

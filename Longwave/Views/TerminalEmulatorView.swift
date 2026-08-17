@@ -12,10 +12,10 @@ import UIKit
 final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
     private var keyboardFocusEnabled = false
     private var appliedFocusRequest = -1
-    /// Set when a grab was declined because text entry was live, so it can be
-    /// completed once that session ends instead of being lost.
+    /// Set when a grab was declined — or given up — because text entry was live,
+    /// so it can be completed once that session ends instead of being lost.
     private var focusGrabDeferred = false
-    private var textEntryObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
     var onFirstResponderChange: ((Bool) -> Void)?
 
     override var canBecomeFirstResponder: Bool { keyboardFocusEnabled }
@@ -57,27 +57,63 @@ final class VisionTerminalView: TerminalView, PassiveTextInputSurface {
         _ = becomeFirstResponder()
     }
 
+    /// Text entry started somewhere in the app — most often a text field in
+    /// another window, since a hardware keyboard hands this terminal the responder
+    /// automatically. Yielding matters as much as not grabbing: holding on kept
+    /// the keystrokes (and, via `becomeFirstResponder`, the key window) here, so
+    /// typing into that field went into the session instead.
+    private func yieldToTextEntry() {
+        guard isFirstResponder, keyboardFocusEnabled else { return }
+        focusGrabDeferred = true
+        _ = resignFirstResponder()
+    }
+
+    /// Complete a deferred grab, but not at the cost of pulling the key window
+    /// away from whatever window the user is actually working in. visionOS often
+    /// reports no key window at all, so only another window's claim blocks this.
+    private func completeDeferredGrab() {
+        guard focusGrabDeferred, keyboardFocusEnabled, let window else { return }
+        if !window.isKeyWindow {
+            for scene in UIApplication.shared.connectedScenes {
+                guard let windowScene = scene as? UIWindowScene else { continue }
+                if windowScene.windows.contains(where: { $0.isKeyWindow && $0 !== window }) { return }
+            }
+        }
+        grabFirstResponder(deliberate: false)
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil {
-            if textEntryObserver == nil {
-                textEntryObserver = NotificationCenter.default.addObserver(
+            if observers.isEmpty {
+                let center = NotificationCenter.default
+                observers.append(center.addObserver(
+                    forName: .textEntryDidBegin, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.yieldToTextEntry()
+                })
+                observers.append(center.addObserver(
                     forName: .textEntryDidEnd, object: nil, queue: .main
                 ) { [weak self] _ in
-                    guard let self, self.focusGrabDeferred, self.keyboardFocusEnabled else { return }
-                    self.grabFirstResponder(deliberate: false)
-                }
+                    self?.completeDeferredGrab()
+                })
+                // A deferral the rule above declined is retried when this window
+                // does become the one in front.
+                observers.append(center.addObserver(
+                    forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
+                ) { [weak self] note in
+                    guard let self, (note.object as? UIWindow) === self.window else { return }
+                    self.completeDeferredGrab()
+                })
             }
-        } else if let observer = textEntryObserver {
-            NotificationCenter.default.removeObserver(observer)
-            textEntryObserver = nil
+        } else {
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
         }
     }
 
     deinit {
-        if let textEntryObserver {
-            NotificationCenter.default.removeObserver(textEntryObserver)
-        }
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     // MARK: - Scrolling

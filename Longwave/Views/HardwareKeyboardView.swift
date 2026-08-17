@@ -18,13 +18,10 @@ struct HardwareKeyboardView: UIViewRepresentable {
     }
 }
 
-/// A UIView that becomes first responder to intercept hardware keyboard press events.
-final class KeyCaptureView: UIView {
+/// A UIView that becomes first responder to intercept hardware keyboard press
+/// events. `KeyCaptureResponderView` owns when it may hold the responder at all.
+final class KeyCaptureView: KeyCaptureResponderView {
     var connectionManager: VNCConnectionManager?
-
-    private var observers: [NSObjectProtocol] = []
-
-    override var canBecomeFirstResponder: Bool { true }
 
     private var loggedFirstPress = false
 
@@ -43,62 +40,18 @@ final class KeyCaptureView: UIView {
     /// double-tap. Matches `DoubleClickCadence`'s pointer double-click window.
     private let doubleTapInterval: TimeInterval = 0.4
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            if observers.isEmpty {
-                // Re-grab first responder whenever this window becomes key — e.g.
-                // after the keyboard window closes — so hardware keyboard input
-                // works without the keyboard window open, not just while focused.
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
-                ) { [weak self] note in
-                    guard let self, (note.object as? UIWindow) === self.window else { return }
-                    self.reclaimFirstResponder()
-                })
-                // And once text entry finishes, since a grab attempted during a
-                // typing/dictation session is declined rather than forced.
-                observers.append(NotificationCenter.default.addObserver(
-                    forName: .textEntryDidEnd, object: nil, queue: .main
-                ) { [weak self] _ in
-                    self?.reclaimFirstResponder()
-                })
-            }
-            reclaimFirstResponder()
-            // Retry shortly after — the window/scene may not accept first
-            // responder at the instant the view is attached.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.reclaimFirstResponder()
-            }
-        } else {
-            observers.forEach(NotificationCenter.default.removeObserver)
-            observers.removeAll()
-            releaseStickyModifiers()
-        }
-    }
-
-    deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
-    }
-
-    /// Become first responder unless something is presented over our window
-    /// (don't steal focus from the credential prompt sheet's text field) or the
-    /// user is entering text anywhere in the app — taking the responder out from
-    /// under a live session ends dictation. We do NOT gate on `isKeyWindow` — on
-    /// visionOS that can be false even for the window the user is looking at,
-    /// which would block capture entirely.
-    private func reclaimFirstResponder() {
-        guard let window = self.window else { return }
-        if window.rootViewController?.presentedViewController != nil { return }
-        if !TextInputActivity.shared.mayTakeFirstResponder() { return }
-        if isFirstResponder { return }
-        let ok = becomeFirstResponder()
-        AppLog.app.line("KeyCaptureView becomeFirstResponder -> \(ok) (isKeyWindow=\(window.isKeyWindow))")
+    /// Leaving the window can't strand a latched modifier down at the remote.
+    override func keyCaptureViewDidLeaveWindow() {
+        releaseStickyModifiers()
     }
 
     // MARK: - Press Events
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard mayCaptureKeys else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
         if !loggedFirstPress {
             loggedFirstPress = true
             AppLog.app.line("KeyCaptureView received first hardware key press")
@@ -141,6 +94,9 @@ final class KeyCaptureView: UIView {
         }
     }
 
+    /// Deliberately not gated on `mayCaptureKeys`: text entry can start between a
+    /// key going down and coming up, and swallowing that release would leave the
+    /// key held at the remote. A release for a key we never pressed is harmless.
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
 

@@ -42,6 +42,12 @@ nonisolated enum TextEntryPacing {
 }
 
 extension Notification.Name {
+    /// Posted when app-wide text entry begins, i.e. the level leaves `.idle`.
+    /// Lets a keyboard-capture surface in another window stand down for the
+    /// duration — asking before *taking* first responder isn't enough, because
+    /// one that already holds it keeps every keystroke otherwise.
+    static let textEntryDidBegin = Notification.Name("Longwave.textEntryDidBegin")
+
     /// Posted when app-wide text entry ends, i.e. the level returns to `.idle`.
     /// Lets a caller that yielded first responder to a text session take it back.
     static let textEntryDidEnd = Notification.Name("Longwave.textEntryDidEnd")
@@ -113,6 +119,12 @@ final class TextInputActivity {
         guard next != level else { return }
         let wasEntering = isEntering
         level = next
+        // Both edges are announced. Observers are registered with a queue, so
+        // delivery is asynchronous — a `refresh()` called from inside a
+        // first-responder decision can't re-enter that decision.
+        if !wasEntering, isEntering {
+            NotificationCenter.default.post(name: .textEntryDidBegin, object: nil)
+        }
         if wasEntering, !isEntering {
             NotificationCenter.default.post(name: .textEntryDidEnd, object: nil)
         }

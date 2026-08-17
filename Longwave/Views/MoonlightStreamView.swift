@@ -371,7 +371,9 @@ struct MoonlightStreamView: View {
             Button {
                 manager.toggleSpatialAudio()
             } label: {
-                Label("Spatial Audio", systemImage: "person.spatialaudio.stereo.fill")
+                Label("Spatial Audio", systemImage: manager.spatialAudioEnabled
+                      ? "person.spatialaudio.fill"
+                      : "person.spatialaudio.stereo.fill")
             }
             .labelStyle(.iconOnly)
             .tint(manager.spatialAudioEnabled ? .accentColor : nil)

@@ -97,7 +97,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     /// session level, or bypassed (flat passthrough of the stream's own
     /// mix — the default). Persisted; applied live to the running session
     /// via the audio renderer, no reconnect needed.
-    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: Self.spatialAudioEnabledKey) {
+    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: MoonlightConnectionManager.spatialAudioEnabledKey) {
         didSet {
             guard spatialAudioEnabled != oldValue else { return }
             UserDefaults.standard.set(spatialAudioEnabled, forKey: Self.spatialAudioEnabledKey)

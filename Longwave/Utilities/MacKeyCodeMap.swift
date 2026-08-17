@@ -149,6 +149,36 @@ enum MacKeyCodeMap {
         }
     }
 
+    /// The physical key that types `character` on a US ANSI layout.
+    ///
+    /// Our on-screen keyboard names its caps by the glyph they type
+    /// (`VirtualKey.character`), while the wire carries a key *position* — so the
+    /// virtual keyboard's sink comes in this way and then goes through
+    /// `keyCode(for:)` like a real key press. Only unshifted glyphs are listed:
+    /// the layout always reports the base glyph plus a Shift modifier.
+    static func hidUsage(typing character: Character) -> UIKeyboardHIDUsage? {
+        characterUsages[character]
+    }
+
+    private static let characterUsages: [Character: UIKeyboardHIDUsage] = [
+        "a": .keyboardA, "b": .keyboardB, "c": .keyboardC, "d": .keyboardD,
+        "e": .keyboardE, "f": .keyboardF, "g": .keyboardG, "h": .keyboardH,
+        "i": .keyboardI, "j": .keyboardJ, "k": .keyboardK, "l": .keyboardL,
+        "m": .keyboardM, "n": .keyboardN, "o": .keyboardO, "p": .keyboardP,
+        "q": .keyboardQ, "r": .keyboardR, "s": .keyboardS, "t": .keyboardT,
+        "u": .keyboardU, "v": .keyboardV, "w": .keyboardW, "x": .keyboardX,
+        "y": .keyboardY, "z": .keyboardZ,
+        "1": .keyboard1, "2": .keyboard2, "3": .keyboard3, "4": .keyboard4,
+        "5": .keyboard5, "6": .keyboard6, "7": .keyboard7, "8": .keyboard8,
+        "9": .keyboard9, "0": .keyboard0,
+        "-": .keyboardHyphen, "=": .keyboardEqualSign,
+        "[": .keyboardOpenBracket, "]": .keyboardCloseBracket,
+        "\\": .keyboardBackslash, ";": .keyboardSemicolon, "'": .keyboardQuote,
+        "`": .keyboardGraveAccentAndTilde,
+        ",": .keyboardComma, ".": .keyboardPeriod, "/": .keyboardSlash,
+        " ": .keyboardSpacebar,
+    ]
+
     /// True for a standalone modifier key press (Shift/Control/Option/Command
     /// alone) — these can never be expressed over the text-only fallback
     /// channel (there's no "shortcut" without a paired key), so the capture

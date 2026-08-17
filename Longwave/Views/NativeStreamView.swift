@@ -752,6 +752,11 @@ struct NativeStreamView: View {
                 Button(action: rightClickAtCursor) {
                     Label("Right-click", systemImage: "cursorarrow.click.2")
                 }
+
+                Button(action: toggleKeyboardWindow) {
+                    Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
+                }
+                .tint(isKeyboardWindowOpen ? .accentColor : nil)
             }
 
             Toggle(isOn: audioOn) {
@@ -790,6 +795,23 @@ struct NativeStreamView: View {
         .glassBackgroundEffect()
     }
 
+    // MARK: - Keyboard Window
+
+    /// True while the on-screen keyboard has been opened in its own window —
+    /// tracked live off `WindowSessionRegistry`, so the button reads as a real
+    /// toggle instead of only ever opening it (mirrors `RemoteDesktopView`).
+    private var isKeyboardWindowOpen: Bool {
+        WindowSessionRegistry.shared.sessions["mac-native-keyboard"] != nil
+    }
+
+    private func toggleKeyboardWindow() {
+        if isKeyboardWindowOpen {
+            dismissWindow(id: "mac-native-keyboard")
+        } else {
+            openWindow(id: "mac-native-keyboard")
+        }
+    }
+
     private func disconnectAll() {
         // Take the per-window scenes down first — their sessions die with
         // the manager's forget() below.
@@ -802,6 +824,7 @@ struct NativeStreamView: View {
         screenManager.forget()
         audioManager.userDisconnect()
         WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+            dismissWindow(id: "mac-native-keyboard")
             dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
         }
     }

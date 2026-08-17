@@ -200,6 +200,16 @@ struct LongwaveApp: App {
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
 
+        WindowGroup("Native Keyboard", id: "mac-native-keyboard") {
+            MacNativeKeyboardView()
+                .homeOrnament()
+                .environment(macNativeManager)
+                .trackWindowSession(id: "mac-native-keyboard")
+        }
+        .defaultSize(width: 1180, height: 540)
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+
         #if MOONLIGHT_ENABLED
         WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard") {
             MoonlightKeyboardView()

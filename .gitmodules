@@ -4,22 +4,29 @@
 # (see CompanionWindows/app/src/pcvr-installer.js for how it gets the built
 # bundle instead).
 #
-# They are deliberately NOT the local paths they are developed from. A local
-# path in a committed .gitmodules leaks one machine's directory layout and makes
-# `git clone --recursive` fail with a confusing "no such file" for everybody
-# else. Point the working copy at the local repos instead, which overrides these
-# without touching the file:
+# GitHub is the only source for all three. This used to describe a second one —
+# a clone of each under ~/Projects, wired in as `origin` through a
+# `git config submodule.<name>.url <path>` override — and that arrangement is
+# retired because it silently rotted: the submodule histories were rewritten
+# onto signed commits, the local clones were not, and the two drifted about
+# eighty commits apart while still looking like a valid remote. A stale remote
+# that answers is worse than no remote at all. Their pre-rewrite history is kept
+# as bundles (~/Projects/_archive/*-prerewrite-*.bundle) and nothing unique was
+# in them: the pre-split work also lives in this repo's own history.
 #
-#   git config submodule.Longwave-PCVR-Host.url ~/Projects/longwave-pcvr-host
-#   git config submodule.SessionBroker.url       ~/Projects/longwave-session-broker
-#   git config submodule.OpenXRLayer.url         ~/Projects/longwave-openxr-layer
-#   git -C Longwave-PCVR-Host remote set-url origin ~/Projects/longwave-pcvr-host
-#   git -C SessionBroker      remote set-url origin ~/Projects/longwave-session-broker
-#   git -C OpenXRLayer        remote set-url origin ~/Projects/longwave-openxr-layer
+# The URLs below stay HTTPS so `git clone --recursive` fails with a clean
+# authentication error for anyone without access, which is the intended outcome
+# — the public app never needs these (see
+# CompanionWindows/app/src/pcvr-installer.js for how it gets the built bundle).
+# A working copy that does have access uses SSH instead, per-machine and without
+# touching this file:
 #
-# Set the module remotes directly, as above, and do NOT run `git submodule sync`
-# afterwards: sync copies the URLs *out of this file* into the config, which
-# undoes the override you just made rather than applying it.
+#   git config submodule.Longwave-PCVR-Host.url git@github.com:illixion/longwave-pcvr-host.git
+#   git config submodule.SessionBroker.url      git@github.com:illixion/longwave-session-broker.git
+#   git config submodule.OpenXRLayer.url        git@github.com:illixion/longwave-openxr-layer.git
+#
+# Do NOT run `git submodule sync` after setting those: sync copies the URLs *out
+# of this file* into the config, undoing the override rather than applying it.
 [submodule "Longwave-PCVR-Host"]
 	path = Longwave-PCVR-Host
 	url = https://github.com/illixion/longwave-pcvr-host.git

@@ -697,13 +697,24 @@ struct NativeStreamView: View {
             .tint(audioManager.eqSettings.enabled ? .accentColor : nil)
             .help("Equalizer")
 
-            Button(action: popOutAudio) {
-                Image(systemName: "arrow.up.forward.app")
+            Button {
+                audioManager.toggleSpatialAudio()
+            } label: {
+                Image(systemName: "person.spatialaudio.stereo.fill")
             }
-            .help("Pop out to its own window")
+            .tint(audioManager.spatialAudioMode == .on ? .accentColor : nil)
+            .help(spatialAudioHelp)
         }
         .buttonStyle(.borderless)
         .font(.title3)
+    }
+
+    private var spatialAudioHelp: String {
+        switch audioManager.spatialAudioMode {
+        case .auto: return "Spatial Audio: Auto — follows the system default"
+        case .on: return "Spatial Audio On — head-tracked rendering"
+        case .off: return "Spatial Audio Off — flat stereo playback"
+        }
     }
 
     // MARK: - Nothing enabled

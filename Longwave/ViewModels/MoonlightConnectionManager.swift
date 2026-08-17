@@ -91,14 +91,16 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     /// Whether HDR is active for the current stream (set by server callback).
     var isHDRActive: Bool = false
 
+    private static let spatialAudioEnabledKey = "moonlightSpatialAudioEnabled"
+
     /// Whether decoded game audio is spatialized (head-tracked) at the
     /// session level, or bypassed (flat passthrough of the stream's own
     /// mix — the default). Persisted; applied live to the running session
     /// via the audio renderer, no reconnect needed.
-    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: "moonlightSpatialAudioEnabled") {
+    var spatialAudioEnabled: Bool = UserDefaults.standard.bool(forKey: Self.spatialAudioEnabledKey) {
         didSet {
             guard spatialAudioEnabled != oldValue else { return }
-            UserDefaults.standard.set(spatialAudioEnabled, forKey: "moonlightSpatialAudioEnabled")
+            UserDefaults.standard.set(spatialAudioEnabled, forKey: Self.spatialAudioEnabledKey)
             audioRenderer?.setSpatialAudioEnabled(spatialAudioEnabled)
         }
     }
@@ -317,6 +319,19 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 }
 
                 let surroundInfo = surroundAudioInfo(from: audioConfig)
+
+                // A fresh install/user has never touched the spatial toggle —
+                // default a surround connection to head-tracked rather than
+                // inheriting the flat/off default sized for stereo, since a
+                // negotiated 5.1/7.1 mix is the case head-tracking matters
+                // most for. Any preference the user has already set (on or
+                // off, from any prior connection) is left alone.
+                let isSurroundConfig = connection.moonlightAudioConfig == .surround51
+                    || connection.moonlightAudioConfig == .surround71
+                if isSurroundConfig,
+                   UserDefaults.standard.object(forKey: Self.spatialAudioEnabledKey) == nil {
+                    self.spatialAudioEnabled = true
+                }
 
                 // Use display mode override if selected, otherwise connection settings
                 let effectiveWidth = displayOverride?.width ?? connection.moonlightResolutionWidth

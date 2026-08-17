@@ -12,7 +12,8 @@
   },
   "devDependencies": {
     "electron": "^39.8.5",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.28.2"
   },
   "dependencies": {
     "openpgp": "^6.3.1"

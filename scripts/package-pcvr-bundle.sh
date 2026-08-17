@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
 # Build the closed-source PCVR bundle (LongwavePCVRHost.exe + the SessionBroker/OpenXRLayer
-# native binaries + the CloudXR SDK redistributable) and attach it as an asset to a GitHub
-# release CI already created for the public app.
+# native binaries + the CloudXR SDK redistributable + the PCVR/Games UI, minified) and attach
+# it as an asset to a GitHub release CI already created for the public app.
 #
 # This is the "compile the PCVR component on my own laptop and attach it to the release" half
 # of the split: GitHub CI builds and publishes the public installer from public source; this
 # script never runs in CI (there is no public source for it to build from) and is meant to be
-# run by hand, from a machine with the private submodules checked out and network access to
-# the RTX host for the native build.
+# run by hand, from a machine with the private submodules checked out. The native cross-build
+# runs on a Windows-on-ARM VMware Fusion VM local to this Mac (see LONGWAVE_PC_HOST below) —
+# validated end-to-end in Phase 0 of the installer plan (real SessionBroker/OpenXRLayer builds,
+# genuine x64 PE output via dumpbin). Never point this at a machine outside your own trust
+# boundary: it receives the private submodule source over scp and returns built binaries that
+# get GPG-signed and shipped, with no build step re-verified afterward.
 #
 # The running app asks GitHub for an asset on *its own build's release tag* (see
 # CompanionWindows/app/src/pcvr-installer.js) — never /releases/latest — because the tag is
@@ -17,7 +21,7 @@
 #
 #   scripts/package-pcvr-bundle.sh                       # auto-detects the latest CI release tag
 #   scripts/package-pcvr-bundle.sh --tag 0.1.0-abc12345  # target a specific release
-#   scripts/package-pcvr-bundle.sh --no-build-native     # reuse whatever's already built on the PC
+#   scripts/package-pcvr-bundle.sh --no-build-native     # reuse whatever's already built on the VM
 #   scripts/package-pcvr-bundle.sh --stage-only          # build + zip locally, skip gh release upload
 #
 # The zip is detached-signed with the Ixion YubiKey OpenPGP key (ed25519, card serial 13655979)
@@ -27,12 +31,16 @@
 # needs gpg installed to check it — see pcvr-installer.js's verifyGpgSignature().
 #
 # Requires: Longwave-PCVR-Host/, SessionBroker/, OpenXRLayer/ submodules checked out locally;
-# `gh` authenticated against this repo; SSH access to the RTX host (ssh-exec, see ~/CLAUDE.md);
-# the signing YubiKey plugged in.
+# `gh` authenticated against this repo; SSH access to the build VM (ssh-exec, see ~/CLAUDE.md);
+# esbuild installed under CompanionWindows/app/node_modules (npm install there); the signing
+# YubiKey plugged in.
 
 set -euo pipefail
 
-HOST="${LONGWAVE_PC_HOST:-pc}"
+# Windows-on-ARM VMware Fusion VM on this Mac — see ~/.ssh/config's `winvm` entry. Override
+# with LONGWAVE_PC_HOST if you ever build on the real gaming PC again (LONGWAVE_CLOUDXR_SDK's
+# default below assumes whichever host you point this at has the CloudXR SDK staged already).
+HOST="${LONGWAVE_PC_HOST:-winvm}"
 BRIDGE_WIN='C:\dev\Longwave-bridge'
 # Where the NGC-downloaded CloudXR SDK is hand-staged on the host (matches provision-pc.ps1's
 # own default) — third-party redistributable, not built, just copied along.
@@ -128,22 +136,46 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
 "
 
   # A stale exe from a previous build silently reporting success is a known trap here
-  # (nothing --build re-links if CMake thinks nothing changed) — delete the two real
-  # deliverables first so their re-appearance is proof the build actually ran.
+  # (nmake won't re-link if CMake thinks nothing changed) — delete the two real deliverables
+  # first so their re-appearance is proof the build actually ran.
+  #
+  # NMake Makefiles, not the multi-config VS generator, because winvm only has VS Build
+  # Tools (no full IDE) — this is the exact toolchain/env validated in the installer plan's
+  # Phase 0 spike: MSVC's Hostarm64\x64 cross-compiler + cppwinrt on INCLUDE + the SDK's
+  # bin\<ver>\arm64 on PATH for rc.exe. Single-config, so CMAKE_BUILD_TYPE is set once at
+  # configure time rather than passed as --config at build time.
   echo "==> building SessionBroker + OpenXRLayer (Release) on $HOST"
   ps_exec 'build broker + layer' 900 "
 \$ErrorActionPreference = 'Stop'
-Remove-Item '$BRIDGE_WIN\\SessionBroker\\build\\Release\\LongwaveSessionBroker.exe' -Force -ErrorAction SilentlyContinue
-Remove-Item '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\LongwaveControllerBridgeLayer.dll' -Force -ErrorAction SilentlyContinue
+\$msvc = (Get-ChildItem 'C:\\BuildTools\\VC\\Tools\\MSVC' -Directory | Select-Object -First 1).FullName
+\$sdk = 'C:\\Program Files (x86)\\Windows Kits\\10'
+\$sdkver = (Get-ChildItem \"\$sdk\\Include\" -Directory | Select-Object -Last 1).Name
+\$env:PATH = \"\$msvc\\bin\\Hostarm64\\x64;\$sdk\\bin\\\$sdkver\\arm64;C:\\Program Files\\CMake\\bin;\$env:PATH\"
+\$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
+\$env:LIB = \"\$msvc\\lib\\x64;\$sdk\\Lib\\\$sdkver\\ucrt\\x64;\$sdk\\Lib\\\$sdkver\\um\\x64\"
 
-cmake --build '$BRIDGE_WIN\\SessionBroker\\build' --config Release
-if (\$LASTEXITCODE -ne 0) { throw 'SessionBroker build failed' }
-cmake --build '$BRIDGE_WIN\\OpenXRLayer\\build' --config Release
-if (\$LASTEXITCODE -ne 0) { throw 'OpenXRLayer build failed' }
+Remove-Item '$BRIDGE_WIN\\SessionBroker\\build\\LongwaveSessionBroker.exe' -Force -ErrorAction SilentlyContinue
+Remove-Item '$BRIDGE_WIN\\OpenXRLayer\\build\\LongwaveControllerBridgeLayer.dll' -Force -ErrorAction SilentlyContinue
+
+foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
+  \$build = Join-Path '$BRIDGE_WIN' \"\$dir\build\"
+  \$src = Join-Path '$BRIDGE_WIN' \$dir
+  # Configure once, then just build — a stale CMakeCache.txt from a differently-shaped source
+  # tree (e.g. re-synced after a rename) is exactly the kind of thing worth a fresh configure,
+  # so wipe and reconfigure rather than trust an existing cache blindly.
+  if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
+  New-Item -ItemType Directory -Force -Path \$build | Out-Null
+  Push-Location \$build
+  cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
+  if (\$LASTEXITCODE -ne 0) { throw \"CMake configure failed for \$dir\" }
+  nmake
+  if (\$LASTEXITCODE -ne 0) { throw \"nmake build failed for \$dir\" }
+  Pop-Location
+}
 
 foreach (\$f in @(
-  '$BRIDGE_WIN\\SessionBroker\\build\\Release\\LongwaveSessionBroker.exe',
-  '$BRIDGE_WIN\\OpenXRLayer\\build\\Release\\LongwaveControllerBridgeLayer.dll'
+  '$BRIDGE_WIN\\SessionBroker\\build\\LongwaveSessionBroker.exe',
+  '$BRIDGE_WIN\\OpenXRLayer\\build\\LongwaveControllerBridgeLayer.dll'
 )) {
   if (-not (Test-Path \$f)) { throw \"expected build output missing: \$f\" }
 }
@@ -160,12 +192,14 @@ BRIDGE_FS="${BRIDGE_WIN//\\//}"
 CLOUDXR_SDK_FS="${CLOUDXR_SDK_WIN//\\//}"
 
 # ------------------------------------------------------------------ collect artifacts back
+# NMake Makefiles is a single-config generator, so build outputs land straight in build/ —
+# no Release/ subfolder, unlike the multi-config VS generator this script used before.
 echo "==> collecting artifacts from $HOST"
 for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll sidecar.dll sidecar_inject.exe; do
-  scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/Release/$f" "$STAGE/bridge/$f"
+  scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/$f" "$STAGE/bridge/$f"
 done
 for f in LongwaveControllerBridgeLayer.dll XR_APILAYER_ILLIXION_controller_bridge.json; do
-  scp -q "$HOST:$BRIDGE_FS/OpenXRLayer/build/Release/$f" "$STAGE/bridge/$f"
+  scp -q "$HOST:$BRIDGE_FS/OpenXRLayer/build/$f" "$STAGE/bridge/$f"
 done
 
 # install-layer.ps1 is a source file, not a build output — it never lands in build/Release/,
@@ -177,6 +211,32 @@ echo "==> collecting the CloudXR SDK redistributable from $HOST"
 mkdir -p "$STAGE/host/Server"
 scp -qr "$HOST:$CLOUDXR_SDK_FS/Server/*" "$STAGE/host/Server/"
 scp -q  "$HOST:$CLOUDXR_SDK_FS/SampleClient/NvStreamManagerClient.dll" "$STAGE/host/NvStreamManagerClient.dll"
+
+# ------------------------------------------------------------------ PCVR/Games UI (minified)
+# The Electron-side PCVR and Game library pages (Longwave-PCVR-Host/ui/) are as closed-source
+# as the rest of this bundle — they talk to backend RPCs that only make sense with the PCVR
+# host installed, and their markup itself describes PCVR internals (session/host-status
+# fields, quality presets, etc). The public Companion app (CompanionWindows/app) only ships a
+# generic <webview> + pcvr-module:// loader (see main.js) that knows nothing PCVR-specific;
+# this is where the actual page content gets built and dropped into the bundle it downloads.
+#
+# Minified (not just copied) so a browsable download doesn't hand out readable source for
+# free — same anti-RE reasoning as the native side, applied to the one JS/HTML/CSS surface in
+# this bundle. esbuild lives in CompanionWindows/app's devDependencies; run from there so it
+# resolves without a second install.
+echo "==> minifying the PCVR/Games UI"
+UI_SRC="$REPO_ROOT/Longwave-PCVR-Host/ui"
+UI_OUT="$STAGE/host/ui"
+mkdir -p "$UI_OUT"
+(cd "$REPO_ROOT/CompanionWindows/app" && npx --no-install esbuild \
+  "$UI_SRC/pcvr.js" "$UI_SRC/games.js" "$UI_SRC/shared.js" \
+  --minify --outdir="$UI_OUT" --charset=utf8)
+for f in pcvr.html games.html styles.css; do
+  # esbuild's --loader=copy would also do this, but keeping HTML/CSS a plain cp is one fewer
+  # thing that could silently transform markup a browser depends on rendering byte-for-byte.
+  cp "$UI_SRC/$f" "$UI_OUT/$f"
+done
+echo "    $(find "$UI_OUT" -type f | wc -l | tr -d ' ') files, $(du -sh "$UI_OUT" | cut -f1)"
 
 # ------------------------------------------------------------------ copyleft guard
 # This bundle is closed-source on purpose. A GPL component inside it would make the whole

@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -9,6 +9,52 @@ const { tailscaleStatus, checkPath } = require('./tailscale');
 const { Supervisor } = require('./supervisor');
 const { ControlServer } = require('./control-server');
 const pcvrInstaller = require('./pcvr-installer');
+
+// Custom scheme the downloaded PCVR module's own pages load from (pcvr-module://ui/pcvr.html
+// etc.), so the <webview> hosting them never needs a bare file:// URL into a user-writable
+// download directory. Serves out of pcvrInstaller.INSTALL_ROOT/ui/ — the verified, extracted
+// module's web assets — nothing else. Registered as 'standard'+'secure' before app ready,
+// which is required for a scheme to behave enough like https: for fetch/CSP to work inside
+// it. The <webview>'s own `preload` attribute is set separately (see renderer.js's
+// ensurePcvrModuleLoaded()) to a real file: URL, since preload scripts are loaded via
+// Node's require and must be file:.
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'pcvr-module',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+}]);
+
+const PCVR_MODULE_MIME = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
+};
+
+const PRELOAD_FILE_URL = require('url').pathToFileURL(path.join(__dirname, 'preload.js')).href;
+// The renderer is sandboxed (no __dirname of its own — and neither does a sandboxed preload,
+// see preload.js's comment), so it asks the main process for this rather than computing it.
+ipcMain.handle('get-preload-url', () => PRELOAD_FILE_URL);
+
+function registerPcvrModuleProtocol() {
+  const root = path.join(pcvrInstaller.INSTALL_ROOT, 'ui');
+  protocol.handle('pcvr-module', (request) => {
+    const url = new URL(request.url);
+    const rel = decodeURIComponent(url.pathname || '/pcvr.html').replace(/^\/+/, '') || 'pcvr.html';
+    // Resolve and pin inside root — url.pathname is already URL-decoded and path-normalized
+    // by the WHATWG URL parser (collapses ".." itself), but this is the one boundary where a
+    // downloaded zip's own contents reach the filesystem, so check anyway rather than trust it.
+    const resolved = path.resolve(root, rel);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return new Response('forbidden', { status: 403 });
+    }
+    let data;
+    try {
+      data = fs.readFileSync(resolved);
+    } catch {
+      return new Response('not found', { status: 404 });
+    }
+    const type = PCVR_MODULE_MIME[path.extname(resolved).toLowerCase()] || 'application/octet-stream';
+    return new Response(data, { headers: { 'content-type': type } });
+  });
+}
 
 let mainWindow = null;
 let pairingWindow = null;
@@ -52,7 +98,7 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 /**
- * Where the host-built PCVR binaries live: the broker, the gaze-fix injector, and the OpenXR
+ * Where the host-built PCVR binaries live: the broker, the sidecar injector, and the OpenXR
  * controller-bridge layer DLL. The on-demand download (pcvr-installer.js) is the path a real
  * user install takes; the dev-checkout path is only for building SessionBroker/OpenXRLayer by
  * hand with CMake. LONGWAVE_BRIDGE_ROOT overrides it for a non-standard checkout.
@@ -198,6 +244,8 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Only the main window hosts the PCVR/Games <webview>s that load the downloaded module.
+      webviewTag: true,
     },
   });
   mainWindow.removeMenu();
@@ -586,6 +634,7 @@ ipcMain.handle('tailscale-path', (_e, ip) => checkPath(ip));
 if (gotSingleInstanceLock) app.on('second-instance', focusMainWindow);
 
 if (gotSingleInstanceLock) app.whenReady().then(() => {
+  registerPcvrModuleProtocol();
   startBackend();
   startPcvrHost();
   supervisor = new Supervisor({

@@ -29,7 +29,9 @@ const el = {
   nsMouse: $('nsMouse'),
   nsKeyboard: $('nsKeyboard'),
 
-  // PCVR (foveated / CloudXR)
+  // PCVR (foveated / CloudXR) — the nav-rail lamp and the installer banner are all this
+  // shell still owns; everything below the banner is the downloaded module's own page,
+  // hosted in pcvrModuleView (see PCVR_MODULE_MIME / pcvr-installer.js / main.js).
   foveatedLamp: $('foveatedLamp'),
   foveatedChannelState: $('foveatedChannelState'),
   pcvrDownload: $('pcvrDownload'),
@@ -38,55 +40,11 @@ const el = {
   pcvrDlBar: $('pcvrDlBar'),
   pcvrDlBtn: $('pcvrDlBtn'),
   pcvrDlStatus: $('pcvrDlStatus'),
-  fovTransmit: $('fovTransmit'),
-  fovLamp: $('fovLamp'),
-  fovCloudXrBanner: $('fovCloudXrBanner'),
-  fovPathBanner: $('fovPathBanner'),
-  fovEncoderBanner: $('fovEncoderBanner'),
-  fovEncoderIssues: $('fovEncoderIssues'),
-  fovConflictBanner: $('fovConflictBanner'),
-  fovConflictTitle: $('fovConflictTitle'),
-  fovConflictList: $('fovConflictList'),
-  fovConflictBtn: $('fovConflictBtn'),
-  fovConflictSub: $('fovConflictSub'),
-  fovPairingBanner: $('fovPairingBanner'),
-  fovShowPairingBtn: $('fovShowPairingBtn'),
+  pcvrModuleView: $('pcvrModuleView'),
   noticesBtn: $('noticesBtn'),
-  pcvrActionBtn: $('pcvrActionBtn'),
-  pcvrStatusTitle: $('pcvrStatusTitle'),
-  pcvrStatusDetail: $('pcvrStatusDetail'),
-  pcvrOptions: $('pcvrOptions'),
-  pcvrServices: $('pcvrServices'),
-  pcvrDesktop: $('pcvrDesktop'),
-  fovModeSelect: $('fovModeSelect'),
-  fovQuality: $('fovQuality'),
-  fovQualitySub: $('fovQualitySub'),
-  fovVrchatOsc: $('fovVrchatOsc'),
-  fovVrchatOscSub: $('fovVrchatOscSub'),
-  fovPassthrough: $('fovPassthrough'),
-  fovPassthroughSub: $('fovPassthroughSub'),
-  fovTsSub: $('fovTsSub'),
-  fovTsStatus: $('fovTsStatus'),
-  fovBundleId: $('fovBundleId'),
-  fovPort: $('fovPort'),
-  fovIp: $('fovIp'),
-  fovForceQr: $('fovForceQr'),
-  fovOpMsg: $('fovOpMsg'),
-  fovEndpoint: $('fovEndpoint'),
-  fovClient: $('fovClient'),
-  fovSession: $('fovSession'),
-  fovCloudXr: $('fovCloudXr'),
-  fovAdvertising: $('fovAdvertising'),
-  fovBundleShown: $('fovBundleShown'),
-  svcList: $('svcList'),
 
-  // Game library
-  gamesFilter: $('gamesFilter'),
-  gamesAddBtn: $('gamesAddBtn'),
-  gamesRefreshBtn: $('gamesRefreshBtn'),
-  gamesList: $('gamesList'),
-  gamesCount: $('gamesCount'),
-  gamesOpMsg: $('gamesOpMsg'),
+  // Game library — entirely the downloaded module's own page; see gamesModuleView.
+  gamesModuleView: $('gamesModuleView'),
 
   // Hotspot
   capabilityBanner: $('capabilityBanner'),
@@ -115,17 +73,6 @@ const el = {
 let preferredAddress = null;
 
 let backendConnected = false;
-let tsInfo = { installed: false, backendState: 'unknown', selfIp: null, selfName: null };
-let lastFoveated = null;
-let lastServices = {};
-let pcvrBusy = false;
-/* Which way the in-flight operation is going ('start' | 'stop' | null). The busy
-   labels used to derive direction from pcvrActive(), but that is LIVE state: a
-   start flips it to true the moment the first service comes up, so the panel read
-   "Stopping PCVR" halfway through starting. The operation knows its own direction;
-   the state does not. */
-let pcvrBusyOp = null;
-let lanAdvertiseIp = '';
 
 /* This page runs in two hosts, and the PCVR host is a separate, closed-source process with
    its own pipe that may simply not be installed. Electron always defines the Foveated- and
@@ -260,17 +207,37 @@ function onPcvrDownloadProgress(progress) {
   }
 }
 
-/** Shows or hides the PCVR download banner and the rest of each PCVR-gated view to match
- *  live host availability. The nav tabs and the views themselves stay reachable either way —
- *  that's the point: opening the PCVR tab with nothing installed yet is how you install it. */
+/** Points a module <webview> at its page for the first time. Idempotent by design — this
+ *  gets called from applyHostCapabilities() every time PCVR's connection state changes, and
+ *  setting .src again on an already-loaded webview would reload it, throwing away whatever
+ *  state that page's own script was holding (e.g. mid-flight PCVR start/stop). */
+async function ensurePcvrModuleLoaded() {
+  if (el.pcvrModuleView.src) return;
+  // <webview>'s own preload attribute needs a file: URL, which this sandboxed renderer has
+  // no Node access to build itself — window.hotspot.preloadUrl() asks the main process,
+  // which does have __dirname (see main.js's PRELOAD_FILE_URL). Both module pages reuse
+  // this exact script, so they get the same window.hotspot bridge this shell window has,
+  // with no separate copy to keep in sync.
+  const preloadUrl = await window.hotspot.preloadUrl();
+  el.pcvrModuleView.setAttribute('preload', preloadUrl);
+  el.gamesModuleView.setAttribute('preload', preloadUrl);
+  el.pcvrModuleView.src = 'pcvr-module://ui/pcvr.html';
+  el.gamesModuleView.src = 'pcvr-module://ui/games.html';
+}
+
+/** Shows or hides the PCVR download banner and the module <webview>s to match live host
+ *  availability. The nav tabs and the views themselves stay reachable either way — that's
+ *  the point: opening the PCVR tab with nothing installed yet is how you install it. */
 function applyHostCapabilities() {
   el.pcvrDownload.classList.toggle('hidden', hasPcvr);
-  for (const id of ['fovTransmit', 'pcvrOptions', 'fovRunPanel']) {
-    $(id).classList.toggle('hidden', !hasPcvr);
+  el.pcvrModuleView.classList.toggle('hidden', !hasPcvr);
+  el.gamesModuleView.classList.toggle('hidden', !hasPcvr);
+  if (hasPcvr) {
+    pcvrDownloadInfo = null;
+    ensurePcvrModuleLoaded();
+  } else {
+    refreshPcvrDownloadState();
   }
-  if (hasPcvr) pcvrDownloadInfo = null;
-  else refreshPcvrDownloadState();
-  renderGames();
 }
 
 function showView(viewId) {
@@ -280,9 +247,12 @@ function showView(viewId) {
     tab.setAttribute('aria-selected', String(current));
     $(tab.dataset.view).classList.toggle('hidden', !current);
   }
-  // Scanning the Steam libraries touches the disk, so only do it when the tab
-  // is actually being looked at.
-  if (viewId === 'gamesView') refreshGames();
+  /* Scanning the Steam libraries touches the disk, so the module only does it when the tab
+     is actually being looked at — the shell just relays the "you're on-screen now, rescan"
+     signal into the isolated <webview>, which owns the actual games.js/refreshGames() logic. */
+  if (viewId === 'gamesView' && el.gamesModuleView.src) {
+    el.gamesModuleView.send('shell-command', 'refresh-games');
+  }
 }
 
 // ── Backend connection ─────────────────────────────────────────────────────
@@ -295,108 +265,8 @@ function setBackendConnected(connected) {
     : 'Companion services unreachable';
   el.startBtn.disabled = !connected;
   el.nsStartBtn.disabled = !connected;
-  renderPcvrSummary();
   if (!connected) return;
   refreshAll();
-  /* And the game library, if it never loaded. The library is deliberately lazy
-     — a Steam scan touches the disk, so it only runs when the tab is looked at
-     — but that made the app needlessly unrecoverable: open Games in the second
-     before the backend's pipe is up, the one attempt fails, and the tab stays
-     empty with no way back except restarting. Which is what people did. */
-  if (gamesCache.length === 0) refreshGames();
-}
-
-// ── PCVR summary ───────────────────────────────────────────────────────────
-
-async function refreshFoveatedStatus() {
-  if (!hasPcvr || !backendConnected) return;
-  try {
-    renderFoveated(await window.hotspot.foveatedStatus());
-  } catch {
-    // Connection state already owns the unavailable message; retry next interval.
-  }
-}
-
-function fovMode() {
-  return el.fovModeSelect.value || 'lan';
-}
-
-function servicesActive() {
-  return Object.values(lastServices).some((service) => service.healthy || service.running);
-}
-
-function pcvrActive() {
-  return Boolean(lastFoveated && ['on', 'starting'].includes(lastFoveated.state)) || servicesActive();
-}
-
-function renderPcvrSummary() {
-  if (!hasPcvr) return;
-  const active = pcvrActive();
-  const f = lastFoveated || {};
-  const serviceCount = Object.keys(lastServices).length;
-  const healthyCount = Object.values(lastServices).filter((service) => service.healthy).length;
-  const partial = serviceCount > 0 && healthyCount > 0 && healthyCount < serviceCount;
-  const busy = pcvrBusy || f.state === 'starting';
-
-  const state = (f.state === 'error' || partial) ? 'fault'
-    : busy ? 'waiting'
-    : (f.clientConnected || f.gameRunning) ? 'live'
-    : active ? 'waiting'
-    : 'off';
-  el.fovTransmit.dataset.state = state;
-  setLamp(el.fovLamp, state);
-  setLamp(el.foveatedLamp, state);
-  el.foveatedChannelState.textContent =
-    { off: 'Off', waiting: 'Ready', live: 'Streaming', fault: 'Needs attention' }[state];
-
-  el.pcvrActionBtn.textContent = pcvrBusy ? (pcvrBusyOp === 'stop' ? 'Stopping…' : 'Starting…')
-    : active ? 'Stop PCVR' : 'Start PCVR';
-  el.pcvrActionBtn.classList.toggle('key-stop', active && !pcvrBusy);
-  el.pcvrActionBtn.disabled = pcvrBusy || (!backendConnected && !active);
-
-  if (!backendConnected) {
-    el.pcvrStatusTitle.textContent = 'Companion services unavailable';
-    el.pcvrStatusDetail.textContent = 'Waiting for the local backend to reconnect.';
-  } else if (pcvrBusy) {
-    const stopping = pcvrBusyOp === 'stop';
-    el.pcvrStatusTitle.textContent = stopping ? 'Stopping PCVR' : 'Starting PCVR';
-    el.pcvrStatusDetail.textContent = stopping
-      ? 'Closing the session and returning system settings.'
-      : 'Preparing CloudXR and the OpenXR session.';
-  } else if (f.state === 'error' || partial) {
-    el.pcvrStatusTitle.textContent = 'PCVR needs attention';
-    el.pcvrStatusDetail.textContent = f.detail || 'One or more PCVR services did not start correctly.';
-  } else if (f.titleRunning) {
-    // Deliberately not f.gameRunning: the broker is itself an OpenXR app, so that bit is
-    // true for any live session. Only a launched title counts as "a game is running".
-    el.pcvrStatusTitle.textContent = 'Game streaming';
-    el.pcvrStatusDetail.textContent = f.titleName
-      ? `${f.titleName} is connected to the CloudXR runtime.`
-      : 'An OpenXR game is connected to the CloudXR runtime.';
-  } else if (f.clientConnected) {
-    el.pcvrStatusTitle.textContent = 'Vision Pro connected';
-    el.pcvrStatusDetail.textContent = f.sessionStatus || 'The headset is connected to this PC.';
-  } else if (active) {
-    el.pcvrStatusTitle.textContent = 'Waiting for the headset';
-    el.pcvrStatusDetail.textContent = 'Open Longwave on the headset to connect.';
-  } else {
-    el.pcvrStatusTitle.textContent = 'PCVR is off';
-    el.pcvrStatusDetail.textContent = 'Start when you are ready to connect from Vision Pro.';
-  }
-
-  // These are read once when the host starts, so editing them mid-session would
-  // be a lie. Lock them while it runs and while an operation is in flight.
-  for (const control of [
-    el.pcvrServices, el.fovModeSelect, el.fovQuality, el.fovVrchatOsc,
-    el.fovBundleId, el.fovPort, el.fovIp, el.fovForceQr,
-  ]) control.disabled = active || pcvrBusy;
-  /* The desktop panel is the exception: the broker creates and tears it down on demand,
-     so this one stays live while a session runs. That is the point of it — you decide you
-     want the desktop in the middle of a game, not before you start one. */
-  el.pcvrDesktop.disabled = pcvrBusy;
-  /* Passthrough is the other exception, for the opposite reason: it cannot be changed
-     under a running stack at all, so instead of greying out it restarts PCVR for you. */
-  el.fovPassthrough.disabled = pcvrBusy;
 }
 
 // ── Screen streaming ───────────────────────────────────────────────────────
@@ -564,12 +434,8 @@ async function refreshAll() {
   } catch (e) {
     setNote(el.opMsg, 'Could not read the hotspot status: ' + e.message, 'error');
   }
-  if (!hasPcvr) return;
-  try {
-    renderFoveated(await window.hotspot.foveatedStatus());
-  } catch (e) {
-    setFovOpMsg('Could not read the PCVR status: ' + e.message, 'error');
-  }
+  // PCVR's own status refresh on reconnect is the module's job now — it subscribes to
+  // window.hotspot.onConnection itself inside its isolated <webview> (see pcvr.js).
 }
 
 async function onStart() {
@@ -648,765 +514,21 @@ async function copyReadout(id) {
   }
 }
 
-// ───────────────── Foveated Streaming (CloudXR) ─────────────────
+// ── PCVR/Games module <webview>s ───────────────────────────────────────────
 
-function setFovOpMsg(text, kind) {
-  setNote(el.fovOpMsg, text, kind === 'error' ? 'error' : kind === 'ok' ? 'ok' : null);
-}
-
-// Refresh Tailscale node status and reflect it in the mode UI.
-async function refreshTailscale() {
-  if (!hasPcvr) return;
-  try {
-    tsInfo = await window.hotspot.tailscaleStatus();
-  } catch {
-    tsInfo = { installed: false, backendState: 'unknown', selfIp: null, selfName: null };
+/* The module pages report their own live state back up via window.hotspot.sendToShell()
+ * (same preload, reused inside the <webview> — see main.js's pcvr-module:// handler),
+ * which arrives here as the <webview> element's 'ipc-message' event. This is the one
+ * channel of communication back across the isolation boundary; everything else the module
+ * needs it already has for itself via the shared preload. */
+function onPcvrModuleMessage(e) {
+  if (e.channel === 'pcvr-summary') {
+    const { state, channelText } = e.args[0];
+    setLamp(el.foveatedLamp, state);
+    el.foveatedChannelState.textContent = channelText;
+  } else if (e.channel === 'show-view') {
+    showView(e.args[0]);
   }
-  el.fovTsStatus.textContent = tsInfo.installed
-    ? `${tsInfo.backendState}${tsInfo.selfIp ? ' · ' + tsInfo.selfIp : ''}`
-    : 'not installed';
-  el.fovTsSub.textContent = tsInfo.selfIp
-    ? `Serve on ${tsInfo.selfIp} — for remote / cloud hosts (EC2 → home)`
-    : 'Tailscale not running — start it to use this mode';
-  applyMode();
-}
-
-// LAN vs Tailscale mode: in tailnet mode the advertise IP is pinned to the tailnet
-// self-IP (and locked); LAN mode leaves it auto. Disabled while the host runs.
-function applyMode() {
-  const running = lastFoveated && (lastFoveated.state === 'on' || lastFoveated.state === 'starting');
-  el.fovModeSelect.disabled = !!running || pcvrBusy;
-  if (fovMode() === 'tailnet') {
-    if (!el.fovIp.readOnly) lanAdvertiseIp = el.fovIp.value.trim();
-    if (tsInfo.selfIp) el.fovIp.value = tsInfo.selfIp;
-    el.fovIp.readOnly = true;
-    el.fovIp.placeholder = 'Tailscale IP';
-  } else {
-    if (el.fovIp.readOnly) el.fovIp.value = lanAdvertiseIp;
-    el.fovIp.readOnly = false;
-    el.fovIp.placeholder = 'Automatic';
-  }
-  renderPcvrSummary();
-}
-
-// DERP watchdog: while a tailnet-mode client is connected, ping it and warn loudly
-// if the path is relayed (DERP can't carry the 4×4096² streams).
-async function refreshPath() {
-  if (!hasPcvr) return;
-  const f = lastFoveated;
-  const running = f && f.state === 'on';
-  if (fovMode() !== 'tailnet' || !running || !f.clientConnected || !f.clientAddress) {
-    el.fovPathBanner.classList.add('hidden');
-    return;
-  }
-  const ip = String(f.clientAddress).replace(/^\[/, '').replace(/\]?:\d+$/, '');
-  let r;
-  try { r = await window.hotspot.tailscalePath(ip); } catch { return; }
-  el.fovPathBanner.classList.remove('hidden');
-  if (r.direct) {
-    el.fovPathBanner.className = 'banner banner-good';
-    el.fovPathBanner.textContent = `Direct Tailscale path to ${ip}: ${r.detail}`;
-  } else {
-    el.fovPathBanner.className = 'banner';
-    el.fovPathBanner.textContent = `${r.detail || 'Path unknown'} — DERP cannot carry the video streams. ` +
-      'Open UDP 41641 between the peers so WireGuard connects directly.';
-  }
-}
-
-function renderFoveated(f) {
-  if (!f) return;
-  lastFoveated = f;
-
-  const on = f.state === 'on' || f.state === 'starting';
-  applyMode();
-
-  // CloudXR availability banner.
-  if (on && f.cloudXrAvailable === false) {
-    el.fovCloudXrBanner.classList.remove('hidden');
-    el.fovCloudXrBanner.textContent = f.cloudXrDetail
-      || 'CloudXR is not installed. Discovery and pairing work, but video cannot stream.';
-  } else {
-    el.fovCloudXrBanner.classList.add('hidden');
-  }
-
-  if (f.state === 'error') {
-    setFovOpMsg(f.detail || 'Host error.', 'error');
-  }
-
-  /* Conflicts before encoder findings, because these are the ones with a button. The encoder
-     banner stays as it was: advice about capacity we cannot act on. */
-  const conflicts = Array.isArray(f.conflicts) ? f.conflicts : [];
-  el.fovConflictBanner.classList.toggle('hidden', conflicts.length === 0);
-  if (conflicts.length > 0) {
-    el.fovConflictList.replaceChildren();
-    for (const c of conflicts) {
-      const item = document.createElement('li');
-      const name = document.createElement('strong');
-      name.textContent = c.name;
-      item.append(name, document.createTextNode(` — ${c.reason}`));
-      el.fovConflictList.appendChild(item);
-    }
-    const stoppable = conflicts.filter((c) => c.canStop);
-    /* The button only ever claims what it will actually do. Naming the programs matters: a
-       generic "Fix" on something that force-closes the user's game-stream host would be a
-       nasty surprise, and OBS is deliberately excluded so it must not be implied. */
-    el.fovConflictBtn.classList.toggle('hidden', stoppable.length === 0);
-    el.fovConflictBtn.textContent = `Stop ${stoppable.map((c) => c.name).join(' and ')}`;
-    el.fovConflictSub.textContent = stoppable.some((c) => c.id === 'sunshine')
-      ? 'Sunshine is a service, so Windows may ask for administrator approval. It is started again when PCVR stops.'
-      : '';
-  }
-
-  const encoderIssues = Array.isArray(f.encoderIssues) ? f.encoderIssues : [];
-  el.fovEncoderBanner.classList.toggle('hidden', encoderIssues.length === 0);
-  el.fovEncoderIssues.replaceChildren();
-  for (const issue of encoderIssues) {
-    const item = document.createElement('li');
-    item.textContent = issue;
-    el.fovEncoderIssues.appendChild(item);
-  }
-
-  el.fovAdvertising.textContent = f.advertising ? 'On' : 'Off';
-  el.fovBundleShown.textContent = f.bundleId || '—';
-  el.fovEndpoint.textContent = on ? `${f.ipAddress || '—'}:${f.port}` : '—';
-  /* The host builds its CloudXR controller when it starts, so while PCVR is off this flag
-     means "not asked yet", not "absent" — and printing "Not installed" there reads as a
-     fault on a machine where CloudXR is fine, which is a confusing thing to see right
-     above the button you are about to press. */
-  el.fovCloudXr.textContent = f.cloudXrAvailable
-    ? (f.runtimeRunning ? 'Runtime running' : 'Available')
-    : (on ? 'Not installed' : 'Checked when PCVR starts');
-  el.fovClient.textContent = f.clientConnected ? (f.clientAddress || 'Connected') : 'Not connected';
-  el.fovSession.textContent = f.titleRunning
-    ? (f.titleName || 'Game running')
-    : (f.sessionStatus || 'Idle');
-
-  // The QR itself belongs to a large, masked-by-default window managed by the main process.
-  if (f.pairingRequired && (f.qrPngDataUri || f.qrPayload)) {
-    showView('foveatedView');
-    el.fovPairingBanner.classList.remove('hidden');
-  } else {
-    el.fovPairingBanner.classList.add('hidden');
-  }
-
-  /* Quality subtitle mirrors the host's ground truth, because the dropdown is only a
-     request: the yaml can be hand-tuned ("custom"), and a change written while the
-     CloudXR service was already running only lands on the next full start. */
-  if (f.qualityPendingRestart) {
-    el.fovQualitySub.textContent = 'New quality saved — applies on the next PCVR start.';
-  } else if (f.quality === 'custom') {
-    el.fovQualitySub.textContent = 'Host is hand-tuned (custom yaml values); the preset applies on next start.';
-  } else if (f.quality && f.quality !== el.fovQuality.value) {
-    el.fovQualitySub.textContent = `Host is currently set to ${f.quality}.`;
-  } else {
-    el.fovQualitySub.textContent = 'Applies when PCVR starts.';
-  }
-
-  /* Same reconciliation for the OSC gate, and for the same reason: the dropdown is a
-     request, the registry is the fact. It is also settable outside this app (the env var,
-     or the registry directly), so the panel must never claim a state the host is not in. */
-  const oscWanted = el.fovVrchatOsc.value === 'on';
-  if (typeof f.vrchatOsc === 'boolean' && f.vrchatOsc !== oscWanted) {
-    el.fovVrchatOscSub.textContent = f.vrchatOsc
-      ? 'Host currently has it ON; your change applies on the next PCVR start.'
-      : 'Host currently has it OFF; your change applies on the next PCVR start.';
-  } else {
-    el.fovVrchatOscSub.textContent = oscWanted
-      ? 'Your headset\'s eye tracking drives your avatar\'s eyes. Overrides any other OSC eye-tracking app on this PC.'
-      : 'Off — VRChat uses its own automatic eye look.';
-  }
-
-  /* Passthrough reconciles the same way, and matters more: this one costs bitrate on
-     every frame, so a panel showing "off" over a host that is streaming alpha would be
-     hiding a real cost. Unlike the others it restarts PCVR on change, so there is no
-     "applies next start" state to report — either it is on or the restart failed. */
-  const passthroughWanted = el.fovPassthrough.value === 'on';
-  if (typeof f.passthrough === 'boolean' && f.passthrough !== passthroughWanted) {
-    el.fovPassthroughSub.textContent = f.passthrough
-      ? 'Host is currently streaming alpha; restart PCVR to turn it off.'
-      : 'Host is not streaming alpha; restart PCVR to turn it on.';
-  } else {
-    el.fovPassthroughSub.textContent = passthroughWanted
-      ? 'Pure green (00FF00) in a game becomes your real room. Costs encoder time and bitrate on every frame.'
-      : 'Off — the game fills the whole picture, and no alpha channel is encoded.';
-  }
-
-  renderPcvrSummary();
-  refreshPath();
-
-  /* A headset asked for the other mode through the host's info endpoint. The host wrote
-     both halves and stopped there on purpose — it does not own the restart ordering, and
-     bouncing CloudXR under a live broker is the failure this codebase keeps warning about.
-     Doing it here also keeps the panel honest: the dropdown moves to what was asked for,
-     rather than silently disagreeing with the host from now on. */
-  if (f.passthroughRestartRequested && !pcvrBusy && !passthroughRestartInFlight) {
-    passthroughRestartInFlight = true;
-    const wanted = f.passthrough ? 'on' : 'off';
-    if (el.fovPassthrough.value !== wanted) {
-      el.fovPassthrough.value = wanted;
-      savePcvrOptions();
-    }
-    restartPcvrForPassthrough()
-      .finally(() => { passthroughRestartInFlight = false; });
-  }
-}
-
-/** Guards against re-entering the restart while a status event arrives mid-flight. */
-let passthroughRestartInFlight = false;
-
-/**
- * The desktop panel, switched while a session is live.
- *
- * Optimistic on the way in — the switch has already moved and arguing with it would feel
- * broken — but put back if the broker refuses, because a switch left on over a panel that
- * never appeared is worse than one that visibly snaps back with a reason.
- */
-async function onDesktopQuadToggled() {
-  const wanted = el.pcvrDesktop.checked;
-  savePcvrOptions();
-  const hint = document.getElementById('pcvrDesktopHint');
-  const originalHint = hint ? hint.dataset.original || hint.textContent : '';
-  if (hint && !hint.dataset.original) hint.dataset.original = originalHint;
-  try {
-    await window.hotspot.setDesktopQuad(wanted);
-    if (hint) hint.textContent = hint.dataset.original;
-  } catch (e) {
-    el.pcvrDesktop.checked = !wanted;
-    savePcvrOptions();
-    if (hint) hint.textContent = `Could not ${wanted ? 'show' : 'hide'} the desktop: ${e.message}`;
-  }
-}
-
-function pcvrStartParams() {
-  const port = parseInt(el.fovPort.value, 10);
-  return {
-    bundleId: el.fovBundleId.value.trim() || undefined,
-    port: Number.isFinite(port) ? port : undefined,
-    ipAddress: fovMode() === 'tailnet'
-      ? (tsInfo.selfIp || undefined)
-      : (el.fovIp.value.trim() || undefined),
-    forceQrCode: el.fovForceQr.checked,
-    quality: el.fovQuality.value || undefined,
-    // Tri-state on the wire: only send a boolean, never undefined-as-false, so a host
-    // configured by hand is not clobbered by a panel that happens to be showing "Off".
-    vrchatOsc: el.fovVrchatOsc.value === 'on',
-    // Same tri-state reasoning: a boolean, never undefined-as-false.
-    passthrough: el.fovPassthrough.value === 'on',
-    // Read by the supervisor and stripped before the host RPC — the broker shows the
-    // desktop panel, and the foveated host has no opinion about it.
-    desktopQuad: el.pcvrDesktop.checked,
-  };
-}
-
-/* Reclaim the encoder and the OpenVR runtime. Disabled while it runs, because stopping a
-   service can sit on a UAC prompt for as long as the user takes to answer it, and a button that
-   still looks pressable invites a second prompt on top of the first. */
-async function onStopConflicts() {
-  el.fovConflictBtn.disabled = true;
-  const label = el.fovConflictBtn.textContent;
-  el.fovConflictBtn.textContent = 'Stopping…';
-  try {
-    const result = await window.hotspot.foveatedStopConflicts();
-    if (result && result.snapshot) renderFoveated(result.snapshot);
-    if (result && result.status === 'nothingToStop') {
-      setFovOpMsg('Nothing left to stop.', null);
-    } else {
-      /* The backend reports what it actually managed, including partial failures — stopping a
-         service needs rights the backend does not have, so "could not stop Sunshine" is a normal
-         outcome and has to reach the user rather than being swallowed into a success. */
-      setFovOpMsg(result?.detail || 'Done.', null);
-    }
-  } catch (e) {
-    setFovOpMsg('Could not stop them: ' + e.message, 'error');
-  } finally {
-    el.fovConflictBtn.disabled = false;
-    el.fovConflictBtn.textContent = label;
-    await refreshFoveatedStatus();
-  }
-}
-
-async function onPcvrAction() {
-  if (pcvrActive()) {
-    await stopPcvr();
-    return;
-  }
-  await startPcvr();
-}
-
-/* Split out of the button handler so the passthrough restart can call it directly. Going
-   back through onPcvrAction() was a bug with teeth: it re-tests pcvrActive(), and a stack
-   that has not finished reporting itself down takes the *stop* branch instead — so the
-   restart stopped PCVR twice and never started it, which from the headset looks like the
-   PC disappearing off the network. */
-async function startPcvr() {
-  if (fovMode() === 'tailnet' && (!tsInfo.selfIp || tsInfo.backendState !== 'Running')) {
-    setFovOpMsg('Tailscale is not running or has no IPv4 address. Use Local network or start Tailscale.', 'error');
-    el.pcvrOptions.open = true;
-    return;
-  }
-
-  pcvrBusy = true;
-  pcvrBusyOp = 'start';
-  setFovOpMsg('Preparing the PCVR host…');
-  renderPcvrSummary();
-  try {
-    if (el.pcvrServices.checked) {
-      const result = await window.hotspot.startPcvrStack(pcvrStartParams());
-      const failed = (result.steps || []).find((step) => !step.ok);
-      if (!result.ok) {
-        throw new Error((failed && `${failed.step}: ${failed.detail || 'failed'}`) || 'PCVR services failed to start.');
-      }
-      setFovOpMsg(failed
-        ? `PCVR is ready, but ${failed.step} is unavailable${failed.detail ? `: ${failed.detail}` : '.'}`
-        : 'PCVR is ready.', failed ? 'error' : 'ok');
-    } else {
-      const result = await window.hotspot.foveatedStart(pcvrStartParams());
-      if (!result.ok) throw new Error(result.detail || result.status || 'The host failed to start.');
-      if (result.snapshot) renderFoveated(result.snapshot);
-      setFovOpMsg('PCVR host is ready.', 'ok');
-    }
-  } catch (err) {
-    setFovOpMsg(`Could not start PCVR: ${err.message || err}`, 'error');
-  } finally {
-    pcvrBusy = false;
-    pcvrBusyOp = null;
-    lastServices = await window.hotspot.servicesStatus();
-    try { renderFoveated(await window.hotspot.foveatedStatus()); } catch { renderPcvrSummary(); }
-    renderServices(lastServices);
-  }
-}
-
-/**
- * Passthrough cutouts, switched with a running PCVR.
- *
- * Both halves of the switch — the yaml's alpha channel and the broker's blend mode — are
- * read once at start, so the only honest way to change it live is to take the stack down
- * and bring it back up. That is done here rather than in the host because the safe order
- * is a full stop and start: bouncing CloudXR under a live broker is the failure this
- * codebase keeps warning about, and the stack scripts already sequence it correctly.
- *
- * The stop path asks before killing a running game, and a declined confirmation puts the
- * switch back — a control that silently did nothing would be worse than one that reverts.
- */
-async function onPassthroughToggled() {
-  savePcvrOptions();
-  if (!pcvrActive()) return;
-  const wanted = el.fovPassthrough.value === 'on';
-  if (!await restartPcvrForPassthrough()) {
-    el.fovPassthrough.value = wanted ? 'off' : 'on';
-    savePcvrOptions();
-  }
-}
-
-/**
- * Cycle the stack so a passthrough change takes effect, whichever side asked for it.
- *
- * Both halves — the yaml's alpha channel and the broker's blend mode — are read once at
- * start, so there is no way to apply this to a running stack. Sequenced here rather than in
- * the host because the safe order is a full stop and start, and the supervisor already
- * knows it. The stop is flagged as a restart so the host keeps the machine-wide state it
- * borrowed: handing Sunshine back needs elevation, and a UAC prompt for someone who changed
- * a dropdown — followed by an offer to stop the service just started — is its own bug.
- */
-async function restartPcvrForPassthrough() {
-  const wanted = el.fovPassthrough.value === 'on';
-  setFovOpMsg(`Restarting PCVR to turn passthrough cutouts ${wanted ? 'on' : 'off'}…`);
-  if (!await stopPcvr({ restarting: true })) return false;
-  if (!await waitForPcvrDown(15000)) {
-    setFovOpMsg('PCVR is still shutting down; start it again when it settles.', 'error');
-    return false;
-  }
-  await startPcvr();
-  return true;
-}
-
-/**
- * Poll until the stack really is down, or give up.
- *
- * "Stopped" is asynchronous on the host side — NvStreamManager is killed and takes a moment
- * to release the runtime pipe and its single-instance claim — and a start that overlaps a
- * dying one exits immediately, taking the mDNS advertisement with it. The headset then
- * cannot find the PC at all, which is a much worse symptom than waiting a second.
- */
-async function waitForPcvrDown(timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      lastFoveated = await window.hotspot.foveatedStatus();
-      lastServices = await window.hotspot.servicesStatus();
-      if (!pcvrActive()) return true;
-    } catch {
-      // A status call that fails mid-teardown says nothing either way; keep waiting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  return false;
-}
-
-/** Returns whether PCVR actually stopped, so a caller restarting it can tell. */
-async function stopPcvr(options = {}) {
-  // Confirm only when stopping would kill a running game. An idle session (the
-  // "OpenXR app" being merely the broker) stops with one click.
-  if (lastFoveated?.titleRunning && !await window.hotspot.confirmPcvrStop()) return false;
-  pcvrBusy = true;
-  pcvrBusyOp = 'stop';
-  setFovOpMsg('Stopping PCVR…');
-  renderPcvrSummary();
-  let stopped = false;
-  try {
-    const result = await window.hotspot.stopPcvrStack(options);
-    if (!result?.ok) throw new Error(result?.detail || 'PCVR stopped with an unknown error.');
-    setFovOpMsg('PCVR stopped.', 'ok');
-    stopped = true;
-  } catch (err) {
-    setFovOpMsg(`Could not stop PCVR: ${err.message || err}`, 'error');
-  } finally {
-    pcvrBusy = false;
-    pcvrBusyOp = null;
-    lastServices = await window.hotspot.servicesStatus();
-    try { renderFoveated(await window.hotspot.foveatedStatus()); } catch { renderPcvrSummary(); }
-    renderServices(lastServices);
-  }
-  return stopped;
-}
-
-const PCVR_OPTIONS_KEY = 'longwave.pcvr.options.v1';
-
-function restorePcvrOptions() {
-  let saved;
-  try { saved = JSON.parse(localStorage.getItem(PCVR_OPTIONS_KEY) || '{}'); } catch { saved = {}; }
-  if (typeof saved.services === 'boolean') el.pcvrServices.checked = saved.services;
-  if (typeof saved.desktopQuad === 'boolean') el.pcvrDesktop.checked = saved.desktopQuad;
-  if (['lan', 'tailnet'].includes(saved.mode)) el.fovModeSelect.value = saved.mode;
-  if (['performance', 'balanced', 'quality'].includes(saved.quality)) el.fovQuality.value = saved.quality;
-  if (['on', 'off'].includes(saved.vrchatOsc)) el.fovVrchatOsc.value = saved.vrchatOsc;
-  if (['on', 'off'].includes(saved.passthrough)) el.fovPassthrough.value = saved.passthrough;
-  // Edition select, formerly a free-text bundle id. Only the two editions are
-  // valid; anything else saved by an older build (e.g. the stale "pro.longwave"
-  // default that made discovery invisible to both real apps) resets to App Store.
-  if (['pro.longwave.app', 'pro.longwave.oss'].includes(saved.bundleId)) {
-    el.fovBundleId.value = saved.bundleId;
-  }
-  if (Number.isInteger(saved.port) && saved.port > 0 && saved.port <= 65535) el.fovPort.value = String(saved.port);
-  if (typeof saved.lanIpAddress === 'string') lanAdvertiseIp = saved.lanIpAddress;
-  if (el.fovModeSelect.value === 'lan') el.fovIp.value = lanAdvertiseIp;
-  if (typeof saved.forceQr === 'boolean') el.fovForceQr.checked = saved.forceQr;
-}
-
-function savePcvrOptions() {
-  const port = parseInt(el.fovPort.value, 10);
-  localStorage.setItem(PCVR_OPTIONS_KEY, JSON.stringify({
-    services: el.pcvrServices.checked,
-    desktopQuad: el.pcvrDesktop.checked,
-    mode: fovMode(),
-    quality: el.fovQuality.value,
-    vrchatOsc: el.fovVrchatOsc.value,
-    passthrough: el.fovPassthrough.value,
-    bundleId: el.fovBundleId.value.trim(),
-    port: Number.isFinite(port) ? port : 55000,
-    lanIpAddress: fovMode() === 'lan' ? el.fovIp.value.trim() : lanAdvertiseIp,
-    forceQr: el.fovForceQr.checked,
-  }));
-}
-
-/* ------------------------------------------------------------------ */
-/* Games — curation happens here, not on the headset                   */
-
-/* The full library, each entry flagged `exposed`. Kept in memory because the filter box must never
-   change what is exposed: GamesSetExposed replaces the whole set, so a toggle has to submit every
-   exposed id including the ones currently filtered out of view. */
-let gamesCache = [];
-
-function gamesSetMsg(text, isError) {
-  el.gamesOpMsg.textContent = text || '';
-  el.gamesOpMsg.classList.toggle('is-fault', Boolean(isError));
-}
-
-async function refreshGames() {
-  if (!hasPcvr) { renderGames(); return; }
-  try {
-    gamesCache = (await window.hotspot.gamesList()) || [];
-    gamesSetMsg('');
-  } catch (err) {
-    gamesCache = [];
-    // "Not connected yet" is a different situation from "the library could not be read",
-    // and only one of them is worth worrying about: this one clears itself.
-    const message = String(err && err.message ? err.message : err);
-    gamesSetMsg(message.includes('not connected')
-      ? 'Waiting for the backend — the list will load by itself.'
-      : `Could not read the library: ${message}`, !message.includes('not connected'));
-  }
-  renderGames();
-}
-
-/* Art is fetched per tile after the grid is in the DOM, not before it. Loading 29 base64 images up
-   front would stall the first paint for no reason; this way the tiles appear immediately with their
-   placeholder and fill in. */
-async function loadTileArt(tile, title) {
-  if (!title.landscapeArt) return;
-  try {
-    const url = await window.hotspot.gameArt(title.landscapeArt);
-    if (!url) return;
-    // The grid may have been re-rendered (filter typed, toggle saved) while this was in flight.
-    if (!tile.isConnected) return;
-    const img = document.createElement('img');
-    img.className = 'game-tile-art';
-    img.alt = '';
-    /* has-art hides the placeholder, so only set it once the image has actually decoded —
-       otherwise a corrupt cover would hide the placeholder and leave an empty tile. */
-    img.addEventListener('load', () => tile.classList.add('has-art'));
-    img.addEventListener('error', () => img.remove());
-    img.src = url;
-    tile.insertBefore(img, tile.firstChild);
-  } catch {
-    /* Placeholder stays; a missing cover is not worth a message. */
-  }
-}
-
-function renderGames() {
-  el.gamesFilter.disabled = !hasPcvr;
-  el.gamesAddBtn.disabled = !hasPcvr;
-  el.gamesRefreshBtn.disabled = !hasPcvr;
-  if (!hasPcvr) {
-    el.gamesCount.textContent = '—';
-    el.gamesList.textContent = '';
-    const empty = document.createElement('div');
-    empty.className = 'games-empty';
-    empty.textContent = 'PCVR isn’t installed. Download it from the PCVR tab to see your library here.';
-    el.gamesList.appendChild(empty);
-    return;
-  }
-
-  const filter = el.gamesFilter.value.trim().toLowerCase();
-  const visible = filter
-    ? gamesCache.filter((t) => (t.name || '').toLowerCase().includes(filter))
-    : gamesCache;
-
-  const exposedCount = gamesCache.filter((t) => t.exposed).length;
-  el.gamesCount.textContent =
-    `${exposedCount} of ${gamesCache.length} available to the headset` +
-    (filter ? ` · showing ${visible.length}` : '');
-
-  el.gamesList.textContent = '';
-  if (visible.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'games-empty';
-    empty.textContent = gamesCache.length === 0
-      ? 'No titles found. Is Steam installed? You can still add a game manually.'
-      : 'Nothing matches that filter.';
-    el.gamesList.appendChild(empty);
-    return;
-  }
-
-  for (const title of visible) {
-    const tile = document.createElement('label');
-    tile.className = 'game-tile' + (title.exposed ? ' selected' : '');
-
-    /* Under the art, so a title with no cover still reads as a tile rather than a blank box. */
-    const placeholder = document.createElement('div');
-    placeholder.className = 'game-tile-placeholder';
-    placeholder.textContent = (title.name || '?').trim().charAt(0).toUpperCase();
-    tile.appendChild(placeholder);
-
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.className = 'game-tile-check';
-    check.checked = Boolean(title.exposed);
-    check.addEventListener('change', () => onToggleExposed(title, check, tile));
-    tile.appendChild(check);
-
-    const caption = document.createElement('div');
-    caption.className = 'game-tile-caption';
-    const name = document.createElement('div');
-    name.className = 'game-tile-name';
-    name.textContent = title.name || title.id;
-    name.title = title.source === 'steam' ? `Steam ${title.steamAppId}` : (title.executable || '');
-    caption.appendChild(name);
-    tile.appendChild(caption);
-
-    const actions = document.createElement('div');
-    actions.className = 'game-tile-actions';
-    /* Launching from here checks a title works before trusting it to the headset — same code path,
-       minus the headset. */
-    const launch = document.createElement('button');
-    launch.className = 'game-tile-btn';
-    launch.textContent = 'Launch';
-    launch.title = 'Launch on this PC';
-    launch.addEventListener('click', (e) => { e.preventDefault(); onLaunchGame(title); });
-    actions.appendChild(launch);
-    if (title.source === 'custom') {
-      const remove = document.createElement('button');
-      remove.className = 'game-tile-btn';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', (e) => { e.preventDefault(); onRemoveGame(title); });
-      actions.appendChild(remove);
-    }
-    /* Titles with a curated launch profile get a per-title toggle. Off = completely stock
-       launch; the tooltip carries the backend's explanation of what the profile changes. */
-    if (title.optimizedAvailable) {
-      const opt = document.createElement('button');
-      opt.className = 'game-tile-btn game-tile-opt' + (title.optimized ? ' on' : '');
-      opt.textContent = title.optimized ? 'Optimized ✓' : 'Optimized';
-      opt.title = title.optimizedNote || 'Launch with settings tuned for this host.';
-      opt.addEventListener('click', (e) => { e.preventDefault(); onToggleOptimized(title, opt); });
-      actions.appendChild(opt);
-    }
-    tile.appendChild(actions);
-
-    el.gamesList.appendChild(tile);
-    loadTileArt(tile, title);
-  }
-}
-
-async function onToggleOptimized(title, button) {
-  const wanted = !title.optimized;
-  button.disabled = true;
-  try {
-    const updated = await window.hotspot.gamesSetOptimized(title.id, wanted);
-    if (updated) {
-      const byId = new Map(updated.map((t) => [t.id, t.optimized]));
-      for (const t of gamesCache) if (byId.has(t.id)) t.optimized = byId.get(t.id);
-    } else {
-      title.optimized = wanted;
-    }
-    gamesSetMsg('');
-  } catch (err) {
-    gamesSetMsg(`Could not save: ${err.message || err}`);
-  }
-  button.disabled = false;
-  button.classList.toggle('on', title.optimized);
-  button.textContent = title.optimized ? 'Optimized ✓' : 'Optimized';
-}
-
-async function onToggleExposed(title, check, tile) {
-  const previous = title.exposed;
-  title.exposed = check.checked;
-  /* Highlight immediately so the click feels answered, then reconcile below if the save fails. */
-  if (tile) tile.classList.toggle('selected', title.exposed);
-
-  const ids = gamesCache.filter((t) => t.exposed).map((t) => t.id);
-  try {
-    const updated = await window.hotspot.gamesSetExposed(ids);
-    if (updated) {
-      /* Merge exposure rather than replacing the cache: the response has no art field resolved
-         differently, but re-rendering from it would drop the art already loaded into tiles. */
-      const byId = new Map(updated.map((t) => [t.id, t.exposed]));
-      for (const t of gamesCache) if (byId.has(t.id)) t.exposed = byId.get(t.id);
-    }
-    gamesSetMsg('');
-    syncTileSelection();
-  } catch (err) {
-    title.exposed = previous;
-    check.checked = previous;
-    if (tile) tile.classList.toggle('selected', previous);
-    gamesSetMsg(`Could not save: ${err.message || err}`, true);
-  }
-  updateGamesCount();
-}
-
-/* Reflect the model onto the existing tiles without rebuilding them, so loaded art survives. */
-function syncTileSelection() {
-  const tiles = el.gamesList.querySelectorAll('.game-tile');
-  const filter = el.gamesFilter.value.trim().toLowerCase();
-  const visible = filter
-    ? gamesCache.filter((t) => (t.name || '').toLowerCase().includes(filter))
-    : gamesCache;
-  tiles.forEach((tile, i) => {
-    const title = visible[i];
-    if (!title) return;
-    tile.classList.toggle('selected', Boolean(title.exposed));
-    const box = tile.querySelector('.game-tile-check');
-    if (box) box.checked = Boolean(title.exposed);
-  });
-}
-
-function updateGamesCount() {
-  const filter = el.gamesFilter.value.trim().toLowerCase();
-  const shown = filter
-    ? gamesCache.filter((t) => (t.name || '').toLowerCase().includes(filter)).length
-    : gamesCache.length;
-  const exposedCount = gamesCache.filter((t) => t.exposed).length;
-  el.gamesCount.textContent =
-    `${exposedCount} of ${gamesCache.length} available to the headset` +
-    (filter ? ` · showing ${shown}` : '');
-}
-
-async function onAddGame() {
-  let picked;
-  try {
-    picked = await window.hotspot.pickExecutable();
-  } catch (err) {
-    gamesSetMsg(`Could not open the file picker: ${err.message || err}`, true);
-    return;
-  }
-  if (!picked) return; // cancelled
-
-  try {
-    gamesCache = (await window.hotspot.gamesAddCustom({ path: picked })) || gamesCache;
-    gamesSetMsg(`Added ${picked}`);
-  } catch (err) {
-    gamesSetMsg(`Could not add that file: ${err.message || err}`, true);
-  }
-  renderGames();
-}
-
-async function onRemoveGame(title) {
-  try {
-    await window.hotspot.gamesRemoveCustom(title.id);
-    await refreshGames();
-    gamesSetMsg(`Removed ${title.name}`);
-  } catch (err) {
-    gamesSetMsg(`Could not remove: ${err.message || err}`, true);
-  }
-}
-
-async function onLaunchGame(title) {
-  gamesSetMsg(`Launching ${title.name}…`);
-  try {
-    const ok = await window.hotspot.gamesLaunch(title.id);
-    gamesSetMsg(ok ? `Launched ${title.name}.` : `The host refused to launch ${title.name}.`, !ok);
-  } catch (err) {
-    gamesSetMsg(`Launch failed: ${err.message || err}`, true);
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* PCVR services — supervised by this app, not by Task Scheduler       */
-
-/* Rendered from the supervisor's own view of its children rather than from a process scan:
-   anything we did not start we also cannot stop.
-
-   The question asked of each service is `healthy`, not "is the process alive". Gaze fix
-   patches the running CloudXR process and exits, so a clean exit is exactly what success
-   looks like — judging it by liveness reported a perfectly good stack as PARTIAL with
-   "gaze fix stopped", which reads as a fault and sent the user looking for one. */
-function renderServices(status) {
-  if (!status) return;
-  lastServices = status;
-  const names = Object.keys(status);
-
-  el.svcList.innerHTML = '';
-  for (const name of names) {
-    const service = status[name];
-    const span = document.createElement('span');
-    span.innerHTML = `${service.title}: <strong></strong>`;
-    span.querySelector('strong').textContent = describeService(service);
-    el.svcList.appendChild(span);
-  }
-  renderPcvrSummary();
-}
-
-function describeService(service) {
-  if (!service.exe) return 'not built';
-  if (service.running) {
-    return `pid ${service.pid}` + (service.restarts ? ` (restarted ${service.restarts}×)` : '');
-  }
-  if (service.oneShot) {
-    if (service.completed) return 'hook installed';
-    if (service.lastExitCode !== null) return `failed (code ${service.lastExitCode})`;
-    return 'not run';
-  }
-  return service.lastExitCode !== null ? `stopped (code ${service.lastExitCode})` : 'stopped';
 }
 
 // ── Wiring ─────────────────────────────────────────────────────────────────
@@ -1461,55 +583,24 @@ window.addEventListener('DOMContentLoaded', async () => {
     el.passphrase.value = await window.hotspot.genPassphrase();
   });
 
-  applyHostCapabilities();
-
   el.pcvrDlBtn.addEventListener('click', onDownloadPcvr);
   if (typeof window.hotspot.onPcvrDownloadProgress === 'function') {
     window.hotspot.onPcvrDownloadProgress(onPcvrDownloadProgress);
   }
-
-  el.pcvrActionBtn.addEventListener('click', onPcvrAction);
-  el.fovShowPairingBtn.addEventListener('click', () => window.hotspot.openPairingWindow());
   el.noticesBtn.addEventListener('click', () => window.hotspot.openNoticesWindow());
-  el.fovConflictBtn.addEventListener('click', onStopConflicts);
-  for (const control of [
-    el.pcvrServices, el.fovModeSelect, el.fovQuality, el.fovVrchatOsc,
-    el.fovBundleId, el.fovPort, el.fovIp, el.fovForceQr,
-  ]) {
-    control.addEventListener('change', () => {
-      savePcvrOptions();
-      applyMode();
-      refreshPath();
-    });
-  }
-  el.pcvrDesktop.addEventListener('change', onDesktopQuadToggled);
-  el.fovPassthrough.addEventListener('change', onPassthroughToggled);
-
-  el.gamesFilter.addEventListener('input', renderGames);
-  el.gamesRefreshBtn.addEventListener('click', refreshGames);
-  el.gamesAddBtn.addEventListener('click', onAddGame);
+  el.pcvrModuleView.addEventListener('ipc-message', onPcvrModuleMessage);
+  el.gamesModuleView.addEventListener('ipc-message', onPcvrModuleMessage);
+  applyHostCapabilities();
 
   el.ssid.value = await window.hotspot.genSsid();
   el.passphrase.value = await window.hotspot.genPassphrase();
-  restorePcvrOptions();
-
-  if (hasPcvr) {
-    // Tailscale node status + the DERP path watchdog.
-    refreshTailscale();
-    setInterval(refreshTailscale, 5000);
-    setInterval(refreshPath, 10000);
-    setInterval(refreshFoveatedStatus, 5000);
-
-    window.hotspot.onServices(renderServices);
-    lastServices = await window.hotspot.servicesStatus();
-    renderServices(lastServices);
-  }
 
   window.hotspot.onConnection(setBackendConnected);
   window.hotspot.onNotify(({ event, data }) => {
     if (event === 'state') renderStatus(data);
-    else if (event === 'foveated') renderFoveated(data);
     else if (event === 'nativeStream') renderNativeStream(data);
+    // 'foveated' events are handled inside the PCVR module's own <webview> now — it
+    // subscribes to window.hotspot.onNotify itself via the same preload.
   });
 
   setBackendConnected(await window.hotspot.isConnected());

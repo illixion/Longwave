@@ -802,6 +802,17 @@ select { cursor: pointer; }
 }
 .game-tile-opt.on { border-color: var(--tally); color: var(--tally); }
 
+/* The PCVR and Games <webview>s, hosting the downloaded module's own pages (see
+   pcvr-installer.js + main.js's pcvr-module:// handler). Electron webviews default to
+   inline/unsized, so this is load-bearing, not decorative. */
+.module-view {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Licences window
 

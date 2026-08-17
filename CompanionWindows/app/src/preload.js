@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('hotspot', {
   // Returns a data: URL (the CSP permits data: but not file:), or null when there is no art.
   gameArt: (artPath) => ipcRenderer.invoke('game-art', artPath),
 
-  // PCVR services this app supervises itself (broker, gaze fix) — no scheduled tasks and
+  // PCVR services this app supervises itself (broker, sidecar) — no scheduled tasks and
   // no console windows. startStack/stopStack also drive the backend's own RPCs, in the one
   // order that works.
   servicesStatus: () => ipcRenderer.invoke('services-status'),
@@ -94,4 +94,24 @@ contextBridge.exposeInMainWorld('hotspot', {
     ipcRenderer.on('services', h);
     return () => ipcRenderer.removeListener('services', h);
   },
+
+  // For content running inside a <webview> (e.g. the downloaded PCVR module's own pages,
+  // which reuse this same preload) to reach back out to whatever hosts that <webview> —
+  // generic on purpose, so it carries no PCVR-specific meaning itself. The host page
+  // listens via the webview element's 'ipc-message' event.
+  sendToShell: (channel, data) => ipcRenderer.sendToHost(channel, data),
+  // The reverse direction: the shell calls <webview>.send('shell-command', ...) to reach into
+  // a module's isolated page (e.g. "you're on-screen now, rescan"). Preload scripts keep
+  // Node/ipcRenderer access regardless of contextIsolation, so this is where the relay into
+  // the page's exposed API has to live.
+  onShellCommand: (cb) => {
+    const h = (_e, cmd, data) => cb(cmd, data);
+    ipcRenderer.on('shell-command', h);
+    return () => ipcRenderer.removeListener('shell-command', h);
+  },
+  // So renderer.js (sandboxed, no Node/__dirname of its own — and a sandboxed preload has
+  // no __dirname either, so this script can't compute its own path) can point the PCVR/Games
+  // <webview>s' own `preload` attribute at this same script — see main.js's comment on
+  // ensurePcvrModuleLoaded() for why that's the same script, not a copy.
+  preloadUrl: () => ipcRenderer.invoke('get-preload-url'),
 });

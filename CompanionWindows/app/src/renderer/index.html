@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src pcvr-module:;" />
   <title>Longwave Companion</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -84,152 +84,12 @@
           </div>
         </section>
 
-        <div id="fovTransmit" class="transmit" data-state="off">
-          <span class="lamp lamp-lg" id="fovLamp" data-state="off" aria-hidden="true"></span>
-          <div class="transmit-text">
-            <strong id="pcvrStatusTitle">PCVR is off</strong>
-            <span id="pcvrStatusDetail">Start when you are ready to connect from Vision Pro.</span>
-          </div>
-          <button id="pcvrActionBtn" class="key" type="button">Start PCVR</button>
-        </div>
-
-        <p id="fovOpMsg" class="note hidden" aria-live="polite"></p>
-
-        <div id="fovCloudXrBanner" class="banner hidden"></div>
-        <div id="fovPathBanner" class="banner hidden"></div>
-        <section id="fovConflictBanner" class="banner banner-fault hidden">
-          <strong id="fovConflictTitle">Something is in the way of PCVR</strong>
-          <ul id="fovConflictList"></ul>
-          <button id="fovConflictBtn" class="chip" type="button">Stop them</button>
-          <small id="fovConflictSub"></small>
-        </section>
-        <section id="fovEncoderBanner" class="banner banner-fault hidden">
-          <strong>The GPU encoder reported problems</strong>
-          <ul id="fovEncoderIssues"></ul>
-        </section>
-        <div id="fovPairingBanner" class="banner banner-inline hidden">
-          <span>Pairing is required. The code is in a separate window, masked until you show it.</span>
-          <button id="fovShowPairingBtn" class="chip" type="button">Show pairing window</button>
-        </div>
-
-        <details id="pcvrOptions" class="drawer">
-          <summary>
-            <span class="drawer-title">
-              <strong>Options</strong>
-              <small>Connection and host settings</small>
-            </span>
-            <span class="drawer-chevron" aria-hidden="true">⌄</span>
-          </summary>
-          <div class="drawer-body">
-            <label class="switch-row">
-              <span class="switch-text">
-                <strong>PCVR services</strong>
-                <small>Start CloudXR, the session broker, and gaze correction along with the host.</small>
-              </span>
-              <input id="pcvrServices" class="switch" type="checkbox" checked />
-            </label>
-
-            <label class="switch-row">
-              <span class="switch-text">
-                <strong>View desktop</strong>
-                <small id="pcvrDesktopHint">Put this screen on a panel in the headset. Point with your right hand and pinch to click; grab the bar underneath with either hand to move it.</small>
-              </span>
-              <input id="pcvrDesktop" class="switch" type="checkbox" />
-            </label>
-
-            <div class="rule"></div>
-
-            <label class="field">
-              <span>Connection</span>
-              <select id="fovModeSelect">
-                <option value="lan" selected>Local network</option>
-                <option value="tailnet">Tailscale</option>
-              </select>
-              <small id="fovTsSub">Use Tailscale for a remote or cloud PC.</small>
-            </label>
-            <label class="field">
-              <span>Stream quality</span>
-              <select id="fovQuality">
-                <option value="performance">Performance — lowest bandwidth and decode load</option>
-                <option value="balanced" selected>Balanced — recommended</option>
-                <option value="quality">Quality — sharpest; heavy games may stutter</option>
-              </select>
-              <small id="fovQualitySub">Applies when PCVR starts.</small>
-            </label>
-            <label class="field">
-              <span>Passthrough cutouts</span>
-              <select id="fovPassthrough">
-                <option value="off" selected>Off — the game fills the whole picture</option>
-                <option value="on">On — pure green in a game becomes your room</option>
-              </select>
-              <small id="fovPassthroughSub">
-                Paint a wall, a skybox or a whole world pure green (00FF00) in the game and
-                the headset shows your real room through it — a green-screen world in
-                VRChat, or a cockpit with the canopy keyed out. Costs encoder time and
-                bitrate on every frame, so leave it off unless a game is set up for it.
-                Changing this restarts PCVR.
-              </small>
-            </label>
-            <label class="field">
-              <span>VRChat eye tracking</span>
-              <select id="fovVrchatOsc">
-                <option value="off" selected>Off</option>
-                <option value="on">On — send your real gaze to VRChat over OSC</option>
-              </select>
-              <small id="fovVrchatOscSub">
-                Your headset's eye tracking drives your avatar's eyes. Off by default: it
-                overrides any other OSC eye-tracking app on this PC. Applies on the next
-                PCVR start.
-              </small>
-            </label>
-            <div class="inline-status">Tailscale <strong id="fovTsStatus">Checking…</strong></div>
-
-            <details class="drawer-sub">
-              <summary>Advanced host settings</summary>
-              <div class="fields">
-                <label class="field">
-                  <span>Headset app edition</span>
-                  <select id="fovBundleId">
-                    <option value="pro.longwave.app" selected>App Store (pro.longwave.app)</option>
-                    <option value="pro.longwave.oss">Open source (pro.longwave.oss)</option>
-                  </select>
-                  <small>
-                    Discovery only shows this PC to the app it names — pick the edition
-                    installed on the headset. Applies on the next PCVR start.
-                  </small>
-                </label>
-                <label class="field">
-                  <span>Session port</span>
-                  <input id="fovPort" type="number" min="1" max="65535" value="55000" />
-                </label>
-                <label class="field">
-                  <span>Advertise IP</span>
-                  <input id="fovIp" type="text" autocomplete="off" spellcheck="false" placeholder="Automatic" />
-                </label>
-                <label class="switch-row">
-                  <span class="switch-text">
-                    <strong>Always show the pairing code</strong>
-                    <small>Useful when testing a connection.</small>
-                  </span>
-                  <input id="fovForceQr" class="switch" type="checkbox" />
-                </label>
-              </div>
-            </details>
-          </div>
-        </details>
-
-        <section id="fovRunPanel" class="panel">
-          <p class="silk">Host status</p>
-          <div class="facts">
-            <div><span>Endpoint</span><strong id="fovEndpoint">—</strong></div>
-            <div><span>Vision Pro</span><strong id="fovClient">Not connected</strong></div>
-            <div><span>Session</span><strong id="fovSession">Idle</strong></div>
-            <div><span>CloudXR</span><strong id="fovCloudXr">—</strong></div>
-            <div><span>Discovery</span><strong id="fovAdvertising">Off</strong></div>
-            <div><span>Bundle</span><strong id="fovBundleShown">—</strong></div>
-          </div>
-          <div id="svcList" class="services"></div>
-        </section>
+        <!-- Everything below is the downloaded PCVR module's own page, not this app's —
+             see pcvr-installer.js (download/verify/extract) and main.js's pcvr-module://
+             protocol handler (serves INSTALL_ROOT/ui/ into this <webview>, isolated from
+             this renderer). Empty/hidden until setPcvrModuleSrc() below points it at the
+             extracted module once one is installed and connected. -->
+        <webview id="pcvrModuleView" class="module-view hidden"></webview>
       </section>
 
       <!-- ───────────────────────────── Game library ──────────────────────── -->
@@ -243,22 +103,8 @@
             PC stays invisible to the headset.</p>
         </header>
 
-        <section class="panel">
-          <div class="games-toolbar">
-            <input id="gamesFilter" type="search" placeholder="Search games…" autocomplete="off"
-                   spellcheck="false" />
-            <button id="gamesAddBtn" class="chip" type="button">Add game</button>
-            <button id="gamesRefreshBtn" class="icon-button" type="button"
-                    title="Scan the Steam libraries again">↻</button>
-          </div>
-          <div id="gamesList" class="games-list">
-            <div class="games-empty">Loading…</div>
-          </div>
-          <div class="games-footer">
-            <span id="gamesCount" class="hint">—</span>
-            <span id="gamesOpMsg" class="hint"></span>
-          </div>
-        </section>
+        <!-- Same module, same reasoning as pcvrModuleView above. -->
+        <webview id="gamesModuleView" class="module-view hidden"></webview>
       </section>
 
       <!-- ─────────────────────────── Screen streaming ────────────────────── -->

@@ -556,6 +556,7 @@ private struct PCVRSessionForm: View {
 
     private func evaluateDisconnect() {
         guard case .disconnected(let reason) = manager.status else { return }
+        manager.noteDisconnect(reason: "\(reason)")
         // Suppress alerts for expected reasons (mirrors Apple's sample).
         if reason == .appInitiatedDisconnect || reason == .unauthorized {
             return
@@ -564,8 +565,12 @@ private struct PCVRSessionForm: View {
            it can only read at start — the passthrough switch does exactly that. Still no
            alert, but no longer nothing: the manager waits for the PC to come back and
            reconnects if it does, and leaves it alone if the person simply stopped it. */
-        if reason == .endpointInitiatedDisconnect {
-            manager.handleHostEndedSession()
+        /* If no reconnect was scheduled, fall through to the alert rather than returning.
+           This used to `return` unconditionally, so a host-ended session that could not be
+           retried — the budget already spent — produced nothing at all: no reconnect and no
+           alert, just a session that stopped. Silence is the one response that leaves
+           somebody staring at an idle tab wondering whether to wait. */
+        if reason == .endpointInitiatedDisconnect, manager.handleHostEndedSession() {
             return
         }
         // Wi-Fi blips are routine on the networks this must work on: the first

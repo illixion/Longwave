@@ -196,7 +196,7 @@ final class FoveatedConnectionManager {
                 try Task.checkCancellation()
                 try await self.session.connect(endpoint: endpoint)
                 // A completed connect earns back the auto-reconnect budget.
-                self.autoReconnectAttempts = 0
+                self.noteConnected()
                 self.startBridgeSupervisor(for: connection)
             } catch is CancellationError {
                 // User cancelled — leave status to the session.
@@ -237,6 +237,30 @@ final class FoveatedConnectionManager {
     private static let maxAutoReconnects = 1
     private var autoReconnectAttempts = 0
     private var autoReconnectTask: Task<Void, Never>?
+
+    /// When the last session reached `.connected`, so the retry budget can be forgiven.
+    ///
+    /// The budget exists to stop a *flapping* link from producing a storm of consent
+    /// prompts, and flapping means drops close together. A session that streamed happily
+    /// for several minutes and then ended is not a flap, and making it inherit the spent
+    /// budget of some earlier stumble is how a drop ends in silence — no reconnect,
+    /// because the budget was gone, and historically no alert either.
+    private var lastConnectedAt: ContinuousClock.Instant?
+    private static let budgetForgivenAfter: Duration = .seconds(60)
+
+    /// Note that the session is up: resets the retry budget and starts the clock that
+    /// decides whether a later drop counts as flapping.
+    private func noteConnected() {
+        autoReconnectAttempts = 0
+        lastConnectedAt = .now
+    }
+
+    /// Record why a session ended, before anything decides what to do about it. Cheap,
+    /// and the reason is the first thing anyone asks when a reconnect does not happen.
+    func noteDisconnect(reason: String) {
+        let held = lastConnectedAt.map { "\(($0.duration(to: .now)).components.seconds)s" } ?? "never up"
+        log.notice("Session ended: \(reason, privacy: .public) (streamed for \(held, privacy: .public), retries used \(self.autoReconnectAttempts)/\(Self.maxAutoReconnects))")
+    }
     /// True while a scheduled automatic reconnect is pending, so the UI can say
     /// "reconnecting…" instead of raising the disconnect alert.
     private(set) var isAutoReconnecting = false
@@ -272,8 +296,17 @@ final class FoveatedConnectionManager {
     }
 
     private func scheduleAutoReconnect(onlyIfHostReturns: Bool) -> Bool {
-        guard pendingConnection != nil,
-              autoReconnectAttempts < Self.maxAutoReconnects else { return false }
+        guard pendingConnection != nil else { return false }
+        /* Forgive a budget spent on some earlier, unrelated stumble. Without this, one
+           bad reconnect earlier in an evening disarms every drop that follows for the
+           rest of it. */
+        if let up = lastConnectedAt, up.duration(to: .now) > Self.budgetForgivenAfter {
+            autoReconnectAttempts = 0
+        }
+        guard autoReconnectAttempts < Self.maxAutoReconnects else {
+            log.notice("Auto-reconnect budget spent; leaving this drop to the alert.")
+            return false
+        }
         autoReconnectAttempts += 1
         isAutoReconnecting = true
         autoReconnectTask?.cancel()
@@ -304,8 +337,12 @@ final class FoveatedConnectionManager {
 
             guard !Task.isCancelled else { return }
             if onlyIfHostReturns, !returned {
-                // Stopped on purpose and still stopped. Leave it alone.
+                /* Stopped on purpose and still stopped: no reconnect, because chasing it
+                   would be arguing with whoever pressed the button. But say so — waiting
+                   a minute and a half and then getting nothing at all is indistinguishable
+                   from the app having forgotten about it. */
                 self.isAutoReconnecting = false
+                self.lastError = "The PC ended the session and has not come back. Start PCVR there, then connect again."
                 return
             }
             self.isAutoReconnecting = false

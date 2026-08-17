@@ -184,6 +184,16 @@ final class AudioStreamerController {
         injectServer?.setAvailability(injection.statusByte)
     }
 
+    /// Re-reads the grant without prompting, for when it was granted through
+    /// some other pane's button. It's one TCC permission behind both keyboard
+    /// channels, but each service mirrors `AXIsProcessTrusted()` separately, and
+    /// a mirror only refreshes when something asks it to — so the Keyboard tab
+    /// would otherwise keep claiming it needs permission it already has.
+    func refreshInjectionAccessibility() {
+        injection.refreshAccessibility()
+        injectServer?.setAvailability(injection.statusByte)
+    }
+
     var clientCount = 0
     var lastError: String?
     private(set) var streamFormat: SystemAudioTap.StreamFormat?

@@ -49,6 +49,16 @@ struct CompanionWindowView: View {
 struct NativePane: View {
     @Bindable var controller: AudioStreamerController
 
+    /// Whether anything in the remote-control section is asking for the
+    /// Accessibility grant. All three switches post events through it, and the
+    /// two services' `accessibilityTrusted` mirrors are both `AXIsProcessTrusted()`
+    /// — so one row, driven off whichever mirror is at hand, covers the set.
+    private var remoteControlRequested: Bool {
+        controller.macNativeStreaming.mouseControlEnabled
+            || controller.macNativeStreaming.keyboardShortcutsEnabled
+            || controller.injectionEnabled
+    }
+
     var body: some View {
         Form {
             Section {
@@ -76,24 +86,34 @@ struct NativePane: View {
                     Toggle("Allow mouse control", isOn: $controller.macNativeStreaming.mouseControlEnabled)
                         .help("Lets the connected Vision Pro click, drag, and scroll on this Mac while viewing its Screen stream.")
 
-                    Toggle("Allow keyboard shortcuts", isOn: $controller.macNativeStreaming.keyboardShortcutsEnabled)
-                        .help("Lets the connected Vision Pro send modifier shortcuts and special keys (Cmd+C, arrows, F-keys, …) on this Mac. Plain typing works either way — see Keyboard below.")
+                    // The Keyboard tab's switch, shown a second time rather than
+                    // copied: it is the same setting, and typing on the Screen
+                    // stream depends on it. Left a tab away, this section read as
+                    // if "shortcuts off" meant the keyboard did nothing at all.
+                    Toggle("Allow keyboard control", isOn: $controller.injectionEnabled)
+                        .help("Plain typing, over the text-only channel — no modifier keys. The same switch as in the Keyboard tab, where VNC typing uses it too.")
 
-                    if (controller.macNativeStreaming.mouseControlEnabled || controller.macNativeStreaming.keyboardShortcutsEnabled)
-                        && !controller.macNativeStreaming.input.accessibilityTrusted {
+                    Toggle("Allow keyboard shortcuts", isOn: $controller.macNativeStreaming.keyboardShortcutsEnabled)
+                        .help("Lets the connected Vision Pro send modifier shortcuts and special keys (Cmd+C, arrows, F-keys, …) on this Mac. Plain typing is the switch above instead.")
+
+                    if remoteControlRequested && !controller.macNativeStreaming.input.accessibilityTrusted {
                         HStack {
                             Text("Needs Accessibility permission to control input.")
                                 .foregroundStyle(.orange)
                             Spacer()
                             Button("Grant Accessibility…") {
                                 controller.macNativeStreaming.grantInputAccessibility()
+                                // One grant, two services holding their own
+                                // mirror of it — and this row now speaks for the
+                                // text channel as well as the stream's.
+                                controller.refreshInjectionAccessibility()
                             }
                         }
-                    } else if controller.macNativeStreaming.mouseControlEnabled || controller.macNativeStreaming.keyboardShortcutsEnabled {
+                    } else if remoteControlRequested {
                         LabeledContent("Status", value: "Ready — remote control routes through this Mac.")
                     }
                 } footer: {
-                    Text("Both off by default — Screen alone is view-only. Plain typing on Screen always tries the text-only channel below (\"Allow keyboard control\"), same as VNC; shortcuts need this toggle too. Both need the same Accessibility permission.")
+                    Text("All off by default — Screen alone is view-only. The two keyboard switches are separate channels: \"keyboard control\" carries plain text (the same one VNC typing uses), \"keyboard shortcuts\" carries real key presses with modifiers. All three need the same Accessibility permission.")
                 }
             }
 
@@ -333,7 +353,7 @@ struct KeyboardPane: View {
         Form {
             Section {
                 Toggle("Allow keyboard control", isOn: $controller.injectionEnabled)
-                    .help("Lets a paired Vision Pro type text into the frontmost Mac app over an encrypted channel. Text and backspace only — never shortcuts or modifier keys.")
+                    .help("Lets a paired Vision Pro type text into the frontmost Mac app over an encrypted channel. Text and backspace only — never shortcuts or modifier keys. The Native tab shows this same switch alongside the stream's own input toggles.")
 
                 if controller.injectionEnabled && !controller.injection.accessibilityTrusted {
                     HStack {
@@ -342,13 +362,16 @@ struct KeyboardPane: View {
                         Spacer()
                         Button("Grant Accessibility…") {
                             controller.grantAccessibility()
+                            // Same grant the Native tab's input toggles need, so
+                            // don't leave that pane's mirror claiming otherwise.
+                            controller.macNativeStreaming.updateInputAvailability()
                         }
                     }
                 } else if controller.injectionEnabled {
                     LabeledContent("Status", value: "Ready — remote typing routes through this Mac.")
                 }
             } footer: {
-                Text("Text-only injection (no modifier keys) keeps remote typing from triggering shortcuts. In Longwave, link this companion to a VNC connection to use it.")
+                Text("Text-only injection (no modifier keys) keeps remote typing from triggering shortcuts. In Longwave it carries typing for a VNC connection linked to this companion, and for the Native stream — where \"Allow keyboard shortcuts\" in the Native tab adds real key presses on top.")
             }
         }
     }

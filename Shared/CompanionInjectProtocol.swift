@@ -1,11 +1,13 @@
 import Foundation
 
-/// Wire protocol for the **text-only keyboard injection** channel: the visionOS
-/// VNC viewer asks the macOS companion to type literal text (or backspaces)
-/// into whatever app is frontmost on the Mac. Deliberately minimal — it can
-/// express *only* Unicode insertion and backspace, never key codes or
-/// modifiers, so a compromised channel cannot synthesize Cmd+Space / Run-dialog
-/// "DuckyScript" payloads. Modifiers and special keys stay on the VNC path.
+/// Wire protocol for the **text-only keyboard injection** channel: a visionOS
+/// viewer — the VNC one, or the Native Mac stream — asks the macOS companion to
+/// type literal text (or backspaces) into whatever app is frontmost on the Mac.
+/// Deliberately minimal — it can express *only* Unicode insertion and backspace,
+/// never key codes or modifiers, so a compromised channel cannot synthesize
+/// Cmd+Space / Run-dialog "DuckyScript" payloads. Modifiers and special keys go
+/// over the transport's own key path instead (VNC keysyms, or Native's
+/// separately-gated shortcut channel).
 ///
 /// Transport: TLS 1.2-PSK over TCP (see `CompanionInjectCrypto`), keyed by the
 /// same companion token as audio but domain-separated, so a leaked audio PSK is

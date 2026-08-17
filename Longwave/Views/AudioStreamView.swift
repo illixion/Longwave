@@ -108,11 +108,11 @@ struct AudioStreamView: View {
             Button {
                 audioManager.toggleSpatialAudio()
             } label: {
-                Image(systemName: audioManager.spatialAudioMode == .on
-                      ? "person.spatialaudio.fill"
-                      : "person.spatialaudio.stereo.fill")
+                Image(systemName: audioManager.spatialAudioMode == .off
+                      ? "person.spatialaudio.stereo.fill"
+                      : "person.spatialaudio.fill")
             }
-            .tint(audioManager.spatialAudioMode == .on ? .accentColor : nil)
+            .tint(audioManager.spatialAudioMode == .off ? nil : .accentColor)
             .help(spatialAudioHelp)
         }
         .buttonStyle(.borderless)

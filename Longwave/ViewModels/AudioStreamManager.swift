@@ -108,10 +108,13 @@ final class AudioStreamManager {
         }
     }
 
-    /// Flips between explicit on/off (mini-player button) — jumps out of
-    /// `.auto` the first time it's pressed.
+    /// Flips between explicit on/off (mini-player button). visionOS's system
+    /// default already spatializes — including plain stereo content — so
+    /// `.auto` sounds identical to `.on`; the first press out of `.auto`
+    /// needs to land on `.off` to produce an audible change, not silently
+    /// re-land on `.on`.
     func toggleSpatialAudio() {
-        spatialAudioMode = (spatialAudioMode == .on) ? .off : .on
+        spatialAudioMode = (spatialAudioMode == .off) ? .on : .off
     }
 
     /// Whether Control Center remote-command targets have been installed yet

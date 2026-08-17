@@ -19,6 +19,7 @@ struct LongwaveApp: App {
     @State private var foveatedManager = FoveatedConnectionManager()
     @State private var pcvrStore = PCVRStore()
     @State private var pcvrLimiter = PCVRSessionLimiter()
+    @State private var pcvrBandwidth = PCVRBandwidthMonitor()
 
     /// Bridges the manager's style to the scene's existential binding.
     ///
@@ -52,6 +53,7 @@ struct LongwaveApp: App {
                 .environment(foveatedManager)
                 .environment(pcvrStore)
                 .environment(pcvrLimiter)
+                .environment(pcvrBandwidth)
                 #endif
                 .task {
                     // Let the VNC manager drive a companion audio stream in
@@ -68,6 +70,9 @@ struct LongwaveApp: App {
                     // whatever happens to be on screen stops counting the moment
                     // the user switches tabs or closes the window.
                     pcvrLimiter.start(manager: foveatedManager, store: pcvrStore)
+                    // Independent of the trial clock and of StoreKit: a metered host
+                    // costs real money whether or not the trial has been paid for.
+                    pcvrBandwidth.start(manager: foveatedManager)
                 }
                 #endif
         } defaultValue: {
@@ -230,6 +235,7 @@ struct LongwaveApp: App {
             FoveatedControlWindowView()
                 .environment(foveatedManager)
                 .environment(pcvrLimiter)
+                .environment(pcvrBandwidth)
                 .environment(pcvrStore)
         }
         .defaultSize(width: 480, height: 520)
@@ -245,6 +251,7 @@ struct LongwaveApp: App {
             FoveatedImmersiveView()
                 .environment(foveatedManager)
                 .environment(pcvrLimiter)
+                .environment(pcvrBandwidth)
                 .persistentSystemOverlays(.hidden)
         }
         .immersionStyle(selection: .constant(.progressive), in: .progressive)
@@ -257,6 +264,7 @@ struct LongwaveApp: App {
             FoveatedImmersiveView()
                 .environment(foveatedManager)
                 .environment(pcvrLimiter)
+                .environment(pcvrBandwidth)
                 // Hide the Home indicator. It is summoned by raising a palm and looking
                 // at it, which is precisely the wrist HUD's gesture — leave it on and the
                 // two fight over the same intent.

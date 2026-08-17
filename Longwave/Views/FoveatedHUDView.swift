@@ -92,6 +92,7 @@ struct FoveatedHUDView: View {
             questSection
             Divider()
             trialRow
+            bandwidthRow
             actionRow
         }
         .padding(18)
@@ -122,6 +123,35 @@ struct FoveatedHUDView: View {
             }
             .font(.caption)
             .foregroundStyle(remaining <= 60 ? .orange : .secondary)
+        }
+    }
+
+    // MARK: Bandwidth
+
+    /// Fresh 0x0E or nothing, same "a dead feed reads as absent, not as stale good
+    /// news" rule as `quest` above — and absent entirely when the host reports
+    /// monitoring off, which is the expected state on an unmetered LAN PC.
+    private var bandwidth: ControllerBridgeBandwidth? {
+        guard let bridge, let bw = bridge.bandwidth,
+              CACurrentMediaTime() - bridge.bandwidthReceivedAt < 3,
+              bw.flags.contains(.enabled)
+        else { return nil }
+        return bw
+    }
+
+    @ViewBuilder
+    private var bandwidthRow: some View {
+        if let bandwidth {
+            HStack(spacing: 6) {
+                Image(systemName: "network")
+                Text("Bandwidth")
+                Spacer()
+                Text("\(bandwidth.usedGB, specifier: "%.1f") / \(bandwidth.stopThresholdGB, specifier: "%.0f") GB")
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(bandwidth.flags.contains(.stop) ? .red
+                : bandwidth.flags.contains(.warning) ? .orange : .secondary)
         }
     }
 

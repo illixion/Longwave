@@ -79,6 +79,7 @@ private struct PCVRSessionForm: View {
     @Environment(FoveatedConnectionManager.self) private var manager
     @Environment(PCVRStore.self) private var store
     @Environment(PCVRSessionLimiter.self) private var limiter
+    @Environment(PCVRBandwidthMonitor.self) private var bandwidthMonitor
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
@@ -94,6 +95,11 @@ private struct PCVRSessionForm: View {
     @State private var paywallAfterSessionEnd = false
     @State private var showDisconnectAlert = false
     @State private var disconnectMessage = ""
+    @State private var showBandwidthCapAlert = false
+    @State private var stagedBandwidthEnabled = false
+    @State private var stagedWarningGB: Double = 60
+    @State private var stagedStopGB: Double = 90
+    @State private var hasSeededBandwidthPanel = false
 
     private var canConnect: Bool {
         FoveatedEndpoint.canConnect(
@@ -111,6 +117,7 @@ private struct PCVRSessionForm: View {
                 connectionPanel
                 immersionPanel
                 controlsPanel
+                bandwidthPanel
             }
             .padding(28)
             .frame(maxWidth: 780)
@@ -172,6 +179,18 @@ private struct PCVRSessionForm: View {
             limiter.didEndSession = false
             paywallAfterSessionEnd = true
             showPaywall = true
+        }
+        // A bandwidth cap has nothing to do with the trial — explain it on its own
+        // terms rather than routing to the paywall above.
+        .onChange(of: bandwidthMonitor.didEndSession) { _, ended in
+            guard ended else { return }
+            bandwidthMonitor.didEndSession = false
+            showBandwidthCapAlert = true
+        }
+        .alert("Bandwidth Cap Reached", isPresented: $showBandwidthCapAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("This session ended because the PC's monthly data cap was reached. Reset the counter or raise the limit in the Bandwidth panel to keep streaming.")
         }
         .sheet(isPresented: $showGestureSettings) {
             GestureMappingSettingsView()
@@ -533,6 +552,102 @@ private struct PCVRSessionForm: View {
                 }
             }
         }
+    }
+
+    /// A monthly cap, configured per PC rather than per connection: each machine's own
+    /// host keeps its own counter and thresholds (see `PCVRBandwidthMonitor`), so this
+    /// panel is only ever showing and editing whichever one you're connected to right
+    /// now — nothing here is cached client-side by hostname.
+    ///
+    /// Three states, not two: a host running an older binary never sends the packet
+    /// this panel depends on, and gating purely on "connected" would show editable
+    /// controls that silently do nothing. Gate on having actually heard from the host.
+    private var bandwidthPanel: some View {
+        PCVRPanel(title: "Bandwidth",
+                  systemImage: "network",
+                  subtitle: "A monthly data cap for this PC") {
+            if manager.isDisconnected {
+                Label("Connect to a PC to configure its bandwidth cap.", systemImage: "network.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if manager.controllerBridge?.bandwidth == nil {
+                Label("This PC's host doesn't report bandwidth.", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                // Level state: stays true for the rest of the month once crossed,
+                // regardless of whether this session was the one that crossed it — see
+                // PCVRBandwidthMonitor. This is the only place Reset is reachable once
+                // it's set, so it has to render every time, not just right after a stop.
+                if bandwidthMonitor.isOverStopThreshold {
+                    Label("Cap reached — reset the counter or raise the limit to keep streaming.",
+                          systemImage: "exclamationmark.octagon.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                }
+
+                Toggle("Enabled", isOn: $stagedBandwidthEnabled)
+                    .onChange(of: stagedBandwidthEnabled) { _, _ in commitBandwidthControl() }
+
+                LabeledContent("Warning at") {
+                    TextField("GB", value: $stagedWarningGB, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(commitBandwidthControl)
+                }
+                LabeledContent("Stop at") {
+                    TextField("GB", value: $stagedStopGB, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(commitBandwidthControl)
+                }
+
+                if let used = bandwidthMonitor.usedGB, let stop = bandwidthMonitor.stopThresholdGB, stop > 0 {
+                    ProgressView(value: min(used, stop), total: stop) {
+                        Text("\(used, specifier: "%.1f") / \(stop, specifier: "%.0f") GB this month")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    manager.controllerBridge?.requestBandwidthReset()
+                } label: {
+                    Label("Reset counter", systemImage: "arrow.counterclockwise")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .onChange(of: manager.controllerBridge?.bandwidth != nil) { _, hasData in
+            if hasData { seedBandwidthPanelIfNeeded() }
+        }
+        .onChange(of: manager.isDisconnected) { _, disconnected in
+            // A new connection may be a different PC with different settings — don't
+            // carry the last one's staged values into it.
+            if disconnected { hasSeededBandwidthPanel = false }
+        }
+    }
+
+    /// Seed the staged fields from whatever the host is already reporting, once, the
+    /// first time real data arrives this connection. Deliberately not re-seeded on
+    /// every packet after that (~1 Hz) — it would fight the user mid-edit, and
+    /// CompanionWindows has no edit controls today for another actor to race against.
+    private func seedBandwidthPanelIfNeeded() {
+        guard !hasSeededBandwidthPanel, let bandwidth = manager.controllerBridge?.bandwidth else { return }
+        stagedBandwidthEnabled = bandwidth.flags.contains(.enabled)
+        stagedWarningGB = Double(bandwidth.warningThresholdGB)
+        stagedStopGB = Double(bandwidth.stopThresholdGB)
+        hasSeededBandwidthPanel = true
+    }
+
+    private func commitBandwidthControl() {
+        manager.controllerBridge?.updateBandwidthControl(
+            enabled: stagedBandwidthEnabled,
+            warningThresholdGB: Float(stagedWarningGB),
+            stopThresholdGB: Float(stagedStopGB)
+        )
     }
 
     /// Says where the switch is, and — once a session can answer — what it is set

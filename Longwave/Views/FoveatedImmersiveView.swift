@@ -25,6 +25,7 @@ import UIKit
 struct FoveatedImmersiveView: View {
     @Environment(FoveatedConnectionManager.self) private var manager
     @Environment(PCVRSessionLimiter.self) private var limiter
+    @Environment(PCVRBandwidthMonitor.self) private var bandwidthMonitor
     @AppStorage("foveatedShowSentSkeleton") private var showSentSkeleton = false
     @AppStorage("foveatedWristHUD") private var wristHUDEnabled = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
@@ -37,7 +38,7 @@ struct FoveatedImmersiveView: View {
     private let wristDriver = WristHUDDriver()
     private let chargeEntity = Entity()
     private let bannerEntity = Entity()
-    private let bannerDriver = TrialBannerDriver()
+    private let bannerDriver = ImmersiveBannerDriver()
 
     var body: some View {
         RealityView { content in
@@ -47,7 +48,7 @@ struct FoveatedImmersiveView: View {
 
             buildWristHUD(content: content)
             buildGestureCharge(content: content)
-            buildTrialBanner(content: content)
+            buildBanner(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -141,24 +142,31 @@ struct FoveatedImmersiveView: View {
         content.add(chargeEntity)
     }
 
-    // MARK: Trial banner
+    // MARK: Banner
 
     /// The one thing here that appears without being asked for. Placed ahead of the
     /// viewer and eased toward that spot rather than pinned to the head — a panel
     /// rigidly locked to head motion is the standard way to make someone ill, and
     /// this one is on screen for twenty-five seconds at a stretch.
-    private func buildTrialBanner(content: RealityViewContent) {
+    ///
+    /// One shared entity for both the trial countdown and the bandwidth cap notices
+    /// — see `ImmersiveBannerRoot` for which one wins when more than one is active.
+    /// The attachment is built once; `ImmersiveBannerRoot` is itself observing both
+    /// `limiter` and `bandwidthMonitor`, so it re-renders its own content on its own
+    /// as their state moves, the same way the trial-only version already did.
+    private func buildBanner(content: RealityViewContent) {
         bannerEntity.components.set(ViewAttachmentComponent(
-            rootView: TrialBannerRoot(limiter: limiter)))
+            rootView: ImmersiveBannerRoot(limiter: limiter, bandwidthMonitor: bandwidthMonitor)))
         // 460 pt ≈ 0.34 m at scale 1. Slightly under half reads as a notice at
         // arm's length rather than a wall.
         bannerEntity.scale = .init(repeating: 0.45)
         bannerEntity.isEnabled = false
         bannerEntity.components.set(ClosureComponent { [weak bannerEntity] deltaTime in
             guard let bannerEntity else { return }
+            let showing = limiter.bannerRemaining != nil || bandwidthMonitor.bannerKind != nil
             bannerDriver.update(entity: bannerEntity,
                                 deltaTime: deltaTime,
-                                showing: limiter.bannerRemaining != nil,
+                                showing: showing,
                                 bridge: manager.controllerBridge)
         })
         content.add(bannerEntity)
@@ -310,12 +318,15 @@ private final class WristHUDDriver {
     }
 }
 
-/// Placement for the trial banner. Same shape as `WristHUDDriver` — durable state
-/// for a per-frame closure — but anchored to the head instead of a palm, and with a
-/// far slower follow: this one has to be readable while the user is playing, and a
-/// panel that tracks head motion tightly is unpleasant to sit inside.
+/// Placement for the shared immersive banner (trial countdown or bandwidth notice —
+/// see `ImmersiveBannerRoot`). Same shape as `WristHUDDriver` — durable state for a
+/// per-frame closure — but anchored to the head instead of a palm, and with a far
+/// slower follow: this one has to be readable while the user is playing, and a
+/// panel that tracks head motion tightly is unpleasant to sit inside. Nothing here
+/// is specific to which banner is currently showing — `showing` is already a plain
+/// `Bool` by the time it reaches this driver.
 @MainActor
-private final class TrialBannerDriver {
+private final class ImmersiveBannerDriver {
     /// How far ahead of the viewer it sits. Comfortably beyond arm's reach, so it
     /// never collides with hands that are busy holding something.
     private static let distance: Float = 1.5

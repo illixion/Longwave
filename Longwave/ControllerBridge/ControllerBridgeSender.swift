@@ -335,6 +335,14 @@ final class ControllerBridgeSender {
     private(set) var framePeriodHistory: [Float] = []
     static let framePeriodHistoryLength = 180
 
+    // MARK: Bandwidth readout (0x0E)
+
+    /// Latest bandwidth packet, nil until the host starts sending them. A fresh
+    /// connection means a fresh sender instance, so this never carries a previous
+    /// host's numbers forward — see `PCVRBandwidthMonitor`, which depends on that.
+    private(set) var bandwidth: ControllerBridgeBandwidth?
+    private(set) var bandwidthReceivedAt: CFTimeInterval = 0
+
     /// Alignment tuning pushed to the host, resent periodically so a host restart or a
     /// transport swap re-adopts it without the user touching anything. Not persisted:
     /// it is a live diagnostic, not a per-title setting (see `ControllerBridgeDebugTune`).
@@ -343,6 +351,38 @@ final class ControllerBridgeSender {
             guard debugTune != oldValue else { return }
             tuneDirty = true
         }
+    }
+
+    /// Bandwidth thresholds pushed to the host, resent periodically like `debugTune` so
+    /// a host restart re-adopts them without the user re-entering anything.
+    ///
+    /// Unlike `debugTune`, this is NOT settable directly (see `updateBandwidthControl`).
+    /// `debugTune`'s compiled-in default is neutral and safe to push on connect;
+    /// `ControllerBridgeBandwidthControl()`'s default is `enabled: false`, and pushing
+    /// that unconditionally on every reconnect — which the `debugTune` pattern does,
+    /// since it resends on the very first tick regardless — would silently disable
+    /// monitoring on the host every time someone reconnects. So until the user actually
+    /// edits something, this mirrors whatever the host itself just reported (see the
+    /// bandwidth decode branch below and `ingest(_ telemetry:)`'s identical trick for
+    /// `debugTune.desktopQuad`), and only starts sending once `bandwidth != nil` — the
+    /// host has been heard from at least once this session.
+    private(set) var bandwidthControl = ControllerBridgeBandwidthControl() {
+        didSet {
+            guard bandwidthControl != oldValue else { return }
+            bandwidthControlDirty = true
+        }
+    }
+    private var bandwidthControlUserEdited = false
+
+    /// Stage an edit from the PCVR tab's bandwidth panel. Latches out the host-mirroring
+    /// above for the rest of the session — the headset is the only editor today.
+    func updateBandwidthControl(enabled: Bool, warningThresholdGB: Float, stopThresholdGB: Float) {
+        bandwidthControlUserEdited = true
+        var control = bandwidthControl
+        if enabled { control.flags.insert(.enabled) } else { control.flags.remove(.enabled) }
+        control.warningThresholdGB = warningThresholdGB
+        control.stopThresholdGB = stopThresholdGB
+        bandwidthControl = control
     }
 
     /// The title the host says is reaching us, its profile, and where that came from.
@@ -388,6 +428,10 @@ final class ControllerBridgeSender {
     private var lastTuneSend: CFTimeInterval = 0
     private var pendingResolve = false
     private var pendingStopClient = false
+    private var bandwidthControlDirty = true
+    private var bandwidthControlSequence: UInt8 = 0
+    private var lastBandwidthControlSend: CFTimeInterval = 0
+    private var pendingBandwidthReset = false
 
     /// Ask the host to discard its solved alignment and re-converge from scratch.
     func requestAlignmentResolve() {
@@ -400,6 +444,12 @@ final class ControllerBridgeSender {
     func requestStopActiveClient() {
         pendingStopClient = true
         tuneDirty = true
+    }
+
+    /// Ask the host to zero its running monthly counter.
+    func requestBandwidthReset() {
+        pendingBandwidthReset = true
+        bandwidthControlDirty = true
     }
 
     init(host: String) {
@@ -609,6 +659,20 @@ final class ControllerBridgeSender {
         } else if let quest = ControllerBridgeQuestStatus(payload) {
             questStatus = quest
             questStatusReceivedAt = CACurrentMediaTime()
+        } else if let bw = ControllerBridgeBandwidth(payload) {
+            bandwidth = bw
+            bandwidthReceivedAt = CACurrentMediaTime()
+            // Keep mirroring the host's own state until the user actually edits
+            // something — see `bandwidthControl`'s doc comment for why a blind
+            // compiled-in default must never be the first thing sent back.
+            if !bandwidthControlUserEdited {
+                var control = bandwidthControl
+                if bw.flags.contains(.enabled) { control.flags.insert(.enabled) }
+                else { control.flags.remove(.enabled) }
+                control.warningThresholdGB = bw.warningThresholdGB
+                control.stopThresholdGB = bw.stopThresholdGB
+                bandwidthControl = control
+            }
         }
     }
 
@@ -1110,6 +1174,7 @@ final class ControllerBridgeSender {
                     }
                 }
                 sendDebugTuneIfNeeded()
+                sendBandwidthControlIfNeeded()
                 deadline += period
                 let now = clock.now
                 // Fell more than a period behind (a long main-actor stall): re-anchor
@@ -1140,6 +1205,27 @@ final class ControllerBridgeSender {
         pendingStopClient = false
         tuneDirty = false
         lastTuneSend = now
+    }
+
+    /// Push bandwidth thresholds: immediately when the panel changes them, and every
+    /// 200 ms regardless so a host restart mid-session picks the values back up —
+    /// same cadence and reasoning as `sendDebugTuneIfNeeded`. Sends nothing at all
+    /// until the host has been heard from this session (`bandwidth != nil`) — before
+    /// that, `bandwidthControl` is still the compiled-in default, and sending it would
+    /// be exactly the "reconnect silently disables monitoring" bug this whole
+    /// mirror-until-edited scheme exists to avoid.
+    private func sendBandwidthControlIfNeeded() {
+        guard bandwidth != nil else { return }
+        let now = CACurrentMediaTime()
+        guard bandwidthControlDirty || now - lastBandwidthControlSend > 0.2 else { return }
+        var outgoing = bandwidthControl
+        if pendingBandwidthReset { outgoing.flags.insert(.reset) }
+        bandwidthControlSequence &+= 1
+        let encoded = outgoing.encoded(sequence: bandwidthControlSequence)
+        if !control.send(encoded) { send(encoded) }
+        pendingBandwidthReset = false
+        bandwidthControlDirty = false
+        lastBandwidthControlSend = now
     }
 
     private func buildPacket() -> ControllerBridgeInputState {

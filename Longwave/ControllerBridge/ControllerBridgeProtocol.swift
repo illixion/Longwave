@@ -32,6 +32,8 @@ enum ControllerBridgeProtocol {
     static let packetDebugTune: UInt8 = 0x08    // headset → host, alignment nudges
     static let packetPerf: UInt8 = 0x0C         // host → headset, frame pacing + residual
     static let packetQuestStatus: UInt8 = 0x0D  // host → headset, desk-Quest calibration
+    static let packetBandwidth: UInt8 = 0x0E        // host → headset, monthly usage + thresholds
+    static let packetBandwidthControl: UInt8 = 0x0F // headset → host, threshold edits + reset
     static let perfFrameSlots = 32   // cb_perf_t.frame_us capacity
     static let handJointCount = 26   // XR_EXT_hand_tracking joint order
 
@@ -490,6 +492,87 @@ struct ControllerBridgeQuestStatus {
         }
         batteryLeft = battery(5)
         batteryRight = battery(6)
+    }
+}
+
+/// The 0x0E bandwidth packet (`cb_bandwidth_t`, 16 bytes) the host ships at ~1 Hz:
+/// its own measured egress for the current calendar month, plus whatever warning/stop
+/// thresholds it's configured with. `usedGB` is cumulative across sessions — unlike
+/// perf/telemetry above, this number does not reset when a session ends, only when the
+/// month rolls over or the host's counter is explicitly reset. That makes `.warning`/
+/// `.stop` level state, not edge state: they stay set for the rest of the month once
+/// crossed. Reacting to "the flag is set" rather than "the flag just became set" will
+/// re-fire on every reconnect for the rest of the month — see `PCVRBandwidthMonitor`,
+/// which is where the edge-triggering actually lives; this struct is a plain decode.
+struct ControllerBridgeBandwidth {
+    struct Flags: OptionSet {
+        let rawValue: UInt8
+        static let enabled = Flags(rawValue: 1 << 0)
+        static let warning = Flags(rawValue: 1 << 1)
+        static let stop    = Flags(rawValue: 1 << 2)
+        /// The host's state mailbox was missing, stale, or the wrong size this tick —
+        /// these are the last-known values, not fresh ones.
+        static let stale   = Flags(rawValue: 1 << 3)
+    }
+
+    var flags: Flags
+    var usedGB: Float
+    var warningThresholdGB: Float
+    var stopThresholdGB: Float
+
+    /// Plain constructor, for tests that build a packet directly rather than
+    /// decoding one off the wire — the same reason `PCVRSessionLimiter.advance`
+    /// takes plain booleans instead of a live manager.
+    init(flags: Flags = [], usedGB: Float = 0, warningThresholdGB: Float = 0, stopThresholdGB: Float = 0) {
+        self.flags = flags
+        self.usedGB = usedGB
+        self.warningThresholdGB = warningThresholdGB
+        self.stopThresholdGB = stopThresholdGB
+    }
+
+    init?(_ data: Data) {
+        guard data.count >= 16, data[data.startIndex] == ControllerBridgeProtocol.packetBandwidth
+        else { return nil }
+        let b = [UInt8](data)
+        func u32(_ o: Int) -> UInt32 {
+            UInt32(b[o]) | (UInt32(b[o + 1]) << 8) |
+            (UInt32(b[o + 2]) << 16) | (UInt32(b[o + 3]) << 24)
+        }
+        func f(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
+        flags = Flags(rawValue: b[3])
+        usedGB = f(4)
+        warningThresholdGB = f(8)
+        stopThresholdGB = f(12)
+    }
+}
+
+/// The 0x0F bandwidth-control packet (`cb_bandwidth_control_t`, 12 bytes) the headset
+/// sends to edit the host's thresholds or request a counter reset. `.enabled` is
+/// latched, same as the debug-tune flags above — the last value seen is the host's
+/// config until changed again. `.reset` is one-shot like `.stopClient`: the host must
+/// act on it exactly once per new `sequence`, since this packet is resent on the same
+/// cadence as everything else here and a resend of an old reset must not fire twice.
+struct ControllerBridgeBandwidthControl: Equatable {
+    struct Flags: OptionSet {
+        let rawValue: UInt8
+        static let enabled = Flags(rawValue: 1 << 0)
+        static let reset   = Flags(rawValue: 1 << 1)
+    }
+
+    var flags: Flags = []
+    var warningThresholdGB: Float = 60
+    var stopThresholdGB: Float = 90
+
+    func encoded(sequence: UInt8) -> Data {
+        var d = Data(capacity: 12)
+        d.cb_appendUInt8(ControllerBridgeProtocol.packetBandwidthControl)  // off 0
+        d.cb_appendUInt8(ControllerBridgeProtocol.version)                // off 1
+        d.cb_appendUInt8(sequence)                                        // off 2
+        d.cb_appendUInt8(flags.rawValue)                                  // off 3
+        d.cb_appendFloat(warningThresholdGB)                              // off 4
+        d.cb_appendFloat(stopThresholdGB)                                 // off 8
+        assert(d.count == 12, "cb_bandwidth_control_t must serialize to 12 bytes, got \(d.count)")
+        return d
     }
 }
 

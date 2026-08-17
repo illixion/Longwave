@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -215,6 +215,17 @@ function createWindow() {
     if (event === 'foveated') {
       lastFoveatedStatus = data;
       syncPairingWindow(data);
+    }
+    // Its own event, not folded into 'foveated' above — that one is level-triggered
+    // status pushed on state changes, this is edge-triggered, fired once per genuine
+    // threshold crossing (see BandwidthMonitor.EvaluateThresholds on the host side),
+    // which is what makes a toast here meaningful instead of firing on every push that
+    // merely happens to still be over the cap.
+    if (event === 'bandwidth') {
+      new Notification({
+        title: data.tier === 'stop' ? 'Bandwidth cap reached' : 'Bandwidth warning',
+        body: `${data.usedGB.toFixed(1)} GB used this month (threshold: ${data.thresholdGB.toFixed(0)} GB)`,
+      }).show();
     }
     send('notify', { event, data });
   });

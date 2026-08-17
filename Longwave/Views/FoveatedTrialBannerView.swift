@@ -14,15 +14,25 @@
 #if FOVEATED_ENABLED
 import SwiftUI
 
-/// Attachment root. The entity's `ViewAttachmentComponent` is built once, so the
-/// view that reads the changing value has to live inside it — the limiter is
-/// observable, and this re-renders when its countdown moves.
-struct TrialBannerRoot: View {
+/// Attachment root for the one shared immersive banner entity. Built once — both
+/// `limiter` and `bandwidthMonitor` are `@Observable`, so this re-renders on its own
+/// whenever either one's state moves, the same way the trial-only version used to
+/// react to the countdown alone. Precedence, highest first: a bandwidth stop means
+/// the session is already ending, which outranks a trial countdown that is about to
+/// be moot anyway; the trial countdown in turn outranks a bandwidth warning, which
+/// is advisory and can wait a beat. Only one banner exists — nothing here has ever
+/// needed two shown at once.
+struct ImmersiveBannerRoot: View {
     let limiter: PCVRSessionLimiter
+    let bandwidthMonitor: PCVRBandwidthMonitor
 
     var body: some View {
-        if let remaining = limiter.bannerRemaining {
+        if bandwidthMonitor.bannerKind == .stop {
+            FoveatedBandwidthBannerView(kind: .stop, monitor: bandwidthMonitor)
+        } else if let remaining = limiter.bannerRemaining {
             FoveatedTrialBannerView(remaining: remaining)
+        } else if bandwidthMonitor.bannerKind == .warning {
+            FoveatedBandwidthBannerView(kind: .warning, monitor: bandwidthMonitor)
         }
     }
 }

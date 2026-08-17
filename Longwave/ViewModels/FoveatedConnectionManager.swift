@@ -175,6 +175,8 @@ final class FoveatedConnectionManager {
     func beginConnect(_ connection: SavedConnection) {
         pendingConnection = connection
         lastError = nil
+        // A stale flag would swallow the first genuine drop of the new session.
+        expectedDisconnect = false
         connectTask?.cancel()
         connectTask = Task { @MainActor in
             defer { self.connectTask = nil }
@@ -212,6 +214,7 @@ final class FoveatedConnectionManager {
                    is currently unavailable. Another app on the system may be streaming
                    already" — the other app being us, one attempt ago. Retrying looks like the
                    obvious thing to do at that point, and each retry renews the problem. */
+                self.expectedDisconnect = true   // the failure is reported as lastError, not twice
                 await self.session.disconnect()
                 self.lastError = error.localizedDescription
                 self.log.error("Foveated connect failed: \(error.localizedDescription, privacy: .public)")
@@ -221,6 +224,7 @@ final class FoveatedConnectionManager {
 
     /// Cancel an in-flight connect attempt.
     func cancelConnect() {
+        expectedDisconnect = true
         connectTask?.cancel()
         connectTask = nil
         autoReconnectTask?.cancel()
@@ -253,6 +257,26 @@ final class FoveatedConnectionManager {
     private func noteConnected() {
         autoReconnectAttempts = 0
         lastConnectedAt = .now
+    }
+
+    /// True when *we* asked the session to end, so the resulting status change is
+    /// expected and must stay silent.
+    ///
+    /// This exists because the reason code cannot carry it. A host that tears the
+    /// session down — the PC restarting PCVR to apply the passthrough switch, say —
+    /// is reported as `appInitiatedDisconnect`, the very same reason our own Disconnect
+    /// button produces. Suppressing that reason outright (which is what Apple's sample
+    /// does, and what this did) means a host-side restart is indistinguishable from the
+    /// user pressing stop: no reconnect, no alert, nothing. Measured on device — the
+    /// host closed the control link, the framework said `appInitiatedDisconnect`, and
+    /// the drop was swallowed before it reached any reconnect path. So intent is tracked
+    /// on our side rather than inferred from a reason that does not encode it.
+    private var expectedDisconnect = false
+
+    /// Read and clear the expected-disconnect flag.
+    func consumeExpectedDisconnect() -> Bool {
+        defer { expectedDisconnect = false }
+        return expectedDisconnect
     }
 
     /// Record why a session ended, before anything decides what to do about it. Cheap,
@@ -377,6 +401,7 @@ final class FoveatedConnectionManager {
 
     func disconnect() async {
         guard !disconnectInFlight else { return }
+        expectedDisconnect = true
         disconnectInFlight = true
         defer { disconnectInFlight = false }
         cancelConnect()   // also cancels any pending auto-reconnect

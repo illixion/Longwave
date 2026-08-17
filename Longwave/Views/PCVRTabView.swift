@@ -557,10 +557,15 @@ private struct PCVRSessionForm: View {
     private func evaluateDisconnect() {
         guard case .disconnected(let reason) = manager.status else { return }
         manager.noteDisconnect(reason: "\(reason)")
-        // Suppress alerts for expected reasons (mirrors Apple's sample).
-        if reason == .appInitiatedDisconnect || reason == .unauthorized {
-            return
-        }
+        /* Silent only when we asked for it, which the reason code cannot tell us.
+           `appInitiatedDisconnect` used to be suppressed here outright, following Apple's
+           sample — but the *host* tearing the session down arrives under that same reason,
+           so a PC restarting to apply the passthrough switch was indistinguishable from
+           the user pressing Disconnect, and got the same silence. Measured on device:
+           control link closed by the host, `appInitiatedDisconnect`, swallowed before it
+           reached any reconnect path. Intent now comes from our own flag. */
+        if manager.consumeExpectedDisconnect() { return }
+        if reason == .unauthorized { return }
         /* The host ending the session is usually the PC restarting PCVR to apply something
            it can only read at start — the passthrough switch does exactly that. Still no
            alert, but no longer nothing: the manager waits for the PC to come back and
@@ -570,7 +575,8 @@ private struct PCVRSessionForm: View {
            retried — the budget already spent — produced nothing at all: no reconnect and no
            alert, just a session that stopped. Silence is the one response that leaves
            somebody staring at an idle tab wondering whether to wait. */
-        if reason == .endpointInitiatedDisconnect, manager.handleHostEndedSession() {
+        if reason == .endpointInitiatedDisconnect || reason == .appInitiatedDisconnect,
+           manager.handleHostEndedSession() {
             return
         }
         // Wi-Fi blips are routine on the networks this must work on: the first

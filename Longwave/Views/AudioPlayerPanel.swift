@@ -54,49 +54,34 @@ struct AudioPlayerPanel: View {
 
     // MARK: - Artwork
 
-    /// Album art in a square pane; the speaker status glyph when there is no
-    /// artwork or nothing is playing. Tapping the art reveals technical stream
-    /// info in the bottom-trailing corner, which auto-hides after a few seconds.
+    /// Album art sitting flush above the labels, at whatever aspect ratio the
+    /// source published; the speaker status glyph when there is no artwork or
+    /// nothing is playing. Tapping the art reveals technical stream info in the
+    /// bottom-trailing corner, which auto-hides after a few seconds.
     ///
-    /// The art is scaled to *fit* rather than fill. Album covers are square, so
-    /// for music the two are identical — but now-playing artwork also covers
-    /// video, and a 16:9 YouTube frame would lose its sides to a square crop.
-    /// The pane itself stays square so the panel doesn't change height from one
-    /// track to the next; non-square art letterboxes against the backdrop.
+    /// Now that video counts as now playing, artwork is not always square — a
+    /// browser publishes 16:9 — so the art is scaled to fit rather than fill,
+    /// which for a square album cover is the same thing.
+    ///
+    /// The pane reserves a **square** and aligns the art to its **bottom**. So
+    /// the window keeps one height no matter what is playing, and the space a
+    /// 16:9 frame doesn't use opens up at the top, where the window's own glass
+    /// shows through. Nothing below the art ever moves.
+    ///
+    /// Letting the window resize to the art instead would be the obvious
+    /// alternative — it is already `.windowResizability(.contentSize)` — but
+    /// visionOS offers no way to say which edge a window anchors while it
+    /// resizes, so the transport controls would drift as tracks changed.
     private var artworkPane: some View {
         ZStack {
-            // Ground for the empty state, and the letterbox behind art that
-            // isn't square.
-            Rectangle()
-                .fill(.fill.tertiary)
-
             if let artwork = audioManager.artworkImage {
-                // Blurred over-scaled copy behind the art, so a 16:9 frame sits
-                // on a backdrop drawn from itself instead of in flat grey bands.
-                // Square covers hide this layer completely — a fitted square
-                // fills the pane exactly — so music looks unchanged.
-                //
-                // It has to hang off a flexible `Color.clear` rather than sit in
-                // the ZStack directly: a `.fill` image reports a size *wider*
-                // than the pane, which makes the ZStack adopt that width and
-                // re-propose it to the fitted copy below — which then "fits"
-                // 16:9 into 16:9 and fills the pane, silently cropping exactly
-                // what this is all meant to stop. An overlay never influences
-                // the size of what it is drawn over.
-                Color.clear
-                    .overlay {
-                        Image(platformImage: artwork)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .blur(radius: 28, opaque: true)
-                            .overlay(Color.black.opacity(0.2))
-                    }
-                    .clipped()
-
                 Image(platformImage: artwork)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
             } else {
+                Rectangle()
+                    .fill(.fill.tertiary)
+
                 // `variableValue` 0 draws the wave bars empty (none
                 // highlighted); the variableColor animation overrides it while
                 // active. Without it the effect's resting state lights *every*
@@ -109,7 +94,7 @@ struct AudioPlayerPanel: View {
                     .animation(.easeInOut(duration: 0.35), value: isAudioActive)
             }
         }
-        .frame(width: width, height: width)
+        .frame(width: width, height: width, alignment: .bottom)
         .clipped()
         .contentShape(Rectangle())
         .onTapGesture(perform: toggleTechInfo)

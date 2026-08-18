@@ -87,29 +87,14 @@ STAGE="$(mktemp -d -t longwave-pcvr-bundle)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/host" "$STAGE/bridge"
 
-# ------------------------------------------------------------------ .NET host (built locally)
-echo "==> publishing LongwavePCVRHost (win-x64, self-contained)"
-dotnet publish "$HOST_PROJ" -c Release -r win-x64 --self-contained true -o "$STAGE/host"
-
-# Symbols stay at home. A .NET assembly is IL and decompiles readably either way,
-# but the PDB is what turns that output back into something with the original
-# local variable names and line numbers — the difference between reading
-# generated code and reading ours. Not shipping it costs only the line numbers in
-# a stack trace from a user's machine, and the build that produced the assembly
-# still has the PDB if one ever needs symbolicating.
-#
-# The native side needs no equivalent: the bridge files are copied by name below,
-# and no .pdb is on that list.
-find "$STAGE/host" -name '*.pdb' -delete
-echo "    stripped $(find "$STAGE/host" -name '*.pdb' | wc -l | tr -d ' ') remaining .pdb (expect 0)"
-
 # ------------------------------------------------------------------ native build (on the PC)
 if [[ "$NO_BUILD_NATIVE" == 0 ]]; then
-  echo "==> syncing SessionBroker/ + OpenXRLayer/ source to $HOST"
-  for dir in SessionBroker OpenXRLayer; do
+  echo "==> syncing SessionBroker/ + OpenXRLayer/ + Longwave-PCVR-Host/ source to $HOST"
+  for dir in SessionBroker OpenXRLayer Longwave-PCVR-Host; do
     TAR="$STAGE/$dir.tar"
     COPYFILE_DISABLE=1 tar -cf "$TAR" -C "$REPO_ROOT" \
       --exclude='._*' --exclude='build' --exclude='build-hxr' --exclude='.git' \
+      --exclude='bin' --exclude='obj' \
       "$dir"
     scp -q "$TAR" "$HOST:C:/Windows/Temp/longwave-$dir.tar"
   done
@@ -117,12 +102,12 @@ if [[ "$NO_BUILD_NATIVE" == 0 ]]; then
   ps_exec 'unpack native source' 120 "
 \$ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path '$BRIDGE_WIN' | Out-Null
-foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
+foreach (\$dir in @('SessionBroker', 'OpenXRLayer', 'Longwave-PCVR-Host')) {
   \$target = Join-Path '$BRIDGE_WIN' \$dir
   # tar -x merges into an existing tree rather than replacing it, so a source file
   # renamed or deleted upstream would otherwise linger in the build forever.
   if (Test-Path \$target) {
-    Get-ChildItem \$target -Exclude 'build','build-hxr','openxr-sdk-source' |
+    Get-ChildItem \$target -Exclude 'build','build-hxr','openxr-sdk-source','bin','obj' |
       Remove-Item -Recurse -Force
   }
   New-Item -ItemType Directory -Force -Path \$target | Out-Null
@@ -177,9 +162,41 @@ foreach (\$f in @(
   '$BRIDGE_WIN\\SessionBroker\\build\\LongwaveSessionBroker.exe',
   '$BRIDGE_WIN\\OpenXRLayer\\build\\LongwaveControllerBridgeLayer.dll'
 )) {
-  if (-not (Test-Path \$f)) { throw \"expected build output missing: \$f\" }
+  if (-not (Test-Path \$f)) { throw \"expected native build output missing: \$f\" }
 }
 'built'
+"
+
+  # Separate ps_exec call, not folded into the one above: PowerShell ships to winvm as
+  # a base64 -EncodedCommand string over UTF-16LE, and Windows OpenSSH's cmd.exe
+  # wrapper caps that whole line at 8191 chars -- the combined script tripped that
+  # limit ("The command line is too long.", no other output at all, since the failure
+  # is in launching the process, before a single line of the script runs).
+  echo "==> publishing LongwavePCVRHost (AOT) on $HOST"
+  ps_exec 'publish host (AOT)' 300 "
+\$ErrorActionPreference = 'Stop'
+\$msvc = (Get-ChildItem 'C:\\BuildTools\\VC\\Tools\\MSVC' -Directory | Select-Object -First 1).FullName
+\$sdk = 'C:\\Program Files (x86)\\Windows Kits\\10'
+\$sdkver = (Get-ChildItem \"\$sdk\\Include\" -Directory | Select-Object -Last 1).Name
+\$env:PATH = \"\$msvc\\bin\\Hostarm64\\x64;\$sdk\\bin\\\$sdkver\\arm64;C:\\Program Files\\CMake\\bin;\$env:PATH\"
+\$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
+\$env:LIB = \"\$msvc\\lib\\x64;\$sdk\\Lib\\\$sdkver\\ucrt\\x64;\$sdk\\Lib\\\$sdkver\\um\\x64\"
+
+# Native AOT publish needs the same VC linker as the CMake builds above (ILCompiler
+# invokes link.exe directly), which is why this runs on the VM instead of as a
+# cross-publish from the Mac: Native AOT has no cross-OS story, only a cross-*arch*
+# one, and that cross-arch case is exactly what this VM's toolchain (Hostarm64\\x64)
+# already proves out for the C++ side. Validated on this same toolchain in the
+# installer plan's Phase 0 spike 3.
+\$hostProj = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\Host.csproj'
+\$hostPublish = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\publish'
+if (Test-Path \$hostPublish) { Remove-Item \$hostPublish -Recurse -Force }
+dotnet publish \$hostProj -c Release -r win-x64 --nologo -o \$hostPublish
+if (\$LASTEXITCODE -ne 0) { throw 'dotnet publish (PCVR host, AOT) failed' }
+if (-not (Test-Path (Join-Path \$hostPublish 'LongwavePCVRHost.exe'))) {
+  throw 'expected AOT publish output missing: LongwavePCVRHost.exe'
+}
+'published'
 "
 else
   echo "==> --no-build-native: reusing whatever is already built on $HOST"
@@ -190,6 +207,20 @@ fi
 # backslash vars, for scp remote paths only.
 BRIDGE_FS="${BRIDGE_WIN//\\//}"
 CLOUDXR_SDK_FS="${CLOUDXR_SDK_WIN//\\//}"
+
+# ------------------------------------------------------------------ .NET host (collected)
+echo "==> collecting LongwavePCVRHost (AOT) from $HOST"
+scp -qr "$HOST:$BRIDGE_FS/Longwave-PCVR-Host/publish/*" "$STAGE/host/"
+
+# Symbols stay at home. Native AOT means the shipped exe is genuine machine code (not
+# IL any more — see Host.csproj), but the PDB is still what maps it back to original
+# names/line numbers, so the same reasoning applies: not shipping it costs only the
+# symbolication, and the build that produced it still has the PDB if one is ever needed.
+#
+# The native C++ side needs no equivalent: the bridge files are copied by name below,
+# and no .pdb is on that list.
+find "$STAGE/host" -name '*.pdb' -delete
+echo "    stripped $(find "$STAGE/host" -name '*.pdb' | wc -l | tr -d ' ') remaining .pdb (expect 0)"
 
 # ------------------------------------------------------------------ collect artifacts back
 # NMake Makefiles is a single-config generator, so build outputs land straight in build/ —

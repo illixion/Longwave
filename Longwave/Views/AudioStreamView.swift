@@ -37,7 +37,7 @@ struct AudioStreamView: View {
                     .padding(.bottom, 22)
             }
             .frame(width: Self.playerWidth)
-            .glassBackgroundEffect()
+            .platformGlassBackground()
         }
         .frame(width: Self.playerWidth)
         .onAppear {

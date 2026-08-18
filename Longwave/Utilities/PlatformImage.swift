@@ -21,3 +21,22 @@ extension Image {
         #endif
     }
 }
+
+// MARK: - Glass
+
+extension View {
+    /// visionOS glass background; a no-op on macOS, where the window supplies
+    /// its own background and `glassBackgroundEffect` doesn't exist.
+    ///
+    /// `AudioStreamView` and `AudioPlayerPanel` are shared with the macOS app, so
+    /// anything visionOS-only in them has to be spelled this way rather than
+    /// wrapped in `#if os(visionOS)` like `NativeStreamView` is.
+    @ViewBuilder
+    func platformGlassBackground() -> some View {
+        #if os(visionOS)
+        glassBackgroundEffect()
+        #else
+        self
+        #endif
+    }
+}

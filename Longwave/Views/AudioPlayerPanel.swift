@@ -81,7 +81,14 @@ struct AudioPlayerPanel: View {
     /// Popover hosts don't need this; a popover is transient and sizes to its
     /// content already.
     static func topSlack(for image: PlatformImage?, width: CGFloat) -> CGFloat {
-        width - artworkHeight(for: image, width: width)
+        #if os(visionOS)
+        return width - artworkHeight(for: image, width: width)
+        #else
+        // macOS windows have an opaque background and no `.plain` style, so slack
+        // there would just be an empty gap. Let the window size to the content —
+        // which on macOS resizes from the title bar and reads as normal anyway.
+        return 0
+        #endif
     }
 
     /// Album art sitting flush above the labels at whatever aspect ratio the

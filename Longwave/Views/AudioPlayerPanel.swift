@@ -75,11 +75,23 @@ struct AudioPlayerPanel: View {
                 // on a backdrop drawn from itself instead of in flat grey bands.
                 // Square covers hide this layer completely — a fitted square
                 // fills the pane exactly — so music looks unchanged.
-                Image(platformImage: artwork)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 28, opaque: true)
-                    .overlay(Color.black.opacity(0.2))
+                //
+                // It has to hang off a flexible `Color.clear` rather than sit in
+                // the ZStack directly: a `.fill` image reports a size *wider*
+                // than the pane, which makes the ZStack adopt that width and
+                // re-propose it to the fitted copy below — which then "fits"
+                // 16:9 into 16:9 and fills the pane, silently cropping exactly
+                // what this is all meant to stop. An overlay never influences
+                // the size of what it is drawn over.
+                Color.clear
+                    .overlay {
+                        Image(platformImage: artwork)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .blur(radius: 28, opaque: true)
+                            .overlay(Color.black.opacity(0.2))
+                    }
+                    .clipped()
 
                 Image(platformImage: artwork)
                     .resizable()

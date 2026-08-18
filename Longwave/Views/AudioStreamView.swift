@@ -10,23 +10,34 @@ struct AudioStreamView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
 
-    /// Width of the window content; the album art is an edge-to-edge
-    /// square of this size, iTunes-mini-player style.
+    /// Width of the window content; the album art spans it edge to edge,
+    /// iTunes-mini-player style, at the art's own aspect ratio.
     private static let playerWidth: CGFloat = 400
 
     @State private var showEQ = false
 
     var body: some View {
         VStack(spacing: 0) {
-            AudioPlayerPanel(width: Self.playerWidth)
+            // Transparent slack outside the glass, so the window keeps one height
+            // while the artwork changes shape and the panel only ever grows
+            // upward. The window is `.plain`, so this shows nothing at all.
+            Spacer(minLength: 0)
+                .frame(height: AudioPlayerPanel.topSlack(
+                    for: audioManager.artworkImage, width: Self.playerWidth))
 
-            AudioVolumeRow()
-                .padding(.horizontal, 28)
-                .padding(.top, 22)
+            VStack(spacing: 0) {
+                AudioPlayerPanel(width: Self.playerWidth)
 
-            utilityRow
-                .padding(.top, 22)
-                .padding(.bottom, 22)
+                AudioVolumeRow()
+                    .padding(.horizontal, 28)
+                    .padding(.top, 22)
+
+                utilityRow
+                    .padding(.top, 22)
+                    .padding(.bottom, 22)
+            }
+            .frame(width: Self.playerWidth)
+            .glassBackgroundEffect()
         }
         .frame(width: Self.playerWidth)
         .onAppear {

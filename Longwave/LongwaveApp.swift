@@ -99,6 +99,10 @@ struct LongwaveApp: App {
         }
         .defaultSize(width: 400, height: 600)
         .windowResizability(.contentSize)
+        // `.plain` so AudioStreamView supplies its own glass around just the
+        // content: the slack it reserves above the panel for short artwork then
+        // shows nothing, instead of a tall empty slab of system glass.
+        .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
 
         WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in

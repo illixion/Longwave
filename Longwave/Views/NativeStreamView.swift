@@ -647,18 +647,28 @@ struct NativeStreamView: View {
 
     private var audioOnlyContent: some View {
         VStack(spacing: 0) {
-            AudioPlayerPanel(width: Self.audioOnlyWidth)
+            // Transparent slack outside the glass, so this window keeps one
+            // height while the artwork changes shape and the panel only ever
+            // grows upward. The window is `.plain`, so this shows nothing.
+            Spacer(minLength: 0)
+                .frame(height: AudioPlayerPanel.topSlack(
+                    for: audioManager.artworkImage, width: Self.audioOnlyWidth))
 
-            AudioVolumeRow()
-                .padding(.horizontal, 28)
-                .padding(.top, 22)
+            VStack(spacing: 0) {
+                AudioPlayerPanel(width: Self.audioOnlyWidth)
 
-            audioUtilityRow
-                .padding(.top, 22)
-                .padding(.bottom, 22)
+                AudioVolumeRow()
+                    .padding(.horizontal, 28)
+                    .padding(.top, 22)
+
+                audioUtilityRow
+                    .padding(.top, 22)
+                    .padding(.bottom, 22)
+            }
+            .frame(width: Self.audioOnlyWidth)
+            .glassBackgroundEffect()
         }
         .frame(width: Self.audioOnlyWidth)
-        .glassBackgroundEffect()
         .sheet(isPresented: $showEQ) {
             EQEditorView()
                 .environment(audioManager)

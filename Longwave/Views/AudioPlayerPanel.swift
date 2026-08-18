@@ -11,8 +11,8 @@ import SwiftUI
 struct AudioPlayerPanel: View {
     @Environment(AudioStreamManager.self) private var audioManager
 
-    /// Width of the panel; the artwork pane is an edge-to-edge square of this
-    /// size, iTunes-mini-player style.
+    /// Width of the panel. The artwork spans it edge to edge, iTunes-mini-player
+    /// style; its height follows the art's aspect ratio (see `artworkHeight`).
     var width: CGFloat = 400
 
     /// Whether a local-output volume row is shown below the transport row.
@@ -54,24 +54,45 @@ struct AudioPlayerPanel: View {
 
     // MARK: - Artwork
 
-    /// Album art sitting flush above the labels, at whatever aspect ratio the
+    /// Height the artwork occupies at `width`: the art's own aspect ratio, never
+    /// taller than a square. So the pane is exactly the shape of the art —
+    /// nothing cropped, nothing letterboxed.
+    ///
+    /// Portrait art is capped at square rather than allowed to grow taller,
+    /// which keeps `topSlack` from going negative and the window from growing.
+    /// It pillarboxes instead, which for now-playing artwork is vanishingly rare.
+    static func artworkHeight(for image: PlatformImage?, width: CGFloat) -> CGFloat {
+        guard let image, image.size.width > 0, image.size.height > 0 else { return width }
+        return min(width, (width * image.size.height / image.size.width).rounded())
+    }
+
+    /// Transparent space a *window* host should reserve above its glass panel.
+    ///
+    /// The panel is glass-backed content inside a `.plain` window, so the window
+    /// keeps one total height while the artwork changes shape: the slack absorbs
+    /// the difference and shows nothing at all, and the panel appears to grow and
+    /// shrink at its top edge only. Nothing below the art ever moves.
+    ///
+    /// Letting the window resize to the content instead is the obvious
+    /// alternative and is wrong: visionOS anchors a window's **centre** when its
+    /// content size changes — measured, not assumed — so both edges move by half
+    /// the delta and the transport controls drift as tracks change.
+    ///
+    /// Popover hosts don't need this; a popover is transient and sizes to its
+    /// content already.
+    static func topSlack(for image: PlatformImage?, width: CGFloat) -> CGFloat {
+        width - artworkHeight(for: image, width: width)
+    }
+
+    /// Album art sitting flush above the labels at whatever aspect ratio the
     /// source published; the speaker status glyph when there is no artwork or
     /// nothing is playing. Tapping the art reveals technical stream info in the
     /// bottom-trailing corner, which auto-hides after a few seconds.
     ///
-    /// Now that video counts as now playing, artwork is not always square — a
-    /// browser publishes 16:9 — so the art is scaled to fit rather than fill,
-    /// which for a square album cover is the same thing.
-    ///
-    /// The pane reserves a **square** and aligns the art to its **bottom**. So
-    /// the window keeps one height no matter what is playing, and the space a
-    /// 16:9 frame doesn't use opens up at the top, where the window's own glass
-    /// shows through. Nothing below the art ever moves.
-    ///
-    /// Letting the window resize to the art instead would be the obvious
-    /// alternative — it is already `.windowResizability(.contentSize)` — but
-    /// visionOS offers no way to say which edge a window anchors while it
-    /// resizes, so the transport controls would drift as tracks changed.
+    /// Now that video counts as now playing, artwork isn't always square — a
+    /// browser publishes 16:9 — so it is scaled to fit, which for a square album
+    /// cover is the same as filling. See `artworkHeight` for the pane's shape and
+    /// `topSlack` for how window hosts keep their height constant.
     private var artworkPane: some View {
         ZStack {
             if let artwork = audioManager.artworkImage {
@@ -94,7 +115,8 @@ struct AudioPlayerPanel: View {
                     .animation(.easeInOut(duration: 0.35), value: isAudioActive)
             }
         }
-        .frame(width: width, height: width, alignment: .bottom)
+        .frame(width: width,
+               height: Self.artworkHeight(for: audioManager.artworkImage, width: width))
         .clipped()
         .contentShape(Rectangle())
         .onTapGesture(perform: toggleTechInfo)

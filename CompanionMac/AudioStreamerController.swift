@@ -201,7 +201,7 @@ final class AudioStreamerController {
 
     private var tap: SystemAudioTap?
     private var server: AudioStreamServer?
-    private var musicBridge: MusicAppBridge?
+    private var musicBridge: NowPlayingCoordinator?
     /// Whether the tap is currently muting local Mac output.
     private var tapMuted = false
     /// Delays tearing down the tap after the last client leaves, so a Vision
@@ -299,8 +299,10 @@ final class AudioStreamerController {
             return
         }
 
-        // Music.app now-playing metadata + transport commands
-        let bridge = MusicAppBridge()
+        // System-wide now-playing metadata + transport commands. Covers every
+        // player (Apple Music streaming, Spotify, browser video) via
+        // MediaRemote, falling back to AppleScript against Music.app.
+        let bridge = NowPlayingCoordinator()
         bridge.onNowPlaying = { [weak self] info, artwork in
             self?.handleNowPlaying(info, artwork: artwork)
         }

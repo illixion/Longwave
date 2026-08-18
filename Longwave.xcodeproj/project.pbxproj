@@ -366,6 +366,7 @@
 				589D9C822F2D180B311E2285 /* Sources */,
 				F3582F8517BABECC627C9924 /* Frameworks */,
 				8D1AAAAD70328F40F785B5B1 /* Resources */,
+				AA10AD100000000000000F01 /* Build MediaRemote Helper */,
 			);
 			buildRules = (
 			);
@@ -398,6 +399,7 @@
 				AA10AD100000000000000006 /* Sources */,
 				AA10AD100000000000000007 /* Frameworks */,
 				AA10AD100000000000000008 /* Resources */,
+				AA10AD100000000000000F00 /* Build MediaRemote Helper */,
 			);
 			buildRules = (
 			);
@@ -542,6 +544,48 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		AA10AD100000000000000F00 /* Build MediaRemote Helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/MediaRemoteHelper/longwave-mediaremote.m",
+				"$(SRCROOT)/scripts/build-mediaremote-helper.sh",
+			);
+			name = "Build MediaRemote Helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/longwave-mediaremote.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/build-mediaremote-helper.sh\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/longwave-mediaremote.dylib\"\n";
+		};
+		AA10AD100000000000000F01 /* Build MediaRemote Helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/MediaRemoteHelper/longwave-mediaremote.m",
+				"$(SRCROOT)/scripts/build-mediaremote-helper.sh",
+			);
+			name = "Build MediaRemote Helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/longwave-mediaremote.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/build-mediaremote-helper.sh\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/longwave-mediaremote.dylib\"\n";
+		};
 		1DC83C5A2F9536A000BF0482 /* Copy Third-Party Notices */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;

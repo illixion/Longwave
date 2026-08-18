@@ -18,8 +18,6 @@ final class MusicAppBridge {
         category: "MusicBridge"
     )
     private static let musicBundleID = "com.apple.Music"
-    /// Artwork is scaled down before streaming (longest side, points).
-    private static let maxArtworkDimension: CGFloat = 600
 
     /// Fires on the main actor with the new state and, when the track
     /// changed, freshly scaled artwork JPEG data (nil = artwork unchanged).
@@ -180,37 +178,19 @@ final class MusicAppBridge {
         return position.isFinite && position >= 0 ? position : nil
     }
 
-    /// Fetches the current track's artwork and re-encodes it as a scaled
-    /// JPEG suitable for streaming (≤600 px, ~0.8 quality).
+    /// Fetches the current track's artwork and re-encodes it as a scaled JPEG
+    /// suitable for streaming.
+    ///
+    /// Returns nil for anything streamed from Apple Music: Music.app exposes
+    /// artwork bytes over AppleScript only for tracks backed by a local file.
+    /// `MediaRemoteBridge` is what covers that case.
     private func fetchArtwork() -> Data? {
         guard isMusicRunning,
               let descriptor = runAppleScript(
                 "tell application \"Music\" to return data of artwork 1 of current track"
               )
         else { return nil }
-        let raw = descriptor.data
-        guard !raw.isEmpty, let image = NSImage(data: raw) else { return nil }
-        return scaledJPEG(image)
-    }
-
-    private func scaledJPEG(_ image: NSImage) -> Data? {
-        let size = image.size
-        guard size.width > 0, size.height > 0 else { return nil }
-        let scale = min(1, Self.maxArtworkDimension / max(size.width, size.height))
-        let target = NSSize(width: size.width * scale, height: size.height * scale)
-
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(target.width), pixelsHigh: Int(target.height),
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-        ) else { return nil }
-
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(origin: .zero, size: target))
-        NSGraphicsContext.restoreGraphicsState()
-
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        return NowPlayingArtwork.scaledJPEG(from: descriptor.data)
     }
 
     @discardableResult

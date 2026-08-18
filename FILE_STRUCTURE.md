@@ -92,10 +92,17 @@ CompanionMac/                           — macOS menu bar companion target (Lon
 ├── MacHEVCAlphaEncoder.swift           — Realtime VideoToolbox HEVC-with-alpha encoder
 ├── MacNativeStreamNotifications.swift  — Foreground-capable connection/takeover notifications
 ├── SystemAudioTap.swift                — Core Audio process tap
-├── MusicAppBridge.swift                — Music.app metadata/control (notifications + AppleScript)
+├── NowPlayingCoordinator.swift         — Single now-playing source: prefers MediaRemote, falls back to AppleScript (arbitrates on which backend reports a track)
+├── MediaRemoteBridge.swift             — System-wide now playing via the perl-hosted helper (spawn/parse/restart) — every player, artwork included
+├── MusicAppBridge.swift                — Fallback: Music.app only, metadata/control (notifications + AppleScript); no artwork for Apple Music streaming
+├── NowPlayingArtwork.swift             — Shared artwork scaling/JPEG re-encode (≤600 px)
 ├── BroadcastServerManager.swift        — one-button mediamtx setup (cert/password gen, managed config, brew restart, pairing URL) + one-click OBS scene provisioning
 ├── OBSWebSocketClient.swift            — minimal obs-websocket v5 client (Hello/Identify challenge auth, Browser Source create/update + visibility/stacking enforcement)
 └── Info.plist                          — NSAudioCaptureUsageDescription, NSAppleEventsUsageDescription
+
+MediaRemoteHelper/                      — system-wide now-playing reader, loaded by /usr/bin/perl (NOT in any Xcode target)
+├── longwave-mediaremote.m               — dlopens MediaRemote, streams NDJSON metadata + artwork; XS entry points
+└── README.md                            — why the perl host is required, and the dyld-loader-lock trap
 
 CompanionWindows/                       — Longwave Companion (PoC; separate Node + .NET codebase)
 ├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see Longwave-PCVR-Host/)
@@ -117,6 +124,7 @@ scripts/
 ├── setup-deps.sh                       — Clone+patch repos/ deps (local Moonlight builds)
 ├── build-and-sign.sh                   — Config-driven device build/sign/deploy (build-signing.conf, gitignored)
 ├── install-companion.sh                — Build the macOS companion + install to /Applications (quit/relaunch)
+├── build-mediaremote-helper.sh          — Universal build+sign of MediaRemoteHelper/ (script phase on both mac targets)
 └── release.sh                          — Local Moonlight-enabled GitHub release (gh CLI)
 
 ci/

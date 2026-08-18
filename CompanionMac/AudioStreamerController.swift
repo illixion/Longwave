@@ -239,13 +239,22 @@ final class AudioStreamerController {
 
     /// "Artist – Title" for the menu bar label, or nil when the option is
     /// off, nothing is playing (paused hides it too), or metadata is missing.
+    ///
+    /// Truncated to `menuBarTrackTextMaxLength` — an unbounded title (e.g. a
+    /// Safari tab's full YouTube video title) can grow long enough to make
+    /// the menu bar item overflow the screen width, which pushes it off the
+    /// menu bar entirely and makes it appear to have disappeared.
     var menuBarTrackText: String? {
         guard showTrackInMenuBar,
               let nowPlaying, nowPlaying.hasTrack, nowPlaying.isPlaying else { return nil }
         let parts = [nowPlaying.artist, nowPlaying.title].compactMap { $0?.isEmpty == false ? $0 : nil }
         guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " – ")
+        let text = parts.joined(separator: " – ")
+        guard text.count > Self.menuBarTrackTextMaxLength else { return text }
+        return text.prefix(Self.menuBarTrackTextMaxLength) + "…"
     }
+
+    private static let menuBarTrackTextMaxLength = 40
 
     var muteWhileStreaming: Bool {
         get {

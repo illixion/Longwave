@@ -2,10 +2,18 @@ import AppKit
 
 /// Artwork normalisation shared by both now-playing sources.
 ///
-/// Sources hand us wildly different images — Music.app's AppleScript artwork is
-/// whatever the file embeds, MediaRemote hands out 800×800 and occasionally PNG
-/// rather than JPEG — so everything is re-encoded to one predictable form
-/// before it goes on the wire.
+/// Sources hand us wildly different images, so everything is re-encoded to one
+/// predictable form before it goes on the wire. Music.app's AppleScript artwork
+/// is whatever the file embeds; MediaRemote's varies by publisher — 600×600 for
+/// Music.app, 336×188 for a 16:9 video in a browser — and its declared MIME type
+/// cannot be trusted: it reports `image/jpeg` for what is actually uncompressed
+/// TIFF. Nothing here reads that MIME; `NSImage` sniffs the real format, and the
+/// re-encode is what makes the size predictable (a 336×188 "JPEG" arrived as
+/// 256 KB of TIFF).
+///
+/// Aspect ratio is always preserved — only the longest side is bounded — because
+/// now-playing artwork is not necessarily square once video is in scope.
+///
 /// `nonisolated` so the MediaRemote bridge can re-encode artwork on its parse
 /// queue instead of hitching the main thread on every track change.
 nonisolated enum NowPlayingArtwork {

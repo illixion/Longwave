@@ -11,7 +11,7 @@ import SwiftUI
 struct AudioPlayerPanel: View {
     @Environment(AudioStreamManager.self) private var audioManager
 
-    /// Width of the panel; the album art is an edge-to-edge square of this
+    /// Width of the panel; the artwork pane is an edge-to-edge square of this
     /// size, iTunes-mini-player style.
     var width: CGFloat = 400
 
@@ -54,20 +54,37 @@ struct AudioPlayerPanel: View {
 
     // MARK: - Artwork
 
-    /// Big square album art; when there is none (streaming-only Apple
-    /// Music tracks expose no artwork via scripting) or nothing playing,
-    /// shows the speaker status glyph instead. Tapping the art reveals
-    /// technical stream info in the bottom-trailing corner, which
-    /// auto-hides after a few seconds.
+    /// Album art in a square pane; the speaker status glyph when there is no
+    /// artwork or nothing is playing. Tapping the art reveals technical stream
+    /// info in the bottom-trailing corner, which auto-hides after a few seconds.
+    ///
+    /// The art is scaled to *fit* rather than fill. Album covers are square, so
+    /// for music the two are identical — but now-playing artwork also covers
+    /// video, and a 16:9 YouTube frame would lose its sides to a square crop.
+    /// The pane itself stays square so the panel doesn't change height from one
+    /// track to the next; non-square art letterboxes against the backdrop.
     private var artworkPane: some View {
         ZStack {
+            // Ground for the empty state, and the letterbox behind art that
+            // isn't square.
+            Rectangle()
+                .fill(.fill.tertiary)
+
             if let artwork = audioManager.artworkImage {
+                // Blurred over-scaled copy behind the art, so a 16:9 frame sits
+                // on a backdrop drawn from itself instead of in flat grey bands.
+                // Square covers hide this layer completely — a fitted square
+                // fills the pane exactly — so music looks unchanged.
                 Image(platformImage: artwork)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    .blur(radius: 28, opaque: true)
+                    .overlay(Color.black.opacity(0.2))
+
+                Image(platformImage: artwork)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
             } else {
-                Rectangle()
-                    .fill(.fill.tertiary)
                 // `variableValue` 0 draws the wave bars empty (none
                 // highlighted); the variableColor animation overrides it while
                 // active. Without it the effect's resting state lights *every*

@@ -52,6 +52,13 @@ static NSString *const kInfoUniqueID = @"kMRMediaRemoteNowPlayingInfoUniqueIdent
 enum { kCmdPlay = 0, kCmdPause = 1, kCmdTogglePlayPause = 2, kCmdNextTrack = 4,
        kCmdPreviousTrack = 5 };
 
+/// How long the send path keeps the runloop alive so the queued XPC command
+/// actually reaches mediaremoted before the process exits. 1.2s was observed to
+/// work and 0 to fail; this leaves generous margin, and costs nothing
+/// perceptible because the player reacts when the message lands, not when we go
+/// away.
+static const double kSendFlushSeconds = 0.75;
+
 #pragma mark - State
 
 static MRGetNowPlayingInfo mrGetInfo;
@@ -422,7 +429,17 @@ void longwave_mediaremote_send(void *interpreter, void *cv) {
             emitError([NSString stringWithFormat:@"unknown command '%@'", name]);
             _exit(2);
         }
-        bool ok = mrSendCommand(command, nil);
-        _exit(ok ? 0 : 1);
+        if (!mrSendCommand(command, nil)) _exit(1);
+
+        // MRMediaRemoteSendCommand returns true as soon as the request is
+        // queued, not when it is delivered: it dispatches asynchronously over
+        // XPC to mediaremoted. Exiting here drops the message in flight and the
+        // command silently does nothing — a paused player just stays paused,
+        // with a success return and a clean exit status to say otherwise. Let
+        // the runloop flush it before going away.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(kSendFlushSeconds * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ _exit(0); });
     }
+    CFRunLoopRun();
 }

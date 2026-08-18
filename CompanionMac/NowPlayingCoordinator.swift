@@ -31,9 +31,9 @@ final class NowPlayingCoordinator {
     private let mediaRemote = MediaRemoteBridge()
     private let musicApp = MusicAppBridge()
 
-    /// Which backend produced `current`. Transport commands follow it, so a
-    /// pause sent while a browser owns Now Playing pauses the browser instead of
-    /// starting Music.app.
+    /// Which backend produced `current`, for `sourceBundleID` and logging.
+    /// Transport routing deliberately does *not* read this — see `send`, which
+    /// decides from whether MediaRemote currently has a track.
     private enum Source { case mediaRemote, musicApp }
     private var activeSource: Source = .musicApp
 
@@ -83,10 +83,29 @@ final class NowPlayingCoordinator {
         deliveredArtworkID = nil
     }
 
-    /// Routes a transport command to whichever backend is currently in charge.
+    /// Routes a transport command.
+    ///
+    /// MediaRemote aims at whichever app owns Now Playing, so play/pause reaches
+    /// Spotify or a browser and not just Music.app — the AppleScript path can
+    /// only ever talk to Music. Two cases fall back to it:
+    ///
+    /// - **Nothing is playing.** There is then no Now Playing app for MediaRemote
+    ///   to command, and it silently no-ops. Music.app can start from a standing
+    ///   stop, so it becomes the default target — which is also what a user
+    ///   pressing play on an idle player expects.
+    /// - **MediaRemote refused or is gone.** Verified from the helper's exit
+    ///   status rather than assumed from a successful launch.
     func send(_ command: MediaCommand) {
-        if activeSource == .mediaRemote, mediaRemote.send(command) { return }
-        musicApp.send(command)
+        guard mediaRemote.isAvailable, mediaRemoteInfo?.hasTrack == true else {
+            musicApp.send(command)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            if await self.mediaRemote.send(command) { return }
+            Self.log.log("MediaRemote refused \(command.rawValue, privacy: .public) — retrying via Music.app")
+            self.musicApp.send(command)
+        }
     }
 
     // MARK: - Arbitration

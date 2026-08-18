@@ -252,10 +252,15 @@ final class MediaRemoteBridge {
     // MARK: - Transport
 
     /// Sends a transport command to whichever app owns Now Playing — which is
-    /// why this beats the AppleScript path: it reaches Spotify and browsers,
-    /// not just Music.app. Returns false if the command couldn't be dispatched.
-    @discardableResult
-    func send(_ command: MediaCommand) -> Bool {
+    /// why this beats the AppleScript path: it reaches Spotify and browsers, not
+    /// just Music.app.
+    ///
+    /// Waits for the helper to exit and reports whether it actually succeeded,
+    /// so the caller can fall back. Launching successfully is not evidence the
+    /// command worked, and treating it as such is exactly how a dead play button
+    /// hides: the helper exits 1 when MediaRemote refuses the command and 2 when
+    /// it can't reach MediaRemote at all.
+    func send(_ command: MediaCommand) async -> Bool {
         guard isAvailable, let helperPath else { return false }
 
         let task = Process()
@@ -267,14 +272,19 @@ final class MediaRemoteBridge {
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
 
-        do {
-            try task.run()
-        } catch {
-            let reason = error.localizedDescription
-            Self.log.error("transport \(command.rawValue, privacy: .public) failed: \(reason, privacy: .public)")
-            return false
+        return await withCheckedContinuation { continuation in
+            task.terminationHandler = { finished in
+                continuation.resume(returning: finished.terminationStatus == 0)
+            }
+            do {
+                try task.run()
+            } catch {
+                task.terminationHandler = nil
+                let reason = error.localizedDescription
+                Self.log.error("transport \(command.rawValue, privacy: .public) failed to launch: \(reason, privacy: .public)")
+                continuation.resume(returning: false)
+            }
         }
-        return true
     }
 }
 

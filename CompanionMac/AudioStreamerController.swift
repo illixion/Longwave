@@ -234,27 +234,30 @@ final class AudioStreamerController {
             withMutation(keyPath: \.showTrackInMenuBar) {
                 UserDefaults.standard.set(newValue, forKey: "showTrackInMenuBar")
             }
+            updateMenuBarLabelPolling()
         }
     }
 
-    /// "Artist – Title" for the menu bar label, or nil when the option is
-    /// off, nothing is playing (paused hides it too), or metadata is missing.
-    ///
-    /// Truncated to `menuBarTrackTextMaxLength` — an unbounded title (e.g. a
-    /// Safari tab's full YouTube video title) can grow long enough to make
-    /// the menu bar item overflow the screen width, which pushes it off the
-    /// menu bar entirely and makes it appear to have disappeared.
+    /// The menu bar label: "Artist – Title ♪", trimmed to whatever room the
+    /// menu bar has (see `MenuBarLabelFitter`), or nil when the option is off,
+    /// nothing is playing (paused hides it too), metadata is missing, or the
+    /// menu bar is too full to hold any of it — the caller shows an icon then.
     var menuBarTrackText: String? {
         guard showTrackInMenuBar,
               let nowPlaying, nowPlaying.hasTrack, nowPlaying.isPlaying else { return nil }
         let parts = [nowPlaying.artist, nowPlaying.title].compactMap { $0?.isEmpty == false ? $0 : nil }
         guard !parts.isEmpty else { return nil }
-        let text = parts.joined(separator: " – ")
-        guard text.count > Self.menuBarTrackTextMaxLength else { return text }
-        return text.prefix(Self.menuBarTrackTextMaxLength) + "…"
+        return menuBarFitter.fit(parts.joined(separator: " – "), trailing: " ♪")
     }
 
-    private static let menuBarTrackTextMaxLength = 40
+    private let menuBarFitter = MenuBarLabelFitter()
+
+    /// The fitter only has to watch the menu bar while the label is on it.
+    private func updateMenuBarLabelPolling() {
+        menuBarFitter.setPolling(
+            showTrackInMenuBar && nowPlaying?.hasTrack == true && nowPlaying?.isPlaying == true
+        )
+    }
 
     var muteWhileStreaming: Bool {
         get {
@@ -410,10 +413,12 @@ final class AudioStreamerController {
         serverRunning = false
         clientCount = 0
         nowPlaying = nil
+        updateMenuBarLabelPolling()
     }
 
     private func handleNowPlaying(_ info: NowPlayingInfo?, artwork: Data?) {
         nowPlaying = info
+        updateMenuBarLabelPolling()
         let infoFrame = info?.encoded().map { AudioStreamProtocol.encodeFrame(.nowPlaying, $0) }
             ?? NowPlayingInfo(isPlaying: false).encoded().map { AudioStreamProtocol.encodeFrame(.nowPlaying, $0) }
         let artworkFrame = artwork.map { AudioStreamProtocol.encodeFrame(.artwork, $0) }

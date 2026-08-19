@@ -30,7 +30,10 @@ struct CompanionApp: App {
             if controller.isInjecting {
                 Image(systemName: "keyboard.fill")
             } else if let track = controller.menuBarTrackText {
-                Text("\(track) ♪")
+                // Already carries the ♪ and is pre-trimmed to the room the menu
+                // bar has — the label can't constrain its own width, so the
+                // string is what has to be the right length.
+                Text(track)
             } else {
                 Image(systemName: controller.isRunning ? "speaker.wave.2.fill" : "speaker.slash")
             }

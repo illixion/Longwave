@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// Terminal window: status row, the SwiftTerm display, a gaze-friendly quick-key
 /// row, and a dictation-capable composer. Looks up its `SSHSession` by id so the
@@ -18,6 +19,17 @@ struct SSHTerminalView: View {
     /// or the next composer send, then cleared. E.g. ⌃ + "b" → 0x02 (tmux
     /// prefix), ⌥ + ← → word-left, ⇧ + tab → back-tab.
     @State private var modifiers: TerminalModifiers = []
+
+    /// Quick key currently held down, and how many repeat-ticker ticks it's been
+    /// held for. Drives auto-repeat (e.g. holding ← walks back through history)
+    /// the same way a hardware keyboard repeats: an initial delay, then steady
+    /// re-sends until release.
+    @State private var heldQuickKey: TerminalQuickKey?
+    @State private var heldQuickKeyTicks = 0
+    @State private var quickKeyRepeatTicker = Timer.publish(every: 0.06, on: .main, in: .common).autoconnect()
+    /// Ticks (at the ticker's 0.06s cadence) before repeat kicks in — long
+    /// enough that a normal tap-and-release never triggers a second send.
+    private let quickKeyRepeatDelayTicks = 8
 
     /// Keeps terminal keyboard intent separate from current first-responder
     /// status. The distinction matters because dictation may temporarily resign
@@ -69,6 +81,7 @@ struct SSHTerminalView: View {
         .onDisappear {
             manager.session(sessionID)?.windowDisappeared()
             keyboardMonitor.stop()
+            heldQuickKey = nil
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { manager.session(sessionID)?.ensureConnected() }
@@ -298,6 +311,12 @@ struct SSHTerminalView: View {
             .padding(.vertical, 8)
         }
         .background(.bar)
+        .onReceive(quickKeyRepeatTicker) { _ in
+            guard let key = heldQuickKey, session.isReady else { return }
+            heldQuickKeyTicks += 1
+            guard heldQuickKeyTicks > quickKeyRepeatDelayTicks else { return }
+            sendQuickKey(key, session)
+        }
     }
 
     /// A latching modifier key. Tap to arm/disarm; armed modifiers apply to the
@@ -311,16 +330,35 @@ struct SSHTerminalView: View {
         .frame(minWidth: 48, minHeight: 44)
     }
 
+    /// Sends on press-down (like a hardware key) rather than on release, so a
+    /// hold reads as "key down, repeating" instead of "hold, then fire once on
+    /// lift". The `simultaneousGesture` drag (zero-distance, so it recognizes
+    /// immediately) supplies the press-down/press-up edges Button doesn't
+    /// expose; the button's own action is left empty.
     private func quickKey(_ key: TerminalQuickKey, _ session: SSHSession) -> some View {
-        Button(key.label) {
-            let bytes = TerminalKeyEncoder.encodeQuickKey(key, modifiers: modifiers)
-            if session.sendBytes(bytes) { modifiers = [] }
-        }
-        .buttonStyle(.bordered)
-        .frame(minWidth: 48, minHeight: 44)
-        // Unlike composed text, raw key bytes aren't worth queueing —
-        // disable instead of silently dropping while disconnected.
-        .disabled(!session.isReady)
+        Button(key.label) { }
+            .buttonStyle(.bordered)
+            .frame(minWidth: 48, minHeight: 44)
+            // Unlike composed text, raw key bytes aren't worth queueing —
+            // disable instead of silently dropping while disconnected.
+            .disabled(!session.isReady)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard heldQuickKey?.id != key.id else { return }
+                        heldQuickKey = key
+                        heldQuickKeyTicks = 0
+                        sendQuickKey(key, session)
+                    }
+                    .onEnded { _ in
+                        if heldQuickKey?.id == key.id { heldQuickKey = nil }
+                    }
+            )
+    }
+
+    private func sendQuickKey(_ key: TerminalQuickKey, _ session: SSHSession) {
+        let bytes = TerminalKeyEncoder.encodeQuickKey(key, modifiers: modifiers)
+        if session.sendBytes(bytes) { modifiers = [] }
     }
 
     // MARK: - Composer

@@ -332,28 +332,28 @@ struct SSHTerminalView: View {
 
     /// Sends on press-down (like a hardware key) rather than on release, so a
     /// hold reads as "key down, repeating" instead of "hold, then fire once on
-    /// lift". The `simultaneousGesture` drag (zero-distance, so it recognizes
-    /// immediately) supplies the press-down/press-up edges Button doesn't
-    /// expose; the button's own action is left empty.
+    /// lift". Press/release comes from `QuickKeyButtonStyle`'s `isPressed` —
+    /// Button's own built-in press tracking, which already coexists with the
+    /// row's horizontal `ScrollView`. A first attempt added a sibling
+    /// `DragGesture(minimumDistance: 0)` instead; a zero-distance drag claims
+    /// the touch immediately, before the ScrollView's pan gesture gets a
+    /// chance to, which broke scrolling the quick-key row entirely.
     private func quickKey(_ key: TerminalQuickKey, _ session: SSHSession) -> some View {
         Button(key.label) { }
-            .buttonStyle(.bordered)
-            .frame(minWidth: 48, minHeight: 44)
+            .buttonStyle(QuickKeyButtonStyle(isEnabled: session.isReady) { pressed in
+                guard session.isReady else { return }
+                if pressed {
+                    guard heldQuickKey?.id != key.id else { return }
+                    heldQuickKey = key
+                    heldQuickKeyTicks = 0
+                    sendQuickKey(key, session)
+                } else if heldQuickKey?.id == key.id {
+                    heldQuickKey = nil
+                }
+            })
             // Unlike composed text, raw key bytes aren't worth queueing —
             // disable instead of silently dropping while disconnected.
             .disabled(!session.isReady)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard heldQuickKey?.id != key.id else { return }
-                        heldQuickKey = key
-                        heldQuickKeyTicks = 0
-                        sendQuickKey(key, session)
-                    }
-                    .onEnded { _ in
-                        if heldQuickKey?.id == key.id { heldQuickKey = nil }
-                    }
-            )
     }
 
     private func sendQuickKey(_ key: TerminalQuickKey, _ session: SSHSession) {
@@ -476,5 +476,28 @@ struct SSHTerminalView: View {
         }
         session.sendComposerText(composer)
         composer = ""
+    }
+}
+
+/// Approximates `.bordered`'s glass-pill look. `.bordered` is a
+/// `PrimitiveButtonStyle`, which doesn't expose press state, and quick-key
+/// repeat needs to know exactly when the button goes down/up — see the note
+/// on `SSHTerminalView.quickKey(_:_:)` for why that must come from Button's
+/// own press tracking rather than an added gesture.
+private struct QuickKeyButtonStyle: ButtonStyle {
+    var isEnabled: Bool
+    var onPressChange: (Bool) -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 48, minHeight: 44)
+            .background(
+                configuration.isPressed ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .opacity(isEnabled ? 1 : 0.4)
+            .onChange(of: configuration.isPressed) { _, pressed in
+                onPressChange(pressed)
+            }
     }
 }

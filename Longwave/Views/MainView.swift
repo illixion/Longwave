@@ -59,6 +59,9 @@ struct MainView: View {
                 ConsoleTabView()
             }
         }
+        .id(selectedTab)
+        .transition(.opacity)
+        .animation(.smooth(duration: 0.25), value: selectedTab)
         .onOpenURL { url in
             // AirDropped pairing URLs from the macOS companion.
             if let token = AudioTokenURL.parseToken(from: url) {

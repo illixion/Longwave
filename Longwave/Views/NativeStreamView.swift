@@ -805,15 +805,30 @@ struct NativeStreamView: View {
     /// own inline utility row (see `audioUtilityRow`'s Disconnect icon). Icon
     /// only and tightly padded, matching `HomeOrnament` (the shared home
     /// button every other pop-out window uses), so it reads as a small badge
-    /// hugging the player rather than a second full-size control bar.
+    /// hugging the player rather than a second full-size control bar. A
+    /// second icon, split off by a divider, restores Screen — otherwise
+    /// there's no way back to the desktop view once it's minimized down to
+    /// this widget short of reopening the connection from the list.
     private var homeOnlyControls: some View {
-        Button {
-            openWindow(id: "main", value: MainWindowID.shared)
-        } label: {
-            Label("Connections", systemImage: "house")
-                .labelStyle(.iconOnly)
+        HStack(spacing: 10) {
+            Button {
+                openWindow(id: "main", value: MainWindowID.shared)
+            } label: {
+                Label("Connections", systemImage: "house")
+                    .labelStyle(.iconOnly)
+            }
+            .help("Open the connection manager")
+
+            Divider().frame(height: 20)
+
+            Button {
+                screenManager.liveEnabled = true
+            } label: {
+                Label("Restore Screen", systemImage: "macwindow.on.rectangle")
+                    .labelStyle(.iconOnly)
+            }
+            .help("Show the screen again")
         }
-        .help("Open the connection manager")
         .padding(8)
         .glassBackgroundEffect()
     }

@@ -7,7 +7,12 @@ import os
 /// hello, so an unauthenticated socket cannot kick off the current user.
 final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onClientActivated:
-        (@Sendable (_ deviceName: String, _ replacedDeviceName: String?, _ protocolVersion: Int) -> Void)?
+        (@Sendable (
+            _ deviceName: String,
+            _ replacedDeviceName: String?,
+            _ protocolVersion: Int,
+            _ wantsScreen: Bool
+        ) -> Void)?
     nonisolated(unsafe) var onClientDisconnected: (@Sendable () -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
 
@@ -373,7 +378,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 promote(
                     client,
                     deviceName: hello.deviceName,
-                    protocolVersion: hello.protocolVersion ?? 1
+                    protocolVersion: hello.protocolVersion ?? 1,
+                    wantsScreen: hello.wantsScreen ?? true
                 )
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
@@ -437,7 +443,12 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
     }
 
-    private nonisolated func promote(_ client: Client, deviceName: String, protocolVersion: Int) {
+    private nonisolated func promote(
+        _ client: Client,
+        deviceName: String,
+        protocolVersion: Int,
+        wantsScreen: Bool
+    ) {
         guard pendingClient === client || activeClient === client else { return }
         if activeClient === client { return }
 
@@ -484,7 +495,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
         sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
         sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
-        onClientActivated?(deviceName, previousName, client.protocolVersion)
+        onClientActivated?(deviceName, previousName, client.protocolVersion, wantsScreen)
     }
 
     private nonisolated func sendRequired(_ data: Data, to client: Client?) {

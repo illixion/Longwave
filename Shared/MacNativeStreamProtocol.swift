@@ -91,10 +91,18 @@ nonisolated enum MacNativeStreamProtocol {
         let deviceName: String
         /// Absent in v1 clients — treat as 1.
         var protocolVersion: Int?
+        /// Whether the client wants the desktop stream at all right now
+        /// (the Native window's Screen toggle). Absent for a genuine v1
+        /// client, which has no such toggle and always wants it — treat a
+        /// missing value as `true` so that legacy behavior is unchanged.
+        /// Lets the Mac skip starting capture, and skip the "connected"
+        /// notification, for a session that's audio-only from the start.
+        var wantsScreen: Bool?
 
-        init(deviceName: String, protocolVersion: Int? = nil) {
+        init(deviceName: String, protocolVersion: Int? = nil, wantsScreen: Bool? = nil) {
             self.deviceName = deviceName
             self.protocolVersion = protocolVersion
+            self.wantsScreen = wantsScreen
         }
     }
 
@@ -195,11 +203,16 @@ nonisolated enum MacNativeStreamProtocol {
         return frame
     }
 
-    static func encodeHello(deviceName: String, protocolVersion: Int = protocolVersion) -> Data {
+    static func encodeHello(
+        deviceName: String,
+        protocolVersion: Int = protocolVersion,
+        wantsScreen: Bool? = nil
+    ) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hello = Hello(
             deviceName: name.isEmpty ? "Vision Pro" : name,
-            protocolVersion: protocolVersion
+            protocolVersion: protocolVersion,
+            wantsScreen: wantsScreen
         )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)

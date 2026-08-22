@@ -8,6 +8,11 @@ final class MacNativeStreamClient: @unchecked Sendable {
         let port: UInt16
         let token: String
         let deviceName: String
+        /// Whether Screen is on for this session at connect time — lets the
+        /// Mac skip starting capture and skip its "connected" notification
+        /// for a session that's audio-only from the start. See
+        /// `MacNativeStreamProtocol.Hello.wantsScreen`.
+        var wantsScreen: Bool = true
     }
 
     enum Event: Sendable {
@@ -86,7 +91,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                self.send(MacNativeStreamProtocol.encodeHello(deviceName: self.config.deviceName))
+                self.send(MacNativeStreamProtocol.encodeHello(
+                    deviceName: self.config.deviceName,
+                    wantsScreen: self.config.wantsScreen
+                ))
                 self.receiveLoop()
             case .failed(let error):
                 self.emitClosed(error.localizedDescription)

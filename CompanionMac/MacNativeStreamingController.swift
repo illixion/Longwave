@@ -167,14 +167,20 @@ final class MacNativeStreamingController {
 
     private func launchServer(generation: Int) {
         let server = MacNativeStreamServer(port: port, token: token)
-        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion in
+        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion, wantsScreen in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 self.connectedDeviceName = deviceName
-                MacNativeStreamNotifications.shared.connected(
-                    deviceName: deviceName,
-                    replacedDeviceName: replacedName
-                )
+                // A session that's audio-only from the start (the Native
+                // window's Screen toggle already off when it connected) skips
+                // the notification — it's redundant on every headset don,
+                // unlike an actual screen connection.
+                if wantsScreen {
+                    MacNativeStreamNotifications.shared.connected(
+                        deviceName: deviceName,
+                        replacedDeviceName: replacedName
+                    )
+                }
                 if protocolVersion >= 2 {
                     // A v2 viewer subscribes to the streams it wants; a
                     // takeover starts from a clean slate (the new viewer has
@@ -184,7 +190,10 @@ final class MacNativeStreamingController {
                     self.windowStreams.start()
                 } else {
                     self.windowStreams.stop()
-                    if self.capture == nil {
+                    // v1 has no per-stream subscription — it always wants the
+                    // desktop pushed unconditionally, unless it just told us
+                    // otherwise via `wantsScreen`.
+                    if wantsScreen, self.capture == nil {
                         self.startCapture()
                     }
                 }

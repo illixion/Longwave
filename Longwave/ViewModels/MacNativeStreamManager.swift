@@ -168,7 +168,8 @@ final class MacNativeStreamManager {
                 host: connection.hostname,
                 port: MacNativeStreamProtocol.defaultPort,
                 token: connection.companionToken,
-                deviceName: UIDevice.current.name
+                deviceName: UIDevice.current.name,
+                wantsScreen: liveEnabled
             ),
             renderer: renderer
         )

@@ -23,6 +23,9 @@ param(
   [string] $PcvrHostRoot = 'C:\dev\Longwave-PCVR-Host',
   # CloudXR Stream Manager extraction (Server/ + SampleClient/NvStreamManagerClient.dll).
   [string] $StreamManager = 'C:\Users\Ixion\cloudxr-stream-manager_v6.1.0\extracted',
+  # Sibling checkout of the closed-source bridge (SessionBroker/ + OpenXRLayer/). Its
+  # shim\ subdirectory is what LIBOVR_DLL_DIR must name - see the LibOVR shim section below.
+  [string] $BridgeRoot = 'C:\dev\Longwave-bridge',
   # Prebuilt hello_xr, kept from the PoC tree - the fallback OpenXR content app.
   [string] $HelloXr = 'C:\dev\Longwave-bridge\OpenXRLayer\build-hxr\src\tests\hello_xr\Release\hello_xr.exe',
   # Half-Life 2: VR Mod install dir (OpenVR title, reached via OpenComposite).
@@ -192,6 +195,50 @@ try {
   }
 } catch {
   Write-Warning ('could not grant runtime-key access: ' + $_.Exception.Message)
+}
+
+# ------------------------------------------------- the LibOVR shim (LIBOVR_DLL_DIR)
+# VDXR is the OpenXR runtime every game gets, and VDXR has no headset of its own: it reaches
+# ours through a LibOVR-shaped shim (SessionBroker/ovrshim, built as LibOVRRT64_1.dll for
+# 64-bit games and LibOVRRT32_1.dll for 32-bit ones). The Oculus CAPI shim compiled into VDXR
+# searches LIBOVR_DLL_DIR ahead of the Oculus install directory, so this one variable is what
+# makes the whole chain resolve. The broker's own CMake POST_BUILD publishes both DLLs into
+# <BridgeRoot>\shim; provisioning's job is only to name that directory and to check it.
+#
+# Set here because until 2026-08-23 nothing ever set it. It had been written by hand during
+# bring-up, naming C:\dev\VisionVNC-bridge\shim, and the 2026-08-14 rename of that directory
+# to Longwave-bridge orphaned it in silence. Every OpenXR and OpenVR title on the box then
+# died in xrGetSystem with XR_ERROR_FORM_FACTOR_UNAVAILABLE, behind a dialog that says only
+# "OpenXR Call failed" and a VDXR log line that says "Virtual Desktop Server is not running"
+# - neither of which names a directory, a variable, or even the right subsystem. The rule this
+# encodes: whoever lays the shim down owns the variable. The packaged app does exactly the
+# same thing for the bundle it downloads (CompanionWindows/app/src/pcvr-installer.js).
+#
+# USER scope, because GameLibrary.ApplyShimDirectory reads User before Machine and this is a
+# per-user tool. Written to the registry, not to this process, because a process environment
+# block is a snapshot taken at creation - see HOST_PROVISIONING.md's "stale-environment trap".
+$shimDir = Join-Path $BridgeRoot 'shim'
+$shimCurrent = [Environment]::GetEnvironmentVariable('LIBOVR_DLL_DIR', 'User')
+if ($shimCurrent -ne $shimDir) {
+  [Environment]::SetEnvironmentVariable('LIBOVR_DLL_DIR', $shimDir, 'User')
+  Say ("LIBOVR_DLL_DIR -> $shimDir" + $(if ($shimCurrent) { " (was $shimCurrent)" } else { ' (was unset)' }))
+} else {
+  Say "LIBOVR_DLL_DIR already $shimDir"
+}
+
+# Both bitnesses are checked, not just the one this machine's games happen to use: a missing
+# 32-bit shim fails identically to a missing 64-bit one, and only for 32-bit titles, which is
+# a long way to travel to find out. LibOVRRT32_1.dll was in fact absent from this host until
+# 2026-08-23 - `cmake -B build32 -A Win32` in SessionBroker/ is what produces it.
+foreach ($bits in @('64', '32')) {
+  $dll = Join-Path $shimDir "LibOVRRT${bits}_1.dll"
+  if (Test-Path $dll) {
+    Say ("shim present: LibOVRRT${bits}_1.dll")
+  } else {
+    Write-Warning ("no LibOVRRT${bits}_1.dll in $shimDir - ${bits}-bit titles will fail at " +
+                   "xrGetSystem with XR_ERROR_FORM_FACTOR_UNAVAILABLE. Build the broker: " +
+                   "cmake -B build$(if ($bits -eq '32') { '32 -A Win32' } else { '' }) in SessionBroker/")
+  }
 }
 
 # ------------------------------------------------------------------ Electron UI
@@ -395,6 +442,17 @@ foreach ($obsolete in @('Longwave-Broker', 'Longwave-Sidecar')) {
   }
 }
 
+# Tasks from before the project was renamed. Every one of them points into a C:\dev\VisionVNC-*
+# directory that no longer exists, or duplicates a Longwave-* task above, or is a per-game
+# launcher (HOST_PROVISIONING.md: "an installer should not create any"). Twenty-five of them
+# had accumulated on the RTX host by 2026-08-23. Swept by prefix rather than by name because
+# the list was ad-hoc from the start and naming them individually would only preserve it.
+foreach ($stale in (Get-ScheduledTask -ErrorAction SilentlyContinue |
+                      Where-Object { $_.TaskName -like 'VisionVNC-*' })) {
+  Unregister-ScheduledTask -TaskName $stale.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  Say ("removed pre-rename task " + $stale.TaskName)
+}
+
 # ------------------------------------------------------------------- firewall
 # WSS signaling + media, plus the Apple session-management port.
 foreach ($rule in @(
@@ -442,6 +500,19 @@ foreach ($name in @('NV_CXR_ENABLE_FOVEATION_VISUALIZATION')) {
   if ((Get-ItemProperty $envKey).PSObject.Properties.Name -contains $name) {
     Remove-ItemProperty -Path $envKey -Name $name -ErrorAction SilentlyContinue
     Say ("cleared diagnostic env var " + $name)
+  }
+}
+
+# The same assertion at user scope, for two that were left behind set to the empty string.
+# An empty value is worse than an absent one: it still appears in every child's environment,
+# and a consumer that tests presence rather than content reads it as "on". Deleted through the
+# registry provider - [Environment]::SetEnvironmentVariable(name, $null, 'User') does NOT
+# remove a value that is already empty (measured 2026-08-23; it reported success and left both
+# in place), so the one call that looks obviously right here is the one that does not work.
+foreach ($name in @('NV_CXR_DOWNSAMPLE_AMOUNT', 'VISIONVNC_BROKER_TEST_QUAD')) {
+  if ((Get-ItemProperty 'HKCU:\Environment').PSObject.Properties.Name -contains $name) {
+    Remove-ItemProperty -Path 'HKCU:\Environment' -Name $name -Force -ErrorAction SilentlyContinue
+    Say ("cleared user diagnostic env var " + $name)
   }
 }
 
@@ -498,6 +569,7 @@ Say 'done.'
   BackendExe   = Join-Path $publish $exeName
   PcvrHostExe  = if ($pcvrHostHasSource) { Join-Path $pcvrHostPublish $pcvrHostExeName } else { '(not installed)' }
   RuntimeJson  = $runtimeJson
+  ShimDir      = $shimDir
   Tools        = $toolsDir
   Logs         = $logDir
 } | Format-List | Out-String | Write-Host

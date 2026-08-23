@@ -66,6 +66,25 @@ contextBridge.exposeInMainWorld('hotspot', {
     ipcRenderer.on('pcvr-download-progress', h);
     return () => ipcRenderer.removeListener('pcvr-download-progress', h);
   },
+  // Whether the installed bundle was built for the app release now running. An app update
+  // leaves them mismatched, and starting the stack in that state is blocked in main.js.
+  pcvrRefreshState: () => ipcRenderer.invoke('pcvr-refresh-state'),
+  // Whether the installer's PCVR checkbox was ticked and this user has not been asked yet.
+  pcvrOptInPending: () => ipcRenderer.invoke('pcvr-optin-pending'),
+  pcvrOptInResolve: (outcome) => ipcRenderer.invoke('pcvr-optin-resolve', outcome),
+
+  // App self-update. Notify-only: checkUpdate() reports, downloadUpdate() fetches and
+  // verifies against the release's signed manifest, installUpdate() quits and hands over to
+  // the installer. Three calls, so nothing happens without a click.
+  checkUpdate: (options) => ipcRenderer.invoke('update-check', options),
+  downloadUpdate: () => ipcRenderer.invoke('update-download'),
+  installUpdate: (installerPath) => ipcRenderer.invoke('update-install', installerPath),
+  openReleasePage: () => ipcRenderer.invoke('update-open-page'),
+  onUpdateProgress: (cb) => {
+    const h = (_e, progress) => cb(progress);
+    ipcRenderer.on('update-download-progress', h);
+    return () => ipcRenderer.removeListener('update-download-progress', h);
+  },
 
   // Tailscale (Foveated LAN/tailnet switch + DERP watchdog).
   tailscaleStatus: () => ipcRenderer.invoke('tailscale-status'),

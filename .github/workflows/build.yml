@@ -370,6 +370,14 @@ jobs:
           - \`LongwaveMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
           - \`LongwaveCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Longwave Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.
 
+          **Release signature.** Shortly after this release is published, a \`SHA256SUMS\` covering every asset above plus a detached \`SHA256SUMS.sig\` are attached to it. That signature is made with an offline key that this workflow does not have — so it proves a human vouched for these exact bytes, which the provenance attestation (proving *this* workflow built them) cannot. Check any asset with:
+
+          \`\`\`bash
+          scripts/verify-release.sh --tag $VERSION
+          \`\`\`
+
+          If those two files are not on this release yet, it has not been signed — the Companion's in-app updater will not offer an unsigned release, by design.
+
           **Running the macOS apps**
 
           The macOS \`.zip\`s are unsigned, so Gatekeeper blocks them on first launch

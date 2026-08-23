@@ -24,11 +24,11 @@
 #   scripts/package-pcvr-bundle.sh --no-build-native     # reuse whatever's already built on the VM
 #   scripts/package-pcvr-bundle.sh --stage-only          # build + zip locally, skip gh release upload
 #
-# The zip is detached-signed with the Ixion YubiKey OpenPGP key (ed25519, card serial 13655979)
-# before upload — this is the one step in the whole script that pauses for you: gpg's pinentry
-# will ask for the card PIN and a physical touch. The app verifies the signature with the public
-# half of that same key, committed at CompanionWindows/app/src/pcvr-signing-key.asc, so nobody
-# needs gpg installed to check it — see pcvr-installer.js's verifyGpgSignature().
+# The bundle is not signed on its own. Once uploaded, this script calls
+# scripts/bless-release.sh, which re-signs the release's SHA256SUMS so that one signature covers
+# this bundle and every other asset on the release — that step is the one that pauses for you,
+# asking for the signing key's PIN and a physical touch. See release-trust.js for how the app
+# verifies it, and bless-release.sh for what to do if that key is ever lost.
 #
 # Requires: Longwave-PCVR-Host/, SessionBroker/, OpenXRLayer/ submodules checked out locally;
 # `gh` authenticated against this repo; SSH access to the build VM (ssh-exec, see ~/CLAUDE.md);
@@ -45,9 +45,6 @@ BRIDGE_WIN='C:\dev\Longwave-bridge'
 # Where the NGC-downloaded CloudXR SDK is hand-staged on the host (matches provision-pc.ps1's
 # own default) — third-party redistributable, not built, just copied along.
 CLOUDXR_SDK_WIN="${LONGWAVE_CLOUDXR_SDK:-C:\\Users\\Ixion\\cloudxr-stream-manager_v6.1.0\\extracted}"
-# The signing key's fingerprint, not its secret material — the private key never leaves the
-# YubiKey. Matches CompanionWindows/app/src/pcvr-signing-key.asc.
-GPG_KEY="${LONGWAVE_GPG_KEY:-4C7C68975127BCF9}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_PROJ="$REPO_ROOT/Longwave-PCVR-Host/Host.csproj"
@@ -167,6 +164,52 @@ foreach (\$f in @(
 'built'
 "
 
+  # Third call rather than a fourth section of the second, for the same 8191-char reason
+  # documented below. The 32-bit shim needs a different toolchain than everything above it --
+  # Hostarm64\x86 rather than Hostarm64\x64, and lib\x86 rather than lib\x64 -- so folding it
+  # into the x64 block would mean mutating INCLUDE/LIB halfway through and hoping CMake's
+  # cached compiler probe noticed. A separate build32/ configure with its own environment is
+  # both shorter and honest about being a second toolchain.
+  #
+  # Shipped because a missing 32-bit shim is invisible until someone launches a 32-bit title:
+  # VDXR-32 then fails xrGetSystem with XR_ERROR_FORM_FACTOR_UNAVAILABLE, exactly as a missing
+  # 64-bit shim does for everything else, and the error names neither the bitness nor the file.
+  # It was absent from this bundle, and from the RTX host, until 2026-08-23.
+  echo "==> building the 32-bit LibOVR shim on $HOST"
+  ps_exec 'build 32-bit shim' 600 "
+\$ErrorActionPreference = 'Stop'
+\$msvc = (Get-ChildItem 'C:\\BuildTools\\VC\\Tools\\MSVC' -Directory | Select-Object -First 1).FullName
+\$sdk = 'C:\\Program Files (x86)\\Windows Kits\\10'
+\$sdkver = (Get-ChildItem \"\$sdk\\Include\" -Directory | Select-Object -Last 1).Name
+\$env:PATH = \"\$msvc\\bin\\Hostarm64\\x86;\$sdk\\bin\\\$sdkver\\arm64;C:\\Program Files\\CMake\\bin;\$env:PATH\"
+\$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
+\$env:LIB = \"\$msvc\\lib\\x86;\$sdk\\Lib\\\$sdkver\\ucrt\\x86;\$sdk\\Lib\\\$sdkver\\um\\x86\"
+
+\$src = Join-Path '$BRIDGE_WIN' 'SessionBroker'
+\$build = Join-Path \$src 'build32'
+Remove-Item (Join-Path \$build 'LibOVRRT32_1.dll') -Force -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
+New-Item -ItemType Directory -Force -Path \$build | Out-Null
+Push-Location \$build
+# A Win32 configure builds the shim and nothing else -- every CloudXR-facing target in
+# SessionBroker/CMakeLists.txt is gated on a 64-bit configure, so this is cheap.
+cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
+if (\$LASTEXITCODE -ne 0) { throw 'CMake configure (Win32) failed' }
+nmake LibOVRRT32_1
+if (\$LASTEXITCODE -ne 0) { throw 'nmake build (32-bit shim) failed' }
+Pop-Location
+\$dll = Join-Path \$build 'LibOVRRT32_1.dll'
+if (-not (Test-Path \$dll)) { throw \"expected 32-bit shim missing: \$dll\" }
+# Assert the bitness rather than trusting the target name: a cross-compiler picked up from
+# the wrong Host*\\* directory produces a perfectly valid DLL of the wrong architecture, and
+# the only symptom downstream is a 32-bit game that cannot load it.
+\$fs = [System.IO.File]::OpenRead(\$dll); \$br = New-Object System.IO.BinaryReader(\$fs)
+\$fs.Position = 0x3C; \$peOff = \$br.ReadInt32(); \$fs.Position = \$peOff + 4
+\$machine = \$br.ReadUInt16(); \$br.Close(); \$fs.Close()
+if (\$machine -ne 0x14c) { throw (\"32-bit shim is not an I386 PE (machine 0x{0:x})\" -f \$machine) }
+'built 32-bit shim'
+"
+
   # Separate ps_exec call, not folded into the one above: PowerShell ships to winvm as
   # a base64 -EncodedCommand string over UTF-16LE, and Windows OpenSSH's cmd.exe
   # wrapper caps that whole line at 8191 chars -- the combined script tripped that
@@ -229,6 +272,9 @@ echo "==> collecting artifacts from $HOST"
 for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll sidecar.dll sidecar_inject.exe; do
   scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/$f" "$STAGE/bridge/$f"
 done
+# The 32-bit shim comes out of its own configure directory, and is the one file in the bundle
+# whose absence is silent until a 32-bit OpenVR title (HL2VR) is launched.
+scp -q "$HOST:$BRIDGE_FS/SessionBroker/build32/LibOVRRT32_1.dll" "$STAGE/bridge/LibOVRRT32_1.dll"
 for f in LongwaveControllerBridgeLayer.dll XR_APILAYER_ILLIXION_controller_bridge.json; do
   scp -q "$HOST:$BRIDGE_FS/OpenXRLayer/build/$f" "$STAGE/bridge/$f"
 done
@@ -298,7 +344,7 @@ if [[ -n "$COPYLEFT_HITS" ]]; then
 fi
 echo "    clean"
 
-# ------------------------------------------------------------------ zip + checksum + signature
+# ------------------------------------------------------------------ zip + checksum
 ASSET="Longwave-PCVR-Bundle-win-x64.zip"
 ZIP="$STAGE/$ASSET"
 echo "==> zipping bundle"
@@ -307,25 +353,34 @@ shasum -a 256 "$ZIP" | awk '{print $1"  '"$ASSET"'"}' > "$ZIP.sha256"
 echo "    $(du -h "$ZIP" | cut -f1)  $ASSET"
 echo "    $(cat "$ZIP.sha256")"
 
-# The one step in this whole script that pauses for a human: gpg's pinentry will pop up
-# asking for the card PIN and a touch. Runs in the foreground on purpose — a backgrounded
-# gpg can't raise that prompt at all.
-echo "==> signing with GPG key $GPG_KEY (check for a PIN/touch prompt)"
-gpg --local-user "$GPG_KEY" --detach-sign --armor --output "$ZIP.asc" "$ZIP"
-echo "    $ZIP.asc"
+# No per-bundle signature any more. It used to be detach-signed with the YubiKey's OpenPGP
+# key right here; the release-wide signed manifest (scripts/bless-release.sh) now covers this
+# asset along with every other one on the release, so signing it twice would mean two signing
+# mechanisms, two key formats and two things to remember for one guarantee. The app still
+# verifies old bundles' .asc signatures — see release-trust.js's verifyGpgSignature — so
+# nothing already published stops working.
 
 if [[ "$STAGE_ONLY" == 1 ]]; then
   FINAL_DIR="$REPO_ROOT/.pcvr-bundle-out"
   mkdir -p "$FINAL_DIR"
-  cp "$ZIP" "$ZIP.sha256" "$ZIP.asc" "$FINAL_DIR/"
-  echo "==> --stage-only: left the bundle in $FINAL_DIR (not uploaded)"
+  cp "$ZIP" "$ZIP.sha256" "$FINAL_DIR/"
+  echo "==> --stage-only: left the bundle in $FINAL_DIR (not uploaded, not signed)"
   exit 0
 fi
 
 # ------------------------------------------------------------------ attach to the release
 echo "==> uploading to release $TAG"
-(cd "$REPO_ROOT" && gh release upload "$TAG" "$ZIP" "$ZIP.sha256" "$ZIP.asc" --clobber)
+(cd "$REPO_ROOT" && gh release upload "$TAG" "$ZIP" "$ZIP.sha256" --clobber)
+
+# ------------------------------------------------------------------ (re-)bless the release
+# Run here, not left to the operator, because the ordering is a trap: the manifest covers what
+# was attached at the moment it was signed, and this script has just added an asset. A release
+# blessed before this upload has a perfectly valid signature that simply does not mention the
+# bundle — and the app treats an unlisted asset as untrusted, so the download would fail with a
+# signature error that looks like tampering rather than like a missed step.
+echo "==> blessing $TAG so the manifest covers this bundle (check for a PIN/touch prompt)"
+"$REPO_ROOT/scripts/bless-release.sh" --tag "$TAG"
 
 echo
-echo "Done. $ASSET (+ .sha256, .asc) is now attached to release $TAG."
+echo "Done. $ASSET (+ .sha256) is attached to release $TAG and covered by its signed manifest."
 echo "An app built from that same release will offer it under PCVR -> Download & install."

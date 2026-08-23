@@ -35,6 +35,14 @@ const el = {
   foveatedLamp: $('foveatedLamp'),
   foveatedChannelState: $('foveatedChannelState'),
   pcvrDownload: $('pcvrDownload'),
+  appUpdate: $('appUpdate'),
+  appUpdateTitle: $('appUpdateTitle'),
+  appUpdateBody: $('appUpdateBody'),
+  appUpdateProgress: $('appUpdateProgress'),
+  appUpdateBar: $('appUpdateBar'),
+  appUpdateBtn: $('appUpdateBtn'),
+  appUpdateNotesBtn: $('appUpdateNotesBtn'),
+  appUpdateStatus: $('appUpdateStatus'),
   pcvrDlTitle: $('pcvrDlTitle'),
   pcvrDlProgress: $('pcvrDlProgress'),
   pcvrDlBar: $('pcvrDlBar'),
@@ -143,19 +151,70 @@ const PCVR_DOWNLOAD_REASON_TEXT = {
   'error': 'Something went wrong checking for the download.',
 };
 
+/** Result of pcvrRefreshState() — whether the installed bundle matches this app release. */
+let pcvrRefresh = null;
+/** True once the installer's opt-in checkbox has been surfaced to this user. */
+let pcvrOptInSurfaced = false;
+
 async function refreshPcvrDownloadState() {
   if (typeof window.hotspot.pcvrCheckDownload !== 'function') return;
-  pcvrDownloadInfo = await window.hotspot.pcvrCheckDownload();
+  const [info, refresh] = await Promise.all([
+    window.hotspot.pcvrCheckDownload(),
+    typeof window.hotspot.pcvrRefreshState === 'function'
+      ? window.hotspot.pcvrRefreshState() : Promise.resolve(null),
+  ]);
+  pcvrDownloadInfo = info;
+  pcvrRefresh = refresh;
+  renderPcvrDownloadPanel();
+  applyPcvrBannerVisibility();
+}
+
+/**
+ * The PCVR banner is normally the "you don't have this yet" panel, and hides once the host
+ * connects. Two cases keep it up even then:
+ *
+ *   - The installed bundle is paired to a different app release (an app update just landed).
+ *     main.js refuses to start the stack in that state, so the banner is the only place the
+ *     user can find out why, and the only place to fix it.
+ *   - The installer's checkbox was ticked and nothing has been downloaded yet, which is a
+ *     promise this app made on the installer's behalf and has to keep.
+ */
+function applyPcvrBannerVisibility() {
+  const mustRefresh = !!pcvrRefresh?.needsRefresh;
+  el.pcvrDownload.classList.toggle('hidden', hasPcvr && !mustRefresh);
+}
+
+/**
+ * Surfaces the installer's PCVR opt-in once per user, and records that it was surfaced
+ * whether or not they go through with it — a prompt that returns on every launch is a prompt
+ * people learn to dismiss without reading.
+ */
+async function surfacePcvrOptIn() {
+  if (pcvrOptInSurfaced) return;
+  if (typeof window.hotspot.pcvrOptInPending !== 'function') return;
+  if (!await window.hotspot.pcvrOptInPending()) return;
+  pcvrOptInSurfaced = true;
+  await window.hotspot.pcvrOptInResolve('offered');
+  showView('foveatedView');
   renderPcvrDownloadPanel();
 }
 
 function renderPcvrDownloadPanel() {
-  if (hasPcvr || pcvrInstalling) return;
+  if (pcvrInstalling) return;
+  if (hasPcvr && !pcvrRefresh?.needsRefresh) return;
   const info = pcvrDownloadInfo;
   el.pcvrDlBtn.disabled = !info || !info.available;
   if (!info) {
     el.pcvrDlTitle.textContent = 'PCVR isn’t installed';
     el.pcvrDlStatus.textContent = 'Checking…';
+  } else if (pcvrRefresh?.needsRefresh) {
+    // Deliberately not auto-downloaded. It is a large transfer and its OpenXR-layer step
+    // raises a UAC prompt, so it waits for a click — but PCVR stays blocked until then, and
+    // saying so here is the only warning the user gets.
+    el.pcvrDlTitle.textContent = 'PCVR needs updating to match this app';
+    el.pcvrDlStatus.textContent = info.available
+      ? `Installed ${pcvrRefresh.installedVersion} · this app is ${pcvrRefresh.currentVersion}`
+      : PCVR_DOWNLOAD_REASON_TEXT[info.reason] || info.reason || '';
   } else if (info.available) {
     el.pcvrDlTitle.textContent = info.installedVersion && !info.upToDate
       ? 'A newer PCVR build is available'
@@ -207,6 +266,108 @@ function onPcvrDownloadProgress(progress) {
   }
 }
 
+// ---------------------------------------------------------------- app self-update
+//
+// Notify-only, in two deliberate steps. "Download" fetches and verifies; "Install & restart"
+// is a second, separate click, because installing quits this app — and this app is supervising
+// a CloudXR session, a broker and possibly a running game. One button that did both would end
+// somebody's session on a mis-click.
+let updateInfo = null;
+/** Path of a downloaded, signature-verified installer, once there is one. */
+let updateReady = null;
+let updateBusy = false;
+
+const UPDATE_REASON_SILENT = new Set([
+  'not-windows', 'dev-build', 'up-to-date', 'network-error',
+  // A release whose installer for this architecture never built, and a build whose own release
+  // has gone. Both are normal enough, and neither is actionable by the person reading it.
+  'asset-missing', 'current-release-unknown',
+]);
+
+async function refreshUpdateState() {
+  if (typeof window.hotspot.checkUpdate !== 'function') return;
+  updateInfo = await window.hotspot.checkUpdate();
+  renderUpdateBanner();
+}
+
+function renderUpdateBanner() {
+  const info = updateInfo;
+  if (!info || (!info.available && UPDATE_REASON_SILENT.has(info.reason))) {
+    el.appUpdate.classList.add('hidden');
+    return;
+  }
+  if (!info.available) {
+    // Everything left here is a genuine fault worth showing: an API error, an unverifiable
+    // release. Shown without an action, because there is nothing useful to click.
+    el.appUpdate.classList.remove('hidden');
+    el.appUpdateTitle.textContent = 'Could not check for updates';
+    el.appUpdateBody.textContent = info.message || info.reason || '';
+    el.appUpdateBtn.classList.add('hidden');
+    return;
+  }
+  el.appUpdate.classList.remove('hidden');
+  el.appUpdateBtn.classList.remove('hidden');
+  const mb = info.size ? `${(info.size / (1024 * 1024)).toFixed(0)} MB` : null;
+  if (updateReady) {
+    el.appUpdateTitle.textContent = `${info.version} is ready to install`;
+    el.appUpdateBody.textContent = 'Installing closes Longwave Companion and stops anything it '
+      + 'is running, including a PCVR session.';
+    el.appUpdateBtn.textContent = 'Install & restart';
+  } else {
+    el.appUpdateTitle.textContent = `Update available — ${info.version}`;
+    el.appUpdateBody.textContent = `You have ${info.currentVersion}.`
+      + (mb ? ` The download is ${mb}.` : '');
+    el.appUpdateBtn.textContent = 'Download';
+  }
+  el.appUpdateBtn.disabled = updateBusy;
+}
+
+async function onUpdateClick() {
+  if (updateBusy || !updateInfo?.available) return;
+  if (updateReady) {
+    // No confirm() here: the banner already says installing closes everything, and this is
+    // second click on a button whose label says "Install & restart".
+    updateBusy = true;
+    renderUpdateBanner();
+    try {
+      await window.hotspot.installUpdate(updateReady);
+    } catch (e) {
+      updateBusy = false;
+      el.appUpdateStatus.textContent = e.message || String(e);
+      renderUpdateBanner();
+    }
+    return;
+  }
+  updateBusy = true;
+  el.appUpdateProgress.classList.remove('hidden');
+  el.appUpdateBar.style.width = '0%';
+  el.appUpdateStatus.textContent = '';
+  renderUpdateBanner();
+  try {
+    const result = await window.hotspot.downloadUpdate();
+    updateReady = result.path;
+    el.appUpdateStatus.textContent = 'Verified against the signed release manifest.';
+  } catch (e) {
+    el.appUpdateStatus.textContent = e.message || String(e);
+  } finally {
+    updateBusy = false;
+    el.appUpdateProgress.classList.add('hidden');
+    renderUpdateBanner();
+  }
+}
+
+function onUpdateProgress(progress) {
+  if (progress.phase === 'downloading' && progress.total) {
+    const pct = Math.min(100, Math.round((progress.received / progress.total) * 100));
+    el.appUpdateBar.style.width = `${pct}%`;
+    el.appUpdateStatus.textContent = `${pct}%`;
+  } else if (progress.phase === 'verifying-release') {
+    el.appUpdateStatus.textContent = 'Checking the release signature…';
+  } else if (progress.phase === 'verifying') {
+    el.appUpdateStatus.textContent = 'Verifying the download…';
+  }
+}
+
 /** Points a module <webview> at its page for the first time. Idempotent by design — this
  *  gets called from applyHostCapabilities() every time PCVR's connection state changes, and
  *  setting .src again on an already-loaded webview would reload it, throwing away whatever
@@ -229,7 +390,7 @@ async function ensurePcvrModuleLoaded() {
  *  availability. The nav tabs and the views themselves stay reachable either way — that's
  *  the point: opening the PCVR tab with nothing installed yet is how you install it. */
 function applyHostCapabilities() {
-  el.pcvrDownload.classList.toggle('hidden', hasPcvr);
+  applyPcvrBannerVisibility();
   el.pcvrModuleView.classList.toggle('hidden', !hasPcvr);
   el.gamesModuleView.classList.toggle('hidden', !hasPcvr);
   if (hasPcvr) {
@@ -587,6 +748,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (typeof window.hotspot.onPcvrDownloadProgress === 'function') {
     window.hotspot.onPcvrDownloadProgress(onPcvrDownloadProgress);
   }
+  el.appUpdateBtn.addEventListener('click', onUpdateClick);
+  el.appUpdateNotesBtn.addEventListener('click', () => window.hotspot.openReleasePage());
+  if (typeof window.hotspot.onUpdateProgress === 'function') {
+    window.hotspot.onUpdateProgress(onUpdateProgress);
+  }
+  // Both are fire-and-forget: neither should hold up first paint, and both are read from the
+  // network or the registry rather than from anything the rest of init depends on.
+  refreshUpdateState();
+  surfacePcvrOptIn();
   el.noticesBtn.addEventListener('click', () => window.hotspot.openNoticesWindow());
   el.pcvrModuleView.addEventListener('ipc-message', onPcvrModuleMessage);
   el.gamesModuleView.addEventListener('ipc-message', onPcvrModuleMessage);

@@ -1,14 +1,15 @@
 {
   "name": "longwave-windows-companion",
   "version": "0.1.0",
-  "description": "Longwave Companion — PCVR foveated streaming, game library, screen streaming, and an optional hotspot for Vision Pro.",
+  "description": "Longwave Companion \u2014 PCVR foveated streaming, game library, screen streaming, and an optional hotspot for Vision Pro.",
   "main": "src/main.js",
   "author": "Ixion <illixion@illixion.com>",
   "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "test": "node --test src/*.test.js"
   },
   "devDependencies": {
     "electron": "^39.8.5",

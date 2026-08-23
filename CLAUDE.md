@@ -75,6 +75,29 @@ Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsi
 
 **Window APIs:** Use `dismissWindow(id:)` (not `dismiss()`) for `WindowGroup`. `navigationTitle` requires `NavigationStack`. visionOS refuses to close the app's last window. The main window is value-typed with a single constant identity (`MainWindowID.shared`) so every `openWindow(id: "main", value:)` reactivates the one instance instead of spawning duplicates. Connection windows open as plain siblings (`openWindow(id:)`, **not** `pushWindow`) so the main window coexists and surfacing one never dismisses the other; on teardown a window unconditionally re-surfaces main (a no-op when it's already up). Teardown must go through `WindowSessionRegistry.closeAfterSurfacingMain(using:_:)` — `openWindow` is async, so a `dismissWindow` in the same turn can still be evaluated as "closing the last window" and silently dropped; the helper waits for the main window's `onAppear` first.
 
+**Windows release signing is SSHSIG, and two keys are pinned.** CI publishes; a human then runs
+`scripts/bless-release.sh`, which hashes every asset on the release into one `SHA256SUMS` and
+signs it with `ssh-keygen -Y sign -n file`. `CompanionWindows/app/src/release-signers` pins the
+everyday YubiKey **and an offline backup** — both from the first release that shipped the file,
+because a recovery key added after the key it recovers from is worthless (nothing installed
+would trust it). `bless-release.sh --key-file <offline key>` is the drill. The Companion's
+updater (`src/updater.js`) is notify-only and refuses any release without a valid manifest —
+`electron-updater` is deliberately absent, since with no code-signing cert it verifies nothing
+on Windows and would run an unverified `.exe`. `scripts/verify-release.sh` is the same check for
+humans. Two traps: `ssh-keygen -Y sign` **silently keeps an existing `<file>.sig`** and still
+exits 0, so always `rm -f` first; and CI tags (`0.1.0-<sha8>`) are **not orderable**, so "is
+there something newer" must come from GitHub's release timestamps, never from comparing tags.
+
+**Whoever lays the LibOVR shim down owns `LIBOVR_DLL_DIR`.** VDXR reaches the PCVR stack through
+a LibOVR-shaped shim it finds only via that user-scope registry value; without it every OpenXR
+and OpenVR title fails `xrGetSystem` with `XR_ERROR_FORM_FACTOR_UNAVAILABLE` behind a log line
+reading "Virtual Desktop Server is not running" — which names neither the variable nor the
+directory. Nothing set it until 2026-08-23 (a hand-set value, orphaned by the
+`VisionVNC-bridge` → `Longwave-bridge` rename). Now `provision-pc.ps1` writes it for a dev
+checkout and `pcvr-installer.js`'s `registerShimDirectory()` for a downloaded bundle. Both
+bitnesses must be present (`LibOVRRT64_1.dll` + `LibOVRRT32_1.dll`, the latter from
+`cmake -B build32 -A Win32`): a missing 32-bit shim fails identically and only for 32-bit titles.
+
 **SwiftData migrations:** New non-optional properties need default values. Renamed columns need `@Attribute(originalName:)`. Missing either causes CoreData error 134110.
 
 See [[KNOWN_CONSTRAINTS.md]] for detailed version of all gotchas (broadcast, Moonlight HDR, Copilot OAuth, etc.).

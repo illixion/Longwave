@@ -61,6 +61,21 @@
     </aside>
 
     <main class="stage">
+      <!-- App self-update. Notify-only, and shown on every tab because it is about the app
+           rather than any one feature. Two clicks, never one: Download verifies against the
+           release's signed SHA256SUMS (src/release-trust.js), and only a second, separate
+           click quits this app and hands over to the installer. -->
+      <section id="appUpdate" class="banner banner-good hidden">
+        <strong id="appUpdateTitle">An update is available</strong>
+        <p id="appUpdateBody"></p>
+        <div id="appUpdateProgress" class="progress hidden"><div id="appUpdateBar" class="progress-bar"></div></div>
+        <div class="banner-actions">
+          <button id="appUpdateBtn" class="key" type="button">Download</button>
+          <button id="appUpdateNotesBtn" class="key key-quiet" type="button">Release notes</button>
+          <span id="appUpdateStatus" class="hint"></span>
+        </div>
+      </section>
+
       <!-- ──────────────────────────────── PCVR ──────────────────────────── -->
       <section id="foveatedView" class="view" role="tabpanel" aria-labelledby="foveatedTab">
         <header class="view-head">

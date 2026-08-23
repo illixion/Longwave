@@ -1,0 +1,31 @@
+# Longwave release signers — the keys allowed to sign a release's SHA256SUMS.
+#
+# ssh-keygen allowed_signers format, so this same file works three ways: as the -f argument to
+# `ssh-keygen -Y verify` (scripts/verify-release.sh), as the pin list this app parses
+# (release-trust.js), and as something a human can read.
+#
+# TWO KEYS, ON PURPOSE — this is the answer to losing one.
+#
+#   ixion@YubiKey5-gpg   the everyday signer. Lives on a YubiKey; needs the card PIN and a
+#                        physical touch, so it cannot be used by anything automated, including
+#                        CI, and cannot be copied off the card by anything at all.
+#   ixion@SecureBackup   an offline ed25519 key, kept out of any machine's normal reach and
+#                        used for exactly two things: signing releases if the YubiKey is lost
+#                        or destroyed, and rotating this list when that happens.
+#
+# Both are trusted equally, from the first release that ships this file. That ordering is the
+# whole point: a recovery key added AFTER the key it is meant to recover from is worthless,
+# because every already-installed copy of the app would only trust the key that is gone, and
+# the update that introduced the new key could never be verified by anything already out
+# there. So the backup is pinned now, while it is not needed.
+#
+# These are the same two signers as the ssh-keys-updater manifest in illixion.github.io
+# (updater/pinned_signers) — deliberately, so there is one pair of keys to protect and one
+# recovery drill to remember rather than a separate set per project.
+#
+# Rotating a signer: sign the release that changes this file with the OTHER key, and say so in
+# the release notes. Anyone still on an older build verifies with what they already pinned;
+# anyone who takes that update pins the new list.
+
+releases@longwave.pro ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDFLEggFzedj9nvz0wl9AoPGXFFbT9XfgEWrAY0l7pa ixion@YubiKey5-gpg
+releases@longwave.pro ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDhKX9Ler/OtQbUlo3ZggDcozle12CS9EFiKHadbXLJ0 ixion@SecureBackup

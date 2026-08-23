@@ -9,6 +9,7 @@ const { tailscaleStatus, checkPath } = require('./tailscale');
 const { Supervisor } = require('./supervisor');
 const { ControlServer } = require('./control-server');
 const pcvrInstaller = require('./pcvr-installer');
+const updater = require('./updater');
 
 // Custom scheme the downloaded PCVR module's own pages load from (pcvr-module://ui/pcvr.html
 // etc.), so the <webview> hosting them never needs a bare file:// URL into a user-writable
@@ -527,6 +528,65 @@ ipcMain.handle('pcvr-download-install', async (event) => {
   startPcvrHost();
   return result;
 });
+// ---- App self-update (notify-only — see updater.js) ----
+//
+// Nothing here runs on a timer. The renderer asks once when it loads and whenever the user
+// opens the About/Updates area; a background poller would mean an update banner appearing
+// mid-session, over a headset, which is the one moment nobody wants to read one.
+ipcMain.handle('update-check', async (_e, options) => {
+  try {
+    return await updater.check(options || {});
+  } catch (e) {
+    return { available: false, reason: 'error', message: e.message };
+  }
+});
+
+ipcMain.handle('update-download', async (event) => {
+  const sendProgress = (progress) => {
+    if (!event.sender.isDestroyed()) event.sender.send('update-download-progress', progress);
+  };
+  return updater.downloadAndVerify(sendProgress);
+});
+
+// Separate from the download on purpose: this one quits the app, so it happens only on a
+// second, explicit click, after the download has been verified and the user has been told
+// that continuing closes everything the app is supervising.
+ipcMain.handle('update-install', async (_e, installerPath) => {
+  if (supervisor) {
+    // A running broker holds the CloudXR service and a game; letting NSIS replace files
+    // underneath that is how you get a half-updated install and an orphaned session. No
+    // options: `restarting` is the only one stopStack honours, and nothing is restarting here.
+    await runStackOperation(() => supervisor.stopStack(
+      (m, params) => routeClientFor(m).rpc(m, params))).catch(() => null);
+  }
+  updater.installAndQuit(installerPath);
+  return { ok: true };
+});
+
+ipcMain.handle('update-open-page', async () => {
+  const info = await updater.check().catch(() => null);
+  return updater.openReleasePage(info);
+});
+
+// ---- PCVR bundle: version pairing and the installer's opt-in checkbox ----
+//
+// The bundle is paired to the app release it was built for (there is no version negotiation on
+// the pipe between them), so an app update leaves a bundle that must not be started. The
+// renderer prompts; `services-start-stack` below is the backstop that makes the prompt
+// impossible to click past.
+ipcMain.handle('pcvr-refresh-state', () => ({
+  needsRefresh: pcvrInstaller.needsRefresh(),
+  installedVersion: pcvrInstaller.installedVersion(),
+  currentVersion: updater.currentVersion,
+  installed: pcvrInstaller.isInstalled(),
+}));
+
+ipcMain.handle('pcvr-optin-pending', () => pcvrInstaller.optInPending());
+ipcMain.handle('pcvr-optin-resolve', (_e, outcome) => {
+  pcvrInstaller.markOptInHandled(outcome);
+  return { ok: true };
+});
+
 /**
  * Native file picker for "Add a game". This is why the headset needs no filesystem access at all:
  * the user chooses the executable here, in a dialog, and only the resulting path is sent to the
@@ -592,8 +652,18 @@ ipcMain.handle('services-start', (_e, name) =>
   runStackOperation(() => supervisor.startChecked(name)));
 ipcMain.handle('services-stop', (_e, name) =>
   runStackOperation(() => supervisor.stop(name)));
-ipcMain.handle('services-start-stack', (_e, params) =>
-  runStackOperation(() => supervisor.startStack((m, p) => routeClientFor(m).rpc(m, p), params)));
+ipcMain.handle('services-start-stack', (_e, params) => {
+  // The backstop for the version pairing above. Refusing here rather than only in the UI
+  // matters because the stack can also be started from the headset and from a restored
+  // session, neither of which passes through the renderer's prompt — and a mismatched bundle
+  // does not fail cleanly, it fails as a pipe that connects and then misbehaves.
+  if (pcvrInstaller.needsRefresh()) {
+    throw new Error(
+      `The installed PCVR component is for ${pcvrInstaller.installedVersion()} and this app is `
+      + `${updater.currentVersion}. Download the matching version from the PCVR tab first.`);
+  }
+  return runStackOperation(() => supervisor.startStack((m, p) => routeClientFor(m).rpc(m, p), params));
+});
 ipcMain.handle('services-stop-stack', (_e, options) =>
   runStackOperation(() => supervisor.stopStack((m, p) => routeClientFor(m).rpc(m, p), options)));
 ipcMain.handle('pcvr-desktop-quad', (_e, enabled) => supervisor.setDesktopQuad(enabled));

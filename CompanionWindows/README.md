@@ -150,14 +150,40 @@ download was produced by this repo's workflow and not tampered with:
 gh attestation verify LongwaveCompanion-<version>-<arch>-Setup.exe --repo illixion/Longwave
 ```
 
-The installer is **unsigned** (no code-signing cert), so SmartScreen may warn on first run;
-the attestation is the integrity guarantee. Still **Beta** — re-read the hardware caveats above.
+The installer is **unsigned** (no code-signing cert), so SmartScreen may warn on first run.
+Still **Beta** — re-read the hardware caveats above.
+
+Every release is additionally signed with a key that CI does not have. After CI publishes,
+`scripts/bless-release.sh` hashes every asset on the release into one `SHA256SUMS` and signs it
+with `ssh-keygen -Y sign` from a YubiKey. Check it yourself — this needs nothing but `gh` and
+`ssh-keygen`, and trusts only the two keys committed in this repo:
+
+```bash
+scripts/verify-release.sh --tag <version>
+```
+
+The two guarantees answer different questions and neither replaces the other: the attestation
+proves *this workflow from this commit built it*, and the signature proves *the person holding
+the key vouched for the result*. A compromised CI token can produce the first and not the second.
+
+The signature is also what makes in-app updating safe to offer at all. See **Updates** below.
 
 ### What the installer must get right for PCVR
 
 Two things are easy to get wrong in a way that produces symptoms pointing somewhere else.
-Neither is currently done by the NSIS installer — the PCVR host is only provisioned by
-`scripts/provision-pc.ps1` — so both are **open work** for shipping PCVR to an end user.
+The NSIS installer itself still does neither — the machine OpenXR default is claimed by the
+running app (`supervisor.js`) rather than at install time, and the dev host is provisioned by
+`scripts/provision-pc.ps1` — so both remain **open work** for shipping PCVR to an end user.
+
+A third one used to be missing and no longer is: `LIBOVR_DLL_DIR`. Nothing in the repo ever set
+it, on either path, so a packaged install could download, verify and register the entire PCVR
+bundle and still fail to launch a single game — VDXR reaches our stack through a LibOVR-shaped
+shim it finds via that variable, and without it `xrGetSystem` returns
+`XR_ERROR_FORM_FACTOR_UNAVAILABLE` behind a log line reading "Virtual Desktop Server is not
+running". `pcvr-installer.js` now writes it (user scope, registry, no broadcast — the consumer
+reads the registry live) and hands it back on uninstall; `provision-pc.ps1` does the same for a
+dev checkout. Both shims are checked, 64- and 32-bit: a missing 32-bit one fails identically and
+only for 32-bit titles.
 See `Longwave-PCVR-Host/docs/HOST_PROVISIONING.md` for the measurements behind them — it
 lives in the private PCVR submodule, so a public checkout will not have it.
 
@@ -179,6 +205,68 @@ lives in the private PCVR submodule, so a public checkout will not have it.
    saying its service is not running, plus `xrCreateInstance` → `-51`, which reads as a broken
    CloudXR install. Only tethering needs admin, and it asks for it on demand.
 
+## Updates
+
+**Notify-only, and two clicks.** The app checks for a newer release when the window loads,
+shows a banner, and does nothing else until asked. Nothing downloads on a timer and nothing
+installs on its own — this process supervises a live CloudXR session, a broker and possibly a
+running game, so an update that swapped itself in on its own schedule would be an update that
+ends a session somebody is wearing.
+
+`electron-updater` is deliberately **not** used. On Windows it verifies a downloaded installer's
+publisher only when a real code-signing certificate exists to derive `publisherName` from — and
+there isn't one here, so it would download and run whatever the feed served, with TLS to GitHub
+as the only guarantee. Instead `src/updater.js` fetches the release's signed `SHA256SUMS`,
+verifies it against the pinned signers in `src/release-signers`, and refuses to run an installer
+whose hash the manifest does not vouch for. A release that has not been blessed yet is not
+offered at all. Roughly 200 lines and one dependency fewer, with an authenticity guarantee
+`electron-updater` cannot give an unsigned build.
+
+Release tags are `0.1.0-<sha8>`, which are **not** orderable — `0.1.0-abc12345` says nothing
+about whether it precedes `0.1.0-def67890`. "Is there something newer" is therefore answered
+with GitHub's own release timestamps, which also gives the safe default for free: a build whose
+own tag is not a release (a local build, a deleted release) is never offered an update rather
+than being told to "update" to whatever is currently latest.
+
+### Losing the signing key
+
+`src/release-signers` pins **two** keys: the everyday YubiKey and an offline backup. If the
+YubiKey is lost, sign with the backup and every copy of the app already installed keeps
+accepting updates:
+
+```bash
+scripts/bless-release.sh --tag <version> --key-file ~/path/to/backup_ed25519
+```
+
+This only works because both keys were pinned before either was needed. A recovery key added
+*after* the key it is meant to recover from is worthless: every installed copy would trust only
+the key that is gone, and the update introducing the new one could never be verified by anything
+already in the field. Same two signers as the `ssh-keys-updater` manifests in
+`illixion.github.io`, on purpose — one pair of keys to protect, one recovery drill to remember.
+
+## The PCVR opt-in checkbox
+
+The installer's PCVR page (`buildResources/installer.nsh`) cannot install anything: the bundle
+is closed-source and is not in the public installer. It records the answer in
+`HKLM\Software\Longwave\Companion\PcvrOptIn`, and the app offers the download on first run.
+Two details that are load-bearing:
+
+- **`SetRegView 64` around the write.** The NSIS stub electron-builder produces is 32-bit, so
+  its default registry view is the WOW6432Node redirect — a plain `WriteRegDWORD` lands where
+  the 64-bit app cannot see it. Nothing about that failure points at a registry view: the
+  checkbox works, the install succeeds, and the feature simply never appears.
+- **Unchecked by default.** Everything else in this installer is auditable open source built by
+  public CI; the PCVR bundle is a closed binary, and downloading one onto someone's machine
+  should be a choice they make rather than one they have to notice and undo. The PCVR tab offers
+  the same download at any time.
+
+The bundle is paired to the app release it was built for — there is no version negotiation on
+the pipe between them — so an app update leaves a bundle that must not be started. The app
+detects that (`pcvrInstaller.needsRefresh()`), prompts, and `services-start-stack` refuses to
+run until the matching bundle is fetched. That refusal lives in the main process rather than only
+in the UI because the stack can also be started from the headset and from a restored session,
+neither of which passes through the renderer's prompt.
+
 ## Build (from source)
 
 Prereqs: **.NET 8 SDK**, **Node.js LTS**. (Installed on the validation box via winget:
@@ -197,6 +285,17 @@ dotnet publish -c Release -r win-x64 --self-contained true `
 cd ..\app
 npm install
 npm start            # dev run (expects a backend; see below)
+npm test             # node:test — the release-trust verifier (no Electron needed)
+npm run dist         # the NSIS installer, into app\dist
+
+# Exercise the updater and the PCVR download from a local build. Both are disabled when
+# build-info.json says "dev" (a local build has no release of its own to compare against),
+# which also means every interesting path in updater.js and pcvr-installer.js is dead code on
+# a dev machine. These make it live — a real GitHub lookup, a real download, a real signature
+# check — without cutting a release per change. See src/build-info.js.
+$env:LONGWAVE_BUILD_VERSION = '0.1.0-abc12345'   # pretend to be that release
+$env:LONGWAVE_BUILD_REPO = 'illixion/Longwave'   # or your own fork's releases
+npm start
 
 # Installer (NSIS) — bundles the published backend under resources\backend
 npm run dist         # -> app\dist\Longwave Companion Setup <ver>.exe

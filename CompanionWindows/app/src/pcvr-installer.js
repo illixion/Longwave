@@ -2,16 +2,9 @@
 const { app, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
-const { execFile } = require('child_process');
-const openpgp = require('openpgp');
-const buildInfo = require('./build-info.json');
-
-// The public half of the Ixion YubiKey OpenPGP key (ed25519) that signs each PCVR bundle —
-// verified here with openpgp.js rather than shelling out to gpg.exe, which most end-user
-// Windows machines simply don't have installed. Committed to the public repo on purpose:
-// this is exactly what lets anyone verify a release independently, not just this app.
-const SIGNING_PUBLIC_KEY = fs.readFileSync(path.join(__dirname, 'pcvr-signing-key.asc'), 'utf8');
+const { execFile, execFileSync } = require('child_process');
+const trust = require('./release-trust');
+const buildInfo = require('./build-info');
 
 /**
  * The closed-source PCVR bundle (LongwavePCVRHost.exe + the SessionBroker/OpenXRLayer native
@@ -26,6 +19,10 @@ const INSTALL_ROOT = path.join(app.getPath('userData'), 'pcvr-bundle');
 const HOST_DIR = path.join(INSTALL_ROOT, 'host');
 const BRIDGE_DIR = path.join(INSTALL_ROOT, 'bridge');
 const VERSION_FILE = path.join(INSTALL_ROOT, 'installed-version.json');
+// Deliberately OUTSIDE INSTALL_ROOT: downloadAndInstall() clears that directory on every
+// install, and a record of "this user has been asked" must not be erased by the very act of
+// answering yes.
+const OPT_IN_HANDLED_FILE = path.join(app.getPath('userData'), 'pcvr-optin-handled.json');
 
 function assetNameForArch() {
   return `Longwave-PCVR-Bundle-${process.arch === 'arm64' ? 'win-arm64' : 'win-x64'}.zip`;
@@ -102,30 +99,132 @@ async function downloadToFile(url, destPath, onProgress) {
   await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
 }
 
-function sha256File(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
+/**
+ * Verifies the bundle's own detached GPG signature. The signing key and the reasoning behind
+ * it now live in release-trust.js, which the app updater shares — see that file's header for
+ * why a YubiKey-held key is the anchor rather than a code-signing certificate.
+ *
+ * Throws on a missing or invalid signature; callers only reach here once they know the .asc
+ * asset exists, so "present but invalid" is always a hard failure, never a silent skip.
+ */
+async function verifyGpgSignature(filePath, signatureArmored) {
+  await trust.verifyGpgSignature(await fs.promises.readFile(filePath), signatureArmored);
 }
 
 /**
- * Verifies the bundle's detached GPG signature against the embedded public key. Stronger than
- * the sha256 sidecar: a checksum only proves the download matches whatever was uploaded, while
- * this proves it was signed by a key that lives on a YubiKey never exposed to CI or the release
- * pipeline — so it also covers a compromised GitHub account/token, not just transport corruption.
- * Throws on a missing or invalid signature; callers only call this once they know the .asc asset
- * exists, so "present but invalid" is always a hard failure, never a silent skip.
+ * Points LIBOVR_DLL_DIR at the bundle's bridge directory.
+ *
+ * This is the step whose absence broke every PCVR title on the dev host on 2026-08-23, and
+ * it had never been implemented for a packaged install at all — meaning a public user who
+ * downloaded the bundle would have had a complete, verified, correctly registered PCVR stack
+ * that could not start a single game.
+ *
+ * VDXR is the OpenXR runtime games get, and VDXR has no headset of its own: it reaches ours
+ * by loading a LibOVR-shaped shim, which the Oculus CAPI shim compiled into it searches for
+ * in LIBOVR_DLL_DIR before anywhere else. Without the variable, xrGetSystem fails with
+ * XR_ERROR_FORM_FACTOR_UNAVAILABLE and the only clue is a VDXR log line reading "Virtual
+ * Desktop Server is not running" — which names neither the variable nor the directory nor
+ * even the right subsystem.
+ *
+ * Written to the registry at USER scope, and nothing else:
+ *   - The registry rather than this process's environment, because a process environment
+ *     block is a snapshot taken at creation. That distinction has bitten this project twice
+ *     (see HOST_PROVISIONING.md, "the stale-environment trap"); the PCVR host reads the
+ *     registry live on every launch, so a value written here is in effect immediately with
+ *     nothing to restart.
+ *   - User rather than machine, so it needs no elevation, and so it cannot outlive this
+ *     user's install or fight with another user's on the same PC.
+ *   - No WM_SETTINGCHANGE broadcast, deliberately: every consumer that matters
+ *     (GameLibrary.ApplyShimDirectory) reads the registry rather than inheriting, so the
+ *     broadcast would buy nothing but a reason to think inheritance works.
  */
-async function verifyGpgSignature(filePath, signatureArmored) {
-  const publicKey = await openpgp.readKey({ armoredKey: SIGNING_PUBLIC_KEY });
-  const message = await openpgp.createMessage({ binary: await fs.promises.readFile(filePath) });
-  const signature = await openpgp.readSignature({ armoredSignature: signatureArmored });
-  const { signatures } = await openpgp.verify({ message, signature, verificationKeys: publicKey });
-  await signatures[0].verified; // rejects if the signature does not check out
+function registerShimDirectory() {
+  try {
+    execFileSync('reg', ['add', 'HKCU\\Environment', '/v', 'LIBOVR_DLL_DIR', '/t', 'REG_SZ',
+                         '/d', BRIDGE_DIR, '/f'], { stdio: 'ignore' });
+    return { ok: true, directory: BRIDGE_DIR };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Gives LIBOVR_DLL_DIR back on uninstall — but only when it still names OUR bridge directory.
+ * A developer running from a source checkout points it at their own build output, and
+ * uninstalling a downloaded bundle has no business deleting that.
+ */
+function unregisterShimDirectory() {
+  try {
+    const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', 'LIBOVR_DLL_DIR'],
+                             { encoding: 'utf8' });
+    const match = out.match(/LIBOVR_DLL_DIR\s+REG_SZ\s+(.+)/);
+    const current = match ? match[1].trim() : null;
+    if (!current || current.toLowerCase() !== BRIDGE_DIR.toLowerCase()) return { ok: true, kept: current };
+    execFileSync('reg', ['delete', 'HKCU\\Environment', '/v', 'LIBOVR_DLL_DIR', '/f'],
+                 { stdio: 'ignore' });
+    return { ok: true, cleared: true };
+  } catch {
+    return { ok: true };   // absent already, or no registry access; nothing to undo
+  }
+}
+
+/**
+ * Whether the installer's PCVR checkbox was ticked (buildResources/installer.nsh).
+ *
+ * Read from HKLM rather than passed on a command line or dropped as a file in $INSTDIR,
+ * because the answer has to survive the installer exiting and the app being started later by
+ * a shortcut, an update, or a different user. `reg` inherits this process's registry view, and
+ * this process is 64-bit (or arm64), so it reads the same view the installer explicitly wrote
+ * to with SetRegView 64 — the two halves of that pairing must not be changed independently.
+ */
+function installerOptIn() {
+  try {
+    const out = execFileSync(
+      'reg', ['query', 'HKLM\\Software\\Longwave\\Companion', '/v', 'PcvrOptIn'],
+      { encoding: 'utf8' });
+    // REG_DWORD prints as 0x1 / 0x0.
+    return /PcvrOptIn\s+REG_DWORD\s+0x1\b/i.test(out);
+  } catch {
+    return false;   // key absent: an install that predates the checkbox, or the box was clear
+  }
+}
+
+/**
+ * True when the app should offer the PCVR download unprompted: the box was ticked, nothing is
+ * installed yet, and this user has not already been asked.
+ *
+ * The "already asked" half is per-user state in userData, not a write back to HKLM, because
+ * the app runs unelevated and cannot clear a machine-wide value — and should not, since two
+ * users of the same PC each need to be asked once. Recorded when the offer is made rather than
+ * when it succeeds, so declining is remembered too and the prompt does not return on every
+ * launch.
+ */
+function optInPending() {
+  if (process.platform !== 'win32') return false;
+  if (isInstalled()) return false;
+  if (fs.existsSync(OPT_IN_HANDLED_FILE)) return false;
+  return installerOptIn();
+}
+
+function markOptInHandled(outcome) {
+  try {
+    fs.mkdirSync(path.dirname(OPT_IN_HANDLED_FILE), { recursive: true });
+    fs.writeFileSync(OPT_IN_HANDLED_FILE, JSON.stringify({
+      outcome, at: new Date().toISOString(),
+    }));
+  } catch { /* best effort — the worst case is being asked once more */ }
+}
+
+/**
+ * True when a bundle is installed but was built for a different app release than the one now
+ * running — which is what an app update leaves behind. The bundle and the app talk over a pipe
+ * protocol with no version negotiation, so the pairing is by release tag and a mismatch means
+ * the PCVR stack must not be started until the matching bundle is fetched.
+ */
+function needsRefresh() {
+  if (!isInstalled()) return false;
+  if (buildInfo.version === 'dev') return false;   // a dev build pins nothing
+  return installedVersion() !== buildInfo.version;
 }
 
 /**
@@ -179,32 +278,63 @@ async function downloadAndInstall(onProgress) {
   const info = await checkAvailability();
   if (!info.available) throw new Error(`PCVR bundle unavailable: ${info.reason}`);
 
+  let verifiedBy = null;
   const tmpZip = path.join(app.getPath('temp'), `longwave-pcvr-${process.pid}.zip`);
   onProgress?.({ phase: 'downloading', received: 0, total: info.size });
   await downloadToFile(info.downloadUrl, tmpZip, onProgress);
 
   try {
-    // The signature is the stronger guarantee (covers a compromised release, not just
-    // transport corruption), so it wins when both are present; the checksum is the fallback
-    // for a bundle uploaded before signing was wired in.
-    if (info.signatureUrl) {
+    // Verification. At least one of these MUST succeed — falling out of the bottom having
+    // checked nothing is a hard failure, not a quiet install.
+    //
+    //   1. The release's signed SHA256SUMS: one signature covering every asset on the
+    //      release, and the same anchor the app updater uses (release-trust.js), so there is
+    //      one thing to reason about rather than a different story per artifact.
+    //   2. This bundle's own detached .asc — the original mechanism, by the same YubiKey, so
+    //      no weaker per signature. Kept for bundles published before the manifest existed,
+    //      and reached when a manifest exists but predates this bundle's upload (the release
+    //      is blessed once, and the bundle is attached separately and by hand afterwards).
+    //   3. The .sha256 sidecar, which proves only that the download matches whatever was
+    //      uploaded. No use against a compromised release, which is why it is last.
+    //
+    // fetchManifest is NOT wrapped in a catch: it returns null when the release simply has no
+    // manifest, and throws only when a manifest is present and its signature does not check
+    // out. Swallowing that throw would let a tampered manifest silently downgrade us to a
+    // weaker check, which is the one thing this cascade must never do.
+    const manifest = await trust.fetchManifest(buildInfo.repo, info.version);
+    if (manifest && manifest.entries.has(info.assetName)) {
+      onProgress?.({ phase: 'verifying' });
+      await trust.verifyAgainstManifest(manifest, info.assetName, tmpZip);
+      verifiedBy = 'release-manifest';
+    } else if (info.signatureUrl) {
       onProgress?.({ phase: 'verifying' });
       const sigRes = await net.fetch(info.signatureUrl);
       if (!sigRes.ok) throw new Error(`could not fetch signature: HTTP ${sigRes.status}`);
       try {
         await verifyGpgSignature(tmpZip, await sigRes.text());
       } catch (e) {
-        throw new Error(`signature verification failed — the download is corrupt or was tampered with: ${e.message}`);
+        throw new Error(
+          `signature verification failed — the download is corrupt or was tampered with: ${e.message}`);
       }
+      verifiedBy = 'bundle-signature';
     } else if (info.checksumUrl) {
       onProgress?.({ phase: 'verifying' });
       const checksumRes = await net.fetch(info.checksumUrl);
       if (!checksumRes.ok) throw new Error(`could not fetch checksum: HTTP ${checksumRes.status}`);
       const expected = (await checksumRes.text()).trim().split(/\s+/)[0].toLowerCase();
-      const actual = await sha256File(tmpZip);
+      const actual = await trust.sha256File(tmpZip);
       if (expected !== actual) {
         throw new Error('checksum mismatch — the download is corrupt or was tampered with');
       }
+      verifiedBy = 'checksum';
+    }
+    if (!verifiedBy) {
+      // Reachable only if a release carries the bundle with no manifest, no .asc and no
+      // .sha256 — i.e. someone uploaded it by hand. Before this check that combination
+      // installed and ran a closed-source binary on nothing but TLS to GitHub.
+      throw new Error(
+        `${info.assetName} on ${info.version} has nothing to verify it against — no signed `
+        + `SHA256SUMS, no .asc, no .sha256. Refusing to install it.`);
     }
 
     onProgress?.({ phase: 'extracting' });
@@ -217,16 +347,20 @@ async function downloadAndInstall(onProgress) {
   onProgress?.({ phase: 'registering' });
   const layerResult = await installApiLayerElevated(BRIDGE_DIR)
     .catch((e) => ({ skipped: true, error: e.message }));
+  // Before the version file is written, so a failure here cannot leave the bundle recorded as
+  // installed-and-ready while games would still fail at xrGetSystem.
+  const shimResult = registerShimDirectory();
 
   fs.writeFileSync(VERSION_FILE, JSON.stringify({
     version: info.version,
     installedAt: new Date().toISOString(),
   }));
   onProgress?.({ phase: 'done' });
-  return { version: info.version, layerResult };
+  return { version: info.version, layerResult, shimResult, verifiedBy };
 }
 
 function uninstall() {
+  unregisterShimDirectory();
   fs.rmSync(INSTALL_ROOT, { recursive: true, force: true });
 }
 
@@ -238,5 +372,11 @@ module.exports = {
   downloadAndInstall,
   isInstalled,
   installedVersion,
+  needsRefresh,
+  installerOptIn,
+  optInPending,
+  markOptInHandled,
+  registerShimDirectory,
+  unregisterShimDirectory,
   uninstall,
 };

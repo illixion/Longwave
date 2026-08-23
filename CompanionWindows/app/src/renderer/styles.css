@@ -458,6 +458,14 @@ select { cursor: pointer; }
 .key:hover { filter: brightness(1.09); }
 .key:active { filter: brightness(.94); }
 .key:disabled { opacity: .4; cursor: not-allowed; filter: none; }
+/* Secondary action sitting next to a .key inside a banner — same shape and rhythm, no fill,
+   so the primary action stays the only thing with weight. */
+.key-quiet {
+  background: none;
+  border-color: rgba(203, 224, 230, .28);
+  color: var(--dim);
+}
+.key-quiet:hover { filter: none; border-color: rgba(203, 224, 230, .5); color: var(--lcd); }
 .key-stop {
   background: transparent;
   border-color: rgba(229, 72, 77, .5);
@@ -674,6 +682,9 @@ select { cursor: pointer; }
   border-color: rgba(229, 72, 77, .38);
   color: #F5C2C4;
 }
+/* The app-update banner is a direct child of .stage rather than of a .view, so it needs the
+   views' own width and a gap of its own — .view supplies both to everything inside it. */
+.stage > .banner { max-width: 760px; margin-bottom: 18px; }
 .banner strong { display: block; margin-bottom: 6px; }
 .banner ul { margin: 0; padding-left: 18px; }
 .banner li + li { margin-top: 4px; }

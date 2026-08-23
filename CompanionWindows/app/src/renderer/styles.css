@@ -213,11 +213,27 @@ body {
 /* ── Stage ───────────────────────────────────────────────────────────────── */
 
 .stage {
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: 26px 30px 34px;
 }
 
 .view { display: flex; flex-direction: column; gap: 18px; max-width: 760px; }
+/* Content views keep their natural height and let .stage scroll past the bottom. Spelled out
+   rather than left to the flex default so the module rule below reads as the exception it is. */
+.view { flex: 0 0 auto; }
+
+/* The PCVR and Game library views are a header plus one full-bleed <webview>, not a stack of
+   panels: the module page inside scrolls itself. So they fill the stage instead of being sized
+   by their content, which is what gives .module-view's `flex: 1` a definite height to resolve
+   against.
+   Without this the webview collapsed to its intrinsic size and clipped the module page a
+   couple of hundred pixels in — mid-sentence through a warning banner, with dead space below.
+   It went unnoticed because the module UI only moved out of this shell on 2026-08-18 and the
+   page could not render at all until the pcvr-module:// root learned its dev fallback, so this
+   was the first time anything had actually been drawn in there. */
+#foveatedView, #gamesView { flex: 1 1 auto; min-height: 0; }
 
 .view-head {
   display: flex;

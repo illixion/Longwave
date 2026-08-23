@@ -9,7 +9,9 @@ struct ConnectionListView: View {
     #if os(visionOS)
     @Environment(MacNativeStreamManager.self) private var macNativeManager
     #endif
-    #if os(visionOS)
+    // Not macOS rather than visionOS-only: the Mac client drops SSH because it
+    // has a real terminal a Cmd-Tab away. iPhone and iPad do not, so they keep it.
+    #if !os(macOS)
     @Environment(SSHTerminalManager.self) private var sshManager
     #endif
     #if MOONLIGHT_ENABLED
@@ -226,7 +228,7 @@ struct ConnectionListView: View {
             connectVNC(connection)
         case .native:
             connectNative(connection)
-        #if os(visionOS)
+        #if !os(macOS)
         case .ssh:
             connectSSH(connection)
         #else
@@ -288,7 +290,7 @@ struct ConnectionListView: View {
         #endif
     }
 
-    #if os(visionOS)
+    #if !os(macOS)
     private func connectSSH(_ connection: SavedConnection) {
         do {
             let id = try sshManager.newShellSession(

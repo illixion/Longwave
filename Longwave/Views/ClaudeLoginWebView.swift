@@ -286,7 +286,7 @@ struct ClaudeLoginSheet: View {
             }
         }
         .frame(minWidth: 720, minHeight: 640)
-        .glassBackgroundEffect()
+        .platformGlassBackground()
         .task { await watchClipboard() }
     }
 

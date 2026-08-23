@@ -5,8 +5,14 @@ import NIOTransportServices
 import os
 
 /// Window value for a terminal scene — one window per SSH session.
-struct SSHSessionID: Hashable, Codable, Sendable {
+///
+/// `Identifiable` because a platform with one window presents a terminal as a
+/// cover or a sheet, and those address content by item identity rather than by
+/// window value. The id already existed; this only says so.
+struct SSHSessionID: Hashable, Codable, Sendable, Identifiable {
     let raw: String
+
+    var id: String { raw }
 }
 
 /// A remote directory entry from the Projects folder browser.

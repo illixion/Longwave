@@ -9,9 +9,13 @@ struct SettingsView: View {
     @AppStorage(ConnectionDefaults.Keys.vncPort) private var vncPort = ConnectionType.vnc.defaultPort
 
     // Audio
-    @AppStorage(ConnectionDefaults.Keys.spatialAudioMode) private var spatialAudioModeRaw = SpatialAudioMode.auto.rawValue
-
     #if os(visionOS)
+    @AppStorage(ConnectionDefaults.Keys.spatialAudioMode) private var spatialAudioModeRaw = SpatialAudioMode.auto.rawValue
+    #endif
+
+    // Not macOS rather than visionOS-only: these settings belong to the built-in
+    // terminal, which every platform that ships one needs to configure.
+    #if !os(macOS)
     // Terminal (applies live to open terminal windows, unlike the
     // new-connection defaults above)
     @AppStorage(ConnectionDefaults.Keys.terminalFontSize) private var terminalFontSize = ConnectionDefaults.terminalFontSizeDefault
@@ -66,6 +70,15 @@ struct SettingsView: View {
                     portField("Port", value: $vncPort)
                 }
 
+                // visionOS-only, and about the control rather than the
+                // capability: iOS has spatial audio as a system feature, but the
+                // API this row drives — `AVAudioSession.setIntendedSpatialExperience`
+                // — is declared inside `#if TARGET_OS_VISION` and marked
+                // `API_UNAVAILABLE(ios, watchos, tvos, macos)`. There is nothing
+                // to route an "intended experience" through on the other
+                // platforms, so the picker would store a preference that never
+                // reaches the audio session. It was already inert on macOS.
+                #if os(visionOS)
                 Section("Audio") {
                     Picker("Spatial Audio", selection: $spatialAudioModeRaw) {
                         ForEach(SpatialAudioMode.allCases, id: \.rawValue) { spatialMode in
@@ -76,8 +89,9 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                #endif
 
-                #if os(visionOS)
+                #if !os(macOS)
                 Section("Terminal") {
                     LabeledContent("Font Size") {
                         Stepper(value: $terminalFontSize, in: 10...24, step: 1) {
@@ -160,7 +174,7 @@ struct SettingsView: View {
         return version
     }
 
-    #if os(visionOS)
+    #if !os(macOS)
     /// One toggle per catalog key, shown with its row glyph. The enabled set
     /// round-trips through the comma-joined id string the terminal row reads.
     private var quickKeyToggles: some View {

@@ -37,7 +37,10 @@ enum SpatialAudioMode: String, Sendable, CaseIterable {
         }
     }
 
-    #if canImport(UIKit)
+    // visionOS, not canImport(UIKit): `AVAudioSessionSpatialExperience` and
+    // `setIntendedSpatialExperience` are visionOS-only API. iOS imports UIKit
+    // and has neither, so the wider guard didn't compile there.
+    #if os(visionOS)
     /// `nil` for `.auto` — the caller should skip the `setIntendedSpatialExperience`
     /// call entirely rather than pass this through, since there's no "system
     /// default" case in that API.
@@ -748,7 +751,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
     nonisolated func setSpatialAudioMode(_ newMode: SpatialAudioMode) {
         queue.async { [self] in
             spatialAudioMode = newMode
-            #if canImport(UIKit)
+            #if os(visionOS)
             guard let experience = newMode.avSpatialExperience else { return }
             do {
                 try AVAudioSession.sharedInstance().setIntendedSpatialExperience(experience)
@@ -878,6 +881,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             // Re-declaring our own spatial experience doesn't touch category
             // or activation, so it can't fight Broadcast for the session —
             // it only reclaims the one setting that got stomped.
+            #if os(visionOS)
             if let experience = self.spatialAudioMode.avSpatialExperience {
                 do {
                     try session.setIntendedSpatialExperience(experience)
@@ -885,6 +889,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                     AppLog.audioStream.line("Failed to reclaim spatial audio experience after category change: \(error)")
                 }
             }
+            #endif
         })
         // visionOS doesn't always notify us via interruption/route-change
         // when Safari WebRTC takes the People channel — sometimes it just
@@ -1256,6 +1261,13 @@ final class AudioStreamReceiver: @unchecked Sendable {
             do {
                 let options: AVAudioSession.CategoryOptions = mode == .music ? [] : [.mixWithOthers]
                 try session.setCategory(.playback, mode: .default, options: options)
+                // Both calls are visionOS-only, and neither has an iOS
+                // counterpart that is needed: iOS does not route AVAudioEngine
+                // output through AutomaticSpatialAudio, so there is no intended
+                // experience to declare, and Now Playing candidacy is a
+                // visionOS notion about windows the wearer has looked away
+                // from. iOS ducking follows the category alone.
+                #if os(visionOS)
                 if let experience = spatialAudioMode.avSpatialExperience {
                     try session.setIntendedSpatialExperience(experience)
                 }
@@ -1265,6 +1277,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                     // app via MPNowPlayingInfoCenter, so this isn't needed.
                     try session.setIsNowPlayingCandidate(true)
                 }
+                #endif
             } catch {
                 AppLog.audioStream.line("Failed to configure audio session: \(error)")
             }

@@ -70,6 +70,24 @@ Shared/                                 — compiled into BOTH targets (visionOS
 ├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
 └── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 
+LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS target); reuses Longwave/ +
+│                                         Shared/ via a membership exception set. No Moonlight (its
+│                                         deps aren't linked), no PCVR (visionOS entitlement), no
+│                                         Broadcast (a visionOS extension capturing a room).
+├── MobileApp.swift                     — @main; one WindowGroup instead of visionOS's scene-per-surface
+├── MobileAppDelegate.swift             — Local Network prompt + TextInputActivity (no window summoning)
+├── MobileRootView.swift                — Five-tab shell; presents covers off manager state, since shared
+│                                         views' openWindow(id:) calls are no-ops in a single-scene app
+├── MobileRemoteDesktopView.swift       — Touch VNC: fit/zoom/pan, absolute + relative pointer mapping
+├── MobilePointerSurface.swift          — UIKit recognizers (SwiftUI can't tell 1 finger from 2):
+│                                         tap/2-finger tap/drag/2-finger scroll/pinch/3-finger pan
+├── MobileKeyboardAccessory.swift       — Modifier strip over the system keyboard; resolves a typed
+│                                         glyph back to its physical key so ⌃/⌥/⌘ can apply to it
+├── MobileVirtualKeyboardSheet.swift    — Scales the shared ANSI grid to a portrait width
+├── MobileAudioView.swift               — Audio tab: shared player panel minus the window-only chrome
+├── Assets.xcassets/                    — iOS AppIcon (appiconset; the visionOS icon is layered) + accent
+└── Info.plist                          — Single-scene, landscape allowed, background audio
+
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
 ├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLog (AppLog is app-only)
 ├── RTPPacketizer.swift                 — RTP/RTCP framing, H.264 RFC 6184 + Opus RFC 7587 (unit-tested)

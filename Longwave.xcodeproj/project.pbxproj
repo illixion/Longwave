@@ -26,6 +26,15 @@
 		5511C0DE0000000000000025 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000015 /* Crypto */; };
 		5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9B918A25E70DE211DA3B92A /* Cocoa.framework */; };
 		A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */; };
+		DD1010000000000000000021 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000011 /* RoyalVNCKit */; };
+		DD1010000000000000000022 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000012 /* SwiftTerm */; };
+		DD1010000000000000000023 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000013 /* NIOSSH */; };
+		DD1010000000000000000024 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000014 /* NIOCore */; };
+		DD1010000000000000000025 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000015 /* NIOTransportServices */; };
+		DD1010000000000000000026 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000016 /* Crypto */; };
+		DD1010000000000000000027 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000017 /* RAVEConsole */; };
+		DD1010000000000000000028 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000018 /* RAVEInput */; };
+		DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000019 /* RAVEDiagnostics */; };
 		CCBB0000000000000000000E /* LongwaveBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* LongwaveBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
 /* End PBXBuildFile section */
@@ -68,6 +77,7 @@
 		AA10AD100000000000000001 /* LongwaveCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA10AD10000000000000000C /* Longwave.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Longwave.xcconfig; path = Configuration/Longwave.xcconfig; sourceTree = "<group>"; };
 		BBAA00000000000000000001 /* LongwaveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LongwaveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD1010000000000000000001 /* LongwaveiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CCBB00000000000000000001 /* LongwaveBroadcast.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LongwaveBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -102,6 +112,33 @@
 				BroadcastExtension.entitlements,
 			);
 			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
+		};
+		DD1010000000000000000003 /* Exceptions for "LongwaveiOS" folder in "LongwaveiOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DD1010000000000000000005 /* LongwaveiOS */;
+		};
+		DD1010000000000000000004 /* Exceptions for "Longwave" folder in "LongwaveiOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				Longwave.entitlements,
+				"Longwave-Foveated.entitlements",
+				Assets.xcassets,
+				LongwaveApp.swift,
+				AppDelegate.swift,
+				Views/MainView.swift,
+				Views/MainTabBar.swift,
+				Views/HomeOrnamentModifier.swift,
+				Views/RemoteDesktopView.swift,
+				Views/SessionsView.swift,
+				Views/BroadcastView.swift,
+				Broadcast/BroadcastManager.swift,
+				Broadcast/BroadcastCaptureSession.swift,
+			);
+			target = DD1010000000000000000005 /* LongwaveiOS */;
 		};
 		E1B1516E30873CEEFF63C73D /* Exceptions for "Longwave" folder in "LongwaveMac" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -146,6 +183,7 @@
 			exceptions = (
 				1DC83C352F74524300BF0482 /* Exceptions for "Longwave" folder in "Longwave" target */,
 				E1B1516E30873CEEFF63C73D /* Exceptions for "Longwave" folder in "LongwaveMac" target */,
+				DD1010000000000000000004 /* Exceptions for "Longwave" folder in "LongwaveiOS" target */,
 			);
 			path = Longwave;
 			sourceTree = "<group>";
@@ -171,6 +209,14 @@
 			exceptions = (
 			);
 			path = LongwaveMac;
+			sourceTree = "<group>";
+		};
+		DD1010000000000000000002 /* LongwaveiOS */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DD1010000000000000000003 /* Exceptions for "LongwaveiOS" folder in "LongwaveiOS" target */,
+			);
+			path = LongwaveiOS;
 			sourceTree = "<group>";
 		};
 		BBAA00000000000000000002 /* LongwaveTests */ = {
@@ -238,6 +284,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DD1010000000000000000007 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DD1010000000000000000021 /* RoyalVNCKit in Frameworks */,
+				DD1010000000000000000022 /* SwiftTerm in Frameworks */,
+				DD1010000000000000000023 /* NIOSSH in Frameworks */,
+				DD1010000000000000000024 /* NIOCore in Frameworks */,
+				DD1010000000000000000025 /* NIOTransportServices in Frameworks */,
+				DD1010000000000000000026 /* Crypto in Frameworks */,
+				DD1010000000000000000027 /* RAVEConsole in Frameworks */,
+				DD1010000000000000000028 /* RAVEInput in Frameworks */,
+				DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F3582F8517BABECC627C9924 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -278,6 +340,7 @@
 				1D1D4D672FD30B7000952C39 /* Recovered References */,
 				998E98D0771424FCCB2F2C1A /* Frameworks */,
 				B7EF0442D34BCA5FCA56413D /* LongwaveMac */,
+				DD1010000000000000000002 /* LongwaveiOS */,
 			);
 			sourceTree = "<group>";
 		};
@@ -289,6 +352,7 @@
 				BBAA00000000000000000001 /* LongwaveTests.xctest */,
 				CCBB00000000000000000001 /* LongwaveBroadcast.appex */,
 				A5B135754F5FB6AA031143FD /* LongwaveMac.app */,
+				DD1010000000000000000001 /* LongwaveiOS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -435,6 +499,39 @@
 			productReference = BBAA00000000000000000001 /* LongwaveTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		DD1010000000000000000005 /* LongwaveiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD1010000000000000000009 /* Build configuration list for PBXNativeTarget "LongwaveiOS" */;
+			buildPhases = (
+				DD1010000000000000000006 /* Sources */,
+				DD1010000000000000000007 /* Frameworks */,
+				DD1010000000000000000008 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1DC83C292F74524200BF0482 /* Longwave */,
+				AA10AD100000000000000004 /* Shared */,
+				DD1010000000000000000002 /* LongwaveiOS */,
+			);
+			name = LongwaveiOS;
+			packageProductDependencies = (
+				DD1010000000000000000011 /* RoyalVNCKit */,
+				DD1010000000000000000012 /* SwiftTerm */,
+				DD1010000000000000000013 /* NIOSSH */,
+				DD1010000000000000000014 /* NIOCore */,
+				DD1010000000000000000015 /* NIOTransportServices */,
+				DD1010000000000000000016 /* Crypto */,
+				DD1010000000000000000017 /* RAVEConsole */,
+				DD1010000000000000000018 /* RAVEInput */,
+				DD1010000000000000000019 /* RAVEDiagnostics */,
+			);
+			productName = LongwaveiOS;
+			productReference = DD1010000000000000000001 /* LongwaveiOS.app */;
+			productType = "com.apple.product-type.application";
+		};
 		CCBB00000000000000000005 /* LongwaveBroadcast */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = CCBB00000000000000000008 /* Build configuration list for PBXNativeTarget "LongwaveBroadcast" */;
@@ -508,6 +605,7 @@
 				BBAA00000000000000000005 /* LongwaveTests */,
 				CCBB00000000000000000005 /* LongwaveBroadcast */,
 				228F25EB1D6A2BB4D767CB5C /* LongwaveMac */,
+				DD1010000000000000000005 /* LongwaveiOS */,
 			);
 		};
 /* End PBXProject section */
@@ -535,6 +633,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BBAA00000000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DD1010000000000000000008 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -638,6 +743,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		CCBB00000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DD1010000000000000000006 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1083,6 +1195,75 @@
 			};
 			name = Release;
 		};
+		DD101000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA10AD10000000000000000C /* Longwave.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9T5F88VJFL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LongwaveiOS/Info.plist;
+				INFOPLIST_KEY_GCSupportsControllerUserInteraction = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DD101000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA10AD10000000000000000C /* Longwave.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9T5F88VJFL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LongwaveiOS/Info.plist;
+				INFOPLIST_KEY_GCSupportsControllerUserInteraction = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1136,6 +1317,15 @@
 			buildConfigurations = (
 				CCBB00000000000000000009 /* Debug */,
 				CCBB0000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD1010000000000000000009 /* Build configuration list for PBXNativeTarget "LongwaveiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD101000000000000000000A /* Debug */,
+				DD101000000000000000000B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1303,6 +1493,51 @@
 		FEC92747F5953D917428BFA0 /* RoyalVNCKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RoyalVNCKit;
+		};
+		DD1010000000000000000011 /* RoyalVNCKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1DC83C3B2F74587300BF0482 /* XCLocalSwiftPackageReference "royalvnc" */;
+			productName = RoyalVNCKit;
+		};
+		DD1010000000000000000012 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+		DD1010000000000000000013 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		DD1010000000000000000014 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		DD1010000000000000000015 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
+		};
+		DD1010000000000000000016 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		DD1010000000000000000017 /* RAVEConsole */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEConsole;
+		};
+		DD1010000000000000000018 /* RAVEInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
+			productName = RAVEInput;
+		};
+		DD1010000000000000000019 /* RAVEDiagnostics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
+			productName = RAVEDiagnostics;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

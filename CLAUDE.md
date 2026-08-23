@@ -11,6 +11,8 @@ Longwave is a remote desktop and game streaming app for **visionOS** built in Sw
 5. **Broadcast** — H.264 + native Opus RTP/RTSP to mediamtx via tab (foreground) and ReplayKit extension (backgrounded). One-button server setup from companion, OBS provisioning via obs-websocket.
 6. **Foveated Streaming / PCVR** — receives immersive OpenXR content from an NVIDIA CloudXR host (Windows + RTX) via Apple's `FoveatedStreaming` framework (visionOS 26.4+). Foveation happens **on the host, driven by real gaze** — not on device: the game itself renders foveated (gaze-driven VRS), which stock CloudXR cannot do because it hands games no eye tracking at all. Say this correctly in user-facing copy; it is the feature's differentiator. Lives in its own **PCVR tab** (`PCVRTabView`, `PCVRHelpView`), not in the connection list — settings persist as one `ConnectionType.foveated` `SavedConnection` the tab owns. `FoveatedConnectionManager` + an `ImmersiveSpace(foveatedStreaming:)`. `FoveatedConnectionMode` offers Automatic (Bonjour) and By IP address only; Apple's `.remote` endpoint case is deliberately not exposed (its server list is baked into Info.plist at build time). Accompanied by a Windows CloudXR session-management host (`Longwave-PCVR-Host/`, closed-source, git submodule) and a Switch Pro + hand-gesture → controller bridge (`Longwave/ControllerBridge/` → `OpenXRLayer/`, an implicit OpenXR API layer on the host, also a closed-source git submodule alongside `SessionBroker/`) presenting emulated controllers (Oculus Touch profile preferred so games use their Quest bindings, Valve Index as fallback; `LONGWAVE_CB_PROFILE` overrides). The gaze-extraction and controller-bridge internals are intentionally not detailed here — see the private submodule's docs below. None of the three closed-source submodules ship in the public Windows Companion installer; the Electron UI downloads and installs the matching bundle on demand from a GitHub Release asset (`pcvr-installer.js`, `scripts/package-pcvr-bundle.sh`) so there is one public download, not two.
 
+**Clients**: the **visionOS app** (`Longwave/`) is the product; **LongwaveMac** (`LongwaveMac/`) and **LongwaveiOS** (`LongwaveiOS/`) are separate targets that reuse `Longwave/` + `Shared/` and supply their own scene graph. See "Platform clients" below.
+
 **Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **Longwave Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
 
 ## Editions
@@ -38,6 +40,55 @@ Why the two builds differ:
 **Optional build features:** `MOONLIGHT_ENABLED` (off = pure VNC viewer) and `FOVEATED_ENABLED` (PCVR; default off, device-only, 26.4+ — effectively "this is the App Store edition").
 
 See [[ARCHITECTURE.md]] for multi-window design, threading patterns, and data pipelines; `Longwave-PCVR-Host/docs/FOVEATED_STREAMING_ARCH.md` for the full PCVR design (CloudXR host, controller bridge, gesture input, OpenXR API layer, verification status). That document lives inside the private submodule along with `FOVEATED_STREAMING_PLAN.md` and `HOST_PROVISIONING.md` — a checkout without the submodule initialised simply won't have them.
+
+## Platform clients
+
+Three app targets share one source folder. `Longwave/` and `Shared/` are attached
+to each as `PBXFileSystemSynchronizedRootGroup`s with a **membership exception
+set** naming the files that target excludes — so they all compile into one
+module and each platform's own shims are visible to shared views without the
+shared code knowing they exist.
+
+| target | platform | scene model | excluded |
+|---|---|---|---|
+| `Longwave` | visionOS 26.2+ | window per surface (`openWindow`) | — |
+| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | SSH (a real terminal is a Cmd-Tab away), Broadcast |
+| `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | Moonlight, PCVR, Broadcast, native Mac screen stream |
+
+**The scene graph is what does not port.** visionOS puts the desktop, every
+terminal, every keyboard and the audio player in their own window; iPhone has
+one. So `MobileRootView` drives presentation off *manager state* — a connection
+going active, a new SSH session appearing — rather than off the button that was
+pressed. Shared views keep calling `openWindow(id:)`, which is a no-op in a
+single-scene app, and still end up with the right surface. Adding a shared view
+that opens a window therefore needs no iOS change; adding one that *is* a window
+does.
+
+**Guards say what they mean.** SSH and the terminal settings read `!os(macOS)`,
+not `os(visionOS)` — the Mac client is the one that drops them. Reach for
+`os(visionOS)` only for something the other platforms genuinely lack, and check
+the SDK before assuming: `setIntendedSpatialExperience` and
+`setIsNowPlayingCandidate` sit inside `#if TARGET_OS_VISION` and are marked
+`API_UNAVAILABLE(ios, …)`, so the Spatial Audio row is visionOS-only even though
+iOS *has* spatial audio. `canImport(UIKit)` is the wrong guard for those: iOS
+imports UIKit and has neither call.
+
+**A local SPM package must declare iOS explicitly.** An omitted platform is not
+an excluded one — SwiftPM substitutes its own ancient default floor, and
+`RAVESDK`/`RAVEEngine` then failed an iOS build on "'Color' is only available in
+iOS 13.0 or newer" and `OSSignposter` (iOS 15), versions nothing here targets.
+Both now list `.iOS(.v26)`.
+
+**Deploying to a phone or iPad.** `~/bin/build-and-sign` reads this repo's
+gitignored `scripts/build-signing.conf`, which maps `PLATFORM` to a scheme —
+because the clients are **separate targets**, not one target with several
+destinations, so building `Longwave` for `generic/platform=iOS` fails on
+supported platforms rather than producing an iOS app. `PLATFORM=iPad` is an
+alias for the same iOS build sent to the iPad. Two things bite: the iOS target
+links neither moonlight-common-c nor Opus, so `MOONLIGHT_ENABLED` makes it fail
+to *compile* rather than be ignored, and `XROS_DEPLOYMENT_TARGET` means nothing
+to it — both the repo conf and `~/Projects/appstore`'s `config.json` scope their
+build settings per platform for exactly that reason.
 
 ## Build Configuration
 

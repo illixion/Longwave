@@ -30,6 +30,12 @@ struct ProjectsView: View {
     @State private var keyStatus: String?
     @State private var showingAgentSetup = false
 
+    #if !os(visionOS)
+    /// A running session the user asked to return to, presented as a cover
+    /// because there is no second window to put it in.
+    @State private var reenteredSession: SSHSessionID?
+    #endif
+
     private var selectedHost: SavedConnection? {
         sshConnections.first { $0.id.uuidString == lastHostID } ?? sshConnections.first
     }
@@ -57,6 +63,19 @@ struct ProjectsView: View {
                 }
             }
         }
+        #if !os(visionOS)
+        .fullScreenCover(item: $reenteredSession) { id in
+            NavigationStack {
+                SSHTerminalView(sessionID: id)
+                    .environment(sshManager)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { reenteredSession = nil }
+                        }
+                    }
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -208,7 +227,15 @@ struct ProjectsView: View {
             Section("Running Sessions") {
                 ForEach(claudeSessions) { session in
                     Button {
+                        #if os(visionOS)
                         openWindow(id: "ssh-terminal", value: session.id)
+                        #else
+                        // One window here, so re-entering a session presents it.
+                        // Only the already-running ones: a session started from
+                        // this view is brand new, and the shell watches for those
+                        // and raises them itself.
+                        reenteredSession = session.id
+                        #endif
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {

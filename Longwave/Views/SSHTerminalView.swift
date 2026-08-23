@@ -39,6 +39,12 @@ struct SSHTerminalView: View {
     /// Drives the "close or force-restart" modal raised by the header's ✕ button.
     @State private var showingSessionActions = false
 
+    #if !os(visionOS)
+    /// The on-screen keyboard, which has to be a sheet where there is only one
+    /// window to put it in.
+    @State private var showingKeyboardSheet = false
+    #endif
+
     #if os(visionOS)
     /// In-app dictation, transcribed on device. Deliberately not the keyboard's
     /// dictation — see `DictationController` for why that one keeps dying.
@@ -101,6 +107,21 @@ struct SSHTerminalView: View {
         .onChange(of: composerFocused) { _, focused in
             keyboardFocus.composerFocusChanged(focused)
         }
+        #if !os(visionOS)
+        .sheet(isPresented: $showingKeyboardSheet) {
+            NavigationStack {
+                SSHKeyboardView(sessionID: sessionID)
+                    .environment(manager)
+                    .navigationTitle("Keyboard")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showingKeyboardSheet = false }
+                        }
+                    }
+            }
+        }
+        #endif
         #if os(visionOS)
         // Mirror recognized speech into the composer as it arrives, including the
         // phrase still being revised, so dictation reads as live.
@@ -211,11 +232,18 @@ struct SSHTerminalView: View {
         .help("Scroll forward a page")
     }
 
-    /// Opens the on-screen keyboard window — the only way to send a modified
-    /// letter (⌃G, ⌥F) without routing it through the composer.
+    /// Opens the on-screen keyboard — the only way to send a modified letter
+    /// (⌃G, ⌥F) without routing it through the composer.
+    ///
+    /// A window on visionOS, a sheet on iPhone and iPad, which have one window
+    /// and would otherwise leave this button doing nothing at all.
     private var onScreenKeyboardButton: some View {
         Button {
+            #if os(visionOS)
             openWindow(id: "ssh-keyboard", value: sessionID)
+            #else
+            showingKeyboardSheet = true
+            #endif
         } label: {
             Image(systemName: "keyboard.badge.ellipsis")
         }

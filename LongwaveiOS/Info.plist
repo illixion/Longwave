@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Longwave</string>
+	<key>CommitHash</key>
+	<string>$(COMMIT_HASH)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>pro.longwave.audioToken</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<!-- visionvnc is the pre-rename scheme, kept so a Companion that has
+			     not been updated yet can still hand off a token. Nothing emits it. -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>longwave</string>
+				<string>visionvnc</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Longwave connects to remote desktops, SSH hosts, and the Companion on your local network.</string>
+	<!-- Only the native-stream service. Foveated streaming is not part of this
+	     target: PCVR needs a headset to be immersed in, and its entitlement is
+	     visionOS-only. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_longwave-native._tcp</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- Single-scene on purpose. The visionOS app is a multi-window design where
+	     every stream, terminal and keyboard is its own scene; iPhone has one
+	     window, and iPad multi-window would need a scene-restoration story the
+	     shared session registry does not have. Everything is navigation here —
+	     see MobileRootView. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<!-- Landscape matters here: a remote desktop is a wide surface, and holding
+	     an iPhone sideways is how it becomes usable at all. -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!-- Companion audio keeps playing with the screen off, same as on visionOS. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+</dict>
+</plist>

@@ -191,7 +191,7 @@ function registerShimDirectory() {
 function unregisterShimDirectory() {
   try {
     const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', 'LIBOVR_DLL_DIR'],
-                             { encoding: 'utf8' });
+                             { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const match = out.match(/LIBOVR_DLL_DIR\s+REG_SZ\s+(.+)/);
     const current = match ? match[1].trim() : null;
     if (!current || current.toLowerCase() !== BRIDGE_DIR.toLowerCase()) return { ok: true, kept: current };
@@ -216,7 +216,13 @@ function installerOptIn() {
   try {
     const out = execFileSync(
       'reg', ['query', 'HKLM\\Software\\Longwave\\Companion', '/v', 'PcvrOptIn'],
-      { encoding: 'utf8' });
+      // stderr ignored, not inherited: an absent key is the NORMAL case here (any source
+      // checkout, and any install predating the checkbox), and execFileSync passes a child's
+      // stderr straight to ours unless told not to. That put "ERROR: The system was unable to
+      // find the specified registry key or value." in the app log on every launch of a dev
+      // host — an alarming line for an expected miss that this function already handles by
+      // returning false.
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     // REG_DWORD prints as 0x1 / 0x0.
     return /PcvrOptIn\s+REG_DWORD\s+0x1\b/i.test(out);
   } catch {

@@ -34,9 +34,42 @@ const PRELOAD_FILE_URL = require('url').pathToFileURL(path.join(__dirname, 'prel
 // see preload.js's comment), so it asks the main process for this rather than computing it.
 ipcMain.handle('get-preload-url', () => PRELOAD_FILE_URL);
 
+/**
+ * Where the PCVR/Games pages live. Same three-way shape as resolvePcvrHostExe(): the
+ * downloaded bundle first, then a packaged build's staged resources, then a dev checkout.
+ *
+ * The dev candidate is the one that was missing. When the PCVR UI moved into the closed-source
+ * module (2026-08-18) this root became bundle-only, which is right for a real install and wrong
+ * for every source checkout: the host exe still resolves from the dev tree, so its pipe
+ * connects, the renderer decides PCVR is available and loads pcvr-module://ui/pcvr.html — and
+ * gets a bare "not found", because a dev host never downloads a bundle. Every other resolver in
+ * this file already had a dev fallback; this one did not, which is why it only broke here.
+ *
+ * Resolved PER REQUEST rather than once at registration. The bundle can arrive at any point
+ * during a run (that is what the PCVR tab's download button does), and a root captured at
+ * startup would have been resolved before it existed — the same staleness bug that
+ * Supervisor.refreshPaths() exists to work around for the binaries. Two existsSync calls per
+ * request is nothing next to reading the file we are about to serve anyway.
+ */
+function resolvePcvrUiRoot() {
+  const candidates = [
+    path.join(pcvrInstaller.INSTALL_ROOT, 'ui'),
+    ...(app.isPackaged
+      ? [path.join(process.resourcesPath, 'pcvr-host', 'ui')]
+      : [path.join(__dirname, '..', '..', '..', 'Longwave-PCVR-Host', 'ui')]),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
 function registerPcvrModuleProtocol() {
-  const root = path.join(pcvrInstaller.INSTALL_ROOT, 'ui');
   protocol.handle('pcvr-module', (request) => {
+    const root = resolvePcvrUiRoot();
+    if (!root) {
+      // Distinguished from a missing file on purpose: "no UI installed at all" is a different
+      // situation from "that page does not exist", and the first one used to render as the
+      // second, which is a long way from the actual cause.
+      return new Response('the PCVR module UI is not installed', { status: 404 });
+    }
     const url = new URL(request.url);
     const rel = decodeURIComponent(url.pathname || '/pcvr.html').replace(/^\/+/, '') || 'pcvr.html';
     // Resolve and pin inside root — url.pathname is already URL-decoded and path-normalized

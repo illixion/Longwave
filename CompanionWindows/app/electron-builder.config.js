@@ -35,6 +35,16 @@ if (hasPcvrHost) {
     to: 'pcvr-host',
     filter: ['**/*'],
   });
+  // The PCVR/Games pages, which are NOT a build output of Host.csproj and so are not in the
+  // publish directory above. Without this a locally packaged build gets the host exe and no UI,
+  // and main.js's pcvr-module:// handler serves 404s — the packaged twin of the dev-checkout
+  // gap that fix documents. Gated on hasPcvrHost like the binaries, so CI (which never
+  // initialises the submodule) still stages nothing closed-source.
+  extraResources.push({
+    from: '../Longwave-PCVR-Host/ui',
+    to: 'pcvr-host/ui',
+    filter: ['**/*'],
+  });
 }
 
 module.exports = {

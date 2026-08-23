@@ -69,6 +69,10 @@ contextBridge.exposeInMainWorld('hotspot', {
   // Whether the installed bundle was built for the app release now running. An app update
   // leaves them mismatched, and starting the stack in that state is blocked in main.js.
   pcvrRefreshState: () => ipcRenderer.invoke('pcvr-refresh-state'),
+  // Whether this machine can host PCVR at all. False on anything but Windows x64 (CloudXR is
+  // x64-only and needs an RTX GPU), and the UI hides the feature entirely rather than offering
+  // a download that cannot exist. LONGWAVE_FORCE_PCVR=1 forces it true for development.
+  pcvrSupported: () => ipcRenderer.invoke('pcvr-supported'),
   // Whether the installer's PCVR checkbox was ticked and this user has not been asked yet.
   pcvrOptInPending: () => ipcRenderer.invoke('pcvr-optin-pending'),
   pcvrOptInResolve: (outcome) => ipcRenderer.invoke('pcvr-optin-resolve', outcome),

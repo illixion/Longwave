@@ -35,6 +35,8 @@ const el = {
   foveatedLamp: $('foveatedLamp'),
   foveatedChannelState: $('foveatedChannelState'),
   pcvrDownload: $('pcvrDownload'),
+  foveatedTab: $('foveatedTab'),
+  gamesTab: $('gamesTab'),
   appUpdate: $('appUpdate'),
   appUpdateTitle: $('appUpdateTitle'),
   appUpdateBody: $('appUpdateBody'),
@@ -151,12 +153,17 @@ const PCVR_DOWNLOAD_REASON_TEXT = {
   'error': 'Something went wrong checking for the download.',
 };
 
+/** Whether this machine can host PCVR at all. Assume yes until told otherwise: the check is
+ *  async, and flashing the tabs away after first paint is worse than never showing them. On the
+ *  overwhelmingly common case (a Windows x64 host) the answer is yes anyway. */
+let pcvrSupported = true;
 /** Result of pcvrRefreshState() — whether the installed bundle matches this app release. */
 let pcvrRefresh = null;
 /** True once the installer's opt-in checkbox has been surfaced to this user. */
 let pcvrOptInSurfaced = false;
 
 async function refreshPcvrDownloadState() {
+  if (!pcvrSupported) return;
   if (typeof window.hotspot.pcvrCheckDownload !== 'function') return;
   const [info, refresh] = await Promise.all([
     window.hotspot.pcvrCheckDownload(),
@@ -180,8 +187,29 @@ async function refreshPcvrDownloadState() {
  *     promise this app made on the installer's behalf and has to keep.
  */
 function applyPcvrBannerVisibility() {
+  if (!pcvrSupported) { el.pcvrDownload.classList.add('hidden'); return; }
   const mustRefresh = !!pcvrRefresh?.needsRefresh;
   el.pcvrDownload.classList.toggle('hidden', hasPcvr && !mustRefresh);
+}
+
+/**
+ * Hides PCVR and the Game library outright on a host that cannot run them — anything but
+ * Windows x64, because CloudXR is x64-only and the feature needs an RTX GPU. Not "installed vs
+ * not": there is no download that would ever work, so an empty tab offering one is a promise
+ * the product cannot keep.
+ *
+ * The PCVR tab is also the DEFAULT selected one, so hiding it has to move the selection or the
+ * app boots showing a blank pane with no tab lit. Screen streaming is the next entry in the
+ * rail and works everywhere.
+ */
+async function applyPcvrHostSupport() {
+  if (typeof window.hotspot.pcvrSupported !== 'function') return;
+  pcvrSupported = await window.hotspot.pcvrSupported();
+  if (pcvrSupported) return;
+  el.foveatedTab.classList.add('hidden');
+  el.gamesTab.classList.add('hidden');
+  applyPcvrBannerVisibility();
+  if (el.foveatedTab.classList.contains('is-current')) showView('streamView');
 }
 
 /**
@@ -190,7 +218,7 @@ function applyPcvrBannerVisibility() {
  * people learn to dismiss without reading.
  */
 async function surfacePcvrOptIn() {
-  if (pcvrOptInSurfaced) return;
+  if (pcvrOptInSurfaced || !pcvrSupported) return;
   if (typeof window.hotspot.pcvrOptInPending !== 'function') return;
   if (!await window.hotspot.pcvrOptInPending()) return;
   pcvrOptInSurfaced = true;
@@ -753,8 +781,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (typeof window.hotspot.onUpdateProgress === 'function') {
     window.hotspot.onUpdateProgress(onUpdateProgress);
   }
-  // Both are fire-and-forget: neither should hold up first paint, and both are read from the
-  // network or the registry rather than from anything the rest of init depends on.
+  // Awaited, unlike the two below: everything PCVR-related keys off the answer, and letting
+  // it race would mean briefly rendering tabs that are about to be removed.
+  await applyPcvrHostSupport();
+  // Fire-and-forget: neither should hold up first paint, and both read from the network or the
+  // registry rather than from anything the rest of init depends on.
   refreshUpdateState();
   surfacePcvrOptIn();
   el.noticesBtn.addEventListener('click', () => window.hotspot.openNoticesWindow());

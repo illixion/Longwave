@@ -43,6 +43,26 @@ Var PcvrOptIn
 !macroend
 
 Function PcvrOptInPageCreate
+  ; Skip the whole page on Windows-on-ARM. CloudXR is x64-only and the feature needs an NVIDIA
+  ; RTX GPU, so there is nothing to offer — and offering it would hand the user a checkbox that
+  ; leads to a download that cannot exist. The app hides the PCVR tabs on the same hosts
+  ; (pcvr-installer.js's isSupportedHost), so the two halves agree.
+  ;
+  ; Read from the environment rather than from the installer's own bitness: this stub is 32-bit
+  ; x86 whatever it was built for, and under ARM64 emulation PROCESSOR_ARCHITECTURE reports
+  ; "x86" while PROCESSOR_ARCHITEW6432 reports "ARM64" — so the second variable is the one that
+  ; answers "what is this machine", and checking only the first would never skip anything.
+  ; Aborting a custom page's create function skips the page; $PcvrOptIn keeps its zero value,
+  ; so customInstall records a clear opt-out.
+  ReadEnvStr $0 "PROCESSOR_ARCHITEW6432"
+  ${If} $0 == "ARM64"
+    Abort
+  ${EndIf}
+  ReadEnvStr $0 "PROCESSOR_ARCHITECTURE"
+  ${If} $0 == "ARM64"
+    Abort
+  ${EndIf}
+
   !insertmacro MUI_HEADER_TEXT "PCVR / Foveated Streaming" "Optional, and not part of this download"
 
   nsDialogs::Create 1018

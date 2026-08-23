@@ -24,8 +24,38 @@ const VERSION_FILE = path.join(INSTALL_ROOT, 'installed-version.json');
 // answering yes.
 const OPT_IN_HANDLED_FILE = path.join(app.getPath('userData'), 'pcvr-optin-handled.json');
 
+/**
+ * Whether this machine can host PCVR at all.
+ *
+ * Windows on x64, and nothing else. Not a policy choice — CloudXR ships x64-only, and the
+ * whole feature needs an NVIDIA RTX GPU, which no Windows-on-ARM machine has. CI does build an
+ * arm64 installer (Snapdragon X laptops are common, and the hotspot and screen-streaming
+ * features work fine there), so without this check an arm64 user gets a PCVR tab that asks
+ * GitHub for `Longwave-PCVR-Bundle-win-arm64.zip` — an asset nothing builds and nothing can —
+ * and is told "not published yet for this app version. Check back after it's uploaded." That
+ * is a promise the product cannot keep. Hiding the feature is the honest answer.
+ *
+ * LONGWAVE_FORCE_PCVR=1 overrides it, for developing the PCVR surfaces on a machine that could
+ * never run them — an arm64 Mac being the case that matters. It forces the UI to render; it
+ * cannot make a bundle exist, so the tab shows its download banner and the download itself
+ * fails at the asset lookup. That is enough to work on the chrome, the banners, the version
+ * pairing and the opt-in flow. Same shape as the LONGWAVE_BUILD_* overrides in build-info.js,
+ * and like those it is an identity override only: nothing here relaxes a signature check.
+ */
+function isSupportedHost() {
+  if (process.env.LONGWAVE_FORCE_PCVR === '1') return true;
+  return process.platform === 'win32' && process.arch === 'x64';
+}
+
+/**
+ * Always the x64 bundle — the only one that exists, and the only one that could. The arm64
+ * name this used to derive from `process.arch` was a dead branch pointing at an asset nothing
+ * builds; isSupportedHost() now rules that host out before anything asks. Keeping it x64 also
+ * makes LONGWAVE_FORCE_PCVR useful on an arm64 Mac: the lookup resolves to a real asset that
+ * can be downloaded and inspected, rather than 404-ing on a name that never existed.
+ */
 function assetNameForArch() {
-  return `Longwave-PCVR-Bundle-${process.arch === 'arm64' ? 'win-arm64' : 'win-x64'}.zip`;
+  return 'Longwave-PCVR-Bundle-win-x64.zip';
 }
 
 function installedVersion() {
@@ -41,6 +71,11 @@ function isInstalled() {
  * (60 req/hr per IP) — fine for a manual, occasional check, never polled in a loop.
  */
 async function checkAvailability() {
+  if (!isSupportedHost()) {
+    // Before the network call, and before the dev-build check: on a machine that cannot run
+    // this, whether a bundle exists is not an interesting question.
+    return { available: false, reason: 'unsupported-host', installedVersion: installedVersion() };
+  }
   if (buildInfo.version === 'dev') {
     return { available: false, reason: 'dev-build', installedVersion: installedVersion() };
   }
@@ -200,7 +235,7 @@ function installerOptIn() {
  * launch.
  */
 function optInPending() {
-  if (process.platform !== 'win32') return false;
+  if (!isSupportedHost()) return false;
   if (isInstalled()) return false;
   if (fs.existsSync(OPT_IN_HANDLED_FILE)) return false;
   return installerOptIn();
@@ -368,6 +403,7 @@ module.exports = {
   INSTALL_ROOT,
   HOST_DIR,
   BRIDGE_DIR,
+  isSupportedHost,
   checkAvailability,
   downloadAndInstall,
   isInstalled,

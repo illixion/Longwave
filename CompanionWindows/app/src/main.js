@@ -581,6 +581,11 @@ ipcMain.handle('pcvr-refresh-state', () => ({
   installed: pcvrInstaller.isInstalled(),
 }));
 
+// Whether this machine can host PCVR at all (Windows x64, or LONGWAVE_FORCE_PCVR=1). The
+// renderer hides the PCVR and Game library tabs outright when this is false — see
+// pcvrInstaller.isSupportedHost() for why an arm64 Windows host is not merely "not installed".
+ipcMain.handle('pcvr-supported', () => pcvrInstaller.isSupportedHost());
+
 ipcMain.handle('pcvr-optin-pending', () => pcvrInstaller.optInPending());
 ipcMain.handle('pcvr-optin-resolve', (_e, outcome) => {
   pcvrInstaller.markOptInHandled(outcome);

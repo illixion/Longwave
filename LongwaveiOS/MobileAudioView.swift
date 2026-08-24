@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEMedia
 
 /// The Audio tab: the shared mini-player, plus the controls that still mean
 /// something here.
@@ -95,9 +96,9 @@ struct MobileAudioView: View {
             // `waveform` has no .fill variant — tint marks the EQ as active.
             .tint(audioManager.eqSettings.enabled ? .accentColor : nil)
             .sheet(isPresented: $showEQ) {
+                @Bindable var audioManager = audioManager
                 NavigationStack {
-                    EQEditorView()
-                        .environment(audioManager)
+                    EQEditorView(settings: $audioManager.eqSettings)
                 }
             }
             .accessibilityLabel("Equalizer")

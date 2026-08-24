@@ -14,6 +14,8 @@
 		AA07000000000000000000D5 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D4 /* RAVEConsole */; };
 		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
 		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
+		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
+		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
@@ -33,6 +35,7 @@
 		DD1010000000000000000025 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000015 /* NIOTransportServices */; };
 		DD1010000000000000000026 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000016 /* Crypto */; };
 		DD1010000000000000000027 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000017 /* RAVEConsole */; };
+		DD101000000000000000002B /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = DD101000000000000000002A /* RAVEMedia */; };
 		DD1010000000000000000028 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000018 /* RAVEInput */; };
 		DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000019 /* RAVEDiagnostics */; };
 		CCBB0000000000000000000E /* LongwaveBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* LongwaveBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -260,6 +263,7 @@
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
+				AA07000000000000000000DB /* RAVEMedia in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,6 +301,7 @@
 				DD1010000000000000000027 /* RAVEConsole in Frameworks */,
 				DD1010000000000000000028 /* RAVEInput in Frameworks */,
 				DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */,
+				DD101000000000000000002B /* RAVEMedia in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,6 +317,7 @@
 				AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
+				AA07000000000000000000DD /* RAVEMedia in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -418,6 +424,7 @@
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
+				AA07000000000000000000DA /* RAVEMedia */,
 			);
 			productName = Longwave;
 			productReference = 1DC83C272F74524200BF0482 /* Longwave.app */;
@@ -451,6 +458,7 @@
 				AA03000000000000000000B4 /* RAVEDiagnostics */,
 				AA07000000000000000000D6 /* RAVEUI */,
 				AA07000000000000000000D8 /* RAVEConsole */,
+				AA07000000000000000000DC /* RAVEMedia */,
 			);
 			productName = LongwaveMac;
 			productReference = A5B135754F5FB6AA031143FD /* LongwaveMac.app */;
@@ -527,6 +535,7 @@
 				DD1010000000000000000017 /* RAVEConsole */,
 				DD1010000000000000000018 /* RAVEInput */,
 				DD1010000000000000000019 /* RAVEDiagnostics */,
+				DD101000000000000000002A /* RAVEMedia */,
 			);
 			productName = LongwaveiOS;
 			productReference = DD1010000000000000000001 /* LongwaveiOS.app */;
@@ -1419,6 +1428,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEConsole;
+		};
+		AA07000000000000000000DA /* RAVEMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEMedia;
+		};
+		AA07000000000000000000DC /* RAVEMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEMedia;
+		};
+		DD101000000000000000002A /* RAVEMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEMedia;
 		};
 		AA03000000000000000000B2 /* RAVEDiagnostics */ = {
 			isa = XCSwiftPackageProductDependency;

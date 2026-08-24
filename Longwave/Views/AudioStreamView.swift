@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEMedia
 
 /// Standalone mini-player window for an active audio-only stream from the
 /// Longwave Companion Mac menu bar app. Wraps the shared
@@ -111,8 +112,8 @@ struct AudioStreamView: View {
             // window, and visionOS clips popovers to their anchor window's
             // presentation bounds.
             .sheet(isPresented: $showEQ) {
-                EQEditorView()
-                    .environment(audioManager)
+                @Bindable var audioManager = audioManager
+                EQEditorView(settings: $audioManager.eqSettings)
             }
             .help("Equalizer")
 

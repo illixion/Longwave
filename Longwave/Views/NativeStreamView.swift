@@ -2,6 +2,7 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import RAVEMedia
 
 private final class MacNativeLayerView: UIView {
     let displayLayer: AVSampleBufferDisplayLayer
@@ -624,8 +625,8 @@ struct NativeStreamView: View {
         .padding(16)
         .glassBackgroundEffect()
         .sheet(isPresented: $showEQ) {
-            EQEditorView()
-                .environment(audioManager)
+            @Bindable var audioManager = audioManager
+            EQEditorView(settings: $audioManager.eqSettings)
         }
     }
 
@@ -670,8 +671,8 @@ struct NativeStreamView: View {
         }
         .frame(width: Self.audioOnlyWidth)
         .sheet(isPresented: $showEQ) {
-            EQEditorView()
-                .environment(audioManager)
+            @Bindable var audioManager = audioManager
+            EQEditorView(settings: $audioManager.eqSettings)
         }
     }
 

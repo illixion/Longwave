@@ -39,28 +39,37 @@ struct MainView: View {
     @State private var selectedTab: Tab = .connections
 
     var body: some View {
-        Group {
-            switch selectedTab {
-            case .connections:
-                ConnectionListView()
-            #if FOVEATED_ENABLED
-            case .pcvr:
-                PCVRTabView()
-            #endif
-            case .projects:
-                ProjectsView()
-            case .sessions:
-                SessionsView()
-            case .broadcast:
-                BroadcastView()
-            case .settings:
-                SettingsView()
-            case .console:
-                ConsoleTabView()
+        // The switch's `.id(selectedTab)` deliberately gives that content a
+        // fresh identity every tab change; a stable ZStack around it keeps
+        // that identity churn from reaching the modifiers below (`.ornament`
+        // included) — chaining them straight onto the `.id`'d view instead
+        // tore the ornament down and rebuilt it on every switch, rather than
+        // just failing to animate it. Matches Spatial Stash's ContentView,
+        // which wraps the same way.
+        ZStack {
+            Group {
+                switch selectedTab {
+                case .connections:
+                    ConnectionListView()
+                #if FOVEATED_ENABLED
+                case .pcvr:
+                    PCVRTabView()
+                #endif
+                case .projects:
+                    ProjectsView()
+                case .sessions:
+                    SessionsView()
+                case .broadcast:
+                    BroadcastView()
+                case .settings:
+                    SettingsView()
+                case .console:
+                    ConsoleTabView()
+                }
             }
+            .id(selectedTab)
+            .transition(.opacity)
         }
-        .id(selectedTab)
-        .transition(.opacity)
         .animation(.smooth(duration: 0.25), value: selectedTab)
         .onOpenURL { url in
             // AirDropped pairing URLs from the macOS companion.

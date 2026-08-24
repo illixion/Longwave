@@ -48,10 +48,18 @@ if [[ -d repos/moonlight-common-c ]]; then
     echo "==> repos/moonlight-common-c exists — skipping (use --force to redo)"
 else
     echo "==> Cloning and patching moonlight-common-c ($MOONLIGHT_COMMON_C_REF)"
-    git clone --recursive https://github.com/moonlight-stream/moonlight-common-c.git repos/moonlight-common-c
+    # Clone WITHOUT --recursive, then check out the pin, then init submodules.
+    # Order matters: a recursive clone populates submodules as they stand on the
+    # default branch, where `nanors` is a submodule — but at the pinned ref it is
+    # a plain tracked directory. The checkout then aborts with "untracked working
+    # tree files would be overwritten" on nanors/rs.c and friends. Initializing
+    # after the checkout also gets the submodule commits the pin actually
+    # records, rather than whatever the default branch points at.
+    git clone https://github.com/moonlight-stream/moonlight-common-c.git repos/moonlight-common-c
     (
         cd repos/moonlight-common-c
         git checkout "$MOONLIGHT_COMMON_C_REF"
+        git submodule update --init --recursive
         # Add SPM Package.swift wrapper and public headers directory
         cp ../../ci/deps/moonlight-common-c/Package.swift .
         mkdir -p include

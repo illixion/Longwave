@@ -6,7 +6,7 @@
 //  a `.task` loop re-poses on its own clock and visibly lags the render, while this runs
 //  in the frame it affects and is handed the actual delta time to smooth against.
 //
-//  Ported from the Spatialcraft project, where it drives that app's wrist HUD.
+//  Ported from the Spatialcraft project.
 
 import Foundation
 import RealityKit

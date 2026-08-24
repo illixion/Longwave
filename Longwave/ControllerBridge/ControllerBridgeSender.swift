@@ -1521,7 +1521,7 @@ final class ControllerBridgeSender {
     /// How squarely a palm faces the viewer — the wrist HUD's summon gesture.
     ///
     /// A plain dot product, deliberately, rather than the pitch-invariant variant
-    /// Spatialcraft's wrist HUD uses. Stripping the finger-axis component suits a game
+    /// used elsewhere. Stripping the finger-axis component suits a use case
     /// that wants a forgiving trigger, but here it widens the engaging cone until the
     /// panel shows up on almost any orientation with a sideways component. "Turn your
     /// palm toward your face" should mean exactly that.

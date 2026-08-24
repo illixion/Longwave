@@ -8,7 +8,7 @@
 //  hand and the emulated controller side line up with the defaults below.
 //
 //  The table AROUND those targets is no longer this app's. It was adapted from
-//  Spatialcraft's HandGestureMapping (which bound pinches to game actions) and
+//  a table Spatialcraft carried for its own purposes and
 //  stayed a line-for-line copy of it: eight slots, one reserved for the
 //  locomotion joystick and rendered locked, Codable, persisted as one blob.
 //  That now lives in RAVE Engine as RAVEFingerBindingTable, shared by both.

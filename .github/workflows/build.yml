@@ -32,6 +32,27 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
 
+      # RAVESDK and RAVEEngine are local Swift package path references
+      # (../RAVESDK, ../RAVEEngine relative to Longwave.xcodeproj), so they have
+      # to land one level ABOVE $GITHUB_WORKSPACE. That is why this is a plain
+      # clone rather than actions/checkout: that action rejects any `path:`
+      # resolving outside the workspace. Without this step every xcodebuild
+      # invocation below dies in package resolution with exit 74, before
+      # compiling anything.
+      #
+      # No credentials, and none would help: both repos are public, while
+      # github.token is scoped to this repository alone. If either goes private
+      # again this needs a PAT or deploy key in secrets instead.
+      #
+      # Deliberately unpinned, unlike the third-party refs in `env:` above. The
+      # apps track these two at HEAD by design — that is the whole point of a
+      # path reference — so pinning here would make CI test a combination no
+      # local build ever sees.
+      - name: Clone the RAVE packages as siblings
+        run: |
+          git clone --depth 1 https://github.com/illixion/RAVESDK.git ../RAVESDK
+          git clone --depth 1 https://github.com/illixion/RAVEEngine.git ../RAVEEngine
+
       - name: Clone and patch RoyalVNC
         run: |
           git clone https://github.com/royalapplications/royalvnc.git repos/royalvnc

@@ -101,6 +101,44 @@ Requires the [Longwave Companion](#longwave-companion-for-windows-beta) on the P
 
 ## Setup
 
+### RAVE Packages
+
+Longwave links two shared packages:
+
+| Package | Products used |
+|---|---|
+| [`RAVESDK`](https://github.com/illixion/RAVESDK) | `RAVEUI`, `RAVEConsole`, `RAVEMedia` |
+| [`RAVEEngine`](https://github.com/illixion/RAVEEngine) | `RAVEInput`, `RAVEDiagnostics` |
+
+Both are referenced as **local** Swift packages by relative path —
+`../RAVESDK` and `../RAVEEngine`, resolved against the directory holding
+`Longwave.xcodeproj` — not as versioned remote dependencies. A clone therefore
+does not fetch them; check them out as **siblings** of this repo:
+
+```bash
+git clone https://github.com/illixion/RAVESDK.git
+git clone https://github.com/illixion/RAVEEngine.git
+```
+
+giving you:
+
+```
+some-parent/
+├── RAVESDK/
+├── RAVEEngine/
+└── Longwave/
+```
+
+The requirement is only that this repo's parent directory also contains
+directories named exactly `RAVESDK` and `RAVEEngine`; this repo's own directory
+name does not matter. Get it wrong and Xcode fails at package resolution, before
+compiling anything.
+
+Why path references and not versions: the packages and the apps co-evolve
+continuously — `RAVEInput` was converged out of this app and two others, and the
+audio EQ moved the other way — and a path reference keeps "move this into the
+package and update its callers" a single atomic edit.
+
 ### VNC Dependencies
 
 Longwave uses [RoyalVNCKit](https://github.com/royalapplications/royalvnc) for the VNC protocol implementation.
@@ -164,7 +202,7 @@ Moonlight streaming requires [moonlight-common-c](https://github.com/moonlight-s
 
 ### Building
 
-Open `Longwave.xcodeproj` in Xcode, then add the local packages as described above. Build and run on Apple Vision Pro or the visionOS Simulator.
+Open `Longwave.xcodeproj` in Xcode. The RAVE packages resolve automatically once they are checked out as siblings (see [RAVE Packages](#rave-packages)). Build and run on Apple Vision Pro or the visionOS Simulator.
 
 The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple deprecated x86_64 with macOS Tahoe. When building for the simulator from the command line, use a concrete destination (e.g. `-destination 'platform=visionOS Simulator,name=Apple Vision Pro'`) rather than a generic one.
 

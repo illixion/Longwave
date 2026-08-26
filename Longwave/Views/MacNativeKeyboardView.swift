@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// The Native keyboard window: the same key grid the VNC and Moonlight windows
-/// use, plus the gaze scroll pad.
+/// use, plus dictation and the gaze scroll pad.
 ///
 /// The Native stream had no keyboard window at all — only the hardware-keyboard
 /// capture inside the stream view — so with nothing paired there was no way to
@@ -16,7 +16,16 @@ struct MacNativeKeyboardView: View {
 
     @AppStorage(ConnectionDefaults.Keys.keyboardScrollPad) private var showsScrollPad = false
 
+    /// Same in-app dictation the VNC keyboard has: visionOS's own dictation lives
+    /// in the system keyboard, whose session a streaming window kills (see
+    /// `DictationController`).
+    @State private var dictation = DictationRelay()
+
     private var sink: MacNativeKeyboardSink { MacNativeKeyboardSink(manager: screenManager) }
+
+    /// Whether either keyboard channel can carry literal text right now — the
+    /// text channel outright, or the shortcut channel one keystroke at a time.
+    private var canType: Bool { sink.supports(.paste) }
 
     var body: some View {
         NavigationStack {
@@ -52,6 +61,10 @@ struct MacNativeKeyboardView: View {
             HStack(spacing: 12) {
                 Spacer(minLength: 0)
 
+                DictationButton(relay: dictation, isEnabled: canType) { text in
+                    sink.insertText(text)
+                }
+
                 Button {
                     showsScrollPad.toggle()
                 } label: {
@@ -66,6 +79,7 @@ struct MacNativeKeyboardView: View {
                 .foregroundStyle(.secondary)
 
             channelNote
+            DictationNote(relay: dictation)
         }
         // Pinned to the keys' own width so a long caption can't stretch the
         // window past the keyboard it belongs to.

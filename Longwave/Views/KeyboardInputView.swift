@@ -17,10 +17,7 @@ struct KeyboardInputView: View {
     /// In-app dictation, so typing by voice into a remote desktop doesn't depend
     /// on the system keyboard's dictation session (see `DictationController`).
     /// macOS keeps its own dictation — the session that fails is visionOS's.
-    @State private var dictation = DictationController()
-    /// How much of this dictation run has already been typed onto the remote, so
-    /// each settled phrase only sends its new tail.
-    @State private var dictatedSoFar = ""
+    @State private var dictation = DictationRelay()
     #endif
 
     private var sink: VNCKeyboardSink { VNCKeyboardSink(manager: connectionManager) }
@@ -50,16 +47,6 @@ struct KeyboardInputView: View {
             }
             .padding(20)
             .navigationTitle("Keyboard — \(connectionManager.connectionTitle)")
-            #if os(visionOS)
-            .onDisappear {
-                Task { await dictation.cancel() }
-            }
-            // Only settled phrases are typed onward: the recognizer's revisions
-            // would arrive at the remote as backspace-and-retype churn.
-            .onChange(of: dictation.settledTranscript) { _, transcript in
-                typeDictated(transcript)
-            }
-            #endif
         }
     }
 
@@ -137,58 +124,12 @@ struct KeyboardInputView: View {
     // MARK: - Dictation
 
     #if os(visionOS)
-    @ViewBuilder
-    private var dictationNoteLabel: some View {
-        if let note = dictationNote {
-            Text(note)
-                .font(.caption)
-                .foregroundStyle(dictation.isListening ? Color.secondary : Color.orange)
-        }
-    }
+    private var dictationNoteLabel: some View { DictationNote(relay: dictation) }
 
     private var dictationButton: some View {
-        Button {
-            Task { await toggleDictation() }
-        } label: {
-            Label(dictation.isListening ? "Stop" : "Dictate",
-                  systemImage: dictation.isListening ? "mic.fill" : "mic")
+        DictationButton(relay: dictation) { text in
+            connectionManager.routeInsertText(text)
         }
-        .buttonStyle(.bordered)
-        .tint(dictation.isListening ? .red : nil)
-        .disabled(dictation.isBusy)
-        .help(dictation.isListening ? "Stop dictating" : "Dictate text to the remote desktop")
-    }
-
-    private var dictationNote: String? {
-        switch dictation.status {
-        case .preparing: return "Preparing dictation…"
-        case .listening: return "Listening — words are typed as each phrase settles."
-        case .unavailable(let reason), .failed(let reason): return reason
-        case .idle: return nil
-        }
-    }
-
-    private func toggleDictation() async {
-        if dictation.isListening {
-            await dictation.stop()
-            return
-        }
-        dictatedSoFar = ""
-        await dictation.start()
-    }
-
-    /// Type whatever is new since the last settled transcript. Settled text only
-    /// ever grows within a run; anything else means the session restarted or was
-    /// cancelled, so resync silently rather than backspacing the remote.
-    private func typeDictated(_ transcript: String) {
-        guard transcript.hasPrefix(dictatedSoFar) else {
-            dictatedSoFar = transcript
-            return
-        }
-        let tail = String(transcript.dropFirst(dictatedSoFar.count))
-        dictatedSoFar = transcript
-        guard !tail.isEmpty else { return }
-        connectionManager.routeInsertText(tail)
     }
     #else
     private var dictationNoteLabel: some View { EmptyView() }

@@ -507,22 +507,40 @@ struct SSHTerminalView: View {
     }
 }
 
-/// Approximates `.bordered`'s glass-pill look. `.bordered` is a
-/// `PrimitiveButtonStyle`, which doesn't expose press state, and quick-key
-/// repeat needs to know exactly when the button goes down/up — see the note
-/// on `SSHTerminalView.quickKey(_:_:)` for why that must come from Button's
-/// own press tracking rather than an added gesture.
+/// Approximates `.bordered`'s glass pill — the look the modifier latches sitting
+/// beside these keys get for free. `.bordered` is a `PrimitiveButtonStyle`, which
+/// doesn't expose press state, and quick-key repeat needs to know exactly when
+/// the button goes down/up — see the note on `SSHTerminalView.quickKey(_:_:)` for
+/// why that must come from Button's own press tracking rather than an added
+/// gesture. So the pill is drawn here, as close to the real thing as it can be:
+///
+/// - **Geometry is measured, not guessed.** 22 pt horizontal and 10 pt vertical
+///   padding round the label puts the capsule pixel-for-pixel on top of what
+///   `.bordered` draws for labels this size. The 48 × 44 frame stays *outside*
+///   it, reserving the same gaze target the latches reserve without stretching
+///   the pill — `.bordered` doesn't stretch to its frame either, which is why the
+///   old fixed 48 × 44 background read as a different, squarer control.
+/// - **`.fill.tertiary`** is the nearest semantic match to `.bordered`'s fill.
+/// - **The gaze highlight is explicit.** A custom `ButtonStyle` gets none of the
+///   platform's automatic hover treatment, which is why these keys were the only
+///   thing in the row that didn't light up when looked at.
 private struct QuickKeyButtonStyle: ButtonStyle {
     var isEnabled: Bool
     var onPressChange: (Bool) -> Void
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(minWidth: 48, minHeight: 44)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
             .background(
-                configuration.isPressed ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                configuration.isPressed
+                    ? AnyShapeStyle(Color.accentColor.opacity(0.35))
+                    : AnyShapeStyle(.fill.tertiary),
+                in: .capsule
             )
+            .contentShape(.capsule)
+            .hoverEffect(.highlight)
+            .frame(minWidth: 48, minHeight: 44)
             .opacity(isEnabled ? 1 : 0.4)
             .onChange(of: configuration.isPressed) { _, pressed in
                 onPressChange(pressed)

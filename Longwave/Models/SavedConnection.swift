@@ -458,6 +458,10 @@ final class SavedConnection {
     /// which type it was until the connection is next edited and saved.
     var nativeScreenEnabledStorage: Bool?
     var nativeAudioEnabledStorage: Bool?
+    /// Opt-in Unity presentation: each streamable host window becomes its
+    /// own visionOS scene and a persistent control window owns the session.
+    /// Optional keeps existing SwiftData stores lightweight-migration safe.
+    var nativeUnityEnabledStorage: Bool?
 
     /// Whether this Native connection streams the Mac's screen.
     var nativeScreenEnabled: Bool {
@@ -469,6 +473,11 @@ final class SavedConnection {
     var nativeAudioEnabled: Bool {
         get { nativeAudioEnabledStorage ?? (connectionTypeRawValue == "audio") }
         set { nativeAudioEnabledStorage = newValue }
+    }
+
+    var nativeUnityEnabled: Bool {
+        get { nativeUnityEnabledStorage ?? false }
+        set { nativeUnityEnabledStorage = newValue }
     }
 
     /// Opt-in low-latency mode: carries PCM over UDP with a smaller jitter

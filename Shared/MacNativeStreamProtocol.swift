@@ -6,6 +6,9 @@ nonisolated enum MacNativeStreamProtocol {
     static let defaultPort: UInt16 = 4857
     static let frameLengthPrefixSize = 4
     static let maxFrameBytes: UInt32 = 64 * 1024 * 1024
+    /// Keeps opt-in Unity sessions from creating an unbounded number of
+    /// simultaneous ScreenCaptureKit and VideoToolbox pipelines.
+    static let maxConcurrentWindowStreams = 6
 
     /// v1: single anonymous desktop stream over `formatDescription`/`videoFrame`.
     /// v2: adds hosts other than macOS, a published window inventory, and

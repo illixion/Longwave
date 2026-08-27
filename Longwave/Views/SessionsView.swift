@@ -106,7 +106,7 @@ struct SessionsView: View {
         case "audio-stream":
             return audioManager.connectionTitle
         #if os(visionOS)
-        case "mac-native-stream":
+        case "mac-native-stream", "mac-native-unity-controls":
             return macNativeManager.title
         #endif
         #if MOONLIGHT_ENABLED

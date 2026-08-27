@@ -47,6 +47,7 @@ struct ConnectionFormView: View {
         #endif
     }()
     @State private var nativeAudioEnabled: Bool = true
+    @State private var nativeUnityEnabled: Bool = false
     @State private var lowLatencyAudio: Bool = false
 
     // SSH
@@ -162,7 +163,10 @@ struct ConnectionFormView: View {
                 }
                 .disabled(
                     hostname.trimmingCharacters(in: .whitespaces).isEmpty
-                    || (connectionType == .native && !nativeScreenEnabled && !nativeAudioEnabled)
+                    || (connectionType == .native
+                        && !nativeScreenEnabled
+                        && !nativeAudioEnabled
+                        && !nativeUnityEnabled)
                 )
             }
         }
@@ -225,6 +229,11 @@ struct ConnectionFormView: View {
 
             #if os(visionOS)
             Toggle("Screen", isOn: $nativeScreenEnabled)
+            Toggle("Unity", isOn: $nativeUnityEnabled)
+
+            Text("Unity opens up to six streamable Mac windows as individual visionOS windows and keeps a control window available for switching windows and showing the full desktop.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             #endif
             Toggle("Audio", isOn: $nativeAudioEnabled)
         }
@@ -608,6 +617,7 @@ struct ConnectionFormView: View {
         companionToken = saved.companionToken
         nativeScreenEnabled = saved.nativeScreenEnabled
         nativeAudioEnabled = saved.nativeAudioEnabled
+        nativeUnityEnabled = saved.nativeUnityEnabled
         lowLatencyAudio = saved.lowLatencyAudio
         sshUsername = saved.sshUsername
         sshLaunchCommand = saved.sshLaunchCommand
@@ -674,6 +684,7 @@ struct ConnectionFormView: View {
             connection.companionToken = companionToken.trimmingCharacters(in: .whitespacesAndNewlines)
             connection.nativeScreenEnabled = nativeScreenEnabled
             connection.nativeAudioEnabled = nativeAudioEnabled
+            connection.nativeUnityEnabled = nativeUnityEnabled
             connection.lowLatencyAudio = lowLatencyAudio
 
         #if MOONLIGHT_ENABLED

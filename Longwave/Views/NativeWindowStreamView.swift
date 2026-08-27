@@ -45,6 +45,7 @@ struct NativeWindowStreamView: View {
         .onAppear {
             screenManager.ensureSessionConnected()
             screenManager.openWindowStream(windowID)
+            screenManager.sendFocusWindow(windowID: windowID)
         }
         .onDisappear {
             screenManager.closeWindowStream(windowID)

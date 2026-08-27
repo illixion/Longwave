@@ -22,6 +22,10 @@ enum MacNativeWindowID: Int, Codable, Hashable {
     case shared = 0
 }
 
+enum MacNativeUnityControlID: Int, Codable, Hashable {
+    case shared = 0
+}
+
 /// Value key for the per-window (Unity-style) Native scenes — one visionOS
 /// window per streamed host window, keyed by the host's window ID so
 /// repeated opens of the same host window reactivate its one scene.
@@ -163,6 +167,7 @@ final class WindowSessionRegistry {
         switch id {
         case "main": openWindow(id: id, value: MainWindowID.shared)
         case "foveated-controls": openWindow(id: id, value: PCVRWindowID.shared)
+        case "mac-native-unity-controls": openWindow(id: id, value: MacNativeUnityControlID.shared)
         default: openWindow(id: id)
         }
     }
@@ -185,6 +190,7 @@ final class WindowSessionRegistry {
         #endif
         #if os(visionOS)
         kinds.append(WindowKind(id: "mac-native-stream", title: "Native", systemImage: "macwindow.on.rectangle"))
+        kinds.append(WindowKind(id: "mac-native-unity-controls", title: "Unity Controls", systemImage: "slider.horizontal.3"))
         #endif
         // On visionOS this only opens via the Native window's pop-out
         // button; on macOS (no Screen receiver) a Native connection opens

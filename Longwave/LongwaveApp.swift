@@ -169,10 +169,27 @@ struct LongwaveApp: App {
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
 
+        WindowGroup(
+            "Unity Controls",
+            id: "mac-native-unity-controls",
+            for: MacNativeUnityControlID.self
+        ) { _ in
+            MacNativeUnityControlView()
+                .environment(macNativeManager)
+                .environment(audioManager)
+                .trackWindowSession(id: "mac-native-unity-controls")
+        } defaultValue: {
+            .shared
+        }
+        .defaultSize(width: 980, height: 180)
+        .windowResizability(.contentSize)
+        .windowStyle(.plain)
+        .defaultLaunchBehavior(.suppressed)
+
         // Unity-style per-window streams: one chrome-free scene per streamed
         // host window, keyed by the host window ID. No ornament by design —
         // the scene is just the remote window's pixels; control lives in the
-        // Native controller window above.
+        // Unity Controls window above.
         WindowGroup(
             "Mac Window",
             id: "mac-native-window",

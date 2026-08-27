@@ -113,8 +113,10 @@ struct NativeStreamView: View {
             // Soft teardown only — visionOS also fires this on transient
             // hides (space restore, snapping); a full forget happens only
             // from the explicit Disconnect button below.
-            screenManager.disconnect()
-            audioManager.windowDisappeared()
+            if !screenManager.unityEnabled {
+                screenManager.disconnect()
+                audioManager.windowDisappeared()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
@@ -860,11 +862,13 @@ struct NativeStreamView: View {
                 value: MacNativeWindowStreamID(windowID: windowID)
             )
         }
+        screenManager.unityEnabled = false
         screenManager.forget()
         audioManager.userDisconnect()
         WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
             dismissWindow(id: "mac-native-keyboard")
             dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+            dismissWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
         }
     }
 }

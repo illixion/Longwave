@@ -75,6 +75,9 @@ final class MacNativeStreamManager {
     /// Subscribed per-window streams, keyed by host window ID. Each entry
     /// backs one ornament-free visionOS scene.
     private(set) var windowSessions: [UInt32: MacNativeWindowSession] = [:]
+    /// Unity keeps the protocol session alive independently of the desktop
+    /// scene and lets Unity Controls reconcile the host inventory into scenes.
+    var unityEnabled = false
 
     var supportsWindowStreams: Bool { serverAck?.supportsWindowStreams ?? false }
     var keyCodeSpace: MacNativeStreamProtocol.KeyCodeSpace {
@@ -145,6 +148,7 @@ final class MacNativeStreamManager {
     /// off, so the live toggle has something to connect to.
     func prepare(for connection: SavedConnection) {
         self.connection = connection
+        unityEnabled = connection.nativeUnityEnabled
     }
 
     func connect(to connection: SavedConnection) {
@@ -234,6 +238,7 @@ final class MacNativeStreamManager {
         windowSessions = [:]
         connection = nil
         liveEnabled = false
+        unityEnabled = false
     }
 
     /// Connects the session if a target is known and nothing is live yet —

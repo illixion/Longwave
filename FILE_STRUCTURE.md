@@ -18,7 +18,8 @@ Longwave/
 │   ├── SettingsView.swift              — New-connection defaults (@AppStorage)
 │   ├── ConsoleView.swift               — Log viewer (tab + "console" pop-out window)
 │   ├── AudioStreamView.swift           — Audio mini player (album art, transport, mute, utility row)
-│   ├── NativeStreamView.swift          — Transparent desktop scene + per-window controller (window picker)
+│   ├── NativeStreamView.swift          — Transparent desktop scene + manual per-window picker
+│   ├── MacNativeUnityControlView.swift — Unity inventory reconciler, scene switcher, desktop/session controls
 │   ├── NativeWindowStreamView.swift    — One chrome-free scene per streamed host window (Unity-style)
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
 │   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
@@ -132,6 +133,7 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── TextDiffTests.swift                 — keyboard common-prefix diff
 ├── CompanionInjectProtocolTests.swift  — inject framing / drain / backspace
 ├── SavedConnectionEnvTests.swift       — SSH env parsing + name validation
+├── SavedConnectionNativeTests.swift    — Native Unity persistence defaults
 ├── MacNativeStreamProtocolTests.swift  — Native hello/video framing and partial-frame draining
 ├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
 └── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)

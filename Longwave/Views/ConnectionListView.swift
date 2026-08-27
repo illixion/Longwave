@@ -210,14 +210,12 @@ struct ConnectionListView: View {
         }
     }
 
-    /// "Screen + Audio" / "Screen only" / "Audio only" for the list row.
     private func nativeSummary(_ connection: SavedConnection) -> String {
-        switch (connection.nativeScreenEnabled, connection.nativeAudioEnabled) {
-        case (true, true): "Screen + Audio"
-        case (true, false): "Screen only"
-        case (false, true): "Audio only"
-        case (false, false): "Nothing enabled"
-        }
+        var features: [String] = []
+        if connection.nativeUnityEnabled { features.append("Unity") }
+        if connection.nativeScreenEnabled { features.append("Screen") }
+        if connection.nativeAudioEnabled { features.append("Audio") }
+        return features.isEmpty ? "Nothing enabled" : features.joined(separator: " + ")
     }
 
     private func connectTo(_ connection: SavedConnection) {
@@ -282,7 +280,12 @@ struct ConnectionListView: View {
                 lowLatency: connection.lowLatencyAudio
             )
         }
-        openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
+            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        }
+        if connection.nativeUnityEnabled {
+            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+        }
         #else
         if connection.nativeAudioEnabled {
             connectAudio(connection)

@@ -166,9 +166,6 @@ final class MacNativeWindowStreamCoordinator {
     nonisolated(unsafe) var onWindowFrame: (@Sendable (UInt32, Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onWindowClosed: (@Sendable (UInt32, String?) -> Void)?
 
-    /// Encoder budget: at most this many simultaneous window streams.
-    static let maxStreams = 6
-
     private var streamers: [UInt32: MacNativeWindowStreamer] = [:]
     private var targets: [UInt32: MacNativeWindowTarget] = [:]
     private var lastInventory: [MacNativeStreamProtocol.WindowInfo] = []
@@ -210,8 +207,11 @@ final class MacNativeWindowStreamCoordinator {
 
     func startStream(windowID: UInt32) {
         guard streamers[windowID] == nil else { return }
-        guard streamers.count < Self.maxStreams else {
-            onWindowClosed?(windowID, "Window stream limit reached (\(Self.maxStreams)).")
+        guard streamers.count < MacNativeStreamProtocol.maxConcurrentWindowStreams else {
+            onWindowClosed?(
+                windowID,
+                "Window stream limit reached (\(MacNativeStreamProtocol.maxConcurrentWindowStreams))."
+            )
             return
         }
         let generation = generation

@@ -42,9 +42,14 @@ set -euo pipefail
 # default below assumes whichever host you point this at has the CloudXR SDK staged already).
 HOST="${LONGWAVE_PC_HOST:-winvm}"
 BRIDGE_WIN='C:\dev\Longwave-bridge'
-# Where the NGC-downloaded CloudXR SDK is hand-staged on the host (matches provision-pc.ps1's
-# own default) — third-party redistributable, not built, just copied along.
-CLOUDXR_SDK_WIN="${LONGWAVE_CLOUDXR_SDK:-C:\\Users\\Ixion\\cloudxr-stream-manager_v6.1.0\\extracted}"
+# Where the NGC-downloaded CloudXR SDK is hand-staged on the host (matches
+# provision-pc.ps1's own default) — resolved after --host is parsed because the default
+# winvm and the gaming PC use different Windows profile names.
+CLOUDXR_SDK_WIN="${LONGWAVE_CLOUDXR_SDK:-}"
+VIGEMBUS_VERSION="1.22.0"
+VIGEMBUS_ASSET="ViGEmBus_1.22.0_x64_x86_arm64.exe"
+VIGEMBUS_SHA256="89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a"
+VIGEMBUS_URL="https://github.com/nefarius/ViGEmBus/releases/download/v${VIGEMBUS_VERSION}/${VIGEMBUS_ASSET}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_PROJ="$REPO_ROOT/Longwave-PCVR-Host/Host.csproj"
@@ -64,6 +69,14 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ -z "$CLOUDXR_SDK_WIN" ]]; then
+  if [[ "$HOST" == "winvm" ]]; then
+    CLOUDXR_SDK_WIN='C:\Users\Username\cloudxr-stream-manager_v6.1.0\extracted'
+  else
+    CLOUDXR_SDK_WIN='C:\Users\Ixion\cloudxr-stream-manager_v6.1.0\extracted'
+  fi
+fi
 
 SSH_EXEC="$HOME/.claude/bin/ssh-exec"
 ps_exec() {
@@ -126,8 +139,12 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer', 'Longwave-PCVR-Host')) {
   # Phase 0 spike: MSVC's Hostarm64\x64 cross-compiler + cppwinrt on INCLUDE + the SDK's
   # bin\<ver>\arm64 on PATH for rc.exe. Single-config, so CMAKE_BUILD_TYPE is set once at
   # configure time rather than passed as --config at build time.
-  echo "==> building SessionBroker + OpenXRLayer (Release) on $HOST"
-  ps_exec 'build broker + layer' 900 "
+  # One remote call per project. ssh-exec carries PowerShell through Windows OpenSSH as
+  # UTF-16LE Base64, whose cmd.exe wrapper has an 8191-character ceiling; combining both
+  # projects crossed it before PowerShell could start.
+  for dir in SessionBroker OpenXRLayer; do
+    echo "==> building $dir (Release) on $HOST"
+    ps_exec "build $dir" 900 "
 \$ErrorActionPreference = 'Stop'
 \$msvc = (Get-ChildItem 'C:\\BuildTools\\VC\\Tools\\MSVC' -Directory | Select-Object -First 1).FullName
 \$sdk = 'C:\\Program Files (x86)\\Windows Kits\\10'
@@ -135,34 +152,19 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer', 'Longwave-PCVR-Host')) {
 \$env:PATH = \"\$msvc\\bin\\Hostarm64\\x64;\$sdk\\bin\\\$sdkver\\arm64;C:\\Program Files\\CMake\\bin;\$env:PATH\"
 \$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
 \$env:LIB = \"\$msvc\\lib\\x64;\$sdk\\Lib\\\$sdkver\\ucrt\\x64;\$sdk\\Lib\\\$sdkver\\um\\x64\"
-
-Remove-Item '$BRIDGE_WIN\\SessionBroker\\build\\LongwaveSessionBroker.exe' -Force -ErrorAction SilentlyContinue
-Remove-Item '$BRIDGE_WIN\\OpenXRLayer\\build\\LongwaveControllerBridgeLayer.dll' -Force -ErrorAction SilentlyContinue
-
-foreach (\$dir in @('SessionBroker', 'OpenXRLayer')) {
-  \$build = Join-Path '$BRIDGE_WIN' \"\$dir\build\"
-  \$src = Join-Path '$BRIDGE_WIN' \$dir
-  # Configure once, then just build — a stale CMakeCache.txt from a differently-shaped source
-  # tree (e.g. re-synced after a rename) is exactly the kind of thing worth a fresh configure,
-  # so wipe and reconfigure rather than trust an existing cache blindly.
-  if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
-  New-Item -ItemType Directory -Force -Path \$build | Out-Null
-  Push-Location \$build
-  cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
-  if (\$LASTEXITCODE -ne 0) { throw \"CMake configure failed for \$dir\" }
-  nmake
-  if (\$LASTEXITCODE -ne 0) { throw \"nmake build failed for \$dir\" }
-  Pop-Location
-}
-
-foreach (\$f in @(
-  '$BRIDGE_WIN\\SessionBroker\\build\\LongwaveSessionBroker.exe',
-  '$BRIDGE_WIN\\OpenXRLayer\\build\\LongwaveControllerBridgeLayer.dll'
-)) {
-  if (-not (Test-Path \$f)) { throw \"expected native build output missing: \$f\" }
-}
-'built'
+\$src = Join-Path '$BRIDGE_WIN' '$dir'
+\$build = Join-Path \$src 'build'
+if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
+New-Item -ItemType Directory -Force -Path \$build | Out-Null
+Push-Location \$build
+cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
+if (\$LASTEXITCODE -ne 0) { throw 'CMake configure failed for $dir' }
+nmake
+if (\$LASTEXITCODE -ne 0) { throw 'nmake build failed for $dir' }
+Pop-Location
+'built $dir'
 "
+  done
 
   # Third call rather than a fourth section of the second, for the same 8191-char reason
   # documented below. The 32-bit shim needs a different toolchain than everything above it --
@@ -184,15 +186,11 @@ foreach (\$f in @(
 \$env:PATH = \"\$msvc\\bin\\Hostarm64\\x86;\$sdk\\bin\\\$sdkver\\arm64;C:\\Program Files\\CMake\\bin;\$env:PATH\"
 \$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
 \$env:LIB = \"\$msvc\\lib\\x86;\$sdk\\Lib\\\$sdkver\\ucrt\\x86;\$sdk\\Lib\\\$sdkver\\um\\x86\"
-
 \$src = Join-Path '$BRIDGE_WIN' 'SessionBroker'
 \$build = Join-Path \$src 'build32'
-Remove-Item (Join-Path \$build 'LibOVRRT32_1.dll') -Force -ErrorAction SilentlyContinue
 if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
 New-Item -ItemType Directory -Force -Path \$build | Out-Null
 Push-Location \$build
-# A Win32 configure builds the shim and nothing else -- every CloudXR-facing target in
-# SessionBroker/CMakeLists.txt is gated on a 64-bit configure, so this is cheap.
 cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
 if (\$LASTEXITCODE -ne 0) { throw 'CMake configure (Win32) failed' }
 nmake LibOVRRT32_1
@@ -200,9 +198,6 @@ if (\$LASTEXITCODE -ne 0) { throw 'nmake build (32-bit shim) failed' }
 Pop-Location
 \$dll = Join-Path \$build 'LibOVRRT32_1.dll'
 if (-not (Test-Path \$dll)) { throw \"expected 32-bit shim missing: \$dll\" }
-# Assert the bitness rather than trusting the target name: a cross-compiler picked up from
-# the wrong Host*\\* directory produces a perfectly valid DLL of the wrong architecture, and
-# the only symptom downstream is a 32-bit game that cannot load it.
 \$fs = [System.IO.File]::OpenRead(\$dll); \$br = New-Object System.IO.BinaryReader(\$fs)
 \$fs.Position = 0x3C; \$peOff = \$br.ReadInt32(); \$fs.Position = \$peOff + 4
 \$machine = \$br.ReadUInt16(); \$br.Close(); \$fs.Close()
@@ -289,6 +284,21 @@ mkdir -p "$STAGE/host/Server"
 scp -qr "$HOST:$CLOUDXR_SDK_FS/Server/*" "$STAGE/host/Server/"
 scp -q  "$HOST:$CLOUDXR_SDK_FS/SampleClient/NvStreamManagerClient.dll" "$STAGE/host/NvStreamManagerClient.dll"
 
+# ------------------------------------------------------------------ optional Xbox driver
+# The client code is linked into the broker, but Windows needs the separately installed
+# ViGEmBus driver before an Xbox 360 target can exist. Ship the official EOL release in the
+# signed bundle and let the user invoke its UAC-backed installer explicitly from the UI.
+echo "==> collecting optional ViGEmBus ${VIGEMBUS_VERSION}"
+mkdir -p "$STAGE/drivers" "$STAGE/licenses"
+curl -fL --retry 3 --output "$STAGE/drivers/$VIGEMBUS_ASSET" "$VIGEMBUS_URL"
+VIGEMBUS_ACTUAL="$(shasum -a 256 "$STAGE/drivers/$VIGEMBUS_ASSET" | awk '{print $1}')"
+if [[ "$VIGEMBUS_ACTUAL" != "$VIGEMBUS_SHA256" ]]; then
+  echo "error: ViGEmBus checksum mismatch: expected $VIGEMBUS_SHA256, got $VIGEMBUS_ACTUAL" >&2
+  exit 1
+fi
+cp "$REPO_ROOT/CompanionWindows/licenses/ViGEmClient-LICENSE.txt" "$STAGE/licenses/"
+cp "$REPO_ROOT/CompanionWindows/licenses/ViGEmBus-LICENSE.txt" "$STAGE/licenses/"
+
 # ------------------------------------------------------------------ PCVR/Games UI (minified)
 # The Electron-side PCVR and Game library pages (Longwave-PCVR-Host/ui/) are as closed-source
 # as the rest of this bundle — they talk to backend RPCs that only make sense with the PCVR
@@ -348,7 +358,7 @@ echo "    clean"
 ASSET="Longwave-PCVR-Bundle-win-x64.zip"
 ZIP="$STAGE/$ASSET"
 echo "==> zipping bundle"
-(cd "$STAGE" && zip -qr "$ASSET" host bridge)
+(cd "$STAGE" && zip -qr "$ASSET" host bridge drivers licenses)
 shasum -a 256 "$ZIP" | awk '{print $1"  '"$ASSET"'"}' > "$ZIP.sha256"
 echo "    $(du -h "$ZIP" | cut -f1)  $ASSET"
 echo "    $(cat "$ZIP.sha256")"

@@ -499,7 +499,7 @@ private struct PCVRSessionForm: View {
             Toggle(isOn: $connection.controllerBridgeEnabled) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Hands and controllers", systemImage: "gamecontroller")
-                    Text("Sends your hand tracking, and a paired Switch Pro or Quest controller, to the PC as a pair of Valve Index controllers. A controller is optional — pinch gestures work on their own. Turn this off and a session has no input at all.")
+                    Text("Sends your hand tracking, and a paired Switch Pro or Quest controller, to the PC. The Windows Companion chooses whether games see OpenXR controllers, an Xbox 360 controller, or both. A controller is optional — pinch gestures work on their own. Turn this off and a session has no input at all.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -2,6 +2,7 @@
 const { app, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
 const trust = require('./release-trust');
 const buildInfo = require('./build-info');
@@ -18,6 +19,9 @@ const buildInfo = require('./build-info');
 const INSTALL_ROOT = path.join(app.getPath('userData'), 'pcvr-bundle');
 const HOST_DIR = path.join(INSTALL_ROOT, 'host');
 const BRIDGE_DIR = path.join(INSTALL_ROOT, 'bridge');
+const DRIVER_DIR = path.join(INSTALL_ROOT, 'drivers');
+const VIGEMBUS_INSTALLER = 'ViGEmBus_1.22.0_x64_x86_arm64.exe';
+const VIGEMBUS_SHA256 = '89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a';
 const VERSION_FILE = path.join(INSTALL_ROOT, 'installed-version.json');
 // Deliberately OUTSIDE INSTALL_ROOT: downloadAndInstall() clears that directory on every
 // install, and a record of "this user has been asked" must not be erased by the very act of
@@ -64,6 +68,64 @@ function installedVersion() {
 
 function isInstalled() {
   return fs.existsSync(path.join(HOST_DIR, 'LongwavePCVRHost.exe'));
+}
+
+function vigemBusStatus() {
+  const installerPath = path.join(DRIVER_DIR, VIGEMBUS_INSTALLER);
+  let installed = false;
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('sc.exe', ['query', 'ViGEmBus'], { stdio: 'ignore', windowsHide: true });
+      installed = true;
+    } catch {
+      installed = false;
+    }
+  }
+  return {
+    installed,
+    bundled: fs.existsSync(installerPath),
+    installerPath,
+  };
+}
+
+function sha256FileSync(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function installVigemBus() {
+  const status = vigemBusStatus();
+  if (status.installed) return Promise.resolve(status);
+  if (process.platform !== 'win32') {
+    return Promise.reject(new Error('ViGEmBus can only be installed on Windows.'));
+  }
+  if (!status.bundled) {
+    return Promise.reject(new Error('The ViGEmBus installer is not present in this PCVR bundle.'));
+  }
+  const actual = sha256FileSync(status.installerPath);
+  if (actual !== VIGEMBUS_SHA256) {
+    return Promise.reject(new Error('The bundled ViGEmBus installer failed its checksum.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const escapedPath = status.installerPath.replace(/'/g, "''");
+    const script = `$p = Start-Process -FilePath '${escapedPath}' -Verb RunAs -Wait -PassThru; exit $p.ExitCode`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    execFile('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded],
+      { windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`ViGEmBus installation failed: ${stderr || err.message}`));
+          return;
+        }
+        const updated = vigemBusStatus();
+        if (!updated.installed) {
+          reject(new Error('The installer finished, but Windows does not report ViGEmBus installed.'));
+          return;
+        }
+        resolve(updated);
+      });
+  });
 }
 
 /**
@@ -409,6 +471,7 @@ module.exports = {
   INSTALL_ROOT,
   HOST_DIR,
   BRIDGE_DIR,
+  DRIVER_DIR,
   isSupportedHost,
   checkAvailability,
   downloadAndInstall,
@@ -420,5 +483,7 @@ module.exports = {
   markOptInHandled,
   registerShimDirectory,
   unregisterShimDirectory,
+  vigemBusStatus,
+  installVigemBus,
   uninstall,
 };

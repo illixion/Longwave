@@ -4,9 +4,10 @@
 //  session is live, this streams the user's hand-tracking wrist poses (ARKit
 //  `HandTrackingProvider`) plus controller inputs to the host
 //  (`cb_input_state_t`, packet 0x03 — see ControllerBridgeProtocol.swift). The
-//  host's OpenXR API layer presents emulated controllers (Oculus Touch profile
-//  preferred, Valve Index fallback) positioned at the hands, so PCVR titles
-//  without skeletal-hand support still get full controllers.
+//  host presents the same state as emulated OpenXR controllers (Oculus Touch
+//  preferred, Valve Index fallback), an optional Xbox 360 controller, or both.
+//  The OpenXR controllers stay positioned at the hands, so PCVR titles without
+//  skeletal-hand support still get full controllers.
 //
 //  Transport: UDP :9520 for the poses, and the TCP control link (:9523,
 //  `BridgeControlLink`) for everything else — haptics, telemetry, perf, the game
@@ -295,6 +296,7 @@ final class ControllerBridgeSender {
 
     // Haptics (driver → Switch Pro rumble), keyed by controller side (0 = left, 1 = right).
     private var hapticEngines: [UInt8: CHHapticEngine] = [:]
+    private var hapticPlayers: [UInt8: any CHHapticPatternPlayer] = [:]
     /// Which device each side's cached engine was built against — per side, because
     /// a Sense pair is two devices, and a single shared owner would tear down both
     /// engines on every alternating left/right pulse.
@@ -579,6 +581,7 @@ final class ControllerBridgeSender {
         directHost = nil
         hapticEngines.values.forEach { $0.stop() }
         hapticEngines.removeAll()
+        hapticPlayers.removeAll()
         hapticEngineOwners.removeAll()
         controllerObservers.forEach { NotificationCenter.default.removeObserver($0) }
         controllerObservers.removeAll()
@@ -774,6 +777,14 @@ final class ControllerBridgeSender {
     }
 
     private func playHaptic(_ haptic: ControllerBridgeHaptic) {
+        let amplitude = min(max(haptic.amplitude, 0), 1)
+        if amplitude == 0 {
+            if let player = hapticPlayers.removeValue(forKey: haptic.controller) {
+                try? player.stop(atTime: CHHapticTimeImmediate)
+            }
+            return
+        }
+
         // The device actually occupying the pulsed hand: a spatial controller of that
         // chirality if one is connected, else the adopted gamepad — not whatever the
         // framework lists first; rumbling a different device than the one in the
@@ -790,6 +801,9 @@ final class ControllerBridgeSender {
 
         // Cached engines belong to one specific device; rebuild this side's on swap.
         if hapticEngineOwners[haptic.controller] != ObjectIdentifier(target) {
+            if let player = hapticPlayers.removeValue(forKey: haptic.controller) {
+                try? player.stop(atTime: CHHapticTimeImmediate)
+            }
             hapticEngines[haptic.controller]?.stop()
             hapticEngines[haptic.controller] = nil
             hapticEngineOwners[haptic.controller] = ObjectIdentifier(target)
@@ -808,10 +822,16 @@ final class ControllerBridgeSender {
             // On reset/stop, drop the cache so the next pulse recreates cleanly.
             let side = haptic.controller
             created.resetHandler = { [weak self] in
-                Task { @MainActor in self?.hapticEngines[side] = nil }
+                Task { @MainActor in
+                    self?.hapticPlayers[side] = nil
+                    self?.hapticEngines[side] = nil
+                }
             }
             created.stoppedHandler = { [weak self] _ in
-                Task { @MainActor in self?.hapticEngines[side] = nil }
+                Task { @MainActor in
+                    self?.hapticPlayers[side] = nil
+                    self?.hapticEngines[side] = nil
+                }
             }
             do { try created.start() } catch {
                 log.error("Haptic engine start failed: \(error.localizedDescription, privacy: .public)")
@@ -823,18 +843,23 @@ final class ControllerBridgeSender {
 
         // Index-controller haptics run ~1–320 Hz; map frequency onto sharpness.
         let intensity = CHHapticEventParameter(
-            parameterID: .hapticIntensity, value: min(max(haptic.amplitude, 0), 1))
+            parameterID: .hapticIntensity, value: amplitude)
         let sharpness = CHHapticEventParameter(
             parameterID: .hapticSharpness, value: min(max(haptic.frequency / 320, 0), 1))
         // SteamVR sends duration 0 for click-style pulses → transient event.
-        let event = haptic.duration > 0.05
+        let event = haptic.duration > 0
             ? CHHapticEvent(eventType: .hapticContinuous, parameters: [intensity, sharpness],
                             relativeTime: 0, duration: Double(min(haptic.duration, 2)))
             : CHHapticEvent(eventType: .hapticTransient, parameters: [intensity, sharpness],
                             relativeTime: 0)
         do {
             let pattern = try CHHapticPattern(events: [event], parameters: [])
-            try engine.makePlayer(with: pattern).start(atTime: CHHapticTimeImmediate)
+            if let player = hapticPlayers.removeValue(forKey: haptic.controller) {
+                try? player.stop(atTime: CHHapticTimeImmediate)
+            }
+            let player = try engine.makePlayer(with: pattern)
+            hapticPlayers[haptic.controller] = player
+            try player.start(atTime: CHHapticTimeImmediate)
         } catch {
             log.debug("Haptic play failed: \(error.localizedDescription, privacy: .public)")
         }

@@ -475,6 +475,22 @@ function runStackOperation(operation) {
   return run;
 }
 
+async function assertPcvrStoppedForDriverInstall() {
+  const servicesRunning = supervisor
+    && Object.values(supervisor.status()).some((service) => service.running || service.healthy);
+  if (servicesRunning) {
+    throw new Error('Stop PCVR before installing ViGEmBus.');
+  }
+  if (!pcvrClient.connected) return;
+
+  const status = await pcvrClient.rpc('FoveatedStatus');
+  lastFoveatedStatus = status;
+  syncPairingWindow(status);
+  if (status && (status.state === 'on' || status.state === 'starting')) {
+    throw new Error('Stop PCVR before installing ViGEmBus.');
+  }
+}
+
 async function dispatchControl(method, params = {}) {
   // Every method this dispatches (PcvrStatus/Start/Stop/.../GamesLaunch) lives on the PCVR
   // host's pipe, so it is the one whose connection actually gates readiness here.
@@ -528,7 +544,10 @@ async function dispatchControl(method, params = {}) {
 
 // ---- IPC bridge: renderer -> backend RPC ----
 ipcMain.handle('rpc', async (_e, method, params) => {
-  const result = await routeClientFor(method).rpc(method, params);
+  const invoke = () => routeClientFor(method).rpc(method, params);
+  const result = method === 'FoveatedStart' || method === 'FoveatedStop'
+    ? await runStackOperation(invoke)
+    : await invoke();
   if (method === 'FoveatedStatus') {
     lastFoveatedStatus = result;
     syncPairingWindow(result);
@@ -705,6 +724,13 @@ ipcMain.handle('services-start-stack', (_e, params) => {
 ipcMain.handle('services-stop-stack', (_e, options) =>
   runStackOperation(() => supervisor.stopStack((m, p) => routeClientFor(m).rpc(m, p), options)));
 ipcMain.handle('pcvr-desktop-quad', (_e, enabled) => supervisor.setDesktopQuad(enabled));
+ipcMain.handle('vigem-status', () => pcvrInstaller.vigemBusStatus());
+ipcMain.handle('vigem-install', () => runStackOperation(async () => {
+  const status = pcvrInstaller.vigemBusStatus();
+  if (status.installed) return status;
+  await assertPcvrStoppedForDriverInstall();
+  return pcvrInstaller.installVigemBus();
+}));
 ipcMain.handle('confirm-pcvr-stop', () =>
   confirmRunningGameShutdown('Stop PCVR?', 'Stop PCVR'));
 ipcMain.handle('open-notices-window', () => { createNoticesWindow(); });

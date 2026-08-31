@@ -89,6 +89,28 @@ Subject to the NVIDIA CloudXR SDK License Agreement. Redistribution is permitted
 applications providing material additional functionality (§1.1(c)); Longwave is such an
 application. NVIDIA and CloudXR are trademarks of NVIDIA Corporation.
 
+### ViGEmClient — MIT
+
+Copyright (c) 2017-2019 Nefarius Software Solutions e.U. and Contributors.
+<https://github.com/nefarius/ViGEmClient>
+
+Statically linked into `LongwaveSessionBroker.exe` to create the optional virtual Xbox 360
+controller. The complete MIT text is shipped in the PCVR bundle as
+`licenses/ViGEmClient-LICENSE.txt`.
+
+### ViGEmBus — BSD-3-Clause
+
+Copyright (c) 2016-2020 Nefarius Software Solutions e.U.
+<https://github.com/nefarius/ViGEmBus>
+
+The official `1.22.0` installer is included in the signed PCVR bundle but is never run
+automatically. Xbox 360 output remains off by default; selecting it exposes an explicit
+install button and the installer raises its own Windows UAC prompt. The complete BSD
+3-Clause text is shipped as `licenses/ViGEmBus-LICENSE.txt`.
+
+ViGEmBus is end-of-life upstream. It remains optional and can be removed through Windows
+Installed Apps without affecting OpenXR controller emulation.
+
 ### `LibOVRRT64_1.dll` / `LibOVRRT32_1.dll` — our code, Oculus PC SDK headers
 
 The shim is our own implementation. It is compiled against the Oculus PC SDK C API headers

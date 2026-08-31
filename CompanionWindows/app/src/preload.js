@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('hotspot', {
   startPcvrStack: (params) => ipcRenderer.invoke('services-start-stack', params),
   stopPcvrStack: (options) => ipcRenderer.invoke('services-stop-stack', options),
   setDesktopQuad: (enabled) => ipcRenderer.invoke('pcvr-desktop-quad', enabled),
+  vigemBusStatus: () => ipcRenderer.invoke('vigem-status'),
+  installVigemBus: () => ipcRenderer.invoke('vigem-install'),
   confirmPcvrStop: () => ipcRenderer.invoke('confirm-pcvr-stop'),
   openPairingWindow: () => ipcRenderer.invoke('open-pairing-window'),
   openNoticesWindow: () => ipcRenderer.invoke('open-notices-window'),

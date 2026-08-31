@@ -42,7 +42,7 @@ struct PCVRHelpView: View {
                     Row("hand.raised", "Raise a palm for the wrist HUD",
                         "Turn a palm toward your face and look at it. Quit the running title, put your PC's desktop on a panel, or switch between emulated controllers and bare hands."),
                     Row("gamecontroller", "A controller is optional",
-                        "Pair a Switch Pro or a Quest controller and the PC sees a pair of Valve Index controllers. Without one, pinch gestures stand in for the buttons."),
+                        "Pair a Switch Pro or a Quest controller, then choose OpenXR, Xbox 360, or both in the Windows Companion. Without one, pinch gestures stand in for the buttons."),
                 ])
                 topic("If something is wrong", rows: [
                     Row("magnifyingglass", "The PC does not appear",

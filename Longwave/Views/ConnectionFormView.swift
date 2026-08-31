@@ -228,10 +228,12 @@ struct ConnectionFormView: View {
                 .foregroundStyle(.secondary)
 
             #if os(visionOS)
-            Toggle("Screen", isOn: $nativeScreenEnabled)
             Toggle("Unity", isOn: $nativeUnityEnabled)
+            if !nativeUnityEnabled {
+                Toggle("Screen", isOn: $nativeScreenEnabled)
+            }
 
-            Text("Unity opens up to six streamable Mac windows as individual visionOS windows and keeps a control window available for switching windows and showing the full desktop.")
+            Text("Unity starts with a control window only. From there you can show the full desktop, open individual Mac windows, show or hide all windows, and opt into automatically showing newly visible windows.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             #endif

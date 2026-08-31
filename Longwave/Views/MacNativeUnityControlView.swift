@@ -11,14 +11,13 @@ struct MacNativeUnityControlView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var requestedWindowIDs: Set<UInt32> = []
     @State private var isDisconnecting = false
 
     var body: some View {
         @Bindable var audioManager = audioManager
 
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Label(screenManager.title, systemImage: "slider.horizontal.3")
                     .font(.headline)
 
@@ -35,33 +34,57 @@ struct MacNativeUnityControlView: View {
                         .labelStyle(.iconOnly)
                 }
 
-                Button(action: toggleDesktop) {
-                    Label(
-                        isDesktopWindowOpen ? "Hide Desktop" : "Show Desktop",
-                        systemImage: isDesktopWindowOpen
-                            ? "macwindow.on.rectangle.fill" : "macwindow.on.rectangle"
-                    )
+                Button(role: .destructive, action: disconnectAll) {
+                    Label("Disconnect", systemImage: "xmark.circle")
                         .labelStyle(.iconOnly)
                 }
-                .tint(isDesktopWindowOpen ? .accentColor : nil)
+            }
+
+            HStack(spacing: 10) {
+                Toggle(isOn: desktopBinding) {
+                    Label("Desktop", systemImage: "macwindow.on.rectangle")
+                }
+                .toggleStyle(.button)
+
+                if screenManager.liveEnabled {
+                    Button {
+                        screenManager.touchMode = screenManager.touchMode == .absolute
+                            ? .relative : .absolute
+                    } label: {
+                        Label(
+                            screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
+                            systemImage: screenManager.touchMode == .absolute
+                                ? "hand.tap" : "rectangle.and.hand.point.up.left"
+                        )
+                    }
+
+                    Button(action: screenManager.rightClickAtDesktopCursor) {
+                        Label("Right-click", systemImage: "cursorarrow.click.2")
+                    }
+                    .disabled(!screenManager.canRightClickDesktop)
+                }
 
                 Button(action: toggleKeyboardWindow) {
                     Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
-                        .labelStyle(.iconOnly)
                 }
                 .tint(isKeyboardWindowOpen ? .accentColor : nil)
 
                 Toggle(isOn: $audioManager.liveEnabled) {
                     Label("Audio", systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash")
-                        .labelStyle(.iconOnly)
                 }
                 .toggleStyle(.button)
                 .disabled(!screenManager.hostServesAudio)
 
-                Button(role: .destructive, action: disconnectAll) {
-                    Label("Disconnect", systemImage: "xmark.circle")
-                        .labelStyle(.iconOnly)
-                }
+                Spacer()
+
+                Button("Show All", systemImage: "rectangle.stack.badge.plus", action: showAllWindows)
+                    .disabled(!canShowAnyWindow)
+
+                Button("Hide All", systemImage: "rectangle.stack.badge.minus", action: hideAllWindows)
+                    .disabled(screenManager.unityVisibleWindowIDs.isEmpty)
+
+                Toggle("Auto-show", isOn: autoShowBinding)
+                    .toggleStyle(.button)
             }
 
             Divider()
@@ -75,7 +98,7 @@ struct MacNativeUnityControlView: View {
                 .frame(maxWidth: .infinity, minHeight: 64)
             } else {
                 if screenManager.windowInventory.count > MacNativeStreamProtocol.maxConcurrentWindowStreams {
-                    Text("Unity streams the first \(MacNativeStreamProtocol.maxConcurrentWindowStreams) visible windows. Close one to open another.")
+                    Text("Up to \(MacNativeStreamProtocol.maxConcurrentWindowStreams) windows can stream at once.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -101,8 +124,6 @@ struct MacNativeUnityControlView: View {
             reconcileWindows(with: windows)
         }
         .onChange(of: audioManager.liveEnabled) { _, enabled in
-            // The desktop scene already owns this side effect while open.
-            guard WindowSessionRegistry.shared.sessions["mac-native-stream"] == nil else { return }
             if enabled {
                 guard screenManager.hostServesAudio else {
                     audioManager.liveEnabled = false
@@ -124,22 +145,24 @@ struct MacNativeUnityControlView: View {
     }
 
     private func windowButton(_ window: MacNativeStreamProtocol.WindowInfo) -> some View {
-        let isOpen = screenManager.windowSessions[window.id] != nil
+        let isOpen = screenManager.unityVisibleWindowIDs.contains(window.id)
         let isAtCapacity = !isOpen
-            && screenManager.windowSessions.count >= MacNativeStreamProtocol.maxConcurrentWindowStreams
+            && screenManager.unityVisibleWindowIDs.count >= MacNativeStreamProtocol.maxConcurrentWindowStreams
         return Button {
-            requestedWindowIDs.insert(window.id)
-            screenManager.sendFocusWindow(windowID: window.id)
-            openWindow(
-                id: "mac-native-window",
-                value: MacNativeWindowStreamID(windowID: window.id)
-            )
+            if isOpen {
+                hideWindow(window.id, suppressAutoShow: true)
+            } else {
+                showWindow(window.id)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Image(systemName: window.isFocused ? "macwindow.badge.plus" : "macwindow")
                     Text(window.title.isEmpty ? window.appName : window.title)
                         .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: isOpen ? "eye.slash" : "eye")
+                        .foregroundStyle(.secondary)
                 }
                 Text(window.title.isEmpty ? "Mac window" : window.appName)
                     .font(.caption2)
@@ -157,21 +180,39 @@ struct MacNativeUnityControlView: View {
         WindowSessionRegistry.shared.sessions["mac-native-keyboard"] != nil
     }
 
-    private var isDesktopWindowOpen: Bool {
-        WindowSessionRegistry.shared.sessions["mac-native-stream"] != nil
+    private var desktopBinding: Binding<Bool> {
+        Binding(
+            get: { screenManager.liveEnabled },
+            set: { showDesktop($0) }
+        )
     }
 
-    private func toggleDesktop() {
-        if isDesktopWindowOpen {
-            screenManager.liveEnabled = false
-            screenManager.desktopToggleChanged(false)
-            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-        } else {
-            if !screenManager.liveEnabled {
-                screenManager.liveEnabled = true
-                screenManager.desktopToggleChanged(true)
+    private var autoShowBinding: Binding<Bool> {
+        Binding(
+            get: { screenManager.unityAutoShow },
+            set: { enabled in
+                screenManager.setUnityAutoShow(enabled)
+                if enabled {
+                    reconcileWindows(with: screenManager.windowInventory)
+                }
             }
+        )
+    }
+
+    private var canShowAnyWindow: Bool {
+        screenManager.unityVisibleWindowIDs.count < MacNativeStreamProtocol.maxConcurrentWindowStreams
+            && screenManager.windowInventory.contains {
+                !screenManager.unityVisibleWindowIDs.contains($0.id)
+            }
+    }
+
+    private func showDesktop(_ show: Bool) {
+        screenManager.liveEnabled = show
+        screenManager.desktopToggleChanged(show)
+        if show {
             openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        } else {
+            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
         }
     }
 
@@ -194,23 +235,58 @@ struct MacNativeUnityControlView: View {
         guard screenManager.unityEnabled else { return }
 
         let availableIDs = Set(windows.map(\.id))
-        for windowID in requestedWindowIDs.subtracting(availableIDs) {
+        let missingIDs = screenManager.unityVisibleWindowIDs.subtracting(availableIDs)
+        for windowID in missingIDs {
+            screenManager.markUnityWindowHidden(windowID, suppressAutoShow: false)
             dismissWindow(
                 id: "mac-native-window",
                 value: MacNativeWindowStreamID(windowID: windowID)
             )
-            requestedWindowIDs.remove(windowID)
         }
+        screenManager.pruneUnityWindowState(availableWindowIDs: availableIDs)
 
+        guard screenManager.unityAutoShow else { return }
         for window in windows
-            where requestedWindowIDs.count < MacNativeStreamProtocol.maxConcurrentWindowStreams
-                && !requestedWindowIDs.contains(window.id) {
-            requestedWindowIDs.insert(window.id)
-            openWindow(
-                id: "mac-native-window",
-                value: MacNativeWindowStreamID(windowID: window.id)
-            )
+            where screenManager.unityVisibleWindowIDs.count
+                < MacNativeStreamProtocol.maxConcurrentWindowStreams
+                && !screenManager.unityVisibleWindowIDs.contains(window.id)
+                && !screenManager.unityAutoShowSuppressedWindowIDs.contains(window.id) {
+            showWindow(window.id)
         }
+    }
+
+    private func showAllWindows() {
+        for window in screenManager.windowInventory
+            where screenManager.unityVisibleWindowIDs.count
+                < MacNativeStreamProtocol.maxConcurrentWindowStreams
+                && !screenManager.unityVisibleWindowIDs.contains(window.id) {
+            showWindow(window.id)
+        }
+    }
+
+    private func hideAllWindows() {
+        for windowID in Array(screenManager.unityVisibleWindowIDs) {
+            hideWindow(windowID, suppressAutoShow: true)
+        }
+    }
+
+    private func showWindow(_ windowID: UInt32) {
+        guard screenManager.unityVisibleWindowIDs.count
+                < MacNativeStreamProtocol.maxConcurrentWindowStreams
+                || screenManager.unityVisibleWindowIDs.contains(windowID) else { return }
+        screenManager.markUnityWindowVisible(windowID)
+        openWindow(
+            id: "mac-native-window",
+            value: MacNativeWindowStreamID(windowID: windowID)
+        )
+    }
+
+    private func hideWindow(_ windowID: UInt32, suppressAutoShow: Bool) {
+        screenManager.markUnityWindowHidden(windowID, suppressAutoShow: suppressAutoShow)
+        dismissWindow(
+            id: "mac-native-window",
+            value: MacNativeWindowStreamID(windowID: windowID)
+        )
     }
 
     private func reopenIfNeeded() {
@@ -230,7 +306,8 @@ struct MacNativeUnityControlView: View {
     private func disconnectAll() {
         isDisconnecting = true
         screenManager.unityEnabled = false
-        for windowID in requestedWindowIDs.union(screenManager.windowSessions.keys) {
+        for windowID in screenManager.unityVisibleWindowIDs.union(screenManager.windowSessions.keys) {
+            screenManager.markUnityWindowHidden(windowID, suppressAutoShow: false)
             dismissWindow(
                 id: "mac-native-window",
                 value: MacNativeWindowStreamID(windowID: windowID)

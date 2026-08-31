@@ -45,10 +45,10 @@ struct NativeWindowStreamView: View {
         .onAppear {
             screenManager.ensureSessionConnected()
             screenManager.openWindowStream(windowID)
-            screenManager.sendFocusWindow(windowID: windowID)
         }
         .onDisappear {
             screenManager.closeWindowStream(windowID)
+            screenManager.unityWindowSceneDidClose(windowID)
         }
         .onChange(of: session?.closedReason) { _, reason in
             // The host ended this stream (window closed, app quit, budget) —

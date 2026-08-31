@@ -95,7 +95,9 @@ struct NativeStreamView: View {
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            if audioManager.liveEnabled, !screenManager.liveEnabled {
+            if screenManager.unityEnabled {
+                EmptyView()
+            } else if audioManager.liveEnabled, !screenManager.liveEnabled {
                 // Audio-only (or popped out): the Screen/Audio toggles and
                 // Disconnect don't apply to this compact view — matches the
                 // old standalone Audio Stream window, which had no ornament
@@ -123,9 +125,11 @@ struct NativeStreamView: View {
             resumeIfNeeded()
         }
         .onChange(of: screenManager.liveEnabled) { _, on in
+            guard !screenManager.unityEnabled else { return }
             screenManager.desktopToggleChanged(on)
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
+            guard !screenManager.unityEnabled else { return }
             if on {
                 // A host that serves no audio would leave this on
                 // "Connecting…" forever; refuse the toggle instead.
@@ -336,7 +340,7 @@ struct NativeStreamView: View {
                                 ProgressView()
                                     .controlSize(.large)
                             }
-                            Text(screenManager.state.statusText)
+                            Text(desktopStatusText)
                                 .font(.headline)
                         }
                         .padding(24)
@@ -403,6 +407,13 @@ struct NativeStreamView: View {
     private var translator: GestureTranslator? {
         guard screenManager.streamSize.width > 0 else { return nil }
         return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
+    }
+
+    private var desktopStatusText: String {
+        if screenManager.state == .connected {
+            return "Waiting for the first frame…"
+        }
+        return screenManager.state.statusText
     }
 
     /// Single tap = left click (absolute) or click at the virtual cursor
@@ -526,13 +537,7 @@ struct NativeStreamView: View {
     /// virtual cursor (trackpad) — a toolbar button, since there's no gesture
     /// free to dedicate to it, matching RemoteDesktopView's approach.
     private func rightClickAtCursor() {
-        if screenManager.touchMode == .absolute {
-            guard let point = lastPointerPoint else { return }
-            screenManager.sendMouseDown(button: .right, x: point.x, y: point.y)
-            screenManager.sendMouseUp(button: .right, x: point.x, y: point.y)
-        } else {
-            screenManager.clickAtVirtualCursor(button: .right)
-        }
+        screenManager.rightClickAtDesktopCursor()
     }
 
     private var dragLockBadge: some View {

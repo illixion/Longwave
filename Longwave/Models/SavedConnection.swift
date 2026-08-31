@@ -462,6 +462,9 @@ final class SavedConnection {
     /// own visionOS scene and a persistent control window owns the session.
     /// Optional keeps existing SwiftData stores lightweight-migration safe.
     var nativeUnityEnabledStorage: Bool?
+    /// Whether newly visible host windows should open automatically in Unity.
+    /// Off by default so a Unity session starts with only its control window.
+    var nativeUnityAutoShowStorage: Bool?
 
     /// Whether this Native connection streams the Mac's screen.
     var nativeScreenEnabled: Bool {
@@ -478,6 +481,11 @@ final class SavedConnection {
     var nativeUnityEnabled: Bool {
         get { nativeUnityEnabledStorage ?? false }
         set { nativeUnityEnabledStorage = newValue }
+    }
+
+    var nativeUnityAutoShow: Bool {
+        get { nativeUnityAutoShowStorage ?? false }
+        set { nativeUnityAutoShowStorage = newValue }
     }
 
     /// Opt-in low-latency mode: carries PCM over UDP with a smaller jitter

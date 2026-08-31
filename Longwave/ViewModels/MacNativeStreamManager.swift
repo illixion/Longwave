@@ -43,7 +43,7 @@ final class MacNativeStreamManager {
             switch self {
             case .disconnected(let message): message ?? "Disconnected"
             case .connecting: "Connecting to Mac…"
-            case .connected: "Waiting for the first frame…"
+            case .connected: "Connected"
             case .streaming: "Streaming"
             }
         }
@@ -78,6 +78,9 @@ final class MacNativeStreamManager {
     /// Unity keeps the protocol session alive independently of the desktop
     /// scene and lets Unity Controls reconcile the host inventory into scenes.
     var unityEnabled = false
+    private(set) var unityAutoShow = false
+    private(set) var unityVisibleWindowIDs: Set<UInt32> = []
+    private(set) var unityAutoShowSuppressedWindowIDs: Set<UInt32> = []
 
     var supportsWindowStreams: Bool { serverAck?.supportsWindowStreams ?? false }
     var keyCodeSpace: MacNativeStreamProtocol.KeyCodeSpace {
@@ -107,6 +110,7 @@ final class MacNativeStreamManager {
     private(set) var virtualCursorX: UInt16 = 0
     private(set) var virtualCursorY: UInt16 = 0
     private var virtualCursorInitialized = false
+    private(set) var lastDesktopPointer: (x: UInt16, y: UInt16)?
 
     /// The Native connection this session targets — remembered independent
     /// of whether Screen is actually running, so the live Screen toggle in
@@ -149,6 +153,9 @@ final class MacNativeStreamManager {
     func prepare(for connection: SavedConnection) {
         self.connection = connection
         unityEnabled = connection.nativeUnityEnabled
+        unityAutoShow = connection.nativeUnityAutoShow
+        unityVisibleWindowIDs = []
+        unityAutoShowSuppressedWindowIDs = []
     }
 
     func connect(to connection: SavedConnection) {
@@ -239,6 +246,9 @@ final class MacNativeStreamManager {
         connection = nil
         liveEnabled = false
         unityEnabled = false
+        unityAutoShow = false
+        unityVisibleWindowIDs = []
+        unityAutoShowSuppressedWindowIDs = []
     }
 
     /// Connects the session if a target is known and nothing is live yet —
@@ -318,6 +328,38 @@ final class MacNativeStreamManager {
         session.renderer.reset()
     }
 
+    func setUnityAutoShow(_ enabled: Bool) {
+        if enabled, !unityAutoShow {
+            unityAutoShowSuppressedWindowIDs = []
+        }
+        unityAutoShow = enabled
+        connection?.nativeUnityAutoShow = enabled
+    }
+
+    func markUnityWindowVisible(_ windowID: UInt32) {
+        unityAutoShowSuppressedWindowIDs.remove(windowID)
+        unityVisibleWindowIDs.insert(windowID)
+    }
+
+    func markUnityWindowHidden(_ windowID: UInt32, suppressAutoShow: Bool) {
+        unityVisibleWindowIDs.remove(windowID)
+        if suppressAutoShow {
+            unityAutoShowSuppressedWindowIDs.insert(windowID)
+        }
+    }
+
+    func pruneUnityWindowState(availableWindowIDs: Set<UInt32>) {
+        unityVisibleWindowIDs.formIntersection(availableWindowIDs)
+        unityAutoShowSuppressedWindowIDs.formIntersection(availableWindowIDs)
+    }
+
+    func unityWindowSceneDidClose(_ windowID: UInt32) {
+        let wasVisible = unityVisibleWindowIDs.remove(windowID) != nil
+        guard wasVisible,
+              windowInventory.contains(where: { $0.id == windowID }) else { return }
+        unityAutoShowSuppressedWindowIDs.insert(windowID)
+    }
+
     func sendFocusWindow(windowID: UInt32) {
         client?.sendFocusWindow(windowID: windowID)
     }
@@ -371,6 +413,7 @@ final class MacNativeStreamManager {
         keyboardShortcutsAvailability = .unknown
         textInputAvailable = false
         virtualCursorInitialized = false
+        lastDesktopPointer = nil
         if case .disconnected = state {
             return
         }
@@ -380,15 +423,31 @@ final class MacNativeStreamManager {
     // MARK: - Remote control (mouse/keyboard)
 
     func sendMouseMove(x: UInt16, y: UInt16) {
+        lastDesktopPointer = (x, y)
         client?.sendMouseMove(x: x, y: y)
     }
 
     func sendMouseDown(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        lastDesktopPointer = (x, y)
         client?.sendMouseDown(button: button, x: x, y: y)
     }
 
     func sendMouseUp(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        lastDesktopPointer = (x, y)
         client?.sendMouseUp(button: button, x: x, y: y)
+    }
+
+    var canRightClickDesktop: Bool {
+        touchMode == .relative || lastDesktopPointer != nil
+    }
+
+    func rightClickAtDesktopCursor() {
+        if touchMode == .relative {
+            clickAtVirtualCursor(button: .right)
+        } else if let point = lastDesktopPointer {
+            sendMouseDown(button: .right, x: point.x, y: point.y)
+            sendMouseUp(button: .right, x: point.x, y: point.y)
+        }
     }
 
     func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {

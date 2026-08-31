@@ -213,7 +213,7 @@ struct ConnectionListView: View {
     private func nativeSummary(_ connection: SavedConnection) -> String {
         var features: [String] = []
         if connection.nativeUnityEnabled { features.append("Unity") }
-        if connection.nativeScreenEnabled { features.append("Screen") }
+        if !connection.nativeUnityEnabled, connection.nativeScreenEnabled { features.append("Screen") }
         if connection.nativeAudioEnabled { features.append("Audio") }
         return features.isEmpty ? "Nothing enabled" : features.joined(separator: " + ")
     }
@@ -257,7 +257,12 @@ struct ConnectionListView: View {
     private func connectNative(_ connection: SavedConnection) {
         #if os(visionOS)
         macNativeManager.prepare(for: connection)
-        macNativeManager.liveEnabled = connection.nativeScreenEnabled
+        // Unity Controls owns the session and starts with the full desktop
+        // hidden. Non-Unity Native connections retain their saved Screen
+        // startup behavior.
+        macNativeManager.liveEnabled = connection.nativeUnityEnabled
+            ? false
+            : connection.nativeScreenEnabled
         // Connect even with Screen off: a v2 host publishes its window
         // inventory over the same session, so the Native window can act as
         // the per-window controller. (Against a v1 host with Screen off the
@@ -280,11 +285,10 @@ struct ConnectionListView: View {
                 lowLatency: connection.lowLatencyAudio
             )
         }
-        if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-        }
         if connection.nativeUnityEnabled {
             openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+        } else if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
+            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
         }
         #else
         if connection.nativeAudioEnabled {

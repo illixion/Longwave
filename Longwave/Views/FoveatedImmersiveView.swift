@@ -39,6 +39,7 @@ struct FoveatedImmersiveView: View {
     private let chargeEntity = Entity()
     private let bannerEntity = Entity()
     private let bannerDriver = ImmersiveBannerDriver()
+    private let joystickEntity = Entity()
 
     var body: some View {
         RealityView { content in
@@ -49,6 +50,7 @@ struct FoveatedImmersiveView: View {
             buildWristHUD(content: content)
             buildGestureCharge(content: content)
             buildBanner(content: content)
+            buildJoystickVisualization(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -140,6 +142,109 @@ struct FoveatedImmersiveView: View {
                 simd_quatf(simd_float3x3(x, simd_cross(z, x), z)), relativeTo: nil)
         })
         content.add(chargeEntity)
+    }
+
+    // MARK: Locomotion joystick visualization
+
+    /// The wrist-delta locomotion joystick (`gestureEngine.poll(...).joystick` in
+    /// `ControllerBridgeSender`) has no on-screen presence today: the player has to
+    /// learn the deadzone and full-scale radius by feel. `RAVEJoystickVisualization`
+    /// (see RAVEEngine's `RAVEHandJoystick.swift`) exists so every consumer can draw
+    /// the same stick from renderer-neutral geometry — this is Longwave's.
+    ///
+    /// Three children, built once like `skeletonRoot`'s markers: a translucent
+    /// full-scale disc, a brighter deadzone disc, and a handle sphere joined to the
+    /// center by a thin stick — all flat, planar meshes generated at unit size and
+    /// resized per frame via `.scale`, the same trick `buildSkeletonMarkers` uses for
+    /// its joint spheres.
+    private func buildJoystickVisualization(content: RealityViewContent) {
+        // A plane with cornerRadius == half its side is a circle in the entity's own
+        // XZ plane (`generatePlane(width:depth:cornerRadius:)` is documented to build
+        // in the xz-plane) — no torus/ring mesh generator needed for either disc, and
+        // no rotation either: `RAVEPlanarBasis.forward`/`.right` are horizontal by
+        // construction, so `center` and `handle` already share one horizontal plane.
+        let discMesh = MeshResource.generatePlane(width: 1, depth: 1, cornerRadius: 0.5)
+
+        var fullScaleMaterial = UnlitMaterial(color: .white)
+        fullScaleMaterial.blending = .transparent(opacity: 0.16)
+        let fullScaleDisc = ModelEntity(mesh: discMesh, materials: [fullScaleMaterial])
+
+        var deadzoneMaterial = UnlitMaterial(color: .white)
+        deadzoneMaterial.blending = .transparent(opacity: 0.55)
+        let deadzoneDisc = ModelEntity(mesh: discMesh, materials: [deadzoneMaterial])
+        // Lifted a hair above the full-scale disc so the two coplanar circles never
+        // z-fight.
+        deadzoneDisc.position.y = 0.0006
+
+        var stickMaterial = UnlitMaterial(color: .white)
+        stickMaterial.blending = .transparent(opacity: 0.7)
+        let stick = ModelEntity(
+            mesh: .generateCylinder(height: 1, radius: 1), materials: [stickMaterial])
+        stick.isEnabled = false
+
+        let handle = ModelEntity(
+            mesh: .generateSphere(radius: 1), materials: [UnlitMaterial(color: .systemGreen)])
+
+        joystickEntity.addChild(fullScaleDisc)
+        joystickEntity.addChild(deadzoneDisc)
+        joystickEntity.addChild(stick)
+        joystickEntity.addChild(handle)
+        joystickEntity.isEnabled = false
+        joystickEntity.components.set(ClosureComponent { [weak joystickEntity] _ in
+            guard let joystickEntity else { return }
+            self.updateJoystickVisualization(root: joystickEntity)
+        })
+        content.add(joystickEntity)
+    }
+
+    /// `RAVEJoystickVisualization.center`/`.handle` are in the same ARKit tracking
+    /// space `thumbTipWorld`/`headWorldPosition` already treat as this scene's world
+    /// space elsewhere in this file, so the root is placed directly at `center` with
+    /// no basis rotation — only the handle/stick offsets need the per-frame geometry.
+    private func updateJoystickVisualization(root: Entity) {
+        guard let bridge = manager.controllerBridge,
+              let vis = bridge.joystickVisualization,
+              // Freshness, exactly like the gesture-charge ring above: a stalled send
+              // loop must not leave a stick frozen mid-deflection.
+              CACurrentMediaTime() - bridge.joystickVisualizationAt < 0.25
+        else {
+            if root.isEnabled { root.isEnabled = false }
+            return
+        }
+        root.isEnabled = true
+        root.setPosition(vis.center, relativeTo: nil)
+
+        guard root.children.count == 4 else { return }
+        let fullScaleDisc = root.children[0]
+        let deadzoneDisc = root.children[1]
+        let stick = root.children[2]
+        let handle = root.children[3]
+
+        // The actual placement/sizing math is a pure, host-testable type (see
+        // JoystickVisualLayout.swift) — this is just handing its numbers to entities.
+        let layout = JoystickVisualLayout(vis)
+        fullScaleDisc.scale = .init(repeating: layout.fullScaleDiameter)
+
+        if let deadzoneDiameter = layout.deadzoneDiameter {
+            deadzoneDisc.isEnabled = true
+            deadzoneDisc.scale = .init(repeating: deadzoneDiameter)
+        } else {
+            deadzoneDisc.isEnabled = false
+        }
+
+        handle.position = SIMD3(layout.handleOffset.x, 0.0012, layout.handleOffset.z)
+        // A 1.2 cm handle reads as the primary, grabbable element against the ~1-4 cm
+        // joint markers `buildSkeletonMarkers` draws at half their real joint radius.
+        handle.scale = .init(repeating: 0.012)
+
+        if let stickLayout = layout.stick {
+            stick.isEnabled = true
+            stick.position = SIMD3(stickLayout.midpoint.x, 0.0009, stickLayout.midpoint.z)
+            stick.orientation = stickLayout.orientation
+            stick.scale = SIMD3(0.006, stickLayout.length, 0.006)
+        } else {
+            stick.isEnabled = false
+        }
     }
 
     // MARK: Banner

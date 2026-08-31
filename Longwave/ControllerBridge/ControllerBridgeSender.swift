@@ -597,6 +597,7 @@ final class ControllerBridgeSender {
         gripConfidence.removeAll()
         // Nothing will sample the hand again, so no press is in progress.
         gestureCharge = nil
+        joystickVisualization = nil
         log.notice("ControllerBridge sender stopped")
     }
 
@@ -1144,6 +1145,7 @@ final class ControllerBridgeSender {
                     // runs on. No packet means no pinch can be mid-press either.
                     sequence &+= 1
                     gestureCharge = nil
+                    joystickVisualization = nil
                 }
                 // Our ARKit head pose rides along at input rate: the host aligns the
                 // hand packets' ARKit world origin to the streaming runtime's tracking
@@ -1290,6 +1292,7 @@ final class ControllerBridgeSender {
         }
         gestureCharge = charge
         state.leftStick = gestures.joystick.vector
+        joystickVisualization = gestures.joystick.visualization
 
         if let pad = controller?.extendedGamepad {
             flags.insert(.controllerPresent)
@@ -1441,6 +1444,16 @@ final class ControllerBridgeSender {
     /// part-filled, apparently ignoring the hand. A press that is not being sampled must
     /// not be drawn.
     private(set) var gestureChargeAt: CFTimeInterval = 0
+
+    /// Renderer-neutral geometry for the locomotion joystick (see `RAVEJoystickVisualization`),
+    /// nil while the joystick pinch is not held. The immersive view draws this at the wrist
+    /// anchor as a disc + handle, same freshness discipline as `gestureCharge` above: a
+    /// stopped send loop must not leave a stick frozen mid-deflection.
+    private(set) var joystickVisualization: RAVEJoystickVisualization? {
+        didSet { if joystickVisualization != nil { joystickVisualizationAt = CACurrentMediaTime() } }
+    }
+    /// When the joystick visualization was last written.
+    private(set) var joystickVisualizationAt: CFTimeInterval = 0
 
     /// Steps in the charge ring: ~10 per second of hold.
     static let chargeSteps: Float = 15

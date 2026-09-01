@@ -8,6 +8,19 @@
   thresholds, while later directions forget that choice and query it as boolean. The bundled patch
   preserves the action type for every direction.
 
+  The same patch fixes vertically flipped submissions. A title may submit its eye texture with
+  VRTextureBounds_t vMin > vMax; upstream turns that straight into an XrRect2Di with a NEGATIVE
+  extent, which OpenXR forbids, so the runtime answers xrEndFrame with
+  XR_ERROR_SWAPCHAIN_RECT_INVALID on every single frame. SubmitFrames only soft-aborts that, so
+  the title runs perfectly and presents nothing whatsoever - the headset just keeps showing
+  whatever the compositor had. Aperture Hand Lab (Knux) is one such title. The patch routes
+  flipped bounds through the existing inverting-copy shader (previously reachable only via the
+  invertUsingShaders config), and fixes three things that path needed before it could work: it
+  names a format for the shader resource view, because a null view desc cannot describe the
+  TYPELESS textures engines actually hand over; it feeds the bounds to the quad so the copy crops
+  as well as flips, which a side-by-side atlas needs; and it sizes the viewport from the
+  swapchain rather than from the (twice as wide) source.
+
   The source revision is pinned because the patch and resulting runtime are part of the PCVR
   compatibility surface. This script builds one architecture and prints the resulting DLL path;
   pass it to install-opencomposite.ps1 -Payload with the same -Arch.

@@ -1,8 +1,8 @@
 diff --git a/DrvOpenXR/XrHMD.cpp b/DrvOpenXR/XrHMD.cpp
-index 0878af5..ab5a195 100644
+index ffeab79..d2fe55c 100644
 --- a/DrvOpenXR/XrHMD.cpp
 +++ b/DrvOpenXR/XrHMD.cpp
-@@ -8,6 +8,7 @@
+@@ -9,6 +9,7 @@
  #include "../OpenOVR/Reimpl/BaseSystem.h"
  #include "../OpenOVR/convert.h"
  #include "generated/static_bases.gen.h"
@@ -10,11 +10,193 @@ index 0878af5..ab5a195 100644
  #include <thread>
  #include <mutex>
  
+diff --git a/OpenOVR/Compositor/compositor.cpp b/OpenOVR/Compositor/compositor.cpp
+index c9456b5..63a4e3d 100644
+--- a/OpenOVR/Compositor/compositor.cpp
++++ b/OpenOVR/Compositor/compositor.cpp
+@@ -16,6 +16,13 @@ void Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBounds_
+ 	bool invertInCompositor = oovr_global_configuration.InvertUsingShaders();
+ 	if (bounds && bounds->vMin == 0.0f && bounds->vMax == 1.0f && bounds->uMin == 0.0f && bounds->uMax == 1.0f)
+ 		bounds = nullptr;
++	// Flipped bounds leave no choice: CalculateViewport below would turn vMin > vMax into
++	// a negative extent, and OpenXR forbids that — the runtime answers every frame with
++	// XR_ERROR_SWAPCHAIN_RECT_INVALID, which SubmitFrames only soft-aborts, so the title
++	// runs to completion having presented nothing. The copy has to do the flip whether or
++	// not invertUsingShaders is configured, wherever the backend can.
++	if (bounds && bounds->vMin > bounds->vMax && SupportsInvertedCopy())
++		invertInCompositor = true;
+ 	CopyToSwapchain(texture, invertInCompositor ? bounds : nullptr, eye, submitFlags);
+ 	subImage.swapchain = GetSwapChain();
+ 	subImage.imageArrayIndex = 0; // This is *not* the swapchain index
+diff --git a/OpenOVR/Compositor/compositor.h b/OpenOVR/Compositor/compositor.h
+index e83a16a..ceddf94 100644
+--- a/OpenOVR/Compositor/compositor.h
++++ b/OpenOVR/Compositor/compositor.h
+@@ -30,6 +30,13 @@ public:
+ 	virtual void InvokeCubemap(const vr::Texture_t* textures) = 0;
+ 	virtual bool SupportsCubemap() { return false; }
+ 
++	/**
++	 * Whether CopyToSwapchain can itself apply flipped texture bounds. OpenXR has no
++	 * inverted viewport — XrRect2Di extents must be positive — so a backend that cannot
++	 * do this has no way to present a title that submits vMin > vMax.
++	 */
++	virtual bool SupportsInvertedCopy() { return false; }
++
+ 	virtual XrSwapchain GetSwapChain() { return chain; };
+ 
+ 	virtual XrExtent2Di GetSrcSize() { return { static_cast<int32_t>(createInfo.width), static_cast<int32_t>(createInfo.height) }; }
+diff --git a/OpenOVR/Compositor/dx11compositor.cpp b/OpenOVR/Compositor/dx11compositor.cpp
+index 2ed44d2..3e7c9c7 100644
+--- a/OpenOVR/Compositor/dx11compositor.cpp
++++ b/OpenOVR/Compositor/dx11compositor.cpp
+@@ -16,6 +16,14 @@ Texture2D shaderTexture : register(t0);
+ 
+ SamplerState SampleType : register(s0);
+ 
++// The submitted VRTextureBounds_t, as (uMin, vMin, uMax, vMax). The quad samples that
++// rectangle rather than the whole texture, so this pass crops as well as flips — a
++// side-by-side atlas submits uMin 0.5 for the right eye, and sampling 0..1 instead
++// squeezed the entire atlas into one eye's half-width chain.
++cbuffer SourceBounds : register(b0) {
++	float4 srcBounds;
++};
++
+ struct psIn {
+ 	float4 pos : SV_POSITION;
+ 	float2 tex : TEXCOORD0;
+@@ -24,9 +32,10 @@ struct psIn {
+ psIn vs_fs(uint vI : SV_VERTEXID)
+ {
+ 	psIn output;
+-    output.tex = float2(vI&1,vI>>1);
+-    output.pos = float4((output.tex.x-0.5f)*2,-(output.tex.y-0.5f)*2,0,1);
+-	output.tex.y = 1.0f - output.tex.y;
++	float2 quad = float2(vI&1,vI>>1);
++	output.pos = float4((quad.x-0.5f)*2,-(quad.y-0.5f)*2,0,1);
++	// vMin > vMax is what selects this path, so the lerp is the vertical flip.
++	output.tex = lerp(srcBounds.xy, srcBounds.zw, quad);
+ 	return output;
+ }
+ 
+@@ -129,6 +138,14 @@ DX11Compositor::DX11Compositor(ID3D11Texture2D* initial)
+ 
+ 	// Create the texture sampler state.
+ 	OOVR_FAILED_DX_ABORT(device->CreateSamplerState(&samplerDesc, &quad_sampleState));
++
++	// Feeds the inverting copy its source rectangle, rewritten per submission.
++	D3D11_BUFFER_DESC boundsDesc = {};
++	boundsDesc.ByteWidth = 4 * sizeof(float);
++	boundsDesc.Usage = D3D11_USAGE_DYNAMIC;
++	boundsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
++	boundsDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
++	OOVR_FAILED_DX_ABORT(device->CreateBuffer(&boundsDesc, nullptr, &fs_bounds_cb));
+ }
+ 
+ DX11Compositor::~DX11Compositor()
+@@ -143,6 +160,9 @@ DX11Compositor::~DX11Compositor()
+ 
+ 	resolvedMSAATextures.clear();
+ 
++	if (fs_bounds_cb)
++		fs_bounds_cb->Release();
++
+ 	context->Release();
+ 	device->Release();
+ }
+@@ -326,10 +346,32 @@ void DX11Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
+ 	sourceRegion.back = 1;
+ 
+ 	// Bounds describe an inverted image so copy texture using pixel shader inverting on copy
+-	if (bounds && bounds->vMin > bounds->vMax && oovr_global_configuration.InvertUsingShaders() && !swapchain_rtvs.empty()) {
++	if (bounds && bounds->vMin > bounds->vMax && !swapchain_rtvs.empty()) {
+ 		auto* src = (ID3D11Texture2D*)texture->handle;
+ 
+-		OOVR_FAILED_DX_ABORT(device->CreateShaderResourceView(src, nullptr, &quad_texture_view));
++		// Name the format explicitly. A null view desc asks D3D to take the format from
++		// the resource, which a TYPELESS texture does not have — and engines that render
++		// through OpenXR hand over R8G8B8A8_TYPELESS as a matter of course. The call
++		// failed E_INVALIDARG, OpenComposite aborted the submission, and the title then
++		// ran to completion having displayed nothing at all. createInfo.format is the
++		// concrete format the chain was built with, so this is the same interpretation
++		// the plain-copy path below gets for free.
++		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
++		srvDesc.Format = (DXGI_FORMAT)createInfo.format;
++		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
++		srvDesc.Texture2D.MostDetailedMip = 0;
++		srvDesc.Texture2D.MipLevels = 1;
++		OOVR_FAILED_DX_ABORT(device->CreateShaderResourceView(src, &srvDesc, &quad_texture_view));
++
++		// Hand the quad the region to sample, so this path crops as the plain copy does.
++		D3D11_MAPPED_SUBRESOURCE mappedBounds = {};
++		OOVR_FAILED_DX_ABORT(context->Map(fs_bounds_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedBounds));
++		const float srcBounds[4] = { bounds->uMin, bounds->vMin, bounds->uMax, bounds->vMax };
++		memcpy(mappedBounds.pData, srcBounds, sizeof(srcBounds));
++		context->Unmap(fs_bounds_cb, 0);
++
++		ID3D11Buffer* previousVsConstants = nullptr;
++		context->VSGetConstantBuffers(0, 1, &previousVsConstants);
+ 
+ 		float blend_factor[4] = { 1.f, 1.f, 1.f, 1.f };
+ 		context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+@@ -350,7 +392,11 @@ void DX11Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
+ 		context->RSGetState(&pRSState);
+ 		context->RSSetState(nullptr);
+ 
+-		D3D11_VIEWPORT viewport = CD3D11_VIEWPORT(src, swapchain_rtvs[currentIndex]);
++		// The swapchain's size, not the source's. CD3D11_VIEWPORT(texture, rtv) takes its
++		// dimensions from the texture passed in, and `src` is the application's — twice
++		// as wide as the chain whenever bounds crop it, which put the quad half off the
++		// render target with the scissor below hiding the evidence.
++		D3D11_VIEWPORT viewport = CD3D11_VIEWPORT(0.0f, 0.0f, (float)createInfo.width, (float)createInfo.height);
+ 		context->RSSetViewports(1, &viewport);
+ 		D3D11_RECT rects[1];
+ 		rects[0].top = 0;
+@@ -367,6 +413,7 @@ void DX11Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
+ 		// Set the active shaders and constant buffers.
+ 		context->PSSetShaderResources(0, 1, &quad_texture_view);
+ 		context->VSSetShader(fs_vshader, nullptr, 0);
++		context->VSSetConstantBuffers(0, 1, &fs_bounds_cb);
+ 		context->PSSetShader(fs_pshader, nullptr, 0);
+ 		context->PSSetSamplers(0, 1, &quad_sampleState);
+ 
+@@ -383,6 +430,10 @@ void DX11Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
+ 		if (numScissors)
+ 			context->RSSetScissorRects(numScissors, scissors.data());
+ 
++		context->VSSetConstantBuffers(0, 1, &previousVsConstants);
++		if (previousVsConstants)
++			previousVsConstants->Release();
++
+ 		context->RSSetState(pRSState);
+ 	} else {
+ 		// Apparently SteamVR supports apps just sending array textures without specifying what's what.
+diff --git a/OpenOVR/Compositor/dx11compositor.h b/OpenOVR/Compositor/dx11compositor.h
+index 1f8fa64..2157f80 100644
+--- a/OpenOVR/Compositor/dx11compositor.h
++++ b/OpenOVR/Compositor/dx11compositor.h
+@@ -13,6 +13,7 @@ public:
+ 
+ 	virtual void InvokeCubemap(const vr::Texture_t* textures) override;
+ 	virtual bool SupportsCubemap() override { return true; }
++	virtual bool SupportsInvertedCopy() override { return true; }
+ 
+ 	ID3D11Device* GetDevice() { return device; }
+ 
+@@ -30,6 +31,8 @@ protected:
+ 	ID3D11SamplerState* quad_sampleState;
+ 	ID3D11VertexShader* fs_vshader;
+ 	ID3D11PixelShader* fs_pshader;
++	/// Source rectangle for the inverting copy, as (uMin, vMin, uMax, vMax).
++	ID3D11Buffer* fs_bounds_cb = nullptr;
+ 
+ 	std::vector<XrSwapchainImageD3D11KHR> imagesHandles;
+ 	std::vector<ID3D11RenderTargetView*> swapchain_rtvs;
 diff --git a/OpenOVR/Reimpl/BaseInput.cpp b/OpenOVR/Reimpl/BaseInput.cpp
-index 1ac62c2..d9facb5 100644
+index 1091a21..5d73ef8 100644
 --- a/OpenOVR/Reimpl/BaseInput.cpp
 +++ b/OpenOVR/Reimpl/BaseInput.cpp
-@@ -1088,19 +1088,16 @@ void BaseInput::LoadDpadAction(const InteractionProfile& profile, const std::str
+@@ -1093,26 +1093,23 @@ void BaseInput::LoadDpadAction(const InteractionProfile& profile, const std::str
  
  	if (subMode == "click") {
  		dpad_info.click = true;
@@ -38,7 +220,6 @@ index 1ac62c2..d9facb5 100644
  				// TODO: it's unclear what the actual threshold value used by SteamVR is, and it's not configurable in bindings json
  				action->perProfileData[&profile].click_activate_threshold = 0.33f;
  				action->perProfileData[&profile].click_deactivate_threshold = 0.2f;
-@@ -1108,7 +1105,7 @@ void BaseInput::LoadDpadAction(const InteractionProfile& profile, const std::str
  			}
  
  			XrPath suggested_path;

@@ -93,7 +93,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
             case .ready:
                 self.send(MacNativeStreamProtocol.encodeHello(
                     deviceName: self.config.deviceName,
-                    wantsScreen: self.config.wantsScreen
+                    wantsScreen: self.config.wantsScreen,
+                    // Measured, not assumed — a host only sends 4:2:2 to a
+                    // headset whose own hardware decoder claimed the profile.
+                    decodesHEVC422: MacNativeVideoCapability.decodesHEVC422InHardware
                 ))
                 self.receiveLoop()
             case .failed(let error):

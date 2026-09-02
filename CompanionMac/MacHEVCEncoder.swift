@@ -13,13 +13,42 @@ import VideoToolbox
 /// passthrough. The desktop stream does not — it is the whole display, opaque
 /// edge to edge — and plain HEVC spends no bits on a constant alpha plane.
 final class MacHEVCEncoder: @unchecked Sendable {
+    /// Chroma sampling for the encoded stream.
+    ///
+    /// VideoToolbox exposes no 4:4:4 HEVC profile at all — the ladder is
+    /// Main/Main10 (4:2:0) and Main42210 (4:2:2 10-bit), and that is the whole
+    /// list — so 4:2:2 is as much colour resolution as an HEVC stream can carry
+    /// on Apple platforms. It is worth having for a desktop: 4:2:0 throws away
+    /// three quarters of the chroma, which is exactly what fringes coloured
+    /// text. It is only ever selected for a viewer that has proven it can
+    /// decode the profile in hardware.
+    nonisolated enum Chroma: Sendable {
+        case yuv420
+        case yuv422_10
+
+        var profileLevel: CFString {
+            switch self {
+            case .yuv420: kVTProfileLevel_HEVC_Main_AutoLevel
+            case .yuv422_10: kVTProfileLevel_HEVC_Main42210_AutoLevel
+            }
+        }
+    }
+
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
+    /// Fired with the encoded dimensions whenever a compression session is
+    /// created, so a caller can report what the encoder actually settled on.
+    nonisolated(unsafe) var onSessionReady: (@Sendable (Int, Int) -> Void)?
 
     private nonisolated(unsafe) var bitrate: Int
     private let frameRate: Int
     private let preservesAlpha: Bool
+    private let chroma: Chroma
+    /// Whether the live session is actually on the media engine. False only
+    /// where no hardware HEVC encoder exists at all (an Intel Mac without
+    /// one); everything Apple silicon reports true.
+    private(set) nonisolated(unsafe) var usingHardwareEncoder = false
     private nonisolated(unsafe) var session: VTCompressionSession?
     private nonisolated(unsafe) var sessionWidth = 0
     private nonisolated(unsafe) var sessionHeight = 0
@@ -29,11 +58,13 @@ final class MacHEVCEncoder: @unchecked Sendable {
     nonisolated init(
         bitrate: Int = 24_000_000,
         frameRate: Int = 60,
-        preservesAlpha: Bool = true
+        preservesAlpha: Bool = true,
+        chroma: Chroma = .yuv420
     ) {
         self.bitrate = bitrate
         self.frameRate = frameRate
         self.preservesAlpha = preservesAlpha
+        self.chroma = chroma
     }
 
     nonisolated func encode(_ sampleBuffer: CMSampleBuffer) {
@@ -103,22 +134,41 @@ final class MacHEVCEncoder: @unchecked Sendable {
     }
 
     private nonisolated func createSession(width: Int, height: Int) {
-        var newSession: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
-            allocator: nil,
-            width: Int32(width),
-            height: Int32(height),
-            codecType: preservesAlpha ? kCMVideoCodecType_HEVCWithAlpha : kCMVideoCodecType_HEVC,
-            encoderSpecification: nil,
-            imageBufferAttributes: nil,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &newSession
+        let codec = preservesAlpha ? kCMVideoCodecType_HEVCWithAlpha : kCMVideoCodecType_HEVC
+
+        // Ask for the media engine explicitly, and *require* it first. Passing
+        // no specification at all leaves VideoToolbox free to hand back a
+        // software encoder, which at a Retina desktop's pixel count is the
+        // difference between a fixed-function block and a hot CPU. The
+        // unrequired retry exists only for a Mac with no hardware HEVC encoder
+        // to give — better a software stream than no stream.
+        var newSession = Self.makeSession(
+            width: width,
+            height: height,
+            codec: codec,
+            requireHardware: true
         )
-        guard status == noErr, let newSession else {
-            onError?("\(codecName) encoder unavailable (\(status))")
+        if newSession == nil {
+            newSession = Self.makeSession(
+                width: width,
+                height: height,
+                codec: codec,
+                requireHardware: false
+            )
+        }
+        guard let newSession else {
+            onError?("\(codecName) encoder unavailable")
             return
+        }
+
+        // Profile before anything else: it decides the chroma format the
+        // session will produce, and VideoToolbox will not change it later.
+        if !preservesAlpha {
+            VTSessionSetProperty(
+                newSession,
+                key: kVTCompressionPropertyKey_ProfileLevel,
+                value: chroma.profileLevel
+            )
         }
 
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
@@ -150,9 +200,67 @@ final class MacHEVCEncoder: @unchecked Sendable {
             onError?("\(codecName) encoder preparation failed (\(prepareStatus))")
             return
         }
+        usingHardwareEncoder = Self.isHardwareAccelerated(newSession)
         session = newSession
         sessionWidth = width
         sessionHeight = height
+        onSessionReady?(width, height)
+    }
+
+    private nonisolated static func makeSession(
+        width: Int,
+        height: Int,
+        codec: CMVideoCodecType,
+        requireHardware: Bool
+    ) -> VTCompressionSession? {
+        let specification: [CFString: Any] = requireHardware
+            ? [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true]
+            : [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true]
+        var session: VTCompressionSession?
+        let status = VTCompressionSessionCreate(
+            allocator: nil,
+            width: Int32(width),
+            height: Int32(height),
+            codecType: codec,
+            encoderSpecification: specification as CFDictionary,
+            imageBufferAttributes: nil,
+            compressedDataAllocator: nil,
+            outputCallback: nil,
+            refcon: nil,
+            compressionSessionOut: &session
+        )
+        return status == noErr ? session : nil
+    }
+
+    /// Reads back what VideoToolbox actually gave us — asking for hardware and
+    /// getting it are different things, and this is the only honest answer.
+    private nonisolated static func isHardwareAccelerated(_ session: VTCompressionSession) -> Bool {
+        // Explicitly allocated rather than `&someVar`: this API is generic over
+        // its out-parameter, and inout-ing a local of reference type makes the
+        // compiler (rightly) warn about forming a raw pointer to a reference.
+        let out = UnsafeMutablePointer<CFTypeRef?>.allocate(capacity: 1)
+        out.initialize(to: nil)
+        defer {
+            out.deinitialize(count: 1)
+            out.deallocate()
+        }
+        let status = VTSessionCopyProperty(
+            session,
+            key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+            allocator: kCFAllocatorDefault,
+            valueOut: out
+        )
+        guard status == noErr, let value = out.pointee else { return false }
+        return (value as? NSNumber)?.boolValue ?? false
+    }
+
+    /// Human-readable chroma, including the alpha case, for status copy.
+    nonisolated var chromaDescription: String {
+        if preservesAlpha { return "4:2:0 + alpha" }
+        return switch chroma {
+        case .yuv420: "4:2:0 8-bit"
+        case .yuv422_10: "4:2:2 10-bit"
+        }
     }
 
     private nonisolated var codecName: String {

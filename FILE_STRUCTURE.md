@@ -68,6 +68,7 @@ Longwave/
 Shared/                                 — compiled into BOTH targets (visionOS app + macOS companion)
 ├── AudioStreamProtocol.swift           — Wire protocol v6 (int24 PCM via PCM24), NowPlayingInfo, MediaCommand
 ├── MacNativeStreamProtocol.swift       — Native stream framing: v2 capabilities, window inventory, multiplexed streams, input
+├── MacNativeVideoCapability.swift      — Hardware HEVC 4:2:2 decode probe (drives the desktop stream's chroma)
 ├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
 └── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 

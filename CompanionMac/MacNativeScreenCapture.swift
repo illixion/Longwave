@@ -18,6 +18,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
+    /// One line describing what the capture actually settled on — size, chroma,
+    /// and whether the encoder landed on the media engine. Fired once the first
+    /// compression session exists, since "asked for hardware" and "got it" are
+    /// different questions.
+    nonisolated(unsafe) var onVideoSummary: (@Sendable (String) -> Void)?
     /// The captured display's frame in the global (point-space) coordinate
     /// system — the same space `CGEvent` mouse coordinates use — and the
     /// stream's pixels-per-point. Fired once capture starts and again whenever
@@ -48,8 +53,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     // can tell whether a subsequent stop() (or restart) already superseded
     // it, instead of clobbering state a later call already tore down.
     private var generation = 0
+    /// Chroma for this capture's encoder, decided by what the connected viewer
+    /// said it can hardware-decode. Fixed for the life of the capture: the
+    /// profile is a property of the compression session, and a viewer swap
+    /// restarts the whole thing anyway.
+    private let chroma: MacHEVCEncoder.Chroma
 
-    nonisolated override init() {
+    nonisolated init(chroma: MacHEVCEncoder.Chroma = .yuv420) {
+        self.chroma = chroma
         super.init()
     }
 
@@ -65,7 +76,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         // Opaque full display: no alpha layer to spend bits or decode cycles on.
         let encoder = MacHEVCEncoder(
             bitrate: Self.bitrate(for: configuration),
-            preservesAlpha: false
+            preservesAlpha: false,
+            chroma: chroma
         )
         encoder.onFormatDescription = { [weak self] data in
             self?.onFormatDescription?(data)
@@ -75,6 +87,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         }
         encoder.onError = { [weak self] message in
             self?.onError?(message)
+        }
+        encoder.onSessionReady = { [weak self, weak encoder] width, height in
+            guard let encoder else { return }
+            let chroma = encoder.chromaDescription
+            let engine = encoder.usingHardwareEncoder ? "hardware" : "software"
+            self?.onVideoSummary?("\(width)×\(height) HEVC \(chroma), \(engine) encode")
         }
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)

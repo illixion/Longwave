@@ -40,7 +40,12 @@ Implemented:
   with the bitrate scaled to the encoded area. Stream coordinates are therefore
   **pixels, not points** — the host divides by the stream's pixels-per-point
   before injecting a `CGEvent`, exactly as per-window streams already did.
-- Realtime VideoToolbox HEVC encoding, opaque (`kCMVideoCodecType_HEVC`).
+- Realtime VideoToolbox HEVC encoding, opaque (`kCMVideoCodecType_HEVC`), on
+  the media engine — hardware is required of the session and then verified,
+  rather than left to VideoToolbox's discretion.
+- 4:2:2 10-bit chroma (`Main42210`) whenever the viewer has proved it can
+  decode that profile in hardware, else 4:2:0. 4:4:4 is not on the menu:
+  VideoToolbox exposes no such HEVC profile. See [[KNOWN_CONSTRAINTS.md]].
 - Exact CoreMedia format-description transport, so the receiver rebuilds the
   format the encoder actually produced rather than approximating it.
 - Opaque visionOS playback in a single value-typed window, corner-rounded so the
@@ -80,6 +85,9 @@ Verify on a physical Vision Pro:
 6. A second authenticated viewer replaces the first and both UIs report it.
 7. Capture or decoder failures close the session with a useful error.
 8. A per-window stream still preserves alpha (rounded corners, shadow, vibrancy).
+9. The companion's Screen Status pane reports "4:2:2 10-bit, hardware encode"
+   once a headset is connected — 4:2:0 there means the headset's decoder probe
+   said no, which is a real answer, not a bug.
 
 ## Phase 1: Mouse and Keyboard Control
 

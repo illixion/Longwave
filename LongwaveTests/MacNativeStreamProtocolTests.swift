@@ -46,6 +46,39 @@ final class MacNativeStreamProtocolTests: XCTestCase {
         XCTAssertNil(hello?.protocolVersion)
     }
 
+    func testHelloCarriesChromaCapability() {
+        var buffer = P.encodeHello(deviceName: "AVP", decodesHEVC422: true)
+        let frames = P.drainFrames(&buffer)
+        XCTAssertEqual(P.decodeHello(frames[0].payload)?.decodesHEVC422, true)
+    }
+
+    /// A viewer that predates the capability, or one that measured its decoder
+    /// and found no hardware 4:2:2, must both read as "send 4:2:0" — the host
+    /// treats a missing flag as false, so silence can never be mistaken for a
+    /// claim of support.
+    func testHelloWithoutChromaCapabilityDecodesAsAbsent() {
+        let legacy = Data(#"{"deviceName":"Old Viewer","protocolVersion":2}"#.utf8)
+        let hello = P.decodeHello(legacy)
+        XCTAssertEqual(hello?.deviceName, "Old Viewer")
+        XCTAssertNil(hello?.decodesHEVC422)
+
+        var buffer = P.encodeHello(deviceName: "AVP", decodesHEVC422: false)
+        let frames = P.drainFrames(&buffer)
+        XCTAssertEqual(P.decodeHello(frames[0].payload)?.decodesHEVC422, false)
+    }
+
+    /// The 4:2:2 probe carries a hardcoded VPS/SPS/PPS triplet lifted from
+    /// VideoToolbox's own hardware encoder. If those bytes ever rot — or the
+    /// decoder specification stops meaning what it means — this is where it
+    /// shows, rather than in a silent fall back to 4:2:0 on every host.
+    /// Simulator-only: on a real device the honest answer depends on the
+    /// device, and either answer is correct there.
+    func testHardware422ProbeAnswersOnThisHost() {
+        let detail = MacNativeVideoCapability.probeDetail()
+        print("422 probe: \(detail)")
+        XCTAssertTrue(detail.formatBuilt)
+    }
+
     func testHelloAckRoundTripAndV1Fallback() {
         let ack = P.HelloAck(
             protocolVersion: 2,

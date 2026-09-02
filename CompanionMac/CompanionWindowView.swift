@@ -76,6 +76,10 @@ struct NativePane: View {
                         Label("Screen capture active", systemImage: "record.circle")
                             .foregroundStyle(.green)
                     }
+                    if let video = controller.macNativeStreaming.desktopVideoSummary {
+                        LabeledContent("Desktop video", value: video)
+                            .help("Chroma is 4:2:2 only when the connected viewer proved it can decode that profile in hardware; otherwise 4:2:0.")
+                    }
                     if let error = controller.macNativeStreaming.lastError {
                         Text(error)
                             .foregroundStyle(.red)

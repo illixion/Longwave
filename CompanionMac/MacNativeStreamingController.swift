@@ -27,6 +27,10 @@ final class MacNativeStreamingController {
     private(set) var connectedDeviceName: String?
     private(set) var lastError: String?
     private(set) var isCapturing = false
+    /// What the live desktop capture negotiated — worth surfacing, because the
+    /// chroma format is chosen by the viewer's own hardware probe and there is
+    /// otherwise no way to tell 4:2:2 from 4:2:0 by looking at the picture.
+    private(set) var desktopVideoSummary: String?
 
     /// Mouse/keyboard remote control for the Screen stream — see
     /// `MacNativeInputService` for why it's a separate opt-in from Screen
@@ -74,6 +78,10 @@ final class MacNativeStreamingController {
     /// puts every click at twice its intended offset.
     private var displayFrame: CGRect = .zero
     private var displayPixelScale: CGFloat = 1
+    /// Whether the connected viewer said it can hardware-decode 4:2:2. Reset
+    /// by every hello, so a takeover by a less capable headset drops the
+    /// desktop stream back to 4:2:0 on its next start.
+    private var viewerDecodesHEVC422 = false
 
     private func globalPoint(x: UInt16, y: UInt16) -> CGPoint {
         CGPoint(
@@ -174,10 +182,13 @@ final class MacNativeStreamingController {
 
     private func launchServer(generation: Int) {
         let server = MacNativeStreamServer(port: port, token: token)
-        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion, wantsScreen in
+        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion, wantsScreen, decodesHEVC422 in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 self.connectedDeviceName = deviceName
+                // Per viewer, and only ever raised by a viewer that has probed
+                // its own hardware decoder — see `MacNativeVideoCapability`.
+                self.viewerDecodesHEVC422 = decodesHEVC422
                 // A session that's audio-only from the start (the Native
                 // window's Screen toggle already off when it connected) skips
                 // the notification — it's redundant on every headset don,
@@ -379,7 +390,14 @@ final class MacNativeStreamingController {
     private func startCapture() {
         captureGeneration += 1
         let generation = captureGeneration
-        let capture = MacNativeScreenCapture()
+        let chroma: MacHEVCEncoder.Chroma = viewerDecodesHEVC422 ? .yuv422_10 : .yuv420
+        let capture = MacNativeScreenCapture(chroma: chroma)
+        capture.onVideoSummary = { [weak self] summary in
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.captureGeneration else { return }
+                self.desktopVideoSummary = summary
+            }
+        }
         capture.onFormatDescription = { [weak server] data in
             server?.broadcastFormatDescription(data)
         }
@@ -431,6 +449,7 @@ final class MacNativeStreamingController {
         let capture = self.capture
         self.capture = nil
         isCapturing = false
+        desktopVideoSummary = nil
         Task {
             await capture?.stop()
         }

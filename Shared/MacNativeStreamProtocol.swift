@@ -101,11 +101,24 @@ nonisolated enum MacNativeStreamProtocol {
         /// Lets the Mac skip starting capture, and skip the "connected"
         /// notification, for a session that's audio-only from the start.
         var wantsScreen: Bool?
+        /// Whether this viewer can decode HEVC Main 4:2:2 10-bit **in
+        /// hardware** (`MacNativeVideoCapability`). The desktop stream is
+        /// mostly text, which is what 4:2:0 chroma subsampling damages most, so
+        /// a host that hears `true` encodes 4:2:2 instead. Absent or false ⇒
+        /// 4:2:0, because a chroma format the viewer has to decode in software
+        /// costs far more than the fringing it fixes.
+        var decodesHEVC422: Bool?
 
-        init(deviceName: String, protocolVersion: Int? = nil, wantsScreen: Bool? = nil) {
+        init(
+            deviceName: String,
+            protocolVersion: Int? = nil,
+            wantsScreen: Bool? = nil,
+            decodesHEVC422: Bool? = nil
+        ) {
             self.deviceName = deviceName
             self.protocolVersion = protocolVersion
             self.wantsScreen = wantsScreen
+            self.decodesHEVC422 = decodesHEVC422
         }
     }
 
@@ -214,13 +227,15 @@ nonisolated enum MacNativeStreamProtocol {
     static func encodeHello(
         deviceName: String,
         protocolVersion: Int = protocolVersion,
-        wantsScreen: Bool? = nil
+        wantsScreen: Bool? = nil,
+        decodesHEVC422: Bool? = nil
     ) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hello = Hello(
             deviceName: name.isEmpty ? "Vision Pro" : name,
             protocolVersion: protocolVersion,
-            wantsScreen: wantsScreen
+            wantsScreen: wantsScreen,
+            decodesHEVC422: decodesHEVC422
         )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)

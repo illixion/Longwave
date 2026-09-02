@@ -11,7 +11,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
             _ deviceName: String,
             _ replacedDeviceName: String?,
             _ protocolVersion: Int,
-            _ wantsScreen: Bool
+            _ wantsScreen: Bool,
+            _ decodesHEVC422: Bool
         ) -> Void)?
     nonisolated(unsafe) var onClientDisconnected: (@Sendable () -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
@@ -36,7 +37,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onWindowScroll: (@Sendable (UInt32, UInt16, UInt16, Int16, Int16) -> Void)?
 
-    private static let maxPendingBytes = 12 * 1024 * 1024
+    private nonisolated static let maxPendingBytes = 12 * 1024 * 1024
 
     private nonisolated final class Client: @unchecked Sendable {
         let connection: NWConnection
@@ -379,7 +380,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     client,
                     deviceName: hello.deviceName,
                     protocolVersion: hello.protocolVersion ?? 1,
-                    wantsScreen: hello.wantsScreen ?? true
+                    wantsScreen: hello.wantsScreen ?? true,
+                    decodesHEVC422: hello.decodesHEVC422 ?? false
                 )
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
@@ -447,7 +449,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         _ client: Client,
         deviceName: String,
         protocolVersion: Int,
-        wantsScreen: Bool
+        wantsScreen: Bool,
+        decodesHEVC422: Bool
     ) {
         guard pendingClient === client || activeClient === client else { return }
         if activeClient === client { return }
@@ -495,7 +498,13 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
         sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
         sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
-        onClientActivated?(deviceName, previousName, client.protocolVersion, wantsScreen)
+        onClientActivated?(
+            deviceName,
+            previousName,
+            client.protocolVersion,
+            wantsScreen,
+            decodesHEVC422
+        )
     }
 
     private nonisolated func sendRequired(_ data: Data, to client: Client?) {

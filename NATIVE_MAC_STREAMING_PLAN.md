@@ -121,11 +121,21 @@ Done:
   no ornament); the Native window doubles as the controller (window picker +
   audio + session controls); scenes self-dismiss on host-side close and
   resubscribe after transient scene teardowns and reconnects.
+- Unity Controls carries the whole session: desktop toggle, pointer mode,
+  keyboard, audio, the audio mini-player pop-out, and the window chips. It has
+  to — a Unity session's desktop scene is usually closed, and it is the only
+  window with an ornament-free path to any of that.
 - Focus/input routing to the correct host window, raising it first when a
   click would land on an occluding window.
 - Sheets/child windows are captured into their parent stream
   (`includeChildWindows`); app termination and Space changes end the stream
   cleanly via the inventory poll.
+- Idle sessions cost close to nothing: with no window streaming, the inventory
+  poll drops to 5 s and `isFocused` changes coalesce to one republish per 5 s,
+  so a session that is only carrying audio is not enumerating windows every
+  second or pushing a fresh inventory on every ⌘-Tab. Nothing else on the
+  connection ticks — the native stream and injection channels are purely
+  event-driven, with no heartbeat of their own.
 
 Remaining (follow-up):
 

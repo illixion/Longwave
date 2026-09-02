@@ -169,27 +169,64 @@ final class MacNativeWindowStreamCoordinator {
     private var streamers: [UInt32: MacNativeWindowStreamer] = [:]
     private var targets: [UInt32: MacNativeWindowTarget] = [:]
     private var lastInventory: [MacNativeStreamProtocol.WindowInfo] = []
+    private var lastFocusPublish = ContinuousClock.now
     private var pollTask: Task<Void, Never>?
+    /// The cadence the running loop was started with, so `syncPollCadence`
+    /// can tell a real transition from a no-op.
+    private var pollingIdle = true
     private var generation = 0
+
+    /// While a window is streaming the poll is load-bearing: it is what
+    /// notices a resize, a close, or a move to another Space, and a second of
+    /// lag there is visible.
+    private static let activePollInterval = Duration.seconds(1)
+    /// With nothing streaming it only refreshes a picker, and a
+    /// `SCShareableContent` enumeration every second is real CPU on the Mac
+    /// for a session that may be doing nothing but playing audio.
+    private static let idlePollInterval = Duration.seconds(5)
+    /// `isFocused` decorates the picker and nothing else — no input routes by
+    /// it — so a burst of ⌘-Tabs must not each rebroadcast the whole
+    /// inventory. Structural changes still publish immediately.
+    private static let focusPublishInterval = Duration.seconds(5)
 
     func start() {
         generation += 1
-        let myGeneration = generation
         pollTask?.cancel()
         lastInventory = []
+        startPollLoop()
+    }
+
+    /// (Re)starts the poll loop at whatever cadence the current stream set
+    /// calls for, polling once immediately.
+    private func startPollLoop() {
+        let myGeneration = generation
+        pollingIdle = streamers.isEmpty
+        let interval = pollingIdle ? Self.idlePollInterval : Self.activePollInterval
+        pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.generation == myGeneration else { return }
                 await self.poll()
-                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, self.generation == myGeneration else { return }
+                try? await Task.sleep(for: interval)
             }
         }
+    }
+
+    /// Restarts the loop when the stream set crosses between empty and not,
+    /// and only then. Without it a window opened during an idle five-second
+    /// sleep would go untracked — no resize following, no close detection —
+    /// until that sleep happened to end.
+    private func syncPollCadence() {
+        guard pollingIdle != streamers.isEmpty else { return }
+        startPollLoop()
     }
 
     func stop() {
         generation += 1
         pollTask?.cancel()
         pollTask = nil
+        pollingIdle = true
         lastInventory = []
         let oldStreamers = streamers
         streamers = [:]
@@ -228,6 +265,7 @@ final class MacNativeWindowStreamCoordinator {
             }
         }
         streamers[windowID] = streamer
+        syncPollCadence()
 
         Task { [weak self] in
             do {
@@ -254,6 +292,7 @@ final class MacNativeWindowStreamCoordinator {
 
     func stopStream(windowID: UInt32) {
         guard let streamer = streamers.removeValue(forKey: windowID) else { return }
+        syncPollCadence()
         Task {
             await streamer.stop()
         }
@@ -265,6 +304,10 @@ final class MacNativeWindowStreamCoordinator {
             await streamer.stop()
         }
         onWindowClosed?(windowID, reason)
+        // Last, and never before `onWindowClosed`: this can restart the very
+        // loop whose `poll()` is calling us, and the notification should be out
+        // the door first.
+        syncPollCadence()
     }
 
     private enum StreamError: LocalizedError {
@@ -326,6 +369,17 @@ final class MacNativeWindowStreamCoordinator {
         }
         targets = newTargets
 
+        // Stable order, not the window server's. `SCShareableContent` hands
+        // back windows front-to-back, so every ⌘-Tab reorders the array — the
+        // picker's chips shuffled under the user's gaze, and the focus-only
+        // check below could never recognise its own list. Grouped by app, then
+        // by window ID (roughly creation order), so a window stays put until it
+        // actually goes away.
+        inventory.sort { left, right in
+            let byApp = left.appName.localizedStandardCompare(right.appName)
+            return byApp == .orderedSame ? left.id < right.id : byApp == .orderedAscending
+        }
+
         // Streams whose window vanished (closed, minimized, other Space).
         for windowID in streamers.keys where byID[windowID] == nil {
             closeStream(windowID: windowID, reason: "The window left the screen.")
@@ -338,9 +392,40 @@ final class MacNativeWindowStreamCoordinator {
             }
         }
 
-        if inventory != lastInventory {
-            lastInventory = inventory
-            onInventoryChanged?(inventory)
+        publish(inventory)
+    }
+
+    /// Publishes an inventory that actually differs — immediately for a
+    /// structural change (a window appearing, closing, retitling, resizing),
+    /// and on a budget for one that only moved the focus highlight. A skipped
+    /// focus update deliberately leaves `lastInventory` alone, so the next
+    /// poll reconsiders it rather than dropping it for good.
+    private func publish(_ inventory: [MacNativeStreamProtocol.WindowInfo]) {
+        guard inventory != lastInventory else { return }
+        if Self.differsOnlyInFocus(inventory, lastInventory) {
+            let now = ContinuousClock.now
+            guard now - lastFocusPublish >= Self.focusPublishInterval else { return }
+            lastFocusPublish = now
+        } else {
+            lastFocusPublish = ContinuousClock.now
+        }
+        lastInventory = inventory
+        onInventoryChanged?(inventory)
+    }
+
+    /// Both lists come out of `poll()` in the same stable order, so a
+    /// positional walk is enough — and cheaper than keying by ID.
+    private static func differsOnlyInFocus(
+        _ lhs: [MacNativeStreamProtocol.WindowInfo],
+        _ rhs: [MacNativeStreamProtocol.WindowInfo]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { left, right in
+            left.id == right.id
+                && left.title == right.title
+                && left.appName == right.appName
+                && left.width == right.width
+                && left.height == right.height
         }
     }
 

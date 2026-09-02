@@ -49,6 +49,9 @@ struct LongwaveApp: App {
                 .environment(moonlightManager)
                 #endif
                 .trackMainWindow()
+                #if DEBUG
+                .unityControlsLayoutDemo(macNativeManager)
+                #endif
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)
                 .environment(pcvrStore)
@@ -181,7 +184,10 @@ struct LongwaveApp: App {
         } defaultValue: {
             .shared
         }
-        .defaultSize(width: 980, height: 180)
+        // Height is a first-frame hint only — `.contentSize` re-measures, and
+        // `MacNativeUnityControlView` now reports a determinate height for its
+        // chip strip so the window can't settle short and clip it.
+        .defaultSize(width: 1100, height: 250)
         .windowResizability(.contentSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
@@ -306,3 +312,37 @@ struct LongwaveApp: App {
         #endif
     }
 }
+
+#if DEBUG
+/// Opens the Unity Controls and desktop windows against a fake session at
+/// launch, for the `-LongwaveUnityUIDemo` layout run. It exists so that the
+/// dense control bar, the window chips and the desktop scene's geometry can be
+/// screenshotted in the simulator — nothing else in the app can put them on
+/// screen without a Mac companion answering on the other end. Inert without the
+/// launch argument, and absent from release builds.
+///
+///     xcrun simctl launch booted pro.longwave.oss -LongwaveUnityUIDemo
+///     xcrun simctl io booted screenshot out.png
+private struct UnityControlsLayoutDemo: ViewModifier {
+    // Handed in rather than read from the environment: this modifier is
+    // applied outside the `.environment(...)` calls that publish the manager,
+    // so an `@Environment` lookup here would trap on a missing value.
+    let macNativeManager: MacNativeStreamManager
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.task {
+            guard MacNativeStreamManager.isUnityUIDemo else { return }
+            macNativeManager.seedUnityUIDemo()
+            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+        }
+    }
+}
+
+private extension View {
+    func unityControlsLayoutDemo(_ manager: MacNativeStreamManager) -> some View {
+        modifier(UnityControlsLayoutDemo(macNativeManager: manager))
+    }
+}
+#endif

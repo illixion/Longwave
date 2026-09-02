@@ -17,29 +17,12 @@ struct MacNativeUnityControlView: View {
         @Bindable var audioManager = audioManager
 
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Label(screenManager.title, systemImage: "slider.horizontal.3")
-                    .font(.headline)
+            header
 
-                Text(screenManager.state.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button {
-                    openWindow(id: "main", value: MainWindowID.shared)
-                } label: {
-                    Label("Connections", systemImage: "house")
-                        .labelStyle(.iconOnly)
-                }
-
-                Button(role: .destructive, action: disconnectAll) {
-                    Label("Disconnect", systemImage: "xmark.circle")
-                        .labelStyle(.iconOnly)
-                }
-            }
-
+            // Session controls only. The window-management cluster lives with
+            // the chips below: eight labelled buttons never fit one row, and
+            // SwiftUI's answer was to wrap every label onto two lines
+            // ("Desk / top", "Right- / click") rather than truncate.
             HStack(spacing: 10) {
                 Toggle(isOn: desktopBinding) {
                     Label("Desktop", systemImage: "macwindow.on.rectangle")
@@ -75,46 +58,16 @@ struct MacNativeUnityControlView: View {
                 .toggleStyle(.button)
                 .disabled(!screenManager.hostServesAudio)
 
-                Spacer()
-
-                Button("Show All", systemImage: "rectangle.stack.badge.plus", action: showAllWindows)
-                    .disabled(!canShowAnyWindow)
-
-                Button("Hide All", systemImage: "rectangle.stack.badge.minus", action: hideAllWindows)
-                    .disabled(screenManager.unityVisibleWindowIDs.isEmpty)
-
-                Toggle("Auto-show", isOn: autoShowBinding)
-                    .toggleStyle(.button)
+                Spacer(minLength: 0)
             }
+            .lineLimit(1)
 
             Divider()
 
-            if screenManager.windowInventory.isEmpty {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text("Waiting for Mac windows…")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 64)
-            } else {
-                if screenManager.windowInventory.count > MacNativeStreamProtocol.maxConcurrentWindowStreams {
-                    Text("Up to \(MacNativeStreamProtocol.maxConcurrentWindowStreams) windows can stream at once.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                ScrollView(.horizontal) {
-                    LazyHStack(spacing: 10) {
-                        ForEach(screenManager.windowInventory) { window in
-                            windowButton(window)
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                }
-                .scrollIndicators(.hidden)
-            }
+            windowStrip
         }
         .padding(14)
-        .frame(width: 980)
+        .frame(width: unityControlsWidth)
         .glassBackgroundEffect()
         .onAppear {
             resumeSession()
@@ -144,6 +97,91 @@ struct MacNativeUnityControlView: View {
         }
     }
 
+    /// Wide enough that the session controls, the three all-window actions and
+    /// a few window chips all sit on their own line without wrapping. The chip
+    /// strip scrolls past whatever is left.
+    private let unityControlsWidth: CGFloat = 1100
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Label(screenManager.title, systemImage: "slider.horizontal.3")
+                .font(.headline)
+                .lineLimit(1)
+
+            Text(screenManager.state.statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 8)
+
+            // Replaces the old standalone "Up to N windows can stream at once"
+            // caption: it says the same thing, plus where you are against the
+            // cap, without spending a row on it.
+            if !screenManager.windowInventory.isEmpty {
+                Text("\(screenManager.unityVisibleWindowIDs.count) of \(MacNativeStreamProtocol.maxConcurrentWindowStreams) shown")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Button {
+                openWindow(id: "main", value: MainWindowID.shared)
+            } label: {
+                Label("Connections", systemImage: "house")
+                    .labelStyle(.iconOnly)
+            }
+
+            Button(role: .destructive, action: disconnectAll) {
+                Label("Disconnect", systemImage: "xmark.circle")
+                    .labelStyle(.iconOnly)
+            }
+        }
+    }
+
+    /// The all-window actions and the per-window chips on one line. The strip
+    /// is `fixedSize`d vertically because a horizontal `ScrollView` reports an
+    /// unconstrained height, and under `.contentSize` resizability that let the
+    /// window settle at its `defaultSize` and clip the chips out of sight.
+    @ViewBuilder
+    private var windowStrip: some View {
+        if screenManager.windowInventory.isEmpty {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Waiting for Mac windows…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 64)
+        } else {
+            HStack(spacing: 10) {
+                Button("Show All", systemImage: "rectangle.stack.badge.plus", action: showAllWindows)
+                    .disabled(!canShowAnyWindow)
+
+                Button("Hide All", systemImage: "rectangle.stack.badge.minus", action: hideAllWindows)
+                    .disabled(screenManager.unityVisibleWindowIDs.isEmpty)
+
+                Toggle("Auto-show", isOn: autoShowBinding)
+                    .toggleStyle(.button)
+
+                Divider()
+                    .frame(height: 36)
+
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(screenManager.windowInventory) { window in
+                            windowButton(window)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func windowButton(_ window: MacNativeStreamProtocol.WindowInfo) -> some View {
         let isOpen = screenManager.unityVisibleWindowIDs.contains(window.id)
         let isAtCapacity = !isOpen
@@ -160,6 +198,7 @@ struct MacNativeUnityControlView: View {
                     Image(systemName: window.isFocused ? "macwindow.badge.plus" : "macwindow")
                     Text(window.title.isEmpty ? window.appName : window.title)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Spacer(minLength: 4)
                     Image(systemName: isOpen ? "eye.slash" : "eye")
                         .foregroundStyle(.secondary)

@@ -581,6 +581,54 @@ final class MacNativeStreamManager {
         }
     }
 
+    #if DEBUG
+    /// Whether this launch is the `-LongwaveUnityUIDemo` layout run: a fake
+    /// connection with a fake window inventory, so the Unity Controls and
+    /// desktop windows can be screenshotted in the simulator without a Mac
+    /// companion on the other end. Never true in a shipped build.
+    static var isUnityUIDemo: Bool {
+        ProcessInfo.processInfo.arguments.contains("-LongwaveUnityUIDemo")
+    }
+
+    /// Fills in exactly the state `MacNativeUnityControlView` and
+    /// `NativeStreamView` read, with window titles long enough to expose
+    /// truncation and label overflow.
+    func seedUnityUIDemo() {
+        title = "Studio Mac"
+        state = .streaming
+        unityEnabled = true
+        // Desktop on is the densest control bar (it adds the pointer-mode and
+        // right-click buttons), so that's what the layout run should show.
+        liveEnabled = true
+        serverAck = .init(
+            protocolVersion: MacNativeStreamProtocol.protocolVersion,
+            platform: "macOS",
+            keyCodeSpace: .macVirtual,
+            supportsWindowStreams: true,
+            supportsTransparentDesktop: false,
+            supportsAudioStream: true
+        )
+        windowInventory = [
+            .init(id: 1, title: "MacNativeUnityControlView.swift — Longwave", appName: "Xcode", width: 1680, height: 1050, isFocused: true),
+            .init(id: 2, title: "Inbox — illixion@illixion.com", appName: "Mail", width: 1200, height: 900, isFocused: false),
+            .init(id: 3, title: "", appName: "Finder", width: 920, height: 620, isFocused: false),
+            .init(id: 4, title: "Longwave — zsh — 120×40", appName: "Terminal", width: 1024, height: 768, isFocused: false),
+            .init(id: 5, title: "Apple Developer Documentation", appName: "Safari", width: 1440, height: 960, isFocused: false),
+            .init(id: 6, title: "Now Playing", appName: "Music", width: 800, height: 600, isFocused: false),
+            .init(id: 7, title: "General — Longwave", appName: "Slack", width: 1300, height: 850, isFocused: false)
+        ]
+        // A layer with no frames still paints the opaque black backing, which
+        // is what makes the desktop scene's real geometry — bleed, corners,
+        // letterboxing — visible in a screenshot.
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.backgroundColor = UIColor.black.cgColor
+        layer.isOpaque = true
+        displayLayer = layer
+        streamSize = CGSize(width: 1512, height: 982)
+    }
+    #endif
+
     private static func mapAvailability(
         _ availability: MacNativeStreamClient.Event.RemoteControlAvailability
     ) -> RemoteControlAvailability {

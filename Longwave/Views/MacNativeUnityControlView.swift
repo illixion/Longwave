@@ -58,6 +58,20 @@ struct MacNativeUnityControlView: View {
                 .toggleStyle(.button)
                 .disabled(!screenManager.hostServesAudio)
 
+                // A Unity session has no ornament and no inline player — the
+                // desktop scene it would live on is usually closed — so the
+                // mini player has to be reachable from here or not at all.
+                if audioManager.liveEnabled {
+                    Button(action: togglePlayerWindow) {
+                        Label(
+                            "Player",
+                            systemImage: isPlayerWindowOpen
+                                ? "arrow.down.right.and.arrow.up.left" : "arrow.up.forward.app"
+                        )
+                    }
+                    .tint(isPlayerWindowOpen ? .accentColor : nil)
+                }
+
                 Spacer(minLength: 0)
             }
             .lineLimit(1)
@@ -219,6 +233,13 @@ struct MacNativeUnityControlView: View {
         WindowSessionRegistry.shared.sessions["mac-native-keyboard"] != nil
     }
 
+    /// Tracked off the live registry rather than a flag of our own, the same
+    /// way `NativeStreamView` decides whether to show its inline player — so
+    /// the button reflects the window even when something else closed it.
+    private var isPlayerWindowOpen: Bool {
+        WindowSessionRegistry.shared.sessions["audio-stream"] != nil
+    }
+
     private var desktopBinding: Binding<Bool> {
         Binding(
             get: { screenManager.liveEnabled },
@@ -260,6 +281,14 @@ struct MacNativeUnityControlView: View {
             dismissWindow(id: "mac-native-keyboard")
         } else {
             openWindow(id: "mac-native-keyboard")
+        }
+    }
+
+    private func togglePlayerWindow() {
+        if isPlayerWindowOpen {
+            dismissWindow(id: "audio-stream")
+        } else {
+            openWindow(id: "audio-stream")
         }
     }
 
@@ -355,6 +384,7 @@ struct MacNativeUnityControlView: View {
         screenManager.forget()
         audioManager.userDisconnect()
         WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+            dismissWindow(id: "audio-stream")
             dismissWindow(id: "mac-native-keyboard")
             dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
             dismissWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)

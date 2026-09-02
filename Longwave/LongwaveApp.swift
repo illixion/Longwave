@@ -50,7 +50,7 @@ struct LongwaveApp: App {
                 #endif
                 .trackMainWindow()
                 #if DEBUG
-                .unityControlsLayoutDemo(macNativeManager)
+                .unityControlsLayoutDemo(macNativeManager, audioManager)
                 #endif
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)
@@ -328,21 +328,30 @@ private struct UnityControlsLayoutDemo: ViewModifier {
     // applied outside the `.environment(...)` calls that publish the manager,
     // so an `@Environment` lookup here would trap on a missing value.
     let macNativeManager: MacNativeStreamManager
+    let audioManager: AudioStreamManager
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
         content.task {
             guard MacNativeStreamManager.isUnityUIDemo else { return }
             macNativeManager.seedUnityUIDemo()
-            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            // Audio on, so the row's Player pop-out button is in the shot —
+            // it is the one control that only exists while audio is live.
+            audioManager.liveEnabled = true
+            // Desktop first so the control panel opens in front of it —
+            // the panel is the thing under review.
             openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
         }
     }
 }
 
 private extension View {
-    func unityControlsLayoutDemo(_ manager: MacNativeStreamManager) -> some View {
-        modifier(UnityControlsLayoutDemo(macNativeManager: manager))
+    func unityControlsLayoutDemo(
+        _ manager: MacNativeStreamManager,
+        _ audioManager: AudioStreamManager
+    ) -> some View {
+        modifier(UnityControlsLayoutDemo(macNativeManager: manager, audioManager: audioManager))
     }
 }
 #endif

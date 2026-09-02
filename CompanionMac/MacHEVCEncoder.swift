@@ -17,7 +17,7 @@ final class MacHEVCEncoder: @unchecked Sendable {
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
 
-    private let bitrate: Int
+    private nonisolated(unsafe) var bitrate: Int
     private let frameRate: Int
     private let preservesAlpha: Bool
     private nonisolated(unsafe) var session: VTCompressionSession?
@@ -82,6 +82,14 @@ final class MacHEVCEncoder: @unchecked Sendable {
         if status != noErr {
             onError?("VTCompressionSessionEncodeFrame failed (\(status))")
         }
+    }
+
+    /// Retargets the bitrate for the *next* compression session. A resized
+    /// source already forces a new session (see `encode`), so a display that
+    /// changes resolution mid-stream picks this up on its next frame rather
+    /// than encoding its new pixel count at the old area's budget.
+    nonisolated func setBitrate(_ bitrate: Int) {
+        self.bitrate = bitrate
     }
 
     nonisolated func invalidate() {

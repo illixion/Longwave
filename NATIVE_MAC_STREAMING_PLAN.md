@@ -36,6 +36,10 @@ Implemented:
 
 - ScreenCaptureKit capture of the entire Mac display: desktop picture, menu bar,
   Dock, Stage Manager strip, notifications, menus and every window.
+- Native (Retina) capture scale, capped so the long edge stays within 4096 px,
+  with the bitrate scaled to the encoded area. Stream coordinates are therefore
+  **pixels, not points** — the host divides by the stream's pixels-per-point
+  before injecting a `CGEvent`, exactly as per-window streams already did.
 - Realtime VideoToolbox HEVC encoding, opaque (`kCMVideoCodecType_HEVC`).
 - Exact CoreMedia format-description transport, so the receiver rebuilds the
   format the encoder actually produced rather than approximating it.
@@ -66,12 +70,16 @@ window belongs; the desktop stream is the desktop.
 Verify on a physical Vision Pro:
 
 1. The first frame appears and remains low latency.
-2. Wallpaper, menu bar and Dock are all present and legible.
-3. Menu-bar and Dock menus open and can be clicked through.
-4. Window resizing preserves aspect ratio; letterboxing is black, not garbage.
-5. A second authenticated viewer replaces the first and both UIs report it.
-6. Capture or decoder failures close the session with a useful error.
-7. A per-window stream still preserves alpha (rounded corners, shadow, vibrancy).
+2. Wallpaper, menu bar and Dock are all present, and menu-bar text is sharp
+   (the stream is Retina — if it looks soft, `pointPixelScale` came back 1).
+3. Clicks land where they are aimed, including near the right and bottom edges
+   — a missed pixels-to-points divide shows up as a 2x offset that grows with
+   distance from the display's origin.
+4. Menu-bar and Dock menus open and can be clicked through.
+5. Window resizing preserves aspect ratio; letterboxing is black, not garbage.
+6. A second authenticated viewer replaces the first and both UIs report it.
+7. Capture or decoder failures close the session with a useful error.
+8. A per-window stream still preserves alpha (rounded corners, shadow, vibrancy).
 
 ## Phase 1: Mouse and Keyboard Control
 

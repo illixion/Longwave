@@ -66,13 +66,20 @@ final class MacNativeStreamingController {
         updateInputAvailability()
     }
 
-    /// The captured display's frame in global (point-space) coordinates —
-    /// used to translate a stream-space (x, y) from the viewer into a real
-    /// `CGEvent` screen position.
+    /// The captured display's frame in global (point-space) coordinates, and
+    /// the desktop stream's pixels-per-point — together they translate a
+    /// stream-space (x, y) from the viewer into a real `CGEvent` screen
+    /// position. The desktop is captured at the display's native backing scale,
+    /// so on a Retina Mac the two spaces differ by 2 and skipping the divide
+    /// puts every click at twice its intended offset.
     private var displayFrame: CGRect = .zero
+    private var displayPixelScale: CGFloat = 1
 
     private func globalPoint(x: UInt16, y: UInt16) -> CGPoint {
-        CGPoint(x: displayFrame.origin.x + CGFloat(x), y: displayFrame.origin.y + CGFloat(y))
+        CGPoint(
+            x: displayFrame.origin.x + CGFloat(x) / displayPixelScale,
+            y: displayFrame.origin.y + CGFloat(y) / displayPixelScale
+        )
     }
 
     /// Maps a stream-space (x, y) to a global point for any stream: the
@@ -392,10 +399,11 @@ final class MacNativeStreamingController {
                 self.stopCapture()
             }
         }
-        capture.onDisplayFrame = { [weak self] frame in
+        capture.onDisplayGeometry = { [weak self] frame, pixelScale in
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }
                 self.displayFrame = frame
+                self.displayPixelScale = pixelScale > 0 ? pixelScale : 1
             }
         }
         self.capture = capture

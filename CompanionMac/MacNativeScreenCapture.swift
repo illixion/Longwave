@@ -19,11 +19,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
     /// The captured display's frame in the global (point-space) coordinate
-    /// system — the same space `CGEvent` mouse coordinates use. Fired once
-    /// capture starts and again whenever the display-refresh poll resolves a
-    /// changed frame, so remote-control input can map a stream-space (x, y)
-    /// back to a real screen position, including on a non-main display.
-    nonisolated(unsafe) var onDisplayFrame: (@Sendable (CGRect) -> Void)?
+    /// system — the same space `CGEvent` mouse coordinates use — and the
+    /// stream's pixels-per-point. Fired once capture starts and again whenever
+    /// the display-refresh poll resolves a change, so remote-control input can
+    /// map a stream-space (x, y) back to a real screen position, including on a
+    /// non-main display and at Retina scale. The stream is in pixels and
+    /// `CGEvent` is in points, so a receiver must divide before adding the
+    /// origin — see `MacNativeStreamingController.globalPoint`.
+    nonisolated(unsafe) var onDisplayGeometry: (@Sendable (CGRect, CGFloat) -> Void)?
 
     private let outputQueue = DispatchQueue(
         label: "pro.longwave.companion.mac-native.capture",
@@ -37,6 +40,9 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private nonisolated(unsafe) var encoder: MacHEVCEncoder?
     private var display: SCDisplay?
+    /// Stream pixels per display point. Native backing scale, except on a
+    /// display big enough to need `maxStreamDimension` to pull it back.
+    private var pixelScale: CGFloat = 1
     private var refreshTask: Task<Void, Never>?
     // Bumped on every start()/stop() so a start() resuming after an `await`
     // can tell whether a subsequent stop() (or restart) already superseded
@@ -55,9 +61,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         guard myGeneration == generation else { return }
 
         let filter = Self.makeFilter(display: display)
-        let configuration = makeConfiguration(display: display)
+        let (configuration, pixelScale) = Self.makeConfiguration(display: display, filter: filter)
         // Opaque full display: no alpha layer to spend bits or decode cycles on.
-        let encoder = MacHEVCEncoder(preservesAlpha: false)
+        let encoder = MacHEVCEncoder(
+            bitrate: Self.bitrate(for: configuration),
+            preservesAlpha: false
+        )
         encoder.onFormatDescription = { [weak self] data in
             self?.onFormatDescription?(data)
         }
@@ -79,9 +88,10 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         }
 
         self.display = display
+        self.pixelScale = pixelScale
         self.encoder = encoder
         self.stream = stream
-        onDisplayFrame?(display.frame)
+        onDisplayGeometry?(display.frame, pixelScale)
         startDisplayRefresh()
     }
 
@@ -120,10 +130,34 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return display
     }
 
-    private func makeConfiguration(display: SCDisplay) -> SCStreamConfiguration {
+    /// Beyond this the encoder, the link and the headset's decoder all start
+    /// paying for pixels nobody can resolve. A 5K Mac lands here and streams at
+    /// something under its native scale; everything smaller streams at 2x.
+    private nonisolated static let maxStreamDimension: CGFloat = 4096
+
+    /// Capture at the display's native backing scale, so menu-bar and window
+    /// text arrive with the pixels they were drawn with. Everything the viewer
+    /// sends back is in these stream pixels, so the scale comes back with the
+    /// configuration rather than being stashed here — the caller stores it only
+    /// once the stream is actually running at that size, or a failed
+    /// `updateConfiguration` would leave input dividing by a scale the live
+    /// stream never adopted.
+    private nonisolated static func makeConfiguration(
+        display: SCDisplay,
+        filter: SCContentFilter
+    ) -> (configuration: SCStreamConfiguration, pixelScale: CGFloat) {
         let configuration = SCStreamConfiguration()
-        configuration.width = display.width
-        configuration.height = display.height
+        let pointSize = CGSize(width: CGFloat(display.width), height: CGFloat(display.height))
+        // `pointPixelScale` is what ScreenCaptureKit itself would render at.
+        // Guard it anyway: a zero would collapse the stream to 2x2.
+        var scale = filter.pointPixelScale > 0 ? CGFloat(filter.pointPixelScale) : 1
+        let longest = max(pointSize.width, pointSize.height)
+        if longest * scale > maxStreamDimension, longest > 0 {
+            scale = maxStreamDimension / longest
+        }
+        // Even dimensions for the encoder's 4:2:0 chroma.
+        configuration.width = max(2, Int(pointSize.width * scale / 2) * 2)
+        configuration.height = max(2, Int(pointSize.height * scale / 2) * 2)
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
@@ -136,7 +170,16 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         configuration.ignoreShadowsDisplay = false
         configuration.scalesToFit = false
         configuration.preservesAspectRatio = true
-        return configuration
+        return (configuration, scale)
+    }
+
+    /// Scales with the encoded pixel area (≈6 bit/px/s at 60 fps) so going
+    /// Retina buys sharper pixels instead of the same bitrate spread over four
+    /// times as many of them. Floored at what the old point-sized stream got,
+    /// so no display comes out of this worse than it went in.
+    private nonisolated static func bitrate(for configuration: SCStreamConfiguration) -> Int {
+        let pixelArea = Double(configuration.width * configuration.height)
+        return Int(max(24_000_000, min(40_000_000, pixelArea * 6)))
     }
 
     /// The filter is the whole display and never needs rebuilding for a window
@@ -169,10 +212,16 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 || refreshed.height != display.height else {
                 return
             }
-            try await stream.updateContentFilter(Self.makeFilter(display: refreshed))
-            try await stream.updateConfiguration(makeConfiguration(display: refreshed))
+            let filter = Self.makeFilter(display: refreshed)
+            let (configuration, scale) = Self.makeConfiguration(display: refreshed, filter: filter)
+            try await stream.updateContentFilter(filter)
+            try await stream.updateConfiguration(configuration)
+            // The new size makes the encoder open a fresh session; give it the
+            // bitrate for the new area rather than the one it was built with.
+            encoder?.setBitrate(Self.bitrate(for: configuration))
             self.display = refreshed
-            onDisplayFrame?(refreshed.frame)
+            self.pixelScale = scale
+            onDisplayGeometry?(refreshed.frame, scale)
         } catch {
             onError?("Display refresh failed: \(error.localizedDescription)")
         }

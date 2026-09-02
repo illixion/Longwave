@@ -77,7 +77,8 @@ Twelve `WindowGroup` scenes in `LongwaveApp` (four conditionally compiled):
 ```
 SCShareableContent visible layer-zero application windows
   → SCContentFilter(display:including:) over clear BGRA
-    → MacHEVCEncoder (VideoToolbox HEVC; alpha only for per-window streams)
+    → MacHEVCEncoder (VideoToolbox HEVC; alpha only for per-window streams,
+      area-scaled bitrate, native Retina capture scale)
       → exact CoreMedia ImageDescription + length-prefixed compressed frames
         → TLS-PSK NWConnection
           → MacNativeVideoRenderer

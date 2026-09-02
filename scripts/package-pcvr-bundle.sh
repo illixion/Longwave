@@ -72,7 +72,7 @@ done
 
 if [[ -z "$CLOUDXR_SDK_WIN" ]]; then
   if [[ "$HOST" == "winvm" ]]; then
-    CLOUDXR_SDK_WIN='C:\Users\Username\cloudxr-stream-manager_v6.1.0\extracted'
+    CLOUDXR_SDK_WIN='C:\Users\User\cloudxr-stream-manager_v6.1.0\extracted'
   else
     CLOUDXR_SDK_WIN='C:\Users\Ixion\cloudxr-stream-manager_v6.1.0\extracted'
   fi
@@ -159,7 +159,14 @@ New-Item -ItemType Directory -Force -Path \$build | Out-Null
 Push-Location \$build
 cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
 if (\$LASTEXITCODE -ne 0) { throw 'CMake configure failed for $dir' }
+# nmake/link.exe write benign warnings straight to stderr, and with
+# \$ErrorActionPreference = 'Stop' PowerShell raises a terminating NativeCommandError the
+# instant a native command writes ANYTHING to stderr -- before a 2>&1 redirect on the same
+# line can merge it, and regardless of the eventual exit code. Drop to 'Continue' for just
+# this call so the explicit \$LASTEXITCODE check below is what actually decides success.
+\$ErrorActionPreference = 'Continue'
 nmake
+\$ErrorActionPreference = 'Stop'
 if (\$LASTEXITCODE -ne 0) { throw 'nmake build failed for $dir' }
 Pop-Location
 'built $dir'
@@ -193,7 +200,9 @@ New-Item -ItemType Directory -Force -Path \$build | Out-Null
 Push-Location \$build
 cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
 if (\$LASTEXITCODE -ne 0) { throw 'CMake configure (Win32) failed' }
+\$ErrorActionPreference = 'Continue'
 nmake LibOVRRT32_1
+\$ErrorActionPreference = 'Stop'
 if (\$LASTEXITCODE -ne 0) { throw 'nmake build (32-bit shim) failed' }
 Pop-Location
 \$dll = Join-Path \$build 'LibOVRRT32_1.dll'

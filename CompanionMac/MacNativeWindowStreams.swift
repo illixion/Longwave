@@ -33,7 +33,7 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
 
     private let outputQueue: DispatchQueue
     private var stream: SCStream?
-    private nonisolated(unsafe) var encoder: MacHEVCAlphaEncoder?
+    private nonisolated(unsafe) var encoder: MacHEVCEncoder?
     private var lastConfiguredSize: CGSize = .zero
 
     nonisolated init(windowID: UInt32) {
@@ -58,7 +58,7 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
         // still gets enough for crisp text.
         let pixelArea = Double(configuration.width * configuration.height)
         let bitrate = Int(max(3_000_000, min(15_000_000, pixelArea * 4)))
-        let encoder = MacHEVCAlphaEncoder(bitrate: bitrate)
+        let encoder = MacHEVCEncoder(bitrate: bitrate, preservesAlpha: true)
         encoder.onFormatDescription = { [weak self] data in
             self?.onFormatDescription?(data)
         }

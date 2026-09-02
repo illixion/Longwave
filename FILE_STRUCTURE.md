@@ -40,7 +40,7 @@ Longwave/
 │   └── PCVRSessionLimiter.swift        — 20-minute trial clock, warnings, and the cutoff
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver
-│   └── MacNativeVideoRenderer.swift    — hvc1+alpha format reconstruction and display
+│   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display
 ├── Moonlight/
 │   ├── MoonlightStreamBridge.swift     — C callback → Swift marshalling, global renderer refs
 │   ├── MoonlightVideoRenderer.swift    — AVSampleBufferDisplayLayer H.264/HEVC/AV1 + HDR
@@ -106,9 +106,9 @@ CompanionMac/                           — macOS menu bar companion target (Lon
 ├── AudioStreamServer.swift             — Single-client TCP server, metadata replay, command rx
 ├── MacNativeStreamingController.swift  — Enable state, capture/server lifecycle, takeover notifications
 ├── MacNativeStreamServer.swift         — Single authenticated newest-viewer-wins server + Bonjour
-├── MacNativeScreenCapture.swift        — Transparent ScreenCaptureKit window composition
+├── MacNativeScreenCapture.swift        — Whole-display ScreenCaptureKit capture (opaque)
 ├── MacNativeWindowStreams.swift        — Per-window streamers + inventory coordinator (Unity-style)
-├── MacHEVCAlphaEncoder.swift           — Realtime VideoToolbox HEVC-with-alpha encoder
+├── MacHEVCEncoder.swift                — Realtime VideoToolbox HEVC encoder (alpha for windows, opaque for the desktop)
 ├── MacNativeStreamNotifications.swift  — Foreground-capable connection/takeover notifications
 ├── SystemAudioTap.swift                — Core Audio process tap
 ├── NowPlayingCoordinator.swift         — Single now-playing source: prefers MediaRemote, falls back to AppleScript (arbitrates on which backend reports a track)

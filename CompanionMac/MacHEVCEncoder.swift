@@ -3,25 +3,37 @@ import CoreMedia
 import CoreVideo
 import VideoToolbox
 
-/// Realtime HEVC-with-alpha encoder. It forwards the exact CoreMedia image
-/// description so the receiver reconstructs the `muxa` format, including its
-/// alpha-layer metadata, rather than approximating it from HEVC parameter sets.
-final class MacHEVCAlphaEncoder: @unchecked Sendable {
+/// Realtime HEVC encoder, with or without an alpha layer. It forwards the exact
+/// CoreMedia image description so the receiver reconstructs the format the
+/// encoder actually produced — including the alpha-layer metadata of a `muxa`
+/// session, which HEVC parameter sets alone cannot express.
+///
+/// Per-window (Unity-style) streams need alpha: a Mac window is rounded,
+/// shadowed and often vibrant, and the visionOS scene composites it over
+/// passthrough. The desktop stream does not — it is the whole display, opaque
+/// edge to edge — and plain HEVC spends no bits on a constant alpha plane.
+final class MacHEVCEncoder: @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
 
     private let bitrate: Int
     private let frameRate: Int
+    private let preservesAlpha: Bool
     private nonisolated(unsafe) var session: VTCompressionSession?
     private nonisolated(unsafe) var sessionWidth = 0
     private nonisolated(unsafe) var sessionHeight = 0
     private nonisolated(unsafe) var lastFormatDescription: Data?
     private nonisolated(unsafe) var sequence: UInt64 = 0
 
-    nonisolated init(bitrate: Int = 24_000_000, frameRate: Int = 60) {
+    nonisolated init(
+        bitrate: Int = 24_000_000,
+        frameRate: Int = 60,
+        preservesAlpha: Bool = true
+    ) {
         self.bitrate = bitrate
         self.frameRate = frameRate
+        self.preservesAlpha = preservesAlpha
     }
 
     nonisolated func encode(_ sampleBuffer: CMSampleBuffer) {
@@ -42,12 +54,14 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
         }
         guard let session else { return }
 
-        CVBufferSetAttachment(
-            pixelBuffer,
-            kCVImageBufferAlphaChannelModeKey,
-            kCVImageBufferAlphaChannelMode_PremultipliedAlpha,
-            .shouldPropagate
-        )
+        if preservesAlpha {
+            CVBufferSetAttachment(
+                pixelBuffer,
+                kCVImageBufferAlphaChannelModeKey,
+                kCVImageBufferAlphaChannelMode_PremultipliedAlpha,
+                .shouldPropagate
+            )
+        }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let status = VTCompressionSessionEncodeFrame(
@@ -86,7 +100,7 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
             allocator: nil,
             width: Int32(width),
             height: Int32(height),
-            codecType: kCMVideoCodecType_HEVCWithAlpha,
+            codecType: preservesAlpha ? kCMVideoCodecType_HEVCWithAlpha : kCMVideoCodecType_HEVC,
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -95,7 +109,7 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
             compressionSessionOut: &newSession
         )
         guard status == noErr, let newSession else {
-            onError?("HEVC-with-alpha encoder unavailable (\(status))")
+            onError?("\(codecName) encoder unavailable (\(status))")
             return
         }
 
@@ -108,27 +122,33 @@ final class MacHEVCAlphaEncoder: @unchecked Sendable {
             key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
             value: 1.0 as CFNumber
         )
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PreserveAlphaChannel, value: kCFBooleanTrue)
-        VTSessionSetProperty(
-            newSession,
-            key: kVTCompressionPropertyKey_AlphaChannelMode,
-            value: kVTAlphaChannelMode_PremultipliedAlpha
-        )
-        VTSessionSetProperty(
-            newSession,
-            key: kVTCompressionPropertyKey_TargetQualityForAlpha,
-            value: 0.75 as CFNumber
-        )
+        if preservesAlpha {
+            VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PreserveAlphaChannel, value: kCFBooleanTrue)
+            VTSessionSetProperty(
+                newSession,
+                key: kVTCompressionPropertyKey_AlphaChannelMode,
+                value: kVTAlphaChannelMode_PremultipliedAlpha
+            )
+            VTSessionSetProperty(
+                newSession,
+                key: kVTCompressionPropertyKey_TargetQualityForAlpha,
+                value: 0.75 as CFNumber
+            )
+        }
 
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(newSession)
         guard prepareStatus == noErr else {
             VTCompressionSessionInvalidate(newSession)
-            onError?("HEVC-with-alpha encoder preparation failed (\(prepareStatus))")
+            onError?("\(codecName) encoder preparation failed (\(prepareStatus))")
             return
         }
         session = newSession
         sessionWidth = width
         sessionHeight = height
+    }
+
+    private nonisolated var codecName: String {
+        preservesAlpha ? "HEVC-with-alpha" : "HEVC"
     }
 
     private nonisolated func emit(_ sampleBuffer: CMSampleBuffer) {

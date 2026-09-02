@@ -3,12 +3,14 @@
 ## Goal
 
 Replace Mac Virtual Display for LAN and optional Tailscale use with a native,
-encrypted host stream that supports transparent windows, remote input, and
-Unity-style per-window visionOS presentation — on macOS and Windows hosts.
+encrypted host stream that carries the host's whole desktop, supports remote
+input, and offers Unity-style per-window visionOS presentation — on macOS and
+Windows hosts.
 
 ## Status
 
-- Transparent desktop milestone: **implemented** (see below).
+- Full desktop milestone: **implemented** (see below). Was a transparent
+  application-window composition; now the complete display.
 - Phase 1 (mouse/keyboard control): **implemented** — pointer/scroll/key
   frames, CGEvent injection behind Accessibility, independent mouse and
   keyboard-shortcut toggles, drag synthesis, double/triple-click detection.
@@ -28,32 +30,48 @@ Unity-style per-window visionOS presentation — on macOS and Windows hosts.
   client on the RTX 3080 host. Intended to double as Desktop View for PCVR
   mode once merged into `appstore/pcvr`.
 
-## First Milestone: Transparent Desktop
+## First Milestone: Full Desktop
 
 Implemented:
 
-- ScreenCaptureKit composition of visible Mac application windows over clear.
-- Realtime VideoToolbox HEVC-with-alpha encoding.
-- Exact CoreMedia format-description transport so alpha metadata survives.
-- Transparent visionOS playback in a single value-typed window.
+- ScreenCaptureKit capture of the entire Mac display: desktop picture, menu bar,
+  Dock, Stage Manager strip, notifications, menus and every window.
+- Realtime VideoToolbox HEVC encoding, opaque (`kCMVideoCodecType_HEVC`).
+- Exact CoreMedia format-description transport, so the receiver rebuilds the
+  format the encoder actually produced rather than approximating it.
+- Opaque visionOS playback in a single value-typed window, corner-rounded so the
+  display reads as a panel rather than a pasted-in rectangle.
 - Domain-separated encrypted transport on port 4857.
 - One authenticated viewer at a time; a new viewer replaces the previous one.
 - macOS connection/takeover notifications.
 - Manual LAN, hostname, IP, or Tailscale addressing and Bonjour advertisement.
 
+### Why it stopped being transparent
+
+The first implementation composited only visible application windows over a
+clear background and shipped it as HEVC-with-alpha, so the wallpaper's place
+showed the real room. It looked striking and cost too much: the menu bar and
+Dock were not in the frame at all, so nothing reachable only through them —
+menu-bar menus, menu-bar extras, Mission Control, the desktop itself — could be
+used from the headset. `MacNativeStreamProtocol.HelloAck.supportsTransparentDesktop`
+is now `false` on every host and kept only so older clients still decode the ack.
+
+The alpha-preserving presentation was not lost, it moved: a **per-window** stream
+(Phase 3) is exactly one Mac window, rounded, shadowed and vibrant, composited
+over passthrough in its own chrome-free scene. That is where a floating Mac
+window belongs; the desktop stream is the desktop.
+
 ### Device Gate
 
-Before adding input or splitting streams, verify on a physical Vision Pro:
+Verify on a physical Vision Pro:
 
 1. The first frame appears and remains low latency.
-2. Wallpaper and empty desktop regions reveal the real environment.
-3. Rounded corners, shadows, and translucent/vibrant content preserve alpha.
-4. Window resizing preserves aspect ratio without opaque backing.
+2. Wallpaper, menu bar and Dock are all present and legible.
+3. Menu-bar and Dock menus open and can be clicked through.
+4. Window resizing preserves aspect ratio; letterboxing is black, not garbage.
 5. A second authenticated viewer replaces the first and both UIs report it.
 6. Capture or decoder failures close the session with a useful error.
-
-If `AVSampleBufferVideoRenderer` does not preserve alpha on device, prototype a
-VideoToolbox decompression session feeding Metal/RealityKit before continuing.
+7. A per-window stream still preserves alpha (rounded corners, shadow, vibrancy).
 
 ## Phase 1: Mouse and Keyboard Control
 
@@ -70,17 +88,17 @@ VideoToolbox decompression session feeding Metal/RealityKit before continuing.
 Acceptance: Finder, window dragging/resizing, scrolling, shortcuts, text entry,
 and takeover cleanup all work without stuck input.
 
-## Phase 2: Complete Desktop Surfaces
+## Phase 2: Complete Desktop Surfaces — implemented
 
-- Add an opaque raw-display mode for workflows that need every system surface.
-- Add a dedicated Mac Chrome stream/window for Dock, Menu Bar, menus, and
-  transient system UI omitted from the transparent desktop composition.
-- Let users switch between transparent desktop, opaque display, and Chrome
-  surfaces without reconnecting.
-- Link the existing companion audio stream to Native Mac connections.
+The full-desktop milestone above subsumed this. Opaque whole-display capture *is*
+the desktop stream, so Dock, Menu Bar, menus and transient system UI are all in
+frame and there is no mode to switch between and no separate Chrome stream to
+build. Companion audio is linked to Native connections (the `supportsAudioStream`
+capability plus the Audio toggle in the Native window and Unity Controls).
 
-Acceptance: users can reach Dock/Menu Bar and choose full-fidelity opaque
-capture when transparency is not appropriate.
+Not done, and deliberately: there is no way to get the old transparent
+composition back. If a use case for it reappears it should return as a *filtered*
+stream alongside the desktop, not as a mode that replaces it.
 
 ## Phase 3: Unity-Style Per-Window Streaming — implemented (v1 scope)
 

@@ -123,8 +123,13 @@ nonisolated enum MacNativeStreamProtocol {
         let keyCodeSpace: KeyCodeSpace
         /// Whether `windowList`/per-window streams are available.
         let supportsWindowStreams: Bool
-        /// Whether the alpha-preserving transparent-desktop composition is
-        /// available (macOS). When false the desktop stream is opaque.
+        /// Legacy capability, now `false` on every host: the desktop stream is
+        /// the host's whole display — wallpaper, menu bar, Dock and all —
+        /// encoded opaque. macOS used to composite only application windows
+        /// over a clear background and stream that with an alpha layer; the
+        /// alpha-preserving presentation moved to per-window streams, which is
+        /// where a single chrome-free Mac window belongs. Still sent, and still
+        /// non-optional, so clients built against the old ack keep decoding it.
         let supportsTransparentDesktop: Bool
         /// Whether this host also serves the companion audio stream on
         /// `AudioStreamProtocol.defaultPort`. Optional so an older host that

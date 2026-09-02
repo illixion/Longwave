@@ -10,7 +10,7 @@ Twelve `WindowGroup` scenes in `LongwaveApp` (four conditionally compiled):
 4. **Terminal** (`id: "ssh-terminal"`, value-typed by `SSHSessionID`) — `SSHTerminalView`, 900x640
 5. **Terminal Keyboard** (`id: "ssh-keyboard"`, value-typed by `SSHSessionID`) — `SSHKeyboardView`, 1180x780
 6. **Remote Desktop** (`id: "remote-desktop"`) — `RemoteDesktopView` for VNC, 1280x800 default
-7. **Native** (`id: "mac-native-stream"`, value-typed by `MacNativeWindowID.shared`) — transparent HEVC-alpha host desktop, audio, and the manual per-window picker, 1440x900 default
+7. **Native** (`id: "mac-native-stream"`, value-typed by `MacNativeWindowID.shared`) — the host's whole desktop as opaque HEVC, audio, and the manual per-window picker, 1440x900 default
 7a. **Unity Controls** (`id: "mac-native-unity-controls"`, value-typed by `MacNativeUnityControlID.shared`) — the sole startup window for a Unity connection. It owns desktop/input/audio/session controls plus show-all, hide-all, persisted auto-show, and individual visibility for up to six per-window scenes; the full desktop starts hidden, 980x180 default
 7b. **Mac Window** (`id: "mac-native-window"`, value-typed by `MacNativeWindowStreamID`) — one chrome-free (no-ornament) scene per streamed host window (Unity-style), 960x720 default
 8. **Keyboard** (`id: "keyboard"`) — `KeyboardInputView` for VNC, 1180x540
@@ -62,12 +62,12 @@ Twelve `WindowGroup` scenes in `LongwaveApp` (four conditionally compiled):
 | Type | Role |
 |------|------|
 | `MacNativeScreenCapture` (macOS) | ScreenCaptureKit display-sized composition of visible application windows over a clear background. Excludes desktop windows and the companion itself, preserves shadows, and refreshes the content filter as windows change. |
-| `MacHEVCAlphaEncoder` (macOS) | Realtime VideoToolbox HEVC-with-alpha encoder. Sends the exact big-endian CoreMedia image description before compressed frames so alpha-layer metadata survives transport. |
+| `MacHEVCEncoder` (macOS) | Realtime VideoToolbox HEVC encoder, alpha optional. Per-window streams keep alpha (`muxa`); the whole-display desktop stream does not (`hvc1`) — it covers every pixel, so a constant alpha plane is pure cost. Sends the exact big-endian CoreMedia image description before compressed frames, so whichever format the encoder produced survives transport, alpha-layer metadata included. |
 | `MacNativeStreamServer` (macOS) | TLS-PSK `NWListener` on port 4857, advertised as `_longwave-native._tcp`. Exactly one authenticated viewer is active; a valid new hello replaces the old viewer and names it in the replacement frame. |
 | `MacNativeStreamingController` (macOS) | Starts capture only while an authenticated viewer is active, stops it on disconnect/failure, and posts a macOS notification naming the new and replaced devices. |
 | `MacNativeStreamClient` (visionOS) | Receives framed format/video/replacement messages and serializes renderer work onto the main queue. |
 | `MacNativeVideoRenderer` (visionOS) | Reconstructs the transported `hvc1` format with `ContainsAlphaChannel`, creates compressed `CMSampleBuffer`s, and submits them through `AVSampleBufferVideoRenderer`. |
-| `MacNativeStreamManager` / `NativeStreamView` (visionOS) | Own connection state, the transparent desktop window, and the per-window controller UI (inventory picker). Connection generations prevent stale callbacks from tearing down a replacement connection. |
+| `MacNativeStreamManager` / `NativeStreamView` (visionOS) | Own connection state, the opaque full-desktop window, and the per-window controller UI (inventory picker). Connection generations prevent stale callbacks from tearing down a replacement connection. |
 | `MacNativeWindowStreamCoordinator` (macOS) | Publishes the streamable-window inventory (1 s poll) and owns per-window `SCContentFilter(desktopIndependentWindow:)` streams + encoders for the active v2 viewer (6-stream cap, area-scaled bitrate, resize tracking). |
 | `MacNativeWindowSession` / `NativeWindowStreamView` (visionOS) | One subscribed per-window stream: its own display layer/renderer behind one chrome-free scene; self-dismisses on host-side close, resubscribes on scene reappearance and reconnect. |
 | `NativeStreamingService` + `NativeStream/*` (Windows, C#) | The same protocol served from the Windows companion backend: BouncyCastle TLS-PSK, Windows.Graphics.Capture sources, hardware HEVC MFT (opaque, `hevcParameterSets` format kind), SendInput injection from HID usages. |
@@ -77,7 +77,7 @@ Twelve `WindowGroup` scenes in `LongwaveApp` (four conditionally compiled):
 ```
 SCShareableContent visible layer-zero application windows
   → SCContentFilter(display:including:) over clear BGRA
-    → MacHEVCAlphaEncoder (VideoToolbox HEVC-with-alpha)
+    → MacHEVCEncoder (VideoToolbox HEVC; alpha only for per-window streams)
       → exact CoreMedia ImageDescription + length-prefixed compressed frames
         → TLS-PSK NWConnection
           → MacNativeVideoRenderer

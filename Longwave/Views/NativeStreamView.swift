@@ -10,10 +10,12 @@ private final class MacNativeLayerView: UIView {
     init(displayLayer: AVSampleBufferDisplayLayer) {
         self.displayLayer = displayLayer
         super.init(frame: .zero)
-        isOpaque = false
-        backgroundColor = .clear
-        layer.isOpaque = false
-        layer.backgroundColor = UIColor.clear.cgColor
+        // Opaque: the desktop stream carries the host's entire display, so
+        // there is nothing behind it to see through to.
+        isOpaque = true
+        backgroundColor = .black
+        layer.isOpaque = true
+        layer.backgroundColor = UIColor.black.cgColor
         layer.addSublayer(displayLayer)
     }
 
@@ -395,6 +397,12 @@ struct NativeStreamView: View {
                 }
             }
         }
+        // The desktop stream is opaque now, so this scene is a solid slab in
+        // a `.plain` window that draws no chrome of its own. Round it, or the
+        // Mac's display arrives as a hard-cornered rectangle pasted into the
+        // room. (When the composition was transparent there were no edges to
+        // round.)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         // Explicit flex range so this stays freely resizable under the
         // window group's `.contentSize` resizability — without it, a plain
         // ZStack reports no size preference of its own and the window would

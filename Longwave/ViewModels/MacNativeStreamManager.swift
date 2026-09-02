@@ -168,8 +168,12 @@ final class MacNativeStreamManager {
 
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.backgroundColor = UIColor.clear.cgColor
-        layer.isOpaque = false
+        // The desktop stream is the host's whole display, opaque edge to edge.
+        // Letterboxing is the only place the layer's own color shows, and black
+        // is what a screen shows there. Per-window streams are the transparent
+        // ones — see `MacNativeWindowSession`.
+        layer.backgroundColor = UIColor.black.cgColor
+        layer.isOpaque = true
         displayLayer = layer
 
         let renderer = MacNativeVideoRenderer(displayLayer: layer)

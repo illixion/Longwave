@@ -3,15 +3,24 @@ import CoreGraphics
 import CoreMedia
 import ScreenCaptureKit
 
-/// Captures a display-sized composition of visible application windows over a
-/// clear background. The desktop picture and Dock are intentionally absent.
+/// Captures the whole Mac display, exactly as it looks on the Mac: desktop
+/// picture, menu bar, Dock, Stage Manager strip, notifications, menus and every
+/// window, opaque edge to edge.
+///
+/// This used to be a composition of just the visible application windows over a
+/// clear background, streamed as HEVC-with-alpha so the wallpaper's place showed
+/// the room instead. That made whole classes of the Mac unreachable — the menu
+/// bar and Dock were not in the frame at all, so neither was any menu opened
+/// from them — and it made a remote desktop that did not look like the desktop.
+/// Per-window streams (`MacNativeWindowStreams`) are where a chrome-free,
+/// alpha-preserving Mac window still lives; this one is the whole display.
 final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
     /// The captured display's frame in the global (point-space) coordinate
     /// system — the same space `CGEvent` mouse coordinates use. Fired once
-    /// capture starts and again if the window-inventory refresh resolves a
+    /// capture starts and again whenever the display-refresh poll resolves a
     /// changed frame, so remote-control input can map a stream-space (x, y)
     /// back to a real screen position, including on a non-main display.
     nonisolated(unsafe) var onDisplayFrame: (@Sendable (CGRect) -> Void)?
@@ -21,21 +30,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         qos: .userInteractive
     )
     // SCStream/display/refreshTask are only ever touched from start()/stop()/
-    // refreshFilter() below, which are MainActor-isolated (the project
+    // refreshDisplay() below, which are MainActor-isolated (the project
     // default) so those three calls can't run concurrently on different
     // threads. `encoder` stays nonisolated(unsafe): it's written here but
     // read from the SCStreamOutput callback on `outputQueue`.
     private var stream: SCStream?
-    private nonisolated(unsafe) var encoder: MacHEVCAlphaEncoder?
+    private nonisolated(unsafe) var encoder: MacHEVCEncoder?
     private var display: SCDisplay?
     private var refreshTask: Task<Void, Never>?
-    // SCStreamConfiguration.backgroundColor does not retain the CGColor it's
-    // handed — ScreenCaptureKit reads it back later (e.g. from
-    // startCaptureWithCompletionHandler:'s serializeStreamProperties), and
-    // without a strong reference of our own the color is deallocated first,
-    // crashing on a dangling CGColorRef read. Keep it alive for as long as
-    // the configuration (and thus the stream) is in use.
-    private var backgroundColor: CGColor?
     // Bumped on every start()/stop() so a start() resuming after an `await`
     // can tell whether a subsequent stop() (or restart) already superseded
     // it, instead of clobbering state a later call already tore down.
@@ -49,19 +51,13 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         generation += 1
         let myGeneration = generation
         guard stream == nil else { return }
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            true,
-            onScreenWindowsOnly: true
-        )
+        let display = try await Self.mainDisplay()
         guard myGeneration == generation else { return }
-        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
-                ?? content.displays.first else {
-            throw CaptureError.noDisplay
-        }
 
-        let filter = makeFilter(content: content, display: display)
+        let filter = Self.makeFilter(display: display)
         let configuration = makeConfiguration(display: display)
-        let encoder = MacHEVCAlphaEncoder()
+        // Opaque full display: no alpha layer to spend bits or decode cycles on.
+        let encoder = MacHEVCEncoder(preservesAlpha: false)
         encoder.onFormatDescription = { [weak self] data in
             self?.onFormatDescription?(data)
         }
@@ -86,7 +82,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         self.encoder = encoder
         self.stream = stream
         onDisplayFrame?(display.frame)
-        startFilterRefresh()
+        startDisplayRefresh()
     }
 
     func stop() async {
@@ -101,26 +97,27 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         display = nil
         encoder?.invalidate()
         encoder = nil
-        backgroundColor = nil
     }
 
-    private nonisolated func makeFilter(
-        content: SCShareableContent,
-        display: SCDisplay
-    ) -> SCContentFilter {
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        let windows = content.windows.filter { window in
-            guard window.isOnScreen,
-                  window.windowLayer == 0,
-                  window.frame.width >= 2,
-                  window.frame.height >= 2 else {
-                return false
-            }
-            return window.owningApplication?.processID != ownPID
-        }
-        let filter = SCContentFilter(display: display, including: windows)
-        filter.includeMenuBar = false
+    /// Everything on the display, nothing excluded — including the companion's
+    /// own window, so the Mac's settings stay reachable from the headset.
+    private nonisolated static func makeFilter(display: SCDisplay) -> SCContentFilter {
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        filter.includeMenuBar = true
         return filter
+    }
+
+    /// The display the stream follows: the main one, or the first available.
+    private nonisolated static func mainDisplay() async throws -> SCDisplay {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+                ?? content.displays.first else {
+            throw CaptureError.noDisplay
+        }
+        return display
     }
 
     private func makeConfiguration(display: SCDisplay) -> SCStreamConfiguration {
@@ -130,53 +127,54 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        let backgroundColor = CGColor(
-            red: 0,
-            green: 0,
-            blue: 0,
-            alpha: 0
-        )
-        self.backgroundColor = backgroundColor
-        configuration.backgroundColor = backgroundColor
-        configuration.shouldBeOpaque = false
+        // The whole display covers every pixel, so there is no background to
+        // show through and no `backgroundColor` to keep alive for the stream's
+        // lifetime (ScreenCaptureKit reads that CGColor back later without
+        // retaining it, and a dangling read there is a crash).
+        configuration.shouldBeOpaque = true
         configuration.showsCursor = true
         configuration.ignoreShadowsDisplay = false
-        configuration.includeChildWindows = true
         configuration.scalesToFit = false
         configuration.preservesAspectRatio = true
         return configuration
     }
 
-    private func startFilterRefresh() {
+    /// The filter is the whole display and never needs rebuilding for a window
+    /// coming or going — only for the display itself changing shape. This poll
+    /// watches for a resolution or arrangement change (display swapped, mode
+    /// changed, headset moved to another Mac display) and republishes the frame
+    /// that remote-control input maps through.
+    private func startDisplayRefresh() {
         refreshTask?.cancel()
         refreshTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
-                await self.refreshFilter()
+                await self.refreshDisplay()
             }
         }
     }
 
-    private func refreshFilter() async {
+    private func refreshDisplay() async {
         guard let stream, let display else { return }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
-                true,
-                onScreenWindowsOnly: true
+                false,
+                onScreenWindowsOnly: false
             )
-            guard let refreshedDisplay = content.displays.first(
+            guard let refreshed = content.displays.first(
                 where: { $0.displayID == display.displayID }
-            ) else {
+            ), refreshed.frame != display.frame
+                || refreshed.width != display.width
+                || refreshed.height != display.height else {
                 return
             }
-            try await stream.updateContentFilter(
-                makeFilter(content: content, display: refreshedDisplay)
-            )
-            self.display = refreshedDisplay
-            onDisplayFrame?(refreshedDisplay.frame)
+            try await stream.updateContentFilter(Self.makeFilter(display: refreshed))
+            try await stream.updateConfiguration(makeConfiguration(display: refreshed))
+            self.display = refreshed
+            onDisplayFrame?(refreshed.frame)
         } catch {
-            onError?("Window inventory refresh failed: \(error.localizedDescription)")
+            onError?("Display refresh failed: \(error.localizedDescription)")
         }
     }
 

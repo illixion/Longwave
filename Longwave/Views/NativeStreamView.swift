@@ -58,6 +58,11 @@ struct NativeStreamView: View {
 
     @State private var showEQ = false
 
+    // Pinned to the exact ideal size for one layout pass right after Screen
+    // is turned back on from a small fixed-size panel — see the `onChange`
+    // of `screenManager.liveEnabled` below for why.
+    @State private var forceScreenIdealSize = false
+
     // Remote-control gesture state (mirrors RemoteDesktopView's absolute-mode
     // handling — Native has no touchpad/relative mode, the video is always a
     // 1:1 tap-to-click surface).
@@ -129,6 +134,24 @@ struct NativeStreamView: View {
         .onChange(of: screenManager.liveEnabled) { _, on in
             guard !screenManager.unityEnabled else { return }
             screenManager.desktopToggleChanged(on)
+            if on {
+                // Turning Screen back on always comes from one of the small
+                // fixed-size panels (audio mini player, window picker, empty
+                // placeholder) — `screenContent` only shows while `on`. Under
+                // `.contentSize` resizability the window only forces a resize
+                // when the new content's size range excludes the current
+                // size; `screenContent`'s free 400...∞ range trivially
+                // contains that small size, so the window would otherwise
+                // stay stuck at it instead of growing back to 16:9. Pin the
+                // frame to the exact ideal size for one layout pass to force
+                // the resize, then relax it so the window stays freely
+                // resizable by hand afterward.
+                forceScreenIdealSize = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    forceScreenIdealSize = false
+                }
+            }
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
             guard !screenManager.unityEnabled else { return }
@@ -406,9 +429,21 @@ struct NativeStreamView: View {
         // Explicit flex range so this stays freely resizable under the
         // window group's `.contentSize` resizability — without it, a plain
         // ZStack reports no size preference of its own and the window would
-        // collapse to the fixed-size panels' dimensions instead.
-        .frame(minWidth: 400, idealWidth: 1440, maxWidth: .infinity, minHeight: 300, idealHeight: 900, maxHeight: .infinity)
+        // collapse to the fixed-size panels' dimensions instead. Pinned tight
+        // to the ideal size for one pass right after Screen comes back on —
+        // see `forceScreenIdealSize`.
+        .frame(
+            minWidth: forceScreenIdealSize ? Self.screenIdealWidth : 400,
+            idealWidth: Self.screenIdealWidth,
+            maxWidth: forceScreenIdealSize ? Self.screenIdealWidth : .infinity,
+            minHeight: forceScreenIdealSize ? Self.screenIdealHeight : 300,
+            idealHeight: Self.screenIdealHeight,
+            maxHeight: forceScreenIdealSize ? Self.screenIdealHeight : .infinity
+        )
     }
+
+    private static let screenIdealWidth: CGFloat = 1440
+    private static let screenIdealHeight: CGFloat = 900
 
     // MARK: - Screen remote control (mouse + keyboard)
 
@@ -818,13 +853,15 @@ struct NativeStreamView: View {
 
     /// Minimal ornament for the audio-only views — the old standalone Audio
     /// Stream window had no ornament at all, just a home button alongside its
-    /// own inline utility row (see `audioUtilityRow`'s Disconnect icon). Icon
-    /// only and tightly padded, matching `HomeOrnament` (the shared home
-    /// button every other pop-out window uses), so it reads as a small badge
-    /// hugging the player rather than a second full-size control bar. A
-    /// second icon, split off by a divider, restores Screen — otherwise
-    /// there's no way back to the desktop view once it's minimized down to
-    /// this widget short of reopening the connection from the list.
+    /// own inline utility row (see `audioUtilityRow`'s Disconnect icon).
+    /// Tightly padded, matching `HomeOrnament` (the shared home button every
+    /// other pop-out window uses), so it reads as a small badge hugging the
+    /// player rather than a second full-size control bar. A second button,
+    /// split off by a divider, restores Screen — otherwise there's no way
+    /// back to the desktop view once it's minimized down to this widget
+    /// short of reopening the connection from the list. It carries its own
+    /// text label (unlike the icon-only home button) since a bare icon here
+    /// reads as decoration rather than the only way back to the screen.
     private var homeOnlyControls: some View {
         HStack(spacing: 10) {
             Button {
@@ -841,7 +878,6 @@ struct NativeStreamView: View {
                 screenManager.liveEnabled = true
             } label: {
                 Label("Restore Screen", systemImage: "macwindow.on.rectangle")
-                    .labelStyle(.iconOnly)
             }
             .help("Show the screen again")
         }

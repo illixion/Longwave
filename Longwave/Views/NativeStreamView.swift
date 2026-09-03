@@ -860,8 +860,9 @@ struct NativeStreamView: View {
     /// split off by a divider, restores Screen — otherwise there's no way
     /// back to the desktop view once it's minimized down to this widget
     /// short of reopening the connection from the list. It carries its own
-    /// text label (unlike the icon-only home button) since a bare icon here
-    /// reads as decoration rather than the only way back to the screen.
+    /// text label (unlike the icon-only home button, matching the `controls`
+    /// ornament's own "Screen" toggle) since a bare icon here reads as
+    /// decoration rather than the only way back to the screen.
     private var homeOnlyControls: some View {
         HStack(spacing: 10) {
             Button {
@@ -877,7 +878,7 @@ struct NativeStreamView: View {
             Button {
                 screenManager.liveEnabled = true
             } label: {
-                Label("Restore Screen", systemImage: "macwindow.on.rectangle")
+                Label("Screen", systemImage: "macwindow.on.rectangle")
             }
             .help("Show the screen again")
         }

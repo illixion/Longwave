@@ -20,6 +20,10 @@
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
 		1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B42F7FCBFA00C67700 /* Opus */; };
+		1D8097C10000000000000002 /* MoonlightCommonC1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C10000000000000001 /* MoonlightCommonC1 */; };
+		1D8097C10000000000000004 /* MoonlightCommonC2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C10000000000000003 /* MoonlightCommonC2 */; };
+		1D8097C20000000000000002 /* MoonlightCommonC1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C20000000000000001 /* MoonlightCommonC1 */; };
+		1D8097C20000000000000004 /* MoonlightCommonC2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C20000000000000003 /* MoonlightCommonC2 */; };
 		1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1DC83C3C2F74587300BF0482 /* RoyalVNCKit */; };
 		5511C0DE0000000000000021 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000011 /* SwiftTerm */; };
 		5511C0DE0000000000000022 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000012 /* NIOSSH */; };
@@ -254,6 +258,8 @@
 				1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */,
 				1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */,
 				1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */,
+				1D8097C10000000000000002 /* MoonlightCommonC1 in Frameworks */,
+				1D8097C10000000000000004 /* MoonlightCommonC2 in Frameworks */,
 				5511C0DE0000000000000021 /* SwiftTerm in Frameworks */,
 				5511C0DE0000000000000022 /* NIOSSH in Frameworks */,
 				5511C0DE0000000000000023 /* NIOCore in Frameworks */,
@@ -313,6 +319,8 @@
 				113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */,
 				A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */,
 				F8A70081F839F9E06B341A4E /* Opus in Frameworks */,
+				1D8097C20000000000000002 /* MoonlightCommonC1 in Frameworks */,
+				1D8097C20000000000000004 /* MoonlightCommonC2 in Frameworks */,
 				AA03000000000000000000A5 /* RAVEInput in Frameworks */,
 				AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
@@ -415,6 +423,8 @@
 				1DC83C3C2F74587300BF0482 /* RoyalVNCKit */,
 				1D8097B12F7FCBED00C67700 /* MoonlightCommonC */,
 				1D8097B42F7FCBFA00C67700 /* Opus */,
+				1D8097C10000000000000001 /* MoonlightCommonC1 */,
+				1D8097C10000000000000003 /* MoonlightCommonC2 */,
 				5511C0DE0000000000000011 /* SwiftTerm */,
 				5511C0DE0000000000000012 /* NIOSSH */,
 				5511C0DE0000000000000013 /* NIOCore */,
@@ -454,6 +464,8 @@
 				FEC92747F5953D917428BFA0 /* RoyalVNCKit */,
 				3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */,
 				BCF95F097C7D2DFE3EF72400 /* Opus */,
+				1D8097C20000000000000001 /* MoonlightCommonC1 */,
+				1D8097C20000000000000003 /* MoonlightCommonC2 */,
 				AA03000000000000000000A4 /* RAVEInput */,
 				AA03000000000000000000B4 /* RAVEDiagnostics */,
 				AA07000000000000000000D6 /* RAVEUI */,
@@ -1467,6 +1479,22 @@
 		1D8097B12F7FCBED00C67700 /* MoonlightCommonC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;
+		};
+		1D8097C10000000000000001 /* MoonlightCommonC1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC1;
+		};
+		1D8097C10000000000000003 /* MoonlightCommonC2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC2;
+		};
+		1D8097C20000000000000001 /* MoonlightCommonC1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC1;
+		};
+		1D8097C20000000000000003 /* MoonlightCommonC2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC2;
 		};
 		1D8097B42F7FCBFA00C67700 /* Opus */ = {
 			isa = XCSwiftPackageProductDependency;

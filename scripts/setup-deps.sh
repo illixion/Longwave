@@ -46,6 +46,14 @@ fi
 
 if [[ -d repos/moonlight-common-c ]]; then
     echo "==> repos/moonlight-common-c exists — skipping (use --force to redo)"
+    # Migration: an older checkout predates the extra, symbol-prefixed copies
+    # of the library (instance1/, instance2/ — see make-instances.sh). Lay them
+    # out and refresh the manifest, since the app now links all three products.
+    if [[ ! -d repos/moonlight-common-c/instance1 ]]; then
+        echo "==> Adding the prefixed moonlight-common-c copies to the existing checkout"
+        ci/deps/moonlight-common-c/make-instances.sh repos/moonlight-common-c
+        cp ci/deps/moonlight-common-c/Package.swift repos/moonlight-common-c/
+    fi
 else
     echo "==> Cloning and patching moonlight-common-c ($MOONLIGHT_COMMON_C_REF)"
     # Clone WITHOUT --recursive, then check out the pin, then init submodules.
@@ -73,6 +81,11 @@ else
         git apply ../../ci/patches/moonlight-common-c-audio-fec-fix.patch
         # Add CommonCrypto backend for AES-GCM/CBC (replaces OpenSSL on Apple platforms)
         git apply ../../ci/patches/moonlight-common-c-commoncrypto.patch
+        # Extra copies of the library with every symbol prefixed (MoonlightCommonC1,
+        # MoonlightCommonC2), so the app can run one game stream per copy —
+        # moonlight-common-c is single-connection by design. Must run after the
+        # patches: the shims #include the patched sources.
+        ../../ci/deps/moonlight-common-c/make-instances.sh .
     )
 fi
 

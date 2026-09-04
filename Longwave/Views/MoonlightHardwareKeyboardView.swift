@@ -8,18 +8,24 @@ import os
 /// A UIViewRepresentable that captures hardware/Bluetooth keyboard events
 /// and forwards them as Moonlight keyboard events via LiSendKeyboardEvent().
 struct MoonlightHardwareKeyboardView: UIViewRepresentable {
+    /// The session this window's keys go to.
+    let library: MoonlightLibrary
 
     func makeUIView(context: Context) -> MoonlightKeyCaptureView {
         let view = MoonlightKeyCaptureView()
+        view.library = library
         return view
     }
 
-    func updateUIView(_ uiView: MoonlightKeyCaptureView, context: Context) {}
+    func updateUIView(_ uiView: MoonlightKeyCaptureView, context: Context) {
+        uiView.library = library
+    }
 }
 
 /// A UIView that becomes first responder to intercept hardware keyboard press
 /// events. `KeyCaptureResponderView` owns when it may hold the responder at all.
 final class MoonlightKeyCaptureView: KeyCaptureResponderView {
+    var library: MoonlightLibrary?
 
     /// Tracks active modifier state as a bitmask (MODIFIER_SHIFT | MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_META).
     private var activeModifiers: Int8 = 0
@@ -61,14 +67,14 @@ final class MoonlightKeyCaptureView: KeyCaptureResponderView {
 
             // Map HID usage to Windows VK code
             if let vkCode = MoonlightKeyCodes.windowsKeyCode(for: usage) {
-                LiSendKeyboardEvent(vkCode, Int8(KEY_ACTION_DOWN), activeModifiers)
+                library?.sendKeyboard(vkCode, KEY_ACTION_DOWN, modifiers: activeModifiers)
                 handled = true
             } else {
                 // Try character-based mapping for printable keys
                 let chars = key.charactersIgnoringModifiers
                 if let char = chars.first,
                    let vkCode = MoonlightKeyCodes.windowsKeyCode(for: char) {
-                    LiSendKeyboardEvent(vkCode, Int8(KEY_ACTION_DOWN), activeModifiers)
+                    library?.sendKeyboard(vkCode, KEY_ACTION_DOWN, modifiers: activeModifiers)
                     handled = true
                 }
             }
@@ -92,13 +98,13 @@ final class MoonlightKeyCaptureView: KeyCaptureResponderView {
 
             // Map HID usage to Windows VK code
             if let vkCode = MoonlightKeyCodes.windowsKeyCode(for: usage) {
-                LiSendKeyboardEvent(vkCode, Int8(KEY_ACTION_UP), activeModifiers)
+                library?.sendKeyboard(vkCode, KEY_ACTION_UP, modifiers: activeModifiers)
                 handled = true
             } else {
                 let chars = key.charactersIgnoringModifiers
                 if let char = chars.first,
                    let vkCode = MoonlightKeyCodes.windowsKeyCode(for: char) {
-                    LiSendKeyboardEvent(vkCode, Int8(KEY_ACTION_UP), activeModifiers)
+                    library?.sendKeyboard(vkCode, KEY_ACTION_UP, modifiers: activeModifiers)
                     handled = true
                 }
             }

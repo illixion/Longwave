@@ -8,6 +8,7 @@ import AppKit
 /// mirroring the visionOS gesture handlers. Absolute pointing by default.
 struct MacMoonlightStreamView: View {
     @Environment(MoonlightConnectionManager.self) private var manager
+    @Environment(MoonlightSessionStore.self) private var sessions
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
@@ -48,23 +49,36 @@ struct MacMoonlightStreamView: View {
             }
 
             if showStats { StreamStatsOverlay().environment(manager) }
+
+            if sessions.streamingSessions.count > 1, sessions.focusedSlot != manager.slot {
+                // Physical inputs are going to another stream right now.
+                Label("Controller is on another stream — move the pointer here to take it", systemImage: "gamecontroller")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
+            }
         }
         .navigationTitle("Moonlight")
         .toolbar { toolbarContent }
         .onDisappear {
             manager.stopStreaming()
-            dismissWindow(id: "moonlight-keyboard")
+            dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
         }
         .alert("Disconnect", isPresented: $showDisconnectAlert) {
             Button("Keep Running") {
                 manager.stopStreaming()
-                dismissWindow(id: "moonlight-keyboard")
-                dismissWindow(id: "moonlight-stream")
+                dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
+                dismissWindow(id: "moonlight-stream", value: manager.sessionID)
             }
             Button("End Session", role: .destructive) {
                 manager.stopStreamingAndQuit()
-                dismissWindow(id: "moonlight-keyboard")
-                dismissWindow(id: "moonlight-stream")
+                dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
+                dismissWindow(id: "moonlight-stream", value: manager.sessionID)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -76,7 +90,7 @@ struct MacMoonlightStreamView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             // No touch-mode toggle on macOS — a Mac always uses absolute pointing.
-            Button { openWindow(id: "moonlight-keyboard") } label: {
+            Button { openWindow(id: "moonlight-keyboard", value: manager.sessionID) } label: {
                 Label("Keyboard", systemImage: "keyboard")
             }
             Button { showStats.toggle() } label: {
@@ -93,13 +107,16 @@ struct MacMoonlightStreamView: View {
     @State private var lastMove: CGPoint = .zero
 
     private func handleMove(_ p: CGPoint, in size: CGSize) {
+        // Pointing at this stream is what routes the gamepad here when more
+        // than one is running.
+        sessions.focus(manager.slot)
         if manager.touchMode == .absolute {
             let (x, y) = mapToStream(p, in: size)
-            LiSendMousePositionEvent(x, y, Int16(manager.streamWidth), Int16(manager.streamHeight))
+            manager.library.sendMousePosition(x: x, y: y, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
         } else {
             let dx = p.x - lastMove.x
             let dy = p.y - lastMove.y
-            LiSendMouseMoveEvent(Int16(dx), Int16(dy))
+            manager.library.sendMouseMove(dx: Int16(dx), dy: Int16(dy))
         }
         lastMove = p
     }
@@ -107,12 +124,11 @@ struct MacMoonlightStreamView: View {
     private func handleButton(_ button: Int, _ p: CGPoint, in size: CGSize, press: Bool) {
         if manager.touchMode == .absolute {
             let (x, y) = mapToStream(p, in: size)
-            LiSendMousePositionEvent(x, y, Int16(manager.streamWidth), Int16(manager.streamHeight))
+            manager.library.sendMousePosition(x: x, y: y, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
         }
-        let action = Int8(press ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE)
         let b: Int32
         switch button { case 1: b = BUTTON_RIGHT; case 2: b = BUTTON_MIDDLE; default: b = BUTTON_LEFT }
-        LiSendMouseButtonEvent(action, b)
+        manager.library.sendMouseButton(press ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, b)
     }
 
     private func handleScroll(_ dx: CGFloat, _ dy: CGFloat) {
@@ -120,7 +136,7 @@ struct MacMoonlightStreamView: View {
         let threshold: CGFloat = 4
         while abs(scrollAccum) >= threshold {
             let up = scrollAccum > 0
-            LiSendHighResScrollEvent(Int16(up ? 120 : -120))
+            manager.library.sendHighResScroll(Int16(up ? 120 : -120))
             scrollAccum += up ? -threshold : threshold
         }
     }
@@ -160,12 +176,12 @@ struct MacMoonlightStreamView: View {
     }
 
     private func sendKey(_ event: NSEvent, down: Bool) {
-        let action = Int8(down ? KEY_ACTION_DOWN : KEY_ACTION_UP)
+        let action = down ? KEY_ACTION_DOWN : KEY_ACTION_UP
         if let vk = MacKeyMaps.windowsKeyCode(for: event.keyCode) {
-            LiSendKeyboardEvent(vk, action, modifiers)
+            manager.library.sendKeyboard(vk, action, modifiers: modifiers)
         } else if let ch = event.charactersIgnoringModifiers?.first,
                   let vk = MoonlightKeyCodes.windowsKeyCode(for: ch) {
-            LiSendKeyboardEvent(vk, action, modifiers)
+            manager.library.sendKeyboard(vk, action, modifiers: modifiers)
         }
     }
 
@@ -176,7 +192,7 @@ struct MacMoonlightStreamView: View {
               let vk = MacKeyMaps.windowsKeyCode(for: kc) else { return }
         let isDown = event.modifierFlags.contains(flag)
         if isDown && modBit != 0 { modifiers |= modBit }
-        LiSendKeyboardEvent(vk, Int8(isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP), modifiers)
+        manager.library.sendKeyboard(vk, isDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers: modifiers)
         if !isDown && modBit != 0 { modifiers &= ~modBit }
     }
 }

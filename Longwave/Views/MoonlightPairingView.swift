@@ -149,7 +149,9 @@ struct MoonlightPairingView: View {
                     Button {
                         manager.launchApp(app)
                         // Open as a sibling window; the main window stays open.
-                        openWindow(id: "moonlight-stream")
+                        // Value-keyed so this session gets its own window even
+                        // while another session is streaming.
+                        openWindow(id: "moonlight-stream", value: manager.sessionID)
                         dismiss()
                     } label: {
                         HStack {

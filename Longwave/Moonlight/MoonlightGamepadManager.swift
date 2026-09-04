@@ -10,8 +10,17 @@ import CoreHaptics
 @Observable
 class MoonlightGamepadManager: @unchecked Sendable {
 
+    /// The session's copy of moonlight-common-c — controller events go to it.
+    let library: MoonlightLibrary
+
     /// Whether A/B and X/Y buttons should be swapped (Nintendo layout).
     let swapABXY: Bool
+
+    /// GameController delivers every pad to every listening session, so only
+    /// the session holding input focus forwards state (see
+    /// `MoonlightInputFocus`). Losing focus sends a neutral state so a button
+    /// held at the moment of the switch is not left down on that host.
+    private var focusObserver: NSObjectProtocol?
 
     /// Currently connected controllers, indexed by playerIndex (0-3).
     private var controllers: [Int: GCController] = [:]
@@ -24,7 +33,8 @@ class MoonlightGamepadManager: @unchecked Sendable {
     private var connectObserver: NSObjectProtocol?
     private var disconnectObserver: NSObjectProtocol?
 
-    init(swapABXY: Bool = false) {
+    init(library: MoonlightLibrary, swapABXY: Bool = false) {
+        self.library = library
         self.swapABXY = swapABXY
     }
 
@@ -51,9 +61,30 @@ class MoonlightGamepadManager: @unchecked Sendable {
             self?.controllerDisconnected(controller)
         }
 
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: MoonlightInputFocus.didChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, (notification.object as? Int) == self.library.slot else { return }
+            self.releaseAllControllers()
+        }
+
         // Pick up any controllers already connected
         for controller in GCController.controllers() {
             controllerConnected(controller)
+        }
+    }
+
+    /// Neutral state for every attached pad — the focus just moved to another
+    /// session, and whatever was pressed here must not stay pressed.
+    private func releaseAllControllers() {
+        for index in controllers.keys {
+            library.sendMultiController(
+                controllerNumber: Int16(index), activeGamepadMask: Int16(bitPattern: activeGamepadMask),
+                buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
+                leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
+            )
         }
     }
 
@@ -68,6 +99,10 @@ class MoonlightGamepadManager: @unchecked Sendable {
             NotificationCenter.default.removeObserver(obs)
             disconnectObserver = nil
         }
+        if let obs = focusObserver {
+            NotificationCenter.default.removeObserver(obs)
+            focusObserver = nil
+        }
 
         // Re-enable system gestures and send zero-state for all connected controllers
         for (index, controller) in controllers {
@@ -76,9 +111,10 @@ class MoonlightGamepadManager: @unchecked Sendable {
             }
             let mask = activeGamepadMask & ~(1 << index)
             activeGamepadMask = mask
-            LiSendMultiControllerEvent(
-                Int16(index), Int16(bitPattern: mask),
-                0, 0, 0, 0, 0, 0, 0
+            library.sendMultiController(
+                controllerNumber: Int16(index), activeGamepadMask: Int16(bitPattern: mask),
+                buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
+                leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
             )
         }
         controllers.removeAll()
@@ -111,12 +147,12 @@ class MoonlightGamepadManager: @unchecked Sendable {
         AppLog.gamepadManager.line("Controller \(playerIndex) connected: \(controller.vendorName ?? "unknown"), type=\(controllerType), caps=0x\(String(capabilities, radix: 16))")
 
         // Notify host of controller arrival
-        LiSendControllerArrivalEvent(
-            UInt8(playerIndex),
-            activeGamepadMask,
-            controllerType,
-            supportedButtons,
-            capabilities
+        library.sendControllerArrival(
+            controllerNumber: UInt8(playerIndex),
+            activeGamepadMask: activeGamepadMask,
+            type: controllerType,
+            supportedButtonFlags: supportedButtons,
+            capabilities: capabilities
         )
 
         // Set up input handler
@@ -137,9 +173,10 @@ class MoonlightGamepadManager: @unchecked Sendable {
         activeGamepadMask &= ~UInt16(1 << playerIndex)
 
         // Send zero-state removal event
-        LiSendMultiControllerEvent(
-            Int16(playerIndex), Int16(bitPattern: activeGamepadMask),
-            0, 0, 0, 0, 0, 0, 0
+        library.sendMultiController(
+            controllerNumber: Int16(playerIndex), activeGamepadMask: Int16(bitPattern: activeGamepadMask),
+            buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
+            leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
         )
     }
 
@@ -162,6 +199,8 @@ class MoonlightGamepadManager: @unchecked Sendable {
     }
 
     private nonisolated func sendControllerState(_ gamepad: GCExtendedGamepad, controllerNumber: Int) {
+        // Another session is the one being played; this pad's state is its business.
+        guard MoonlightInputFocus.owns(library.slot) else { return }
         var buttonFlags: Int32 = 0
 
         // Face buttons
@@ -204,16 +243,16 @@ class MoonlightGamepadManager: @unchecked Sendable {
         let leftTrigger  = UInt8(clamping: Int32(gamepad.leftTrigger.value * 0xFF))
         let rightTrigger = UInt8(clamping: Int32(gamepad.rightTrigger.value * 0xFF))
 
-        LiSendMultiControllerEvent(
-            Int16(controllerNumber),
-            Int16(bitPattern: activeGamepadMask),
-            buttonFlags,
-            leftTrigger,
-            rightTrigger,
-            leftStickX,
-            leftStickY,
-            rightStickX,
-            rightStickY
+        library.sendMultiController(
+            controllerNumber: Int16(controllerNumber),
+            activeGamepadMask: Int16(bitPattern: activeGamepadMask),
+            buttonFlags: buttonFlags,
+            leftTrigger: leftTrigger,
+            rightTrigger: rightTrigger,
+            leftStickX: leftStickX,
+            leftStickY: leftStickY,
+            rightStickX: rightStickX,
+            rightStickY: rightStickY
         )
     }
 

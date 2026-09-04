@@ -12,7 +12,7 @@ struct LongwaveMacApp: App {
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
     #if MOONLIGHT_ENABLED
-    @State private var moonlightManager = MoonlightConnectionManager()
+    @State private var moonlightSessions = MoonlightSessionStore()
     #endif
     // Host (companion) side: system-audio streaming + broadcast/OBS provisioning.
     @State private var companionController = AudioStreamerController()
@@ -27,7 +27,7 @@ struct LongwaveMacApp: App {
                 .environment(connectionManager)
                 .environment(audioManager)
                 #if MOONLIGHT_ENABLED
-                .environment(moonlightManager)
+                .environment(moonlightSessions)
                 #endif
                 .frame(minWidth: 720, minHeight: 480)
                 .task { connectionManager.audioManager = audioManager }
@@ -90,17 +90,23 @@ struct LongwaveMacApp: App {
         .defaultSize(width: 800, height: 440)
 
         #if MOONLIGHT_ENABLED
-        WindowGroup("Moonlight Stream", id: "moonlight-stream") {
-            MacMoonlightStreamView()
-                .environment(moonlightManager)
-                .trackWindowSession(id: "moonlight-stream")
+        // One window per Moonlight session — see `MoonlightSessionStore`.
+        WindowGroup("Moonlight Stream", id: "moonlight-stream", for: MoonlightSessionID.self) { $sessionID in
+            if let sessionID {
+                MacMoonlightStreamView()
+                    .environment(moonlightSessions.session(for: sessionID))
+                    .environment(moonlightSessions)
+                    .trackWindowSession(id: "moonlight-stream")
+            }
         }
         .defaultSize(width: 1920, height: 1080)
 
-        WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard") {
-            MoonlightKeyboardView()
-                .environment(moonlightManager)
-                .trackWindowSession(id: "moonlight-keyboard")
+        WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard", for: MoonlightSessionID.self) { $sessionID in
+            if let sessionID {
+                MoonlightKeyboardView()
+                    .environment(moonlightSessions.session(for: sessionID))
+                    .trackWindowSession(id: "moonlight-keyboard")
+            }
         }
         .defaultSize(width: 800, height: 440)
         #endif

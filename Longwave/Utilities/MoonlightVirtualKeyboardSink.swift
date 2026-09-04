@@ -8,6 +8,9 @@
 /// shift bit set — never as a key of its own.
 @MainActor
 struct MoonlightKeyboardSink: VirtualKeyboardSink {
+    /// The session this keyboard types into.
+    let library: MoonlightLibrary
+
     func press(_ key: VirtualKey, modifiers: VirtualModifiers, held: VirtualModifiers) {
         guard let code = Self.virtualKey(for: key) else { return }
 
@@ -15,23 +18,23 @@ struct MoonlightKeyboardSink: VirtualKeyboardSink {
         let mask = Self.mask(modifiers)
 
         for modifier in wrap {
-            LiSendKeyboardEvent(Self.virtualKey(for: modifier), Int8(KEY_ACTION_DOWN), mask)
+            library.sendKeyboard(Self.virtualKey(for: modifier), KEY_ACTION_DOWN, modifiers: mask)
         }
-        LiSendKeyboardEvent(code, Int8(KEY_ACTION_DOWN), mask)
-        LiSendKeyboardEvent(code, Int8(KEY_ACTION_UP), mask)
+        library.sendKeyboard(code, KEY_ACTION_DOWN, modifiers: mask)
+        library.sendKeyboard(code, KEY_ACTION_UP, modifiers: mask)
         // Unwind the mask alongside the keys, so the host never sees a release
         // that still claims the modifier is down.
         var remaining = modifiers
         for modifier in wrap.reversed() {
             remaining.remove(modifier)
-            LiSendKeyboardEvent(Self.virtualKey(for: modifier), Int8(KEY_ACTION_UP), Self.mask(remaining))
+            library.sendKeyboard(Self.virtualKey(for: modifier), KEY_ACTION_UP, modifiers: Self.mask(remaining))
         }
     }
 
     func setHeld(_ modifier: VirtualModifiers, held: Bool, allHeld: VirtualModifiers) {
-        LiSendKeyboardEvent(Self.virtualKey(for: modifier),
-                            Int8(held ? KEY_ACTION_DOWN : KEY_ACTION_UP),
-                            Self.mask(allHeld))
+        library.sendKeyboard(Self.virtualKey(for: modifier),
+                             held ? KEY_ACTION_DOWN : KEY_ACTION_UP,
+                             modifiers: Self.mask(allHeld))
     }
 
     func insertText(_ text: String) {
@@ -51,12 +54,12 @@ struct MoonlightKeyboardSink: VirtualKeyboardSink {
         let del: Int16 = 0x2E
         let both = Int8(MODIFIER_CTRL) | Int8(MODIFIER_ALT)
 
-        LiSendKeyboardEvent(ctrl, Int8(KEY_ACTION_DOWN), Int8(MODIFIER_CTRL))
-        LiSendKeyboardEvent(alt, Int8(KEY_ACTION_DOWN), both)
-        LiSendKeyboardEvent(del, Int8(KEY_ACTION_DOWN), both)
-        LiSendKeyboardEvent(del, Int8(KEY_ACTION_UP), both)
-        LiSendKeyboardEvent(alt, Int8(KEY_ACTION_UP), Int8(MODIFIER_CTRL))
-        LiSendKeyboardEvent(ctrl, Int8(KEY_ACTION_UP), 0)
+        library.sendKeyboard(ctrl, KEY_ACTION_DOWN, modifiers: Int8(MODIFIER_CTRL))
+        library.sendKeyboard(alt, KEY_ACTION_DOWN, modifiers: both)
+        library.sendKeyboard(del, KEY_ACTION_DOWN, modifiers: both)
+        library.sendKeyboard(del, KEY_ACTION_UP, modifiers: both)
+        library.sendKeyboard(alt, KEY_ACTION_UP, modifiers: Int8(MODIFIER_CTRL))
+        library.sendKeyboard(ctrl, KEY_ACTION_UP, modifiers: 0)
     }
 
     // MARK: - Key Codes

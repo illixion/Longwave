@@ -131,9 +131,13 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            // visionOS-only API (marked unavailable on iOS even though iOS has
+            // spatial audio — see the Spatial Audio note in CLAUDE.md).
+            #if os(visionOS)
             try session.setIntendedSpatialExperience(
                 spatialAudioEnabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
             )
+            #endif
             try session.setActive(true)
         } catch {
             AppLog.moonlightAudio.line("Failed to configure audio session: \(error)")
@@ -146,7 +150,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// running (e.g. while muted, before any session has been configured).
     nonisolated func setSpatialAudioEnabled(_ enabled: Bool) {
         spatialAudioEnabled = enabled
-        #if canImport(UIKit)
+        #if os(visionOS)
         guard !muted else { return }
         do {
             try AVAudioSession.sharedInstance().setIntendedSpatialExperience(

@@ -48,6 +48,7 @@ private struct VideoDisplayView: UIViewRepresentable {
 /// SwiftUI view that displays the Moonlight video stream and handles input.
 struct MoonlightStreamView: View {
     @Environment(MoonlightConnectionManager.self) private var manager
+    @Environment(MoonlightSessionStore.self) private var sessions
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.scenePhase) private var scenePhase
@@ -73,7 +74,7 @@ struct MoonlightStreamView: View {
             // 1×1 transparent hardware keyboard capture, kept bottommost so it
             // never intercepts gestures. A zero-size / zero-alpha view can't
             // reliably become first responder on visionOS.
-            MoonlightHardwareKeyboardView()
+            MoonlightHardwareKeyboardView(library: manager.library)
                 .frame(width: 1, height: 1)
 
             if let layer = manager.displayLayer {
@@ -90,10 +91,14 @@ struct MoonlightStreamView: View {
                             // gets raw deltas from GCMouse instead.
                             switch phase {
                             case .active(let location):
+                                // Looking at this stream is what routes the
+                                // gamepad / Bluetooth mouse / keyboard here when
+                                // more than one is running.
+                                sessions.focus(manager.slot)
                                 manager.setPointerOverContent(true)
                                 if manager.touchMode == .absolute {
                                     let (streamX, streamY) = mapToStreamCoordinates(location, in: geometry.size)
-                                    LiSendMousePositionEvent(streamX, streamY, Int16(manager.streamWidth), Int16(manager.streamHeight))
+                                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
                                 }
                             case .ended:
                                 manager.setPointerOverContent(false)
@@ -140,6 +145,14 @@ struct MoonlightStreamView: View {
                     .padding(.vertical, 6)
                     .glassBackgroundEffect()
                     .padding(.top, 8)
+            } else if sessions.streamingSessions.count > 1, sessions.focusedSlot != manager.slot {
+                // Physical inputs are going to another stream right now.
+                Label("Controller and mouse are on another stream — look here to take them", systemImage: "gamecontroller")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .glassBackgroundEffect()
+                    .padding(.top, 8)
             }
         }
         .handlesGameControllerEvents(matching: .gamepad)
@@ -152,7 +165,7 @@ struct MoonlightStreamView: View {
         }
         .onDisappear {
             manager.stopStreaming()
-            dismissWindow(id: "moonlight-keyboard")
+            dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
         }
         .ornament(attachmentAnchor: .scene(.bottom)) {
             controlsBar
@@ -180,8 +193,8 @@ struct MoonlightStreamView: View {
     /// visionOS won't let an app close its own last window.
     private func closeStreamWindow() {
         WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
-            dismissWindow(id: "moonlight-keyboard")
-            dismissWindow(id: "moonlight-stream")
+            dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
+            dismissWindow(id: "moonlight-stream", value: manager.sessionID)
         }
     }
 
@@ -192,7 +205,7 @@ struct MoonlightStreamView: View {
     private func positionForTap(at location: CGPoint, in viewSize: CGSize) {
         guard manager.touchMode == .absolute else { return }
         let (streamX, streamY) = mapToStreamCoordinates(location, in: viewSize)
-        LiSendMousePositionEvent(streamX, streamY, Int16(manager.streamWidth), Int16(manager.streamHeight))
+        manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
     }
 
     /// Single tap: left click, or release an active drag lock.
@@ -203,15 +216,15 @@ struct MoonlightStreamView: View {
             // here as a tap; that would release it instantly.
             if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
             positionForTap(at: location, in: viewSize)
-            LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_LEFT)
+            manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
             dragLocked = false
         } else {
             // Position the second of two quick taps where the first one landed,
             // so the host reads them as a double-click rather than two clicks a
             // few pixels apart (see DoubleClickCadence).
             positionForTap(at: snappedTapLocation(location, in: viewSize), in: viewSize)
-            LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
-            LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_LEFT)
+            manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
+            manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
         }
     }
 
@@ -235,7 +248,7 @@ struct MoonlightStreamView: View {
         LongPressGesture(minimumDuration: 0.55)
             .onEnded { _ in
                 guard !manager.isMouseConnected, !dragLocked else { return }
-                LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
+                manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
                 dragLocked = true
                 dragLockStartedAt = Date()
             }
@@ -243,8 +256,7 @@ struct MoonlightStreamView: View {
 
     /// Right click at the host's current cursor position (toolbar button).
     private func rightClickAtCurrentPosition() {
-        LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_RIGHT)
-        LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_RIGHT)
+        manager.library.clickMouseButton(BUTTON_RIGHT)
     }
 
     // MARK: - Coordinate Mapping
@@ -291,13 +303,13 @@ struct MoonlightStreamView: View {
                 guard !manager.isMouseConnected else { return }
                 if manager.touchMode == .absolute {
                     let (streamX, streamY) = mapToStreamCoordinates(value.location, in: viewSize)
-                    LiSendMousePositionEvent(streamX, streamY, Int16(manager.streamWidth), Int16(manager.streamHeight))
+                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
                     // In drag-lock the button is already held (from a double-tap);
                     // don't re-press. Otherwise this is a plain click-and-drag:
                     // press the button on the first drag update.
                     if !dragLocked && !absoluteDragActive {
                         absoluteDragActive = true
-                        LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), BUTTON_LEFT)
+                        manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
                     }
                 } else {
                     // Relative: send incremental deltas (the button, if any, is
@@ -305,7 +317,7 @@ struct MoonlightStreamView: View {
                     let dx = value.translation.width - previousDragTranslation.width
                     let dy = value.translation.height - previousDragTranslation.height
                     previousDragTranslation = value.translation
-                    LiSendMouseMoveEvent(Int16(dx), Int16(dy))
+                    manager.library.sendMouseMove(dx: Int16(dx), dy: Int16(dy))
                 }
             }
             .onEnded { value in
@@ -315,8 +327,8 @@ struct MoonlightStreamView: View {
                 // button held until a single tap releases it.
                 if manager.touchMode == .absolute && absoluteDragActive && !dragLocked {
                     let (streamX, streamY) = mapToStreamCoordinates(value.location, in: viewSize)
-                    LiSendMousePositionEvent(streamX, streamY, Int16(manager.streamWidth), Int16(manager.streamHeight))
-                    LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), BUTTON_LEFT)
+                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
+                    manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
                 }
                 absoluteDragActive = false
             }
@@ -330,7 +342,7 @@ struct MoonlightStreamView: View {
                 let delta = value.magnification - 1.0
                 let scrollAmount = Int16(delta * 120)
                 if scrollAmount != 0 {
-                    LiSendHighResScrollEvent(scrollAmount)
+                    manager.library.sendHighResScroll(scrollAmount)
                 }
             }
     }
@@ -356,7 +368,7 @@ struct MoonlightStreamView: View {
             }
 
             Button {
-                openWindow(id: "moonlight-keyboard")
+                openWindow(id: "moonlight-keyboard", value: manager.sessionID)
             } label: {
                 Label("Keyboard", systemImage: "keyboard")
             }

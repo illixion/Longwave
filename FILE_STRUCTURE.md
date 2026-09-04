@@ -10,7 +10,8 @@ Longwave/
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing)
 │   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, transparent display layer
 │   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
-│   └── MoonlightConnectionManager.swift — Moonlight orchestrator, state machine, @Observable
+│   ├── MoonlightConnectionManager.swift — Moonlight orchestrator for one session, state machine, @Observable
+│   └── MoonlightSessionStore.swift     — One Moonlight session per linked library copy; picks the session for a row, mirrors input focus
 ├── Views/
 │   ├── MainView.swift                  — Main window: ornament tab bar (Connections/Settings/Console)
 │   ├── ConnectionListView.swift        — Server list, routes by connection type (pushWindow)
@@ -42,7 +43,9 @@ Longwave/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display
 ├── Moonlight/
-│   ├── MoonlightStreamBridge.swift     — C callback → Swift marshalling, global renderer refs
+│   ├── MoonlightLibrary.swift          — One linked copy of moonlight-common-c (slot, entry-point table, callback state) + MoonlightInputFocus
+│   ├── MoonlightLibrarySlot0.swift     — Entry points of the unprefixed copy (Slot1/Slot2: the ml1_/ml2_ copies, raw pointers)
+│   ├── MoonlightStreamBridge.swift     — C callback → Swift marshalling, one callback set per copy
 │   ├── MoonlightVideoRenderer.swift    — AVSampleBufferDisplayLayer H.264/HEVC/AV1 + HDR
 │   ├── MoonlightAudioRenderer.swift    — Opus multistream → AVAudioEngine
 │   ├── MoonlightGamepadManager.swift   — GameController framework → LiSendMultiControllerEvent
@@ -143,6 +146,7 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 scripts/
 ├── edition-settings.sh                 — The ONLY definition of oss / oss-moonlight / pro
 ├── setup-deps.sh                       — Clone+patch repos/ deps (local Moonlight builds)
+├── verify-moonlight-instances.sh       — Checks the built objects: every copy fully prefixed, rename list complete (--regenerate)
 ├── build-and-sign.sh                   — Config-driven device build/sign/deploy (build-signing.conf, gitignored)
 ├── install-companion.sh                — Build the macOS companion + install to /Applications (quit/relaunch)
 ├── build-mediaremote-helper.sh          — Universal build+sign of MediaRemoteHelper/ (script phase on both mac targets)
@@ -150,7 +154,9 @@ scripts/
 
 ci/
 ├── deps/
-│   ├── moonlight-common-c/Package.swift — SPM wrapper (MoonlightCommonC + enet targets)
+│   ├── moonlight-common-c/Package.swift — SPM wrapper (MoonlightCommonC + enet, plus the prefixed MoonlightCommonC1/2 copies)
+│   ├── moonlight-common-c/make-instances.sh — Lays the prefixed copies out in a checkout (shims that #include the real sources)
+│   ├── moonlight-common-c/ml_redefine_symbols.h — Generated `#pragma redefine_extname` list, one line per external symbol
 │   └── opus/
 │       ├── Package.swift               — SPM wrapper for Opus C library
 │       ├── include/module.modulemap    — Exposes multistream API

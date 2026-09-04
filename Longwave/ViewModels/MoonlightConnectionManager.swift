@@ -29,8 +29,41 @@ struct StreamStats {
 
 /// Orchestrates the Moonlight connection lifecycle:
 /// server info → pairing → app list → stream launch.
+///
+/// One instance per linked copy of moonlight-common-c (`library`), owned by
+/// `MoonlightSessionStore`; every C call goes through `library` so it reaches
+/// this session's copy and not another session's.
 @Observable
 class MoonlightConnectionManager: MoonlightStreamDelegate {
+
+    /// The copy of moonlight-common-c this session streams through.
+    let library: MoonlightLibrary
+    var slot: Int { library.slot }
+    var sessionID: MoonlightSessionID { MoonlightSessionID(slot: library.slot) }
+
+    /// `id` of the saved connection this session is working on, from `connect`
+    /// until `disconnect` — how the store finds the session for a row.
+    private(set) var activeConnectionID: UUID?
+
+    /// Set by the store: fires (slot, isStreaming) on the main actor when a
+    /// stream comes up or goes down, so input focus can follow.
+    var onStreamingChanged: ((Int, Bool) -> Void)?
+
+    init(library: MoonlightLibrary) {
+        self.library = library
+    }
+
+    /// Whether this session has a host on the hook right now — mid-handshake,
+    /// launching or streaming. Idle, ready and errored sessions can be reused
+    /// for another connection.
+    var isBusy: Bool {
+        switch connectionState {
+        case .connecting, .fetchingServerInfo, .pairing, .paired, .fetchingApps, .launching, .streaming:
+            return true
+        case .idle, .ready, .error:
+            return false
+        }
+    }
 
     enum ConnectionState: Equatable {
         case idle
@@ -155,6 +188,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         apps = []
         serverInfo = nil
         activeConnection = connection
+        activeConnectionID = connection.id
         hideLocalCursor = connection.hideLocalCursor
 
         let hostname = connection.hostname
@@ -386,7 +420,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                     return l
                 }
 
-                let video = MoonlightVideoRenderer()
+                let video = MoonlightVideoRenderer(library: self.library)
                 video.displayLayer = layer
                 let audio = MoonlightAudioRenderer()
                 audio.muted = noAudio
@@ -450,6 +484,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
 
                 // Start connection (blocks until connected or fails)
                 let result = startMoonlightStream(
+                    library: self.library,
                     config: streamConfig,
                     videoRenderer: video,
                     audioRenderer: audio,
@@ -498,8 +533,9 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         }
         isTearingDown = true
         let client = quitOnServer ? httpClient : nil
+        let library = self.library
         Task.detached {
-            stopMoonlightStream()
+            stopMoonlightStream(library: library)
             if quitOnServer { try? await client?.quitApp() }
             await MainActor.run {
                 self.cleanupStream()       // sets isStreamActive = false
@@ -510,10 +546,11 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     }
 
     private func cleanupStream() {
+        let wasStreaming = isStreamActive
         stopDisplayLink()
         gamepadManager?.stopListening()
         gamepadManager = nil
-        activeGamepadManager = nil
+        library.gamepadManager = nil
         mouseManager?.stopListening()
         mouseManager = nil
         isMouseConnected = false
@@ -529,18 +566,19 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         // Reset FPS tracking so the next session doesn't underflow
         fpsFrameCount = 0
         fpsLastSampleTime = 0
+        if wasStreaming { onStreamingChanged?(slot, false) }
     }
 
     private func startGamepadManager() {
         let swapABXY = activeConnection?.moonlightSwapABXY ?? false
-        let manager = MoonlightGamepadManager(swapABXY: swapABXY)
+        let manager = MoonlightGamepadManager(library: library, swapABXY: swapABXY)
         gamepadManager = manager
-        activeGamepadManager = manager
+        library.gamepadManager = manager
         manager.startListening()
     }
 
     private func startMouseManager() {
-        let manager = MoonlightMouseManager(relativeMotionEnabled: touchMode == .relative)
+        let manager = MoonlightMouseManager(library: library, relativeMotionEnabled: touchMode == .relative)
         manager.onConnectedChange = { [weak self] connected in
             self?.isMouseConnected = connected
         }
@@ -549,7 +587,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     }
 
     private func startKeyboardManager() {
-        let manager = MoonlightKeyboardManager()
+        let manager = MoonlightKeyboardManager(library: library)
         keyboardManager = manager
         manager.startListening()
     }
@@ -625,9 +663,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         streamStats.droppedFrames = renderer.droppedFrames
 
         // Update network RTT
-        var rtt: UInt32 = 0
-        var rttVariance: UInt32 = 0
-        if LiGetEstimatedRttInfo(&rtt, &rttVariance) {
+        if let (rtt, rttVariance) = library.estimatedRtt() {
             streamStats.networkRttMs = rtt
             streamStats.rttVarianceMs = rttVariance
         }
@@ -636,7 +672,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     // MARK: - MoonlightStreamDelegate
 
     nonisolated func moonlightStreamStageStarting(_ stage: Int32) {
-        let name = String(cString: LiGetStageName(stage))
+        let name = library.stageName(stage)
         Task { @MainActor in
             self.statusMessage = "Starting \(name)..."
         }
@@ -645,7 +681,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     nonisolated func moonlightStreamStageComplete(_ stage: Int32) {}
 
     nonisolated func moonlightStreamStageFailed(_ stage: Int32, errorCode: Int32) {
-        let name = String(cString: LiGetStageName(stage))
+        let name = library.stageName(stage)
         Task { @MainActor in
             self.teardownStream {
                 self.connectionState = .error("Stage '\(name)' failed (error: \(errorCode))")
@@ -664,6 +700,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
             self.startGamepadManager()
             self.startMouseManager()
             self.startKeyboardManager()
+            self.onStreamingChanged?(self.slot, true)
         }
     }
 
@@ -793,6 +830,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         }
         httpClient = nil
         activeConnection = nil
+        activeConnectionID = nil
         connectionState = .idle
         serverInfo = nil
         apps = []

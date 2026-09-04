@@ -23,6 +23,14 @@ import UIKit
 @Observable
 final class MoonlightKeyboardManager: @unchecked Sendable {
 
+    /// The session's copy of moonlight-common-c. `GCKeyboard` is app-wide, so
+    /// keys are only forwarded while this session holds input focus.
+    private let library: MoonlightLibrary
+
+    init(library: MoonlightLibrary) {
+        self.library = library
+    }
+
     private var connectObserver: NSObjectProtocol?
     private var disconnectObserver: NSObjectProtocol?
 
@@ -75,6 +83,8 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
         // down and coming up, and dropping that release strands the key on the
         // host. The handler queue is the main queue (see `startListening`).
         if pressed, MainActor.assumeIsolated({ TextInputActivity.shared.isEntering }) { return }
+        // Another session is the one being typed into.
+        if pressed, !MoonlightInputFocus.owns(library.slot) { return }
 
         let modFlag = MoonlightKeyCodes.modifierFlag(for: usage)
         // Set the modifier before sending a press; clear after sending a release
@@ -82,7 +92,7 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
         if pressed && modFlag != 0 { activeModifiers |= modFlag }
 
         if let vkCode = MoonlightKeyCodes.windowsKeyCode(for: usage) {
-            LiSendKeyboardEvent(vkCode, Int8(pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP), activeModifiers)
+            library.sendKeyboard(vkCode, pressed ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers: activeModifiers)
         }
 
         if !pressed && modFlag != 0 { activeModifiers &= ~modFlag }
@@ -95,6 +105,7 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
 /// `MoonlightConnectionManager` call sites identical across platforms.
 @Observable
 final class MoonlightKeyboardManager: @unchecked Sendable {
+    init(library: MoonlightLibrary) {}
     func startListening() {}
     func stopListening() {}
 }

@@ -15,7 +15,7 @@ struct ConnectionListView: View {
     @Environment(SSHTerminalManager.self) private var sshManager
     #endif
     #if MOONLIGHT_ENABLED
-    @Environment(MoonlightConnectionManager.self) private var moonlightManager
+    @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
 
     @Query(sort: \SavedConnection.lastConnected, order: .reverse)
@@ -24,7 +24,16 @@ struct ConnectionListView: View {
     @State private var showingNewConnection = false
     @State private var connectionToEdit: SavedConnection?
     #if MOONLIGHT_ENABLED
-    @State private var moonlightConnection: SavedConnection?
+    /// The pairing sheet's target: which connection, on which session. The
+    /// session is chosen when the row is tapped, so the sheet can be handed the
+    /// exact manager to observe rather than a global one.
+    private struct MoonlightSheetTarget: Identifiable {
+        let connection: SavedConnection
+        let session: MoonlightConnectionManager
+        var id: UUID { connection.id }
+    }
+    @State private var moonlightSheet: MoonlightSheetTarget?
+    @State private var showingMoonlightSessionsBusy = false
     #endif
 
     /// PCVR rows are hidden here: PCVR moved to its own tab, which owns the one
@@ -128,9 +137,14 @@ struct ConnectionListView: View {
                 }
             }
             #if MOONLIGHT_ENABLED
-            .sheet(item: $moonlightConnection) { connection in
-                MoonlightPairingView(connection: connection)
-                    .environment(moonlightManager)
+            .sheet(item: $moonlightSheet) { target in
+                MoonlightPairingView(connection: target.connection)
+                    .environment(target.session)
+            }
+            .alert("All Moonlight sessions are in use", isPresented: $showingMoonlightSessionsBusy) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Longwave can stream from \(MoonlightLibrary.count) hosts at once. Disconnect one of the running streams to start another.")
             }
             #endif
         }
@@ -390,9 +404,21 @@ struct ConnectionListView: View {
     }
 
     #if MOONLIGHT_ENABLED
+    /// Each Moonlight session is its own linked copy of moonlight-common-c, so
+    /// there are exactly `MoonlightLibrary.count` of them. A row that already
+    /// has a session (streaming, or paired with its sheet swiped away) reopens
+    /// that one; otherwise the first session with nothing in flight is reset
+    /// and pointed at this host.
     private func connectMoonlight(_ connection: SavedConnection) {
-        moonlightManager.connect(to: connection)
-        moonlightConnection = connection
+        guard let session = moonlightSessions.session(for: connection) else {
+            showingMoonlightSessionsBusy = true
+            return
+        }
+        if session.activeConnectionID != connection.id {
+            session.disconnect()
+        }
+        session.connect(to: connection)
+        moonlightSheet = MoonlightSheetTarget(connection: connection, session: session)
     }
     #endif
 

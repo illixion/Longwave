@@ -48,6 +48,11 @@ final class WindowSessionRegistry {
     /// (its scene phase is `.active`), `false` when snapped in another room.
     private(set) var sessions: [String: Bool] = [:]
 
+    /// How many open windows share each id. Moonlight opens one stream window
+    /// per session under the same id, so the entry has to outlive the first of
+    /// them to close.
+    private var openCounts: [String: Int] = [:]
+
     /// Number of currently-open "main" windows. When this is zero the user has
     /// no way to navigate the app, so a home-screen re-launch must summon one.
     private(set) var mainWindowCount: Int = 0
@@ -138,11 +143,18 @@ final class WindowSessionRegistry {
     }
 
     func register(_ id: String) {
+        openCounts[id, default: 0] += 1
         sessions[id] = true
     }
 
     func unregister(_ id: String) {
-        sessions[id] = nil
+        let remaining = max(0, (openCounts[id] ?? 1) - 1)
+        if remaining == 0 {
+            openCounts[id] = nil
+            sessions[id] = nil
+        } else {
+            openCounts[id] = remaining
+        }
     }
 
     func setActiveRoom(_ id: String, _ active: Bool) {

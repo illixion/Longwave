@@ -67,22 +67,33 @@ jobs:
       # project's local package references still need to resolve — stand in
       # empty stub packages with matching product names. Swapped for the
       # real dependencies after the MIT archive below.
+      # The moonlight-common-c package also vends MoonlightCommonC1 and
+      # MoonlightCommonC2 (symbol-prefixed copies for multi-session streaming;
+      # see ci/deps/moonlight-common-c/make-instances.sh), and the app targets
+      # link all three, so the stub has to declare all three products too.
       - name: Stub out Moonlight dependencies
         run: |
           for pkg in MoonlightCommonC Opus; do
             dir=$([ "$pkg" = "MoonlightCommonC" ] && echo repos/moonlight-common-c || echo repos/opus)
-            mkdir -p "$dir/Sources/$pkg"
+            extra=()
+            [ "$pkg" = "MoonlightCommonC" ] && extra=(MoonlightCommonC1 MoonlightCommonC2)
+            products=""; targets=""
+            for t in "$pkg" "${extra[@]}"; do
+              mkdir -p "$dir/Sources/$t"
+              echo "// CI stub" > "$dir/Sources/$t/Stub.swift"
+              products+=".library(name: \"$t\", targets: [\"$t\"]),"
+              targets+=".target(name: \"$t\"),"
+            done
             cat > "$dir/Package.swift" <<EOF
           // swift-tools-version:5.9
           // CI stub — replaced with the real package for the Moonlight archive.
           import PackageDescription
           let package = Package(
               name: "$pkg",
-              products: [.library(name: "$pkg", targets: ["$pkg"])],
-              targets: [.target(name: "$pkg")]
+              products: [$products],
+              targets: [$targets]
           )
           EOF
-            echo "// CI stub" > "$dir/Sources/$pkg/Stub.swift"
           done
 
       - name: Set build info (commit hash shown in Settings)
@@ -194,6 +205,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             "${EDITION[@]}"
+
+      # The extra copies of moonlight-common-c are only safe if every one of
+      # their symbols really is prefixed — a missed symbol links without error
+      # and silently shares state between sessions. Check the objects that were
+      # actually built (see the script for what it looks at).
+      - name: Verify the prefixed moonlight-common-c copies
+        run: |
+          ./scripts/verify-moonlight-instances.sh ~/Library/Developer/Xcode/DerivedData
 
       - name: Create unsigned Moonlight IPA
         run: |

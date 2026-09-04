@@ -13,7 +13,7 @@ struct SessionsView: View {
     @Environment(MacNativeStreamManager.self) private var macNativeManager
     #endif
     #if MOONLIGHT_ENABLED
-    @Environment(MoonlightConnectionManager.self) private var moonlightManager
+    @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -81,14 +81,14 @@ struct SessionsView: View {
                 // Re-opening an already-open window makes visionOS bring it to the
                 // user's current position. Via the registry, because some of these
                 // windows are value-matched and a bare id would open nothing.
-                WindowSessionRegistry.surface(kind.id, using: openWindow)
+                surface(kind.id)
             } label: {
                 Label("Summon", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
             }
             .buttonStyle(.borderedProminent)
 
             Button(role: .destructive) {
-                dismissWindow(id: kind.id)
+                close(kind.id)
             } label: {
                 Image(systemName: "xmark")
             }
@@ -96,6 +96,28 @@ struct SessionsView: View {
             .help("Close this window")
         }
         .padding(.vertical, 6)
+    }
+
+    /// Moonlight windows are keyed per session; the one holding input focus is
+    /// the one the user is playing on, so that is what a Summon or close targets.
+    private func surface(_ id: String) {
+        #if MOONLIGHT_ENABLED
+        if id == "moonlight-stream" || id == "moonlight-keyboard" {
+            openWindow(id: id, value: MoonlightSessionID(slot: moonlightSessions.focusedSlot))
+            return
+        }
+        #endif
+        WindowSessionRegistry.surface(id, using: openWindow)
+    }
+
+    private func close(_ id: String) {
+        #if MOONLIGHT_ENABLED
+        if id == "moonlight-stream" || id == "moonlight-keyboard" {
+            dismissWindow(id: id, value: MoonlightSessionID(slot: moonlightSessions.focusedSlot))
+            return
+        }
+        #endif
+        dismissWindow(id: id)
     }
 
     /// Live connection label for a window, where one applies.
@@ -111,7 +133,8 @@ struct SessionsView: View {
         #endif
         #if MOONLIGHT_ENABLED
         case "moonlight-stream":
-            return moonlightManager.serverInfo?.hostname
+            let hosts = moonlightSessions.streamingSessions.compactMap { $0.serverInfo?.hostname }
+            return hosts.isEmpty ? nil : hosts.joined(separator: ", ")
         #endif
         default:
             return nil

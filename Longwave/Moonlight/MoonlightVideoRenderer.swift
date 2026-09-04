@@ -83,6 +83,10 @@ private struct AV1SequenceHeader {
 /// Decodes H.264/HEVC/AV1 video from moonlight-common-c using AVSampleBufferDisplayLayer,
 /// which handles both hardware decoding and display with native HDR support.
 class MoonlightVideoRenderer: @unchecked Sendable {
+    /// The copy of moonlight-common-c feeding this renderer — IDR requests and
+    /// HDR metadata have to be asked of the session that owns the stream.
+    private let library: MoonlightLibrary
+
     /// Display layer for hardware-accelerated video decode and display.
     /// Created on the main thread by MoonlightConnectionManager, set before streaming starts.
     nonisolated(unsafe) var displayLayer: AVSampleBufferDisplayLayer?
@@ -112,7 +116,9 @@ class MoonlightVideoRenderer: @unchecked Sendable {
     private nonisolated(unsafe) var contentLightLevelInfo: Data?
     private nonisolated(unsafe) var masteringDisplayColorVolume: Data?
 
-    nonisolated init() {}
+    nonisolated init(library: MoonlightLibrary) {
+        self.library = library
+    }
 
     nonisolated func setup(videoFormat: Int32, width: Int32, height: Int32, fps: Int32) -> Int32 {
         self.videoFormat = videoFormat
@@ -170,8 +176,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         AppLog.moonlightVideo.line("HDR mode: \(enabled)")
 
         if enabled {
-            var metadata = SS_HDR_METADATA()
-            if LiGetHdrMetadata(&metadata) {
+            if var metadata = library.hdrMetadata() {
                 // Pack MDCV and CLL from SS_HDR_METADATA
                 // displayPrimaries[3] is RGB order; MDCV spec requires GBR order
                 packHdrMetadata(&metadata)
@@ -185,7 +190,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         if wasHDR != enabled {
             formatDescription = nil
             displayLayer?.flush()
-            LiRequestIdrFrame()
+            library.requestIdrFrame()
         }
     }
 

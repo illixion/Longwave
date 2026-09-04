@@ -23,6 +23,10 @@ import GameController
 @Observable
 final class MoonlightMouseManager: @unchecked Sendable {
 
+    /// The session's copy of moonlight-common-c. `GCMouse` events are app-wide,
+    /// so they are only forwarded while this session holds input focus.
+    private let library: MoonlightLibrary
+
     /// When true, raw motion deltas are forwarded as relative mouse moves.
     /// Set false in absolute mode where the view sends position events instead.
     @ObservationIgnored
@@ -66,9 +70,12 @@ final class MoonlightMouseManager: @unchecked Sendable {
     /// even if the pointer left the content mid-click (no stuck buttons).
     @ObservationIgnored private nonisolated(unsafe) var forwardedButtons: Set<Int32> = []
 
-    init(relativeMotionEnabled: Bool) {
+    init(library: MoonlightLibrary, relativeMotionEnabled: Bool) {
+        self.library = library
         self.relativeMotionEnabled = relativeMotionEnabled
     }
+
+    private nonisolated var hasFocus: Bool { MoonlightInputFocus.owns(library.slot) }
 
     // MARK: - Lifecycle
 
@@ -142,7 +149,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
             // Forward deltas in relative (touchpad) mode, OR whenever a button is
             // held — even in absolute mode — so a click+drag keeps moving after
             // visionOS stops delivering hover updates mid-drag.
-            guard self.relativeMotionEnabled || self.heldButtons > 0 else { return }
+            guard self.hasFocus, self.relativeMotionEnabled || self.heldButtons > 0 else { return }
             // GCMouse reports +Y as up (controller convention); Moonlight/screen
             // space is +Y down, so invert. Carry the fractional remainder so a
             // slow drag isn't repeatedly truncated to zero.
@@ -151,7 +158,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
             let dx = Int(self.accumX)
             let dy = Int(self.accumY)
             if dx != 0 || dy != 0 {
-                LiSendMouseMoveEvent(Int16(clamping: dx), Int16(clamping: dy))
+                self.library.sendMouseMove(dx: Int16(clamping: dx), dy: Int16(clamping: dy))
                 self.accumX -= Float(dx)
                 self.accumY -= Float(dy)
             }
@@ -170,20 +177,20 @@ final class MoonlightMouseManager: @unchecked Sendable {
         // Scroll wheel. Accumulate the raw axis value, then emit high-res ticks
         // scaled by 20 (matches moonlight-ios). +Y = up; horizontal is reversed.
         input.scroll.yAxis.valueChangedHandler = { [weak self] _, value in
-            guard let self else { return }
+            guard let self, self.hasFocus else { return }
             self.accumScrollY += value
             let ticks = Int(self.accumScrollY)
             if ticks != 0 {
-                LiSendHighResScrollEvent(Int16(clamping: ticks * 20))
+                self.library.sendHighResScroll(Int16(clamping: ticks * 20))
                 self.accumScrollY -= Float(ticks)
             }
         }
         input.scroll.xAxis.valueChangedHandler = { [weak self] _, value in
-            guard let self else { return }
+            guard let self, self.hasFocus else { return }
             self.accumScrollX += value
             let ticks = Int(self.accumScrollX)
             if ticks != 0 {
-                LiSendHighResHScrollEvent(Int16(clamping: -ticks * 20))
+                self.library.sendHighResHScroll(Int16(clamping: -ticks * 20))
                 self.accumScrollX -= Float(ticks)
             }
         }
@@ -196,16 +203,17 @@ final class MoonlightMouseManager: @unchecked Sendable {
             guard let self else { return }
             if pressed {
                 // Suppress clicks aimed at the app's own controls — forward only
-                // when the pointer is over the stream content.
-                guard self.pointerOverContent else { return }
-                LiSendMouseButtonEvent(Int8(BUTTON_ACTION_PRESS), button)
+                // when the pointer is over the stream content, and only from the
+                // session that owns the physical inputs.
+                guard self.pointerOverContent, self.hasFocus else { return }
+                self.library.sendMouseButton(BUTTON_ACTION_PRESS, button)
                 self.forwardedButtons.insert(button)
                 self.heldButtons += 1
             } else {
                 // Release only what we actually pressed (no stuck buttons if the
                 // pointer left the content between press and release).
                 guard self.forwardedButtons.remove(button) != nil else { return }
-                LiSendMouseButtonEvent(Int8(BUTTON_ACTION_RELEASE), button)
+                self.library.sendMouseButton(BUTTON_ACTION_RELEASE, button)
                 self.heldButtons = max(0, self.heldButtons - 1)
                 // Drop any residual delta so the next hover-driven move starts clean.
                 self.accumX = 0

@@ -9,9 +9,10 @@ import SwiftUI
 /// host. Text can't carry a modifier, so a latched Ctrl was dropped on the way —
 /// every cap here sends a real virtual-key event with the modifier mask set.
 struct MoonlightKeyboardView: View {
+    @Environment(MoonlightConnectionManager.self) private var manager
     @AppStorage(ConnectionDefaults.Keys.keyboardScrollPad) private var showsScrollPad = false
 
-    private let sink = MoonlightKeyboardSink()
+    private var sink: MoonlightKeyboardSink { MoonlightKeyboardSink(library: manager.library) }
 
     var body: some View {
         NavigationStack {
@@ -23,10 +24,10 @@ struct MoonlightKeyboardView: View {
                 if showsScrollPad {
                     ScrollPadView(
                         onVerticalTick: { steps in
-                            LiSendHighResScrollEvent(Int16(clamping: steps * 20))
+                            manager.library.sendHighResScroll(Int16(clamping: steps * 20))
                         },
                         onHorizontalTick: { steps in
-                            LiSendHighResHScrollEvent(Int16(clamping: steps * 20))
+                            manager.library.sendHighResHScroll(Int16(clamping: steps * 20))
                         }
                     )
                 }
@@ -34,8 +35,15 @@ struct MoonlightKeyboardView: View {
                 Spacer(minLength: 0)
             }
             .padding(20)
-            .navigationTitle("Moonlight Keyboard")
+            .navigationTitle(keyboardTitle)
         }
+    }
+
+    private var keyboardTitle: String {
+        if let host = manager.serverInfo?.hostname, !host.isEmpty {
+            return "Moonlight Keyboard — \(host)"
+        }
+        return "Moonlight Keyboard"
     }
 
     private var header: some View {

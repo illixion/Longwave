@@ -13,7 +13,7 @@ struct LongwaveApp: App {
     @State private var sshManager = SSHTerminalManager()
     @State private var broadcastManager = BroadcastManager()
     #if MOONLIGHT_ENABLED
-    @State private var moonlightManager = MoonlightConnectionManager()
+    @State private var moonlightSessions = MoonlightSessionStore()
     #endif
     #if FOVEATED_ENABLED
     @State private var foveatedManager = FoveatedConnectionManager()
@@ -46,7 +46,7 @@ struct LongwaveApp: App {
                 .environment(sshManager)
                 .environment(broadcastManager)
                 #if MOONLIGHT_ENABLED
-                .environment(moonlightManager)
+                .environment(moonlightSessions)
                 #endif
                 .trackMainWindow()
                 #if DEBUG
@@ -212,10 +212,16 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
 
         #if MOONLIGHT_ENABLED
-        WindowGroup("Moonlight Stream", id: "moonlight-stream") {
-            MoonlightStreamView()
-                .environment(moonlightManager)
-                .trackWindowSession(id: "moonlight-stream")
+        // One scene per Moonlight session (see `MoonlightSessionStore`): the value
+        // names the session, and the view keeps reading a single manager from the
+        // environment exactly as it did when there was only one.
+        WindowGroup("Moonlight Stream", id: "moonlight-stream", for: MoonlightSessionID.self) { $sessionID in
+            if let sessionID {
+                MoonlightStreamView()
+                    .environment(moonlightSessions.session(for: sessionID))
+                    .environment(moonlightSessions)
+                    .trackWindowSession(id: "moonlight-stream")
+            }
         }
         .defaultSize(width: 1920, height: 1080)
         .windowResizability(.contentMinSize)
@@ -243,11 +249,13 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
 
         #if MOONLIGHT_ENABLED
-        WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard") {
-            MoonlightKeyboardView()
-                .homeOrnament()
-                .environment(moonlightManager)
-                .trackWindowSession(id: "moonlight-keyboard")
+        WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard", for: MoonlightSessionID.self) { $sessionID in
+            if let sessionID {
+                MoonlightKeyboardView()
+                    .homeOrnament()
+                    .environment(moonlightSessions.session(for: sessionID))
+                    .trackWindowSession(id: "moonlight-keyboard")
+            }
         }
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)

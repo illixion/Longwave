@@ -8,7 +8,7 @@ Longwave/
 ├── ViewModels/
 │   ├── VNCConnectionManager.swift      — VNC connection bridge, @Observable
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing)
-│   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, transparent display layer
+│   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, display layer (all clients)
 │   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
 │   ├── MoonlightConnectionManager.swift — Moonlight orchestrator for one session, state machine, @Observable
 │   └── MoonlightSessionStore.swift     — One Moonlight session per linked library copy; picks the session for a row, mirrors input focus
@@ -19,7 +19,7 @@ Longwave/
 │   ├── SettingsView.swift              — New-connection defaults (@AppStorage)
 │   ├── ConsoleView.swift               — Log viewer (tab + "console" pop-out window)
 │   ├── AudioStreamView.swift           — Audio mini player (album art, transport, mute, utility row)
-│   ├── NativeStreamView.swift          — Transparent desktop scene + manual per-window picker
+│   ├── NativeStreamView.swift          — visionOS desktop scene + manual per-window picker (Mac: LongwaveMac/MacNativeStreamWindowView, iOS: LongwaveiOS/MobileNativeStreamView)
 │   ├── MacNativeUnityControlView.swift — Unity inventory reconciler, scene switcher, desktop/session controls
 │   ├── NativeWindowStreamView.swift    — One chrome-free scene per streamed host window (Unity-style)
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
@@ -40,8 +40,8 @@ Longwave/
 │   ├── PCVRStore.swift                 — StoreKit 2 entitlements: $1.99/mo or $24.99 once
 │   └── PCVRSessionLimiter.swift        — 20-minute trial clock, warnings, and the cutoff
 ├── MacNative/
-│   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver
-│   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display
+│   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
+│   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)
 ├── Moonlight/
 │   ├── MoonlightLibrary.swift          — One linked copy of moonlight-common-c (slot, entry-point table, callback state) + MoonlightInputFocus
 │   ├── MoonlightLibrarySlot0.swift     — Entry points of the unprefixed copy (Slot1/Slot2: the ml1_/ml2_ copies, raw pointers)
@@ -64,7 +64,10 @@ Longwave/
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
 │   ├── SSHVirtualKeyboardSink.swift    — Key + modifiers → PTY bytes (⌃G → 0x07), unit-tested
-│   └── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (VNC)
+│   ├── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (VNC)
+│   ├── MacKeyCodeMap.swift             — HID usage ↔ macOS virtual keycode tables (raw ints, UIKit adapters) for the Native keyboard channel
+│   ├── MacNativeVirtualKeyboardSink.swift — Key + modifiers → Native key frames, or text over the inject channel
+│   └── DeviceName.swift                — The name a client introduces itself with (UIDevice / Host)
 ├── Assets.xcassets/                    — App icon (solidimagestack, 1024x1024 @2x)
 └── Info.plist                          — NSLocalNetworkUsageDescription, multi-scene
 
@@ -84,7 +87,9 @@ LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS targ
 ├── MobileAppDelegate.swift             — Local Network prompt + TextInputActivity (no window summoning)
 ├── MobileRootView.swift                — Five-tab shell; presents covers off manager state, since shared
 │                                         views' openWindow(id:) calls are no-ops in a single-scene app
-├── MobileRemoteDesktopView.swift       — Touch VNC: fit/zoom/pan, absolute + relative pointer mapping
+├── MobileRemoteDesktopView.swift       — Touch VNC: absolute + relative pointer mapping over MobileViewport
+├── MobileNativeStreamView.swift        — Touch Native desktop stream: same touch model, both keyboard channels, audio sheet
+├── MobileViewport.swift                — Zoom/pan + view↔surface mapping shared by the VNC and Native views (render == hit-test)
 ├── MobileMoonlightStreamView.swift     — Touch Moonlight: direct/touchpad pointer, two-finger scroll, keyboard strip, stats
 ├── MobilePointerSurface.swift          — UIKit recognizers (SwiftUI can't tell 1 finger from 2):
 │                                         tap/2-finger tap/drag/2-finger scroll/pinch/3-finger pan

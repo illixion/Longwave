@@ -129,7 +129,7 @@ Unit tests in `LongwaveTests/` (XCTest, visionOS, run locally — no CI test job
 xcodebuild test -scheme LongwaveTests -destination 'platform=visionOS Simulator,name=Apple Vision Pro,OS=26.5'
 ```
 
-Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsing + per-agent token resolution, `PCVRSessionLimiter` (add `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` — its tests are gated with the feature). `PBXFileSystemSynchronizedRootGroup`, so new `.swift` files auto-compile — no pbxproj edits needed.
+Coverage: `TextDiff`, `CompanionInjectProtocol`, `SavedConnection` SSH env parsing + per-agent token resolution, `PCVRSessionLimiter` (add `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` — its tests are gated with the feature). `PBXFileSystemSynchronizedRootGroup`, so new `.swift` files auto-compile — no pbxproj edits needed. **Don't pass `CODE_SIGNING_ALLOWED=NO` to the test run**: the `SavedConnectionCredentialTests`/`SavedConnectionEnvTests` classes store tokens in the keychain, which an unsigned simulator bundle cannot reach, and all 30 of them fail with `nil` tokens while everything else passes.
 
 ## Critical Gotchas
 

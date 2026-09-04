@@ -11,6 +11,11 @@ Windows hosts.
 
 - Full desktop milestone: **implemented** (see below). Was a transparent
   application-window composition; now the complete display.
+- **Receivers on every client: implemented** — the Mac client
+  (`MacNativeStreamWindowView`, real pointer and keyboard) and the iPhone/iPad
+  client (`MobileNativeStreamView`, touch with zoom and pan) view the same
+  desktop stream, audio and remote input as the headset. Per-window Unity
+  scenes remain visionOS-only.
 - Phase 1 (mouse/keyboard control): **implemented** — pointer/scroll/key
   frames, CGEvent injection behind Accessibility, independent mouse and
   keyboard-shortcut toggles, drag synthesis, double/triple-click detection.

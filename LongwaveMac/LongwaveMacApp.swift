@@ -4,13 +4,14 @@ import SwiftData
 import AppKit
 
 /// macOS app entry. The Mac already ships an SSH client, so this target keeps
-/// the shared VNC, Moonlight, audio, console, and soft-keyboard scenes without
-/// compiling the visionOS SSH/SwiftTerm feature set.
+/// the shared VNC, Moonlight, Native desktop stream, audio, console, and
+/// soft-keyboard scenes without compiling the visionOS SSH/SwiftTerm feature set.
 @main
 struct LongwaveMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
+    @State private var macNativeManager = MacNativeStreamManager()
     #if MOONLIGHT_ENABLED
     @State private var moonlightSessions = MoonlightSessionStore()
     #endif
@@ -26,6 +27,7 @@ struct LongwaveMacApp: App {
             MacMainView()
                 .environment(connectionManager)
                 .environment(audioManager)
+                .environment(macNativeManager)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)
                 #endif
@@ -86,6 +88,26 @@ struct LongwaveMacApp: App {
             KeyboardInputView()
                 .environment(connectionManager)
                 .trackWindowSession(id: "keyboard")
+        }
+        .defaultSize(width: 800, height: 440)
+
+        // The Native (desktop stream + audio) window — value-typed with one
+        // constant identity like on visionOS, so a connection reactivates the
+        // one window. Per-window Unity scenes stay visionOS-only.
+        WindowGroup("Native", id: "mac-native-stream", for: MacNativeWindowID.self) { _ in
+            MacNativeStreamWindowView()
+                .environment(macNativeManager)
+                .environment(audioManager)
+                .trackWindowSession(id: "mac-native-stream")
+        } defaultValue: {
+            .shared
+        }
+        .defaultSize(width: 1440, height: 900)
+
+        WindowGroup("Native Keyboard", id: "mac-native-keyboard") {
+            MacNativeKeyboardView()
+                .environment(macNativeManager)
+                .trackWindowSession(id: "mac-native-keyboard")
         }
         .defaultSize(width: 800, height: 440)
 

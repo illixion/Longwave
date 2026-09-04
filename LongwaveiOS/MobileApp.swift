@@ -29,11 +29,14 @@ import SwiftData
 /// copies — see `MoonlightSessionStore`) and defines `MOONLIGHT_ENABLED`, so the
 /// GPLv3 terms of the Moonlight build apply to it exactly as they do to the
 /// `oss-moonlight` visionOS edition. The touch surface is `MobileMoonlightStreamView`.
+/// The Native desktop stream is present too (`MobileNativeStreamView`); only its
+/// per-window Unity scenes, a spatial idea, stay on visionOS.
 @main
 struct LongwaveMobileApp: App {
     @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
+    @State private var macNativeManager = MacNativeStreamManager()
     @State private var sshManager = SSHTerminalManager()
     #if MOONLIGHT_ENABLED
     @State private var moonlightSessions = MoonlightSessionStore()
@@ -44,6 +47,7 @@ struct LongwaveMobileApp: App {
             MobileRootView()
                 .environment(connectionManager)
                 .environment(audioManager)
+                .environment(macNativeManager)
                 .environment(sshManager)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)

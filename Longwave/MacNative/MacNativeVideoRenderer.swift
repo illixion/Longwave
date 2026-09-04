@@ -1,4 +1,3 @@
-#if os(visionOS)
 import Foundation
 import AVFoundation
 import CoreMedia
@@ -235,4 +234,3 @@ final class MacNativeVideoRenderer {
         )
     }
 }
-#endif

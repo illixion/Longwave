@@ -180,6 +180,7 @@ final class WindowSessionRegistry {
         case "main": openWindow(id: id, value: MainWindowID.shared)
         case "foveated-controls": openWindow(id: id, value: PCVRWindowID.shared)
         case "mac-native-unity-controls": openWindow(id: id, value: MacNativeUnityControlID.shared)
+        case "mac-native-stream": openWindow(id: id, value: MacNativeWindowID.shared)
         default: openWindow(id: id)
         }
     }
@@ -200,15 +201,17 @@ final class WindowSessionRegistry {
         #if FOVEATED_ENABLED
         kinds.append(WindowKind(id: "foveated-controls", title: "PCVR Controls", systemImage: "visionpro"))
         #endif
-        #if os(visionOS)
+        // The Native desktop stream has a window on visionOS and macOS (iPhone
+        // presents it as a cover and has no Sessions tab); Unity's per-window
+        // scenes are visionOS-only.
         kinds.append(WindowKind(id: "mac-native-stream", title: "Native", systemImage: "macwindow.on.rectangle"))
+        #if os(visionOS)
         kinds.append(WindowKind(id: "mac-native-unity-controls", title: "Unity Controls", systemImage: "slider.horizontal.3"))
         #endif
-        // On visionOS this only opens via the Native window's pop-out
-        // button; on macOS (no Screen receiver) a Native connection opens
-        // it directly.
+        // Opens via the Native window's pop-out button.
         kinds.append(WindowKind(id: "audio-stream", title: "Audio Stream", systemImage: "hifispeaker"))
         kinds.append(WindowKind(id: "keyboard", title: "Keyboard", systemImage: "keyboard"))
+        kinds.append(WindowKind(id: "mac-native-keyboard", title: "Native Keyboard", systemImage: "keyboard"))
         #if MOONLIGHT_ENABLED
         kinds.append(WindowKind(id: "moonlight-keyboard", title: "Game Keyboard", systemImage: "keyboard"))
         #endif

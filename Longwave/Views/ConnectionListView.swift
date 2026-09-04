@@ -6,9 +6,7 @@ struct ConnectionListView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
-    #if os(visionOS)
     @Environment(MacNativeStreamManager.self) private var macNativeManager
-    #endif
     // Not macOS rather than visionOS-only: the Mac client drops SSH because it
     // has a real terminal a Cmd-Tab away. iPhone and iPad do not, so they keep it.
     #if !os(macOS)
@@ -264,24 +262,34 @@ struct ConnectionListView: View {
     /// connection has enabled — both share the same host and token. Both
     /// targets are always remembered (`prepare`/`prepareTarget`) even if
     /// off, so the window's live Screen/Audio toggles can start either one
-    /// later without returning to the connection list. Screen has no macOS
-    /// receiver yet, so on macOS only Audio applies (its own standalone
-    /// window, unchanged) even if the row's Screen flag is set (e.g. a
-    /// connection created on visionOS).
+    /// later without returning to the connection list.
+    ///
+    /// Unity (one scene per host window) is a spatial idea and stays on
+    /// visionOS; the Mac and iPhone clients show a Unity-flagged connection
+    /// as the plain desktop stream. visionOS also connects with Screen off,
+    /// because a v2 host publishes its window inventory over the same
+    /// session and the Native window acts as the per-window controller; the
+    /// other clients have nothing to do with that session, so an audio-only
+    /// connection there is audio only.
     private func connectNative(_ connection: SavedConnection) {
-        #if os(visionOS)
         macNativeManager.prepare(for: connection)
+        #if os(visionOS)
+        let unity = connection.nativeUnityEnabled
+        #else
+        let unity = false
+        macNativeManager.unityEnabled = false
+        #endif
         // Unity Controls owns the session and starts with the full desktop
         // hidden. Non-Unity Native connections retain their saved Screen
         // startup behavior.
-        macNativeManager.liveEnabled = connection.nativeUnityEnabled
-            ? false
-            : connection.nativeScreenEnabled
-        // Connect even with Screen off: a v2 host publishes its window
-        // inventory over the same session, so the Native window can act as
-        // the per-window controller. (Against a v1 host with Screen off the
-        // manager tears the session back down after the handshake.)
+        macNativeManager.liveEnabled = unity ? false : connection.nativeScreenEnabled
+        #if os(visionOS)
         macNativeManager.connect(to: connection)
+        #else
+        if macNativeManager.liveEnabled {
+            macNativeManager.connect(to: connection)
+        }
+        #endif
         audioManager.prepareTarget(
             hostname: connection.hostname,
             port: AudioStreamProtocol.defaultPort,
@@ -299,16 +307,13 @@ struct ConnectionListView: View {
                 lowLatency: connection.lowLatencyAudio
             )
         }
-        if connection.nativeUnityEnabled {
+        if unity {
+            #if os(visionOS)
             openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            #endif
         } else if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
             openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
         }
-        #else
-        if connection.nativeAudioEnabled {
-            connectAudio(connection)
-        }
-        #endif
     }
 
     #if !os(macOS)
@@ -421,15 +426,4 @@ struct ConnectionListView: View {
         moonlightSheet = MoonlightSheetTarget(connection: connection, session: session)
     }
     #endif
-
-    private func connectAudio(_ connection: SavedConnection) {
-        audioManager.connect(
-            hostname: connection.hostname,
-            port: AudioStreamProtocol.defaultPort,
-            token: connection.companionToken,
-            title: connection.displayName,
-            lowLatency: connection.lowLatencyAudio
-        )
-        openWindow(id: "audio-stream")
-    }
 }

@@ -9,9 +9,7 @@ import SwiftUI
 struct SessionsView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
-    #if os(visionOS)
     @Environment(MacNativeStreamManager.self) private var macNativeManager
-    #endif
     #if MOONLIGHT_ENABLED
     @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
@@ -127,10 +125,8 @@ struct SessionsView: View {
             return connectionManager.connectionTitle
         case "audio-stream":
             return audioManager.connectionTitle
-        #if os(visionOS)
-        case "mac-native-stream", "mac-native-unity-controls":
+        case "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard":
             return macNativeManager.title
-        #endif
         #if MOONLIGHT_ENABLED
         case "moonlight-stream":
             let hosts = moonlightSessions.streamingSessions.compactMap { $0.serverInfo?.hostname }

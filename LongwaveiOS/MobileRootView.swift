@@ -13,12 +13,14 @@ struct MobileRootView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(SSHTerminalManager.self) private var sshManager
+    @Environment(MacNativeStreamManager.self) private var macNativeManager
     #if MOONLIGHT_ENABLED
     @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
 
     @State private var selectedTab: MobileTab = .connections
     @State private var showingDesktop = false
+    @State private var showingNativeScreen = false
     @State private var presentedSession: SSHSessionID?
     #if MOONLIGHT_ENABLED
     /// The Moonlight session whose stream fills the screen. One at a time here:
@@ -63,6 +65,27 @@ struct MobileRootView: View {
         }
         .fullScreenCover(item: $presentedSession) { id in
             MobileTerminalCover(sessionID: id)
+        }
+        // The Native desktop stream, like VNC, fills the screen. Driven off the
+        // manager: `ConnectionListView` connects it and opens a window that
+        // doesn't exist here. Audio-only Native connections never connect the
+        // screen manager, so they stay in the Audio tab.
+        .fullScreenCover(isPresented: $showingNativeScreen) {
+            MobileNativeStreamView()
+        }
+        .onChange(of: macNativeManager.isEnabled) { _, enabled in
+            if enabled {
+                showingNativeScreen = true
+            } else if showingNativeScreen {
+                // Leave the stream up briefly so its own error state is
+                // readable before the cover drops.
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    if !macNativeManager.isEnabled {
+                        showingNativeScreen = false
+                    }
+                }
+            }
         }
         #if MOONLIGHT_ENABLED
         .fullScreenCover(item: $presentedMoonlightSession) { id in

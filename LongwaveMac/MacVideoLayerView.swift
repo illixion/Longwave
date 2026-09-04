@@ -1,11 +1,11 @@
-#if MOONLIGHT_ENABLED
 import SwiftUI
 import AppKit
 import AVFoundation
 
 /// macOS counterpart of the visionOS `VideoLayerView`: a layer-backed `NSView`
-/// that hosts the Moonlight `AVSampleBufferDisplayLayer` (hardware decode +
-/// display, native HDR). The layer's frame is kept in sync in `layout()`.
+/// that hosts a session's `AVSampleBufferDisplayLayer` (hardware decode +
+/// display, native HDR) — Moonlight's or the Native desktop stream's. The
+/// layer's frame is kept in sync in `layout()`.
 final class VideoLayerNSView: NSView {
     private let displayLayer: AVSampleBufferDisplayLayer
 
@@ -28,7 +28,7 @@ final class VideoLayerNSView: NSView {
     }
 }
 
-/// SwiftUI wrapper hosting the Moonlight video layer.
+/// SwiftUI wrapper hosting a video layer.
 struct MacVideoLayerView: NSViewRepresentable {
     let displayLayer: AVSampleBufferDisplayLayer
 
@@ -38,4 +38,3 @@ struct MacVideoLayerView: NSViewRepresentable {
 
     func updateNSView(_ nsView: VideoLayerNSView, context: Context) {}
 }
-#endif

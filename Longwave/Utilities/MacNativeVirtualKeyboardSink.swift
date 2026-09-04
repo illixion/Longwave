@@ -1,5 +1,4 @@
-#if os(visionOS)
-import UIKit
+import Foundation
 
 /// Turns our on-screen keyboard's key events into Native remote-control key
 /// frames, so the Native window has the same keyboard the VNC and Moonlight
@@ -123,64 +122,46 @@ struct MacNativeKeyboardSink: VirtualKeyboardSink {
     }
 
     private func wireKeyCode(for key: VirtualKey) -> UInt16? {
-        Self.hidUsage(for: key).flatMap(wireKeyCode(forHIDUsage:))
+        Self.hidUsage(for: key).flatMap { MacKeyCodeMap.wireKeyCode(forHIDUsage: $0, space: manager.keyCodeSpace) }
     }
 
     private func wireKeyCode(for modifier: VirtualModifiers) -> UInt16? {
-        wireKeyCode(forHIDUsage: Self.hidUsage(for: modifier))
-    }
-
-    /// Same rule as the hardware capture view: the kVK code for macOS hosts, the
-    /// raw HID usage for hosts that asked for `hidUsage`, and the map lookup still
-    /// gates which keys we forward at all.
-    private func wireKeyCode(forHIDUsage usage: UIKeyboardHIDUsage) -> UInt16? {
-        guard let macCode = MacKeyCodeMap.keyCode(for: usage) else { return nil }
-        switch manager.keyCodeSpace {
-        case .macVirtual: return macCode
-        case .hidUsage: return UInt16(exactly: usage.rawValue)
-        }
+        MacKeyCodeMap.wireKeyCode(forHIDUsage: Self.hidUsage(for: modifier), space: manager.keyCodeSpace)
     }
 
     /// The left-hand key for each modifier, matching what a Mac keyboard sends.
-    private static func hidUsage(for modifier: VirtualModifiers) -> UIKeyboardHIDUsage {
+    private static func hidUsage(for modifier: VirtualModifiers) -> Int {
         switch modifier {
-        case .control: return .keyboardLeftControl
-        case .option: return .keyboardLeftAlt
-        case .command: return .keyboardLeftGUI
-        default: return .keyboardLeftShift
+        case .control: return MacKeyCodeMap.HID.leftControl
+        case .option: return MacKeyCodeMap.HID.leftAlt
+        case .command: return MacKeyCodeMap.HID.leftGUI
+        default: return MacKeyCodeMap.HID.leftShift
         }
     }
 
-    private static func hidUsage(for key: VirtualKey) -> UIKeyboardHIDUsage? {
+    private static func hidUsage(for key: VirtualKey) -> Int? {
         switch key {
         // Always the unshifted glyph — the mask's shift bit does the rest, and the
         // Mac's own layout resolves what that position types.
         case .character(let base, _): return MacKeyCodeMap.hidUsage(typing: base)
-        case .return: return .keyboardReturnOrEnter
-        case .tab: return .keyboardTab
-        case .escape: return .keyboardEscape
-        case .backspace: return .keyboardDeleteOrBackspace
-        case .forwardDelete: return .keyboardDeleteForward
-        case .capsLock: return .keyboardCapsLock
-        case .up: return .keyboardUpArrow
-        case .down: return .keyboardDownArrow
-        case .left: return .keyboardLeftArrow
-        case .right: return .keyboardRightArrow
-        case .home: return .keyboardHome
-        case .end: return .keyboardEnd
-        case .pageUp: return .keyboardPageUp
-        case .pageDown: return .keyboardPageDown
-        case .insert: return .keyboardInsert
+        case .return: return MacKeyCodeMap.HID.returnOrEnter
+        case .tab: return MacKeyCodeMap.HID.tab
+        case .escape: return MacKeyCodeMap.HID.escape
+        case .backspace: return MacKeyCodeMap.HID.deleteOrBackspace
+        case .forwardDelete: return MacKeyCodeMap.HID.deleteForward
+        case .capsLock: return MacKeyCodeMap.HID.capsLock
+        case .up: return MacKeyCodeMap.HID.upArrow
+        case .down: return MacKeyCodeMap.HID.downArrow
+        case .left: return MacKeyCodeMap.HID.leftArrow
+        case .right: return MacKeyCodeMap.HID.rightArrow
+        case .home: return MacKeyCodeMap.HID.home
+        case .end: return MacKeyCodeMap.HID.end
+        case .pageUp: return MacKeyCodeMap.HID.pageUp
+        case .pageDown: return MacKeyCodeMap.HID.pageDown
+        case .insert: return MacKeyCodeMap.HID.insert
         case .function(let number):
-            guard functionUsages.indices.contains(number - 1) else { return nil }
-            return functionUsages[number - 1]
+            guard (1...12).contains(number) else { return nil }
+            return MacKeyCodeMap.HID.f1 + number - 1
         }
     }
-
-    private static let functionUsages: [UIKeyboardHIDUsage] = [
-        .keyboardF1, .keyboardF2, .keyboardF3, .keyboardF4, .keyboardF5,
-        .keyboardF6, .keyboardF7, .keyboardF8, .keyboardF9, .keyboardF10,
-        .keyboardF11, .keyboardF12,
-    ]
 }
-#endif

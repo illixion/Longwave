@@ -39,13 +39,7 @@ struct ConnectionFormView: View {
 
     // Native (Screen + Audio)
     @State private var companionToken: String = ""
-    @State private var nativeScreenEnabled: Bool = {
-        #if os(visionOS)
-        true
-        #else
-        false // no macOS receiver for the screen stream yet
-        #endif
-    }()
+    @State private var nativeScreenEnabled: Bool = true
     @State private var nativeAudioEnabled: Bool = true
     @State private var nativeUnityEnabled: Bool = false
     @State private var lowLatencyAudio: Bool = false

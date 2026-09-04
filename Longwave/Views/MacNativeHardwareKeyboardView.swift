@@ -1,4 +1,4 @@
-#if os(visionOS)
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
 
@@ -90,11 +90,7 @@ final class MacNativeKeyCaptureView: KeyCaptureResponderView {
         for key: UIKey,
         space: MacNativeStreamProtocol.KeyCodeSpace
     ) -> UInt16? {
-        guard let macCode = MacKeyCodeMap.keyCode(for: key.keyCode) else { return nil }
-        switch space {
-        case .macVirtual: return macCode
-        case .hidUsage: return UInt16(exactly: key.keyCode.rawValue)
-        }
+        MacKeyCodeMap.wireKeyCode(forHIDUsage: Int(key.keyCode.rawValue), space: space)
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

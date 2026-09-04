@@ -1,4 +1,3 @@
-#if os(visionOS)
 import Foundation
 import Network
 
@@ -313,4 +312,3 @@ final class MacNativeStreamClient: @unchecked Sendable {
         }
     }
 }
-#endif

@@ -15,10 +15,8 @@ struct MobileRemoteDesktopView: View {
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.dismiss) private var dismiss
 
-    /// 1.0 == fit the whole desktop on screen. Zoom is about a pinch anchor, so
-    /// pan has to be tracked alongside it.
-    @State private var zoom: CGFloat = 1
-    @State private var pan: CGSize = .zero
+    /// Zoom and pan — shared with the Native desktop view (`MobileViewport`).
+    @State private var viewport = MobileViewport()
     /// The full ANSI grid, for caps a phone keyboard cannot type at all.
     @State private var showingKeyboard = false
     /// The system keyboard plus the modifier strip — the everyday typing path.
@@ -28,10 +26,6 @@ struct MobileRemoteDesktopView: View {
     /// Where the current one-finger drag last was, so relative mode can measure
     /// deltas and absolute mode can hold the button down across the move.
     @State private var lastDragPoint: CGPoint?
-
-    /// Zoom bounds. Below 1 there is empty space around a desktop that already
-    /// fits; past 6× a pixel is a thumb wide and the pointer stops being aimable.
-    private let zoomRange: ClosedRange<CGFloat> = 1...6
 
     var body: some View {
         GeometryReader { geometry in
@@ -204,7 +198,7 @@ struct MobileRemoteDesktopView: View {
 
             Divider().frame(height: 20)
 
-            Text("\(Int((zoom * 100).rounded()))%")
+            Text("\(Int((viewport.zoom * 100).rounded()))%")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 44)
@@ -214,7 +208,7 @@ struct MobileRemoteDesktopView: View {
             } label: {
                 Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
             }
-            .disabled(zoom == 1 && pan == .zero)
+            .disabled(viewport.isDefault)
             .accessibilityLabel("Fit to screen")
         }
         .font(.title3)
@@ -240,56 +234,15 @@ struct MobileRemoteDesktopView: View {
 
     // MARK: - Layout and coordinate mapping
 
-    /// Where the framebuffer is drawn, for the current zoom and pan. The single
-    /// source of truth for rendering *and* hit-testing — computing the two apart
-    /// is how a remote pointer ends up landing near, but not on, the tap.
-    private struct Layout {
-        let origin: CGPoint
-        let drawn: CGSize
-        /// Framebuffer pixels → screen points.
-        let scale: CGFloat
-    }
-
-    private func layout(in size: CGSize) -> Layout {
-        let fb = connectionManager.framebufferSize
-        guard fb.width > 0, fb.height > 0, size.width > 0, size.height > 0 else {
-            return Layout(origin: .zero, drawn: size, scale: 1)
-        }
-        let fit = min(size.width / fb.width, size.height / fb.height)
-        let scale = fit * zoom
-        let drawn = CGSize(width: fb.width * scale, height: fb.height * scale)
-        let clamped = clampedPan(pan, drawn: drawn, in: size)
-        return Layout(
-            origin: CGPoint(
-                x: (size.width - drawn.width) / 2 + clamped.width,
-                y: (size.height - drawn.height) / 2 + clamped.height
-            ),
-            drawn: drawn,
-            scale: scale
-        )
-    }
-
-    /// Keeps the desktop from being flung off screen: an axis larger than the
-    /// screen may pan up to its overhang, an axis that already fits stays centred.
-    private func clampedPan(_ proposed: CGSize, drawn: CGSize, in size: CGSize) -> CGSize {
-        let slackX = max(0, (drawn.width - size.width) / 2)
-        let slackY = max(0, (drawn.height - size.height) / 2)
-        return CGSize(
-            width: min(max(proposed.width, -slackX), slackX),
-            height: min(max(proposed.height, -slackY), slackY)
-        )
+    /// Where the framebuffer is drawn, for the current zoom and pan — the single
+    /// source of truth for rendering *and* hit-testing (see `MobileViewport`).
+    private func layout(in size: CGSize) -> MobileViewport.Layout {
+        viewport.layout(content: connectionManager.framebufferSize, in: size)
     }
 
     /// View point → framebuffer pixel, or nil for a touch outside the desktop.
     private func framebufferPoint(_ point: CGPoint, in size: CGSize) -> (x: UInt16, y: UInt16)? {
-        let fb = connectionManager.framebufferSize
-        guard fb.width > 0, fb.height > 0 else { return nil }
-        let layout = self.layout(in: size)
-        guard layout.scale > 0 else { return nil }
-        let x = (point.x - layout.origin.x) / layout.scale
-        let y = (point.y - layout.origin.y) / layout.scale
-        guard x >= 0, y >= 0, x < fb.width, y < fb.height else { return nil }
-        return (UInt16(x.rounded(.down)), UInt16(y.rounded(.down)))
+        viewport.contentPoint(point, content: connectionManager.framebufferSize, in: size)
     }
 
     private var isRelative: Bool {
@@ -374,53 +327,24 @@ struct MobileRemoteDesktopView: View {
     }
 
     private func magnify(by factor: CGFloat, about anchor: CGPoint, in size: CGSize) {
-        let old = zoom
-        let new = min(max(old * factor, zoomRange.lowerBound), zoomRange.upperBound)
-        guard new != old else { return }
-        // Keep the pixel under the fingers under the fingers: shift the pan by how
-        // far that point moves when the scale changes.
-        let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-        let offsetFromCentre = CGSize(
-            width: anchor.x - centre.x - pan.width,
-            height: anchor.y - centre.y - pan.height
-        )
-        let ratio = new / old
-        zoom = new
-        pan = CGSize(
-            width: pan.width - offsetFromCentre.width * (ratio - 1),
-            height: pan.height - offsetFromCentre.height * (ratio - 1)
-        )
-        pan = clampedPan(pan, drawn: layout(in: size).drawn, in: size)
+        viewport.magnify(by: factor, about: anchor, content: connectionManager.framebufferSize, in: size)
     }
 
     private func panViewport(by delta: CGSize, in size: CGSize) {
-        let proposed = CGSize(width: pan.width + delta.width, height: pan.height + delta.height)
-        pan = clampedPan(proposed, drawn: layout(in: size).drawn, in: size)
+        viewport.pan(by: delta, content: connectionManager.framebufferSize, in: size)
     }
 
     /// Double tap toggles between fitting the desktop and showing it at true
     /// pixel size, which is the zoom that actually matters for reading text.
     private func toggleZoom(in size: CGSize) {
-        let fb = connectionManager.framebufferSize
-        guard fb.width > 0, fb.height > 0, size.width > 0, size.height > 0 else { return }
-        let fit = min(size.width / fb.width, size.height / fb.height)
-        // 1:1 in framebuffer pixels per screen point, expressed as a zoom factor.
-        let oneToOne = min(max(1 / fit, zoomRange.lowerBound), zoomRange.upperBound)
         withAnimation(.smooth(duration: 0.25)) {
-            if zoom > 1.01 {
-                zoom = 1
-                pan = .zero
-            } else {
-                zoom = oneToOne
-                pan = .zero
-            }
+            viewport.toggleZoom(content: connectionManager.framebufferSize, in: size)
         }
     }
 
     private func resetZoom() {
         withAnimation(.smooth(duration: 0.25)) {
-            zoom = 1
-            pan = .zero
+            viewport.reset()
         }
     }
 }

@@ -52,8 +52,18 @@ shared code knowing they exist.
 | target | platform | scene model | excluded |
 |---|---|---|---|
 | `Longwave` | visionOS 26.2+ | window per surface (`openWindow`) | — |
-| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | SSH (a real terminal is a Cmd-Tab away), Broadcast |
-| `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | PCVR, Broadcast, native Mac screen stream |
+| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | SSH (a real terminal is a Cmd-Tab away), Broadcast, Unity per-window scenes |
+| `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | PCVR, Broadcast, Unity per-window scenes |
+
+Moonlight and the Native desktop stream (with audio and remote input) are on
+all three; PCVR is visionOS-only by entitlement, Broadcast by hardware, and
+Unity (one scene per host window) because it is a spatial idea. The Native
+receiver (`MacNativeStreamClient`, `MacNativeVideoRenderer`,
+`MacNativeStreamManager`, `MacKeyCodeMap`, the keyboard sink) is platform-
+neutral; only the views differ: `NativeStreamView` on visionOS,
+`MacNativeStreamWindowView` on macOS (NSEvents, kVK keycodes verbatim, the
+HID inverse for Windows hosts), `MobileNativeStreamView` on iOS (touch, zoom
+and pan via `MobileViewport`, shared with the VNC view).
 
 **The scene graph is what does not port.** visionOS puts the desktop, every
 terminal, every keyboard and the audio player in their own window; iPhone has

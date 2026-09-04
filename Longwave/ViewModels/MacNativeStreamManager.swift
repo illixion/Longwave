@@ -1,10 +1,11 @@
-#if os(visionOS)
 import Foundation
 import AVFoundation
-import UIKit
+import CoreGraphics
 
 /// One subscribed per-window (Unity-style) stream: its own display layer and
-/// renderer, plus the live metadata its visionOS scene renders from.
+/// renderer, plus the live metadata its visionOS scene renders from. Only the
+/// visionOS client opens these (per-window scenes are a spatial idea); the
+/// type is platform-neutral so the manager is too.
 @Observable
 final class MacNativeWindowSession: Identifiable {
     let windowID: UInt32
@@ -24,7 +25,7 @@ final class MacNativeWindowSession: Identifiable {
         self.windowID = windowID
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.backgroundColor = UIColor.clear.cgColor
+        layer.backgroundColor = CGColor(gray: 0, alpha: 0)
         layer.isOpaque = false
         self.displayLayer = layer
         self.renderer = MacNativeVideoRenderer(displayLayer: layer)
@@ -172,7 +173,7 @@ final class MacNativeStreamManager {
         // Letterboxing is the only place the layer's own color shows, and black
         // is what a screen shows there. Per-window streams are the transparent
         // ones — see `MacNativeWindowSession`.
-        layer.backgroundColor = UIColor.black.cgColor
+        layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.isOpaque = true
         displayLayer = layer
 
@@ -183,7 +184,7 @@ final class MacNativeStreamManager {
                 host: connection.hostname,
                 port: MacNativeStreamProtocol.defaultPort,
                 token: connection.companionToken,
-                deviceName: UIDevice.current.name,
+                deviceName: DeviceName.current,
                 wantsScreen: liveEnabled
             ),
             renderer: renderer
@@ -622,7 +623,7 @@ final class MacNativeStreamManager {
         // letterboxing — visible in a screenshot.
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
-        layer.backgroundColor = UIColor.black.cgColor
+        layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.isOpaque = true
         displayLayer = layer
         streamSize = CGSize(width: 1512, height: 982)
@@ -639,4 +640,3 @@ final class MacNativeStreamManager {
         }
     }
 }
-#endif

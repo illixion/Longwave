@@ -53,7 +53,7 @@ shared code knowing they exist.
 |---|---|---|---|
 | `Longwave` | visionOS 26.2+ | window per surface (`openWindow`) | — |
 | `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | SSH (a real terminal is a Cmd-Tab away), Broadcast |
-| `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | Moonlight, PCVR, Broadcast, native Mac screen stream |
+| `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | PCVR, Broadcast, native Mac screen stream |
 
 **The scene graph is what does not port.** visionOS puts the desktop, every
 terminal, every keyboard and the audio player in their own window; iPhone has
@@ -84,11 +84,20 @@ gitignored `scripts/build-signing.conf`, which maps `PLATFORM` to a scheme —
 because the clients are **separate targets**, not one target with several
 destinations, so building `Longwave` for `generic/platform=iOS` fails on
 supported platforms rather than producing an iOS app. `PLATFORM=iPad` is an
-alias for the same iOS build sent to the iPad. Two things bite: the iOS target
-links neither moonlight-common-c nor Opus, so `MOONLIGHT_ENABLED` makes it fail
-to *compile* rather than be ignored, and `XROS_DEPLOYMENT_TARGET` means nothing
-to it — both the repo conf and `~/Projects/appstore`'s `config.json` scope their
-build settings per platform for exactly that reason.
+alias for the same iOS build sent to the iPad. Two things bite: the iOS and
+macOS targets bake `MOONLIGHT_ENABLED` (and the moonlight-common-c + Opus links)
+into their own build settings, so it is the visionOS scheme alone that takes the
+flag on the command line — and `FOVEATED_ENABLED`/`XROS_DEPLOYMENT_TARGET` mean
+nothing to the iOS target — so both the repo conf and `~/Projects/appstore`'s
+`config.json` scope their build settings per platform. Consequently there is no
+MIT edition of the iOS or macOS client: both link GPLv3 moonlight-common-c.
+
+**Moonlight on a phone** is `MobileMoonlightStreamView` (touch model + chrome
+over the same session objects); the shared `MoonlightStreamView` is excluded
+from the iOS target because it is built around gaze, an ornament and its own
+window. `MobileRootView` presents the stream as a full-screen cover off
+`MoonlightSessionStore.activeSession`, one at a time, since the pairing sheet's
+`openWindow(id: "moonlight-stream")` is a no-op there.
 
 ## Build Configuration
 

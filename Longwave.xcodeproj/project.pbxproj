@@ -24,6 +24,10 @@
 		1D8097C10000000000000004 /* MoonlightCommonC2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C10000000000000003 /* MoonlightCommonC2 */; };
 		1D8097C20000000000000002 /* MoonlightCommonC1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C20000000000000001 /* MoonlightCommonC1 */; };
 		1D8097C20000000000000004 /* MoonlightCommonC2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C20000000000000003 /* MoonlightCommonC2 */; };
+		1D8097C30000000000000002 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C30000000000000001 /* MoonlightCommonC */; };
+		1D8097C30000000000000004 /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C30000000000000003 /* Opus */; };
+		1D8097C30000000000000006 /* MoonlightCommonC1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C30000000000000005 /* MoonlightCommonC1 */; };
+		1D8097C30000000000000008 /* MoonlightCommonC2 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C30000000000000007 /* MoonlightCommonC2 */; };
 		1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1DC83C3C2F74587300BF0482 /* RoyalVNCKit */; };
 		5511C0DE0000000000000021 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000011 /* SwiftTerm */; };
 		5511C0DE0000000000000022 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000012 /* NIOSSH */; };
@@ -140,6 +144,7 @@
 				Views/MainTabBar.swift,
 				Views/HomeOrnamentModifier.swift,
 				Views/RemoteDesktopView.swift,
+				Views/MoonlightStreamView.swift,
 				Views/SessionsView.swift,
 				Views/BroadcastView.swift,
 				Broadcast/BroadcastManager.swift,
@@ -299,6 +304,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				DD1010000000000000000021 /* RoyalVNCKit in Frameworks */,
+				1D8097C30000000000000002 /* MoonlightCommonC in Frameworks */,
+				1D8097C30000000000000004 /* Opus in Frameworks */,
+				1D8097C30000000000000006 /* MoonlightCommonC1 in Frameworks */,
+				1D8097C30000000000000008 /* MoonlightCommonC2 in Frameworks */,
 				DD1010000000000000000022 /* SwiftTerm in Frameworks */,
 				DD1010000000000000000023 /* NIOSSH in Frameworks */,
 				DD1010000000000000000024 /* NIOCore in Frameworks */,
@@ -539,6 +548,10 @@
 			name = LongwaveiOS;
 			packageProductDependencies = (
 				DD1010000000000000000011 /* RoyalVNCKit */,
+				1D8097C30000000000000001 /* MoonlightCommonC */,
+				1D8097C30000000000000003 /* Opus */,
+				1D8097C30000000000000005 /* MoonlightCommonC1 */,
+				1D8097C30000000000000007 /* MoonlightCommonC2 */,
 				DD1010000000000000000012 /* SwiftTerm */,
 				DD1010000000000000000013 /* NIOSSH */,
 				DD1010000000000000000014 /* NIOCore */,
@@ -1241,6 +1254,7 @@
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MOONLIGHT_ENABLED";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1275,6 +1289,7 @@
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MOONLIGHT_ENABLED";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1493,6 +1508,22 @@
 			productName = MoonlightCommonC1;
 		};
 		1D8097C20000000000000003 /* MoonlightCommonC2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC2;
+		};
+		1D8097C30000000000000001 /* MoonlightCommonC */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC;
+		};
+		1D8097C30000000000000003 /* Opus */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Opus;
+		};
+		1D8097C30000000000000005 /* MoonlightCommonC1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MoonlightCommonC1;
+		};
+		1D8097C30000000000000007 /* MoonlightCommonC2 */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC2;
 		};

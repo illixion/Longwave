@@ -76,14 +76,16 @@ Shared/                                 — compiled into BOTH targets (visionOS
 └── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
 
 LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS target); reuses Longwave/ +
-│                                         Shared/ via a membership exception set. No Moonlight (its
-│                                         deps aren't linked), no PCVR (visionOS entitlement), no
-│                                         Broadcast (a visionOS extension capturing a room).
+│                                         Shared/ via a membership exception set. Moonlight included
+│                                         (MOONLIGHT_ENABLED is baked into the target). No PCVR
+│                                         (visionOS entitlement), no Broadcast (a visionOS extension
+│                                         capturing a room).
 ├── MobileApp.swift                     — @main; one WindowGroup instead of visionOS's scene-per-surface
 ├── MobileAppDelegate.swift             — Local Network prompt + TextInputActivity (no window summoning)
 ├── MobileRootView.swift                — Five-tab shell; presents covers off manager state, since shared
 │                                         views' openWindow(id:) calls are no-ops in a single-scene app
 ├── MobileRemoteDesktopView.swift       — Touch VNC: fit/zoom/pan, absolute + relative pointer mapping
+├── MobileMoonlightStreamView.swift     — Touch Moonlight: direct/touchpad pointer, two-finger scroll, keyboard strip, stats
 ├── MobilePointerSurface.swift          — UIKit recognizers (SwiftUI can't tell 1 finger from 2):
 │                                         tap/2-finger tap/drag/2-finger scroll/pinch/3-finger pan
 ├── MobileKeyboardAccessory.swift       — Modifier strip over the system keyboard; resolves a typed

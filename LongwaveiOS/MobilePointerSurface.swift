@@ -34,7 +34,10 @@ struct MobilePointerSurface: UIViewRepresentable {
     var onZoom: (CGFloat, CGPoint) -> Void
     /// Three-finger viewport pan, in points since the last callback.
     var onViewportPan: (CGSize) -> Void
-    var onDoubleTap: () -> Void
+    /// `nil` drops the double-tap recognizer altogether. That matters more than
+    /// it sounds: a single tap has to wait for the double-tap window to lapse
+    /// before it fires, and a game stream feels that delay on every click.
+    var onDoubleTap: (() -> Void)?
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -45,14 +48,15 @@ struct MobilePointerSurface: UIViewRepresentable {
 
         let coordinator = context.coordinator
 
-        let doubleTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        view.addGestureRecognizer(doubleTap)
-
         let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleTap(_:)))
-        // A single tap must not fire while a double tap is still possible, or
-        // every double tap also clicks the remote.
-        tap.require(toFail: doubleTap)
+        if onDoubleTap != nil {
+            let doubleTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+            doubleTap.numberOfTapsRequired = 2
+            view.addGestureRecognizer(doubleTap)
+            // A single tap must not fire while a double tap is still possible, or
+            // every double tap also clicks the remote.
+            tap.require(toFail: doubleTap)
+        }
         view.addGestureRecognizer(tap)
 
         let secondaryTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleSecondaryTap(_:)))
@@ -122,7 +126,7 @@ struct MobilePointerSurface: UIViewRepresentable {
         }
 
         @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
-            owner.onDoubleTap()
+            owner.onDoubleTap?()
         }
 
         @objc func handleDrag(_ recognizer: UIPanGestureRecognizer) {

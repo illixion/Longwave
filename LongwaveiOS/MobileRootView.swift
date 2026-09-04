@@ -13,10 +13,19 @@ struct MobileRootView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(SSHTerminalManager.self) private var sshManager
+    #if MOONLIGHT_ENABLED
+    @Environment(MoonlightSessionStore.self) private var moonlightSessions
+    #endif
 
     @State private var selectedTab: MobileTab = .connections
     @State private var showingDesktop = false
     @State private var presentedSession: SSHSessionID?
+    #if MOONLIGHT_ENABLED
+    /// The Moonlight session whose stream fills the screen. One at a time here:
+    /// a phone has one screen, so the store's "up to three streams" becomes
+    /// "whichever one is launching or streaming".
+    @State private var presentedMoonlightSession: MoonlightSessionID?
+    #endif
     /// Session ids already seen, so only a genuinely new session raises a
     /// terminal. Re-entering an existing one goes through the Terminals tab.
     @State private var knownSessions: Set<String> = []
@@ -55,6 +64,29 @@ struct MobileRootView: View {
         .fullScreenCover(item: $presentedSession) { id in
             MobileTerminalCover(sessionID: id)
         }
+        #if MOONLIGHT_ENABLED
+        .fullScreenCover(item: $presentedMoonlightSession) { id in
+            MobileMoonlightStreamView()
+                .environment(moonlightSessions.session(for: id))
+        }
+        .onChange(of: moonlightSessions.activeSession?.slot) { _, slot in
+            // The pairing sheet launched an app (or a dropped stream came back):
+            // its `openWindow("moonlight-stream")` is a no-op here, so the cover
+            // is driven off the session state instead, like the VNC desktop.
+            if let slot {
+                presentedMoonlightSession = MoonlightSessionID(slot: slot)
+            } else if presentedMoonlightSession != nil {
+                // Leave the stream up briefly so its own error state is
+                // readable before the cover drops.
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    if moonlightSessions.activeSession == nil {
+                        presentedMoonlightSession = nil
+                    }
+                }
+            }
+        }
+        #endif
         .onChange(of: connectionManager.connectionState) { _, state in
             if state.isActive {
                 showingDesktop = true

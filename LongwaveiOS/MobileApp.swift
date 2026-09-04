@@ -22,18 +22,22 @@ import SwiftData
 ///   phone, and `com.apple.developer.foveated-streaming-session` is a visionOS
 ///   entitlement. All of it is behind `FOVEATED_ENABLED`, which this target
 ///   never defines.
-/// - **Moonlight.** Same reason the App Store edition drops it — this target
-///   simply does not define `MOONLIGHT_ENABLED`, so those files compile away.
 /// - **Broadcast.** The ReplayKit extension is a visionOS target, and what it
 ///   broadcasts is a view of a room.
-/// - **The native Mac stream.** Its receiver is `#if os(visionOS)`; the Audio
-///   half of a Native connection does work here.
+///
+/// Moonlight is present: this target links moonlight-common-c (all three linked
+/// copies — see `MoonlightSessionStore`) and defines `MOONLIGHT_ENABLED`, so the
+/// GPLv3 terms of the Moonlight build apply to it exactly as they do to the
+/// `oss-moonlight` visionOS edition. The touch surface is `MobileMoonlightStreamView`.
 @main
 struct LongwaveMobileApp: App {
     @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
     @State private var sshManager = SSHTerminalManager()
+    #if MOONLIGHT_ENABLED
+    @State private var moonlightSessions = MoonlightSessionStore()
+    #endif
 
     var body: some Scene {
         WindowGroup {
@@ -41,6 +45,9 @@ struct LongwaveMobileApp: App {
                 .environment(connectionManager)
                 .environment(audioManager)
                 .environment(sshManager)
+                #if MOONLIGHT_ENABLED
+                .environment(moonlightSessions)
+                #endif
                 .task {
                     // Let the VNC manager drive a companion audio stream in
                     // lockstep with its connection lifecycle, as on visionOS.

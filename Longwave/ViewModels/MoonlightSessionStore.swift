@@ -5,7 +5,8 @@ import SwiftUI
 /// Value key for the per-session Moonlight scenes ("moonlight-stream",
 /// "moonlight-keyboard"): one window per linked copy of moonlight-common-c, so
 /// reopening a session's window reactivates it instead of minting a duplicate.
-struct MoonlightSessionID: Codable, Hashable {
+struct MoonlightSessionID: Codable, Hashable, Identifiable {
+    var id: Int { slot }
     let slot: Int
 }
 

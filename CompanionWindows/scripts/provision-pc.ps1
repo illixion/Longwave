@@ -144,6 +144,30 @@ $runtimeJson = Get-ChildItem (Join-Path $cloudXrTarget 'Server\releases') -Recur
 if ($runtimeJson) { Say "CloudXR OpenXR runtime: $runtimeJson" }
 else { Write-Warning 'no openxr_cloudxr.json under Server/releases - set ActiveRuntime manually' }
 
+# The headset microphone reaches Windows only through NVIDIA's virtual audio driver, shipped
+# next to the runtime. Without it the runtime still says "Microphone streaming enabled" and
+# captures nothing (see docs/HOST_PROVISIONING.md, "Microphone"). Creating its device node
+# needs elevation, which this script otherwise avoids on purpose - so install when we have
+# it and otherwise print the one command to run elevated.
+$audioDriverDir = Get-ChildItem (Join-Path $cloudXrTarget 'Server\releases') -Recurse -Filter 'nvcloudxrvad.inf' `
+                    -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty DirectoryName
+$audioDriverScript = Join-Path $PSScriptRoot 'install-cloudxr-audio-driver.ps1'
+if ($audioDriverDir) {
+  $audioStatus = (& $audioDriverScript -Status | ConvertFrom-Json)
+  if ($audioStatus.installed) {
+    Say 'CloudXR virtual audio driver already installed'
+  } elseif (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+              [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Say "installing CloudXR virtual audio driver from $audioDriverDir"
+    & $audioDriverScript -DriverDir $audioDriverDir | ForEach-Object { Say $_ }
+  } else {
+    Write-Warning ("CloudXR virtual audio driver is not installed - the headset microphone will not be heard. " +
+                   "From an elevated PowerShell run: `"$audioDriverScript`" -DriverDir `"$audioDriverDir`"")
+  }
+} else {
+  Write-Warning 'no CloudXRVirtualAudioDriver under Server/releases - microphone streaming will not work'
+}
+
 # ----------------------------------------------------- OpenXR runtime selection
 # THE MACHINE DEFAULT BELONGS TO GAMES, and the broker - the one process that must reach
 # CloudXR - carries an explicit XR_RUNTIME_JSON of its own (app/src/supervisor.js, and

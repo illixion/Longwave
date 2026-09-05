@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('hotspot', {
   setDesktopQuad: (enabled) => ipcRenderer.invoke('pcvr-desktop-quad', enabled),
   vigemBusStatus: () => ipcRenderer.invoke('vigem-status'),
   installVigemBus: () => ipcRenderer.invoke('vigem-install'),
+  cloudXRAudioDriverStatus: () => ipcRenderer.invoke('cloudxr-audio-status'),
+  installCloudXRAudioDriver: () => ipcRenderer.invoke('cloudxr-audio-install'),
   confirmPcvrStop: () => ipcRenderer.invoke('confirm-pcvr-stop'),
   openPairingWindow: () => ipcRenderer.invoke('open-pairing-window'),
   openNoticesWindow: () => ipcRenderer.invoke('open-notices-window'),

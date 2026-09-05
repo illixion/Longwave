@@ -63,6 +63,7 @@ Everything in Longwave is free except one thing. PCVR is free to try with **unli
 - **No IP to type** — the PC advertises itself over Bonjour and the headset finds it. Entering an address by hand is there as a fallback for networks that block discovery
 - **Hands are the controller.** Hand tracking and pinch gestures reach the PC as a pair of Valve Index controllers; a paired Switch Pro or Quest controller is optional, and its motion is attributed to whichever hand is actually holding it
 - **Your desktop, in VR** — put the PC's screen on a panel you can point at, click, and move like any other window, without leaving the game
+- **Your voice, too.** The headset microphone shows up on the PC as an ordinary recording device named "NVIDIA CloudXR", so voice chat and any game that wants a real microphone just pick it from the list. Needs NVIDIA's CloudXR audio driver, installed with one click from the Companion's PCVR tab
 - Wrist HUD on a raised palm: quit the running title, show the desktop, or switch between emulated controllers and bare hands
 - **VRChat eye tracking** — opt in on the PC and the same gaze that foveates the render also drives your avatar's eyes, over VRChat's OSC eye-look override. Off by default, because it takes over the eye channel from any other OSC eye-tracking app
 - **Stream quality lever** — Performance / Balanced / Quality on the PC. Each step asks for more pixels to render and encode, so stepping down is the first thing to try when a heavy title stutters

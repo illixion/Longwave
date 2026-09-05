@@ -128,7 +128,8 @@ final class FoveatedStreamingSession: Identifiable {
 
     var status: Status = .initialized
     var immersivePresentationBehaviors: ImmersivePresentationBehaviors?
-    var isMicrophoneEnabled: Bool = false
+    // No microphone property, matching the real framework: visionOS forwards the headset
+    // mic for every session on its own and exposes no switch for it.
 
     init() {}
 

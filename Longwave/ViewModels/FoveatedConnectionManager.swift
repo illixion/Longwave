@@ -96,6 +96,11 @@ final class FoveatedConnectionManager {
     /// to guess which side is lying.
     private(set) var alphaDisagreement: String?
 
+    /// Whether the PC said it can receive the headset microphone, read with the immersion
+    /// answer before connecting. Nil until a host has answered, and again after a
+    /// disconnect — a stale "ready" from one PC must not vouch for the next.
+    private(set) var hostMicrophone: FoveatedHostInfo.Microphone?
+
     /// The active controller bridge (Switch Pro + hand tracking → SteamVR),
     /// non-nil only while a session with the bridge enabled is connected.
     private(set) var controllerBridge: ControllerBridgeSender?
@@ -191,6 +196,10 @@ final class FoveatedConnectionManager {
                 let answered = await FoveatedHostInfo.immersionStyle(for: connection)
                 self.settleImmersion(answered ?? .progressive)
                 self.immersionUnanswered = answered == nil
+                self.hostMicrophone = answered == nil ? nil : FoveatedHostInfo.lastPayload?.microphoneState
+                if self.hostMicrophone == .driverMissing {
+                    self.log.notice("The PC reports no CloudXR audio driver; the microphone will not be heard.")
+                }
                 if answered == nil {
                     self.log.notice("No immersion answer from the PC; opening progressive.")
                 }
@@ -416,6 +425,7 @@ final class FoveatedConnectionManager {
            from being changed while a space still exists. */
         settleImmersion(nil)
         immersionUnanswered = false
+        hostMicrophone = nil
     }
 
     /// The immersive space can disappear independently of the framework session when the user

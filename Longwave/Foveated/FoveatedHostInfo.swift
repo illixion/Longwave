@@ -149,7 +149,9 @@ enum FoveatedHostInfo {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(Payload.self, from: data)
+            let payload = try JSONDecoder().decode(Payload.self, from: data)
+            lastPayload = payload
+            return payload
         } catch {
             log.notice("Host info over HTTP failed: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -175,9 +177,27 @@ enum FoveatedHostInfo {
         let name: String?
         let applied: Bool?
         let rejected: String?
+        /// Whether the PC can receive the headset microphone: `"ready"` or
+        /// `"driverMissing"`. Absent from hosts older than the field.
+        let microphone: String?
 
         var style: FoveatedImmersionStyle? { FoveatedImmersionStyle(rawValue: immersion) }
+        var microphoneState: Microphone? { microphone.flatMap(Microphone.init(rawValue:)) }
     }
+
+    /// The PC's answer about the microphone. visionOS forwards the headset mic for every
+    /// session whether or not anything is listening; what decides if a game hears it is
+    /// the CloudXR Virtual Audio Driver on the PC, which the runtime needs installed
+    /// *before it starts* — without it the runtime logs "Microphone streaming enabled" and
+    /// then "total bytes captured: 0". The host checks for the driver so the headset can
+    /// say so up front instead of leaving the wearer to discover it in voice chat.
+    enum Microphone: String {
+        case ready
+        case driverMissing
+    }
+
+    /// The most recent full answer from any host, for fields other than immersion.
+    private(set) static var lastPayload: Payload?
 
     // MARK: Discovered
 

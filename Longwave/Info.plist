@@ -42,7 +42,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Longwave broadcasts your selected camera (such as Persona or Mirror My View) to your streaming server.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Longwave uses your microphone to dictate messages into terminal sessions, and can include it in the broadcast stream.</string>
+	<string>Longwave uses your microphone to dictate messages into terminal sessions, to include it in the broadcast stream, and to send your voice to the PC during a PCVR session.</string>
 	<!-- Dictation transcribes on device via SpeechAnalyzer, which documents no
 	     authorization step of its own. The key is declared anyway: it is the same
 	     framework SFSpeechRecognizer gates on, and an API that asks for consent

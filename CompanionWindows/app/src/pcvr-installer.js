@@ -129,6 +129,93 @@ function installVigemBus() {
 }
 
 /**
+ * The NVIDIA CloudXR Virtual Audio Driver — the only way the headset microphone reaches
+ * Windows. visionOS forwards the mic for every session and the runtime creates a microphone
+ * stream for it, but that stream is pushed into this driver's capture endpoint and nowhere
+ * else: without it the server log reads `nvAudCapRegisterEndpoint failed (13)` at start and
+ * `total bytes captured: 0` at teardown, and no game hears a word. NVIDIA: "install the
+ * driver before starting the runtime."
+ *
+ * It is a root-enumerated virtual device, so `pnputil /add-driver` would only stage the
+ * package. The bundled script creates the device node and binds the INF (the `devcon
+ * install` sequence via SetupAPI); it needs one UAC prompt, like ViGEmBus. The INF ships
+ * inside the CloudXR redistributable already in the bundle, under
+ * host/Server/releases/<version>/CloudXRVirtualAudioDriver/.
+ */
+const AUDIO_DRIVER_SCRIPT = path.join(HOST_DIR, 'install-cloudxr-audio-driver.ps1');
+
+function cloudXRAudioDriverDir() {
+  const releases = path.join(HOST_DIR, 'Server', 'releases');
+  let versions = [];
+  try { versions = fs.readdirSync(releases); } catch { return null; }
+  for (const version of versions.sort().reverse()) {
+    const dir = path.join(releases, version, 'CloudXRVirtualAudioDriver');
+    if (fs.existsSync(path.join(dir, 'nvcloudxrvad.inf'))) return dir;
+  }
+  return null;
+}
+
+function runAudioDriverScript(args, { elevated } = {}) {
+  return new Promise((resolve, reject) => {
+    const scriptArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', AUDIO_DRIVER_SCRIPT, ...args];
+    if (!elevated) {
+      execFile('powershell.exe', scriptArgs, { windowsHide: true }, (err, stdout, stderr) => {
+        if (err) { reject(new Error(stderr || err.message)); return; }
+        resolve(stdout);
+      });
+      return;
+    }
+    // `-Verb RunAs` raises the UAC prompt; the exit code is the only thing that comes back
+    // across the elevation boundary, so the caller re-reads the status afterwards.
+    const quoted = scriptArgs.map((a) => `'${a.replace(/'/g, "''")}'`).join(',');
+    const script = `$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @(${quoted}) -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    execFile('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded],
+      { windowsHide: true }, (err, stdout, stderr) => {
+        if (err) { reject(new Error(stderr || err.message)); return; }
+        resolve(stdout);
+      });
+  });
+}
+
+async function cloudXRAudioDriverStatus() {
+  const driverDir = cloudXRAudioDriverDir();
+  const bundled = driverDir !== null && fs.existsSync(AUDIO_DRIVER_SCRIPT);
+  const status = { installed: false, bundled, driverDir };
+  if (process.platform !== 'win32' || !fs.existsSync(AUDIO_DRIVER_SCRIPT)) return status;
+  try {
+    const out = await runAudioDriverScript(['-Status']);
+    const parsed = JSON.parse(out.trim().split(/\r?\n/).pop());
+    status.installed = parsed.installed === true;
+    status.deviceStatus = parsed.status ?? null;
+  } catch (e) {
+    status.error = e.message;
+  }
+  return status;
+}
+
+async function installCloudXRAudioDriver() {
+  const status = await cloudXRAudioDriverStatus();
+  if (status.installed) return status;
+  if (process.platform !== 'win32') {
+    throw new Error('The CloudXR audio driver can only be installed on Windows.');
+  }
+  if (!status.bundled) {
+    throw new Error('This PCVR bundle does not contain the CloudXR audio driver.');
+  }
+  try {
+    await runAudioDriverScript(['-DriverDir', status.driverDir], { elevated: true });
+  } catch (e) {
+    throw new Error(`CloudXR audio driver installation failed: ${e.message}`);
+  }
+  const updated = await cloudXRAudioDriverStatus();
+  if (!updated.installed) {
+    throw new Error('The installer finished, but Windows does not report the NVIDIA CloudXR audio device.');
+  }
+  return updated;
+}
+
+/**
  * Asks GitHub whether a PCVR bundle exists for this build's own release tag. Unauthenticated
  * (60 req/hr per IP) — fine for a manual, occasional check, never polled in a loop.
  */
@@ -485,5 +572,7 @@ module.exports = {
   unregisterShimDirectory,
   vigemBusStatus,
   installVigemBus,
+  cloudXRAudioDriverStatus,
+  installCloudXRAudioDriver,
   uninstall,
 };

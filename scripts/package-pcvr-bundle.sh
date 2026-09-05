@@ -293,6 +293,14 @@ mkdir -p "$STAGE/host/Server"
 scp -qr "$HOST:$CLOUDXR_SDK_FS/Server/*" "$STAGE/host/Server/"
 scp -q  "$HOST:$CLOUDXR_SDK_FS/SampleClient/NvStreamManagerClient.dll" "$STAGE/host/NvStreamManagerClient.dll"
 
+# The redistributable carries NVIDIA's virtual audio driver under
+# Server/releases/<ver>/CloudXRVirtualAudioDriver/ — the only route by which the headset
+# microphone reaches Windows — but installing a root-enumerated device takes more than
+# copying files. Same arrangement as install-layer.ps1 above: the script is a source file,
+# so it rides along from the checkout (pcvr-installer.js's installCloudXRAudioDriver()
+# looks for it in host/).
+cp "$REPO_ROOT/CompanionWindows/scripts/install-cloudxr-audio-driver.ps1" "$STAGE/host/install-cloudxr-audio-driver.ps1"
+
 # ------------------------------------------------------------------ optional Xbox driver
 # The client code is linked into the broker, but Windows needs the separately installed
 # ViGEmBus driver before an Xbox 360 target can exist. Ship the official EOL release in the

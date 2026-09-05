@@ -475,11 +475,11 @@ function runStackOperation(operation) {
   return run;
 }
 
-async function assertPcvrStoppedForDriverInstall() {
+async function assertPcvrStoppedForDriverInstall(driverName = 'ViGEmBus') {
   const servicesRunning = supervisor
     && Object.values(supervisor.status()).some((service) => service.running || service.healthy);
   if (servicesRunning) {
-    throw new Error('Stop PCVR before installing ViGEmBus.');
+    throw new Error(`Stop PCVR before installing ${driverName}.`);
   }
   if (!pcvrClient.connected) return;
 
@@ -487,7 +487,7 @@ async function assertPcvrStoppedForDriverInstall() {
   lastFoveatedStatus = status;
   syncPairingWindow(status);
   if (status && (status.state === 'on' || status.state === 'starting')) {
-    throw new Error('Stop PCVR before installing ViGEmBus.');
+    throw new Error(`Stop PCVR before installing ${driverName}.`);
   }
 }
 
@@ -730,6 +730,15 @@ ipcMain.handle('vigem-install', () => runStackOperation(async () => {
   if (status.installed) return status;
   await assertPcvrStoppedForDriverInstall();
   return pcvrInstaller.installVigemBus();
+}));
+ipcMain.handle('cloudxr-audio-status', () => pcvrInstaller.cloudXRAudioDriverStatus());
+ipcMain.handle('cloudxr-audio-install', () => runStackOperation(async () => {
+  const status = await pcvrInstaller.cloudXRAudioDriverStatus();
+  if (status.installed) return status;
+  // The runtime binds the driver's endpoints when it starts, so a driver installed under a
+  // running stack is not picked up until the next PCVR start anyway.
+  await assertPcvrStoppedForDriverInstall('the CloudXR audio driver');
+  return pcvrInstaller.installCloudXRAudioDriver();
 }));
 ipcMain.handle('confirm-pcvr-stop', () =>
   confirmRunningGameShutdown('Stop PCVR?', 'Stop PCVR'));

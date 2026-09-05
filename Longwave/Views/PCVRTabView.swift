@@ -477,18 +477,40 @@ private struct PCVRSessionForm: View {
 
             Divider()
 
-            Toggle(isOn: $connection.foveatedMicEnabled) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Microphone", systemImage: "mic")
-                    Text("Sends the headset microphone to the PC, where CloudXR presents it as the OpenXR runtime's audio input. SteamVR titles and voice chat pick it up from there; a Windows app that insists on an ordinary recording device may need a virtual audio cable to route it.")
+            /* Status, not a switch. visionOS forwards the headset microphone for the whole
+               session on its own — `FoveatedStreamingSession` has no microphone API at all,
+               so a toggle here would persist a preference nothing could act on (one did, for
+               a while). What can vary is the PC: CloudXR delivers the mic through its own
+               kernel audio driver, and without that driver the runtime creates the stream
+               and captures nothing. The PC reports whether the driver is there, and this
+               row relays it. */
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Microphone", systemImage: "mic")
+                Text("The headset microphone is always sent to the PC, where it appears as an ordinary recording device named NVIDIA CloudXR. Games and voice chat pick it from the list like any USB microphone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                switch manager.hostMicrophone {
+                case .ready:
+                    Label("The PC has the CloudXR audio driver. Microphone is available.",
+                          systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .driverMissing:
+                    Label("The PC is missing the CloudXR audio driver, so nothing will hear you. Install it from the PCVR tab in the Windows Companion.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                case nil:
+                    Label("Whether the PC can receive it is read when you connect.",
+                          systemImage: "pc")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            // The one setting in this panel that a session really does fix: the
-            // microphone is negotiated when the session opens.
-            .disabled(!manager.isDisconnected)
         }
     }
 

@@ -856,6 +856,10 @@ final class SavedConnection {
     /// nothing to persist. Kept, like `foveatedRemoteServerName` above, so
     /// existing stores don't need a migration for a column nothing reads.
     var foveatedImmersionStyleStorage: String?
+    /// Unused since the PCVR tab's microphone toggle was removed: `FoveatedStreamingSession`
+    /// has no microphone API — visionOS forwards the headset mic for every session on its
+    /// own — so the flag never reached anything. Kept, like the two above, so existing
+    /// stores don't need a migration for a column nothing reads.
     var foveatedMicEnabledStorage: Bool?
     /// Whether to stream Switch Pro + hand-tracking input to the host's SteamVR
     /// controller-bridge driver while this PCVR session is active.
@@ -867,11 +871,6 @@ final class SavedConnection {
     var foveatedConnectionMode: FoveatedConnectionMode {
         get { FoveatedConnectionMode(rawValue: foveatedConnectionModeStorage ?? "") ?? .systemDiscovered }
         set { foveatedConnectionModeStorage = newValue.rawValue }
-    }
-
-    var foveatedMicEnabled: Bool {
-        get { foveatedMicEnabledStorage ?? false }
-        set { foveatedMicEnabledStorage = newValue }
     }
 
     /// Defaults to **on** for connections saved before the flag existed (storage nil): CloudXR

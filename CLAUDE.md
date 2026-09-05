@@ -168,6 +168,19 @@ checkout and `pcvr-installer.js`'s `registerShimDirectory()` for a downloaded bu
 bitnesses must be present (`LibOVRRT64_1.dll` + `LibOVRRT32_1.dll`, the latter from
 `cmake -B build32 -A Win32`): a missing 32-bit shim fails identically and only for 32-bit titles.
 
+**The headset microphone reaches a PCVR game only through NVIDIA's virtual audio driver.** visionOS
+forwards the mic for every foveated session on its own; `FoveatedStreamingSession` has no microphone
+API (a toggle bound to a mock-only `isMicrophoneEnabled` shipped for a while and did nothing). On the
+PC, `micStreaming: true` in `cloudxr-runtime.yaml` makes the runtime create a mic stream, but it is
+pushed into the capture pin of the `CloudXRVirtualAudioDriver` (`nvcloudxrvad`, "NVIDIA CloudXR",
+HWID `USB\VID_0959&PID_9004`) and nowhere else. The signature of the driver being absent is
+`nvAudCapRegisterEndpoint failed (13)` at runtime start and `total bytes captured: 0` at teardown in
+`cxr_server.*.log`, with no error anywhere else. It is a root-enumerated device, so `pnputil
+/add-driver` alone does nothing: `CompanionWindows/scripts/install-cloudxr-audio-driver.ps1` creates
+the node and binds the INF (the Companion's PCVR tab and `provision-pc.ps1` both call it), the host
+reports `microphone` on `/info`, and the PCVR tab relays it. V.A.C. or other virtual cables are not a
+substitute — nothing feeds them.
+
 **SwiftData migrations:** New non-optional properties need default values. Renamed columns need `@Attribute(originalName:)`. Missing either causes CoreData error 134110.
 
 See [[KNOWN_CONSTRAINTS.md]] for detailed version of all gotchas (broadcast, Moonlight HDR, Copilot OAuth, etc.).

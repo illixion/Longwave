@@ -97,6 +97,30 @@ index c99c5a3..81d8704 100644
  // MARK: - Mouse Input
  public extension VNCConnection {
  #if canImport(ObjectiveC)
+diff --git a/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+ClipboardMonitor.swift b/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+ClipboardMonitor.swift
+index 36fc869..575f7e9 100644
+--- a/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+ClipboardMonitor.swift
++++ b/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+ClipboardMonitor.swift
+@@ -8,7 +8,19 @@ extension VNCConnection {
+ 	func startMonitoringClipboard() {
+ 		guard settings.isClipboardRedirectionEnabled else { return }
+ 
++#if os(iOS)
++		// Longwave: never poll the pasteboard on iOS. Since iOS 16 every
++		// programmatic `UIPasteboard.general.string` read that the user did not
++		// initiate raises the system "would like to paste from …" banner, and a
++		// half-second poll that reads after each changeCount bump raises it
++		// constantly — visibly, every time the software keyboard comes up.
++		// Server → client clipboard (`handleServerCutTextMessage`) still works:
++		// writing the pasteboard prompts nothing. Client → server is left to the
++		// app's explicit paste key, where a prompt is the user's own action.
++		return
++#else
+ 		clipboardMonitor.startMonitoring()
++#endif
+ 	}
+ 
+ 	func stopMonitoringClipboard() {
 diff --git a/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+Send.swift b/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+Send.swift
 index 90fca49..109ac2f 100644
 --- a/Sources/RoyalVNCKit/SDK/Connection/VNCConnection+Send.swift

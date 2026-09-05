@@ -113,7 +113,7 @@ window. `MobileRootView` presents the stream as a full-screen cover off
 
 - **Platform:** visionOS 26.2+, Swift 5.0
 - **SWIFT_DEFAULT_ACTOR_ISOLATION:** MainActor (all types implicitly @MainActor)
-- **RoyalVNCKit:** Local SPM from `repos/royalvnc/` with local mods (static linking, JPEG quality/compression, framebuffer pause/resume). **Re-export the patch after edits** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-longwave.patch` — or CI builds fail.
+- **RoyalVNCKit:** Local SPM from `repos/royalvnc/` with local mods (static linking, JPEG quality/compression, framebuffer pause/resume, no clipboard polling on iOS). **Re-export the patch after edits** — `cd repos/royalvnc && git diff 337197a > ../../ci/patches/royalvnc-longwave.patch` — or CI builds fail.
 - **Dependencies:** moonlight-common-c, Opus (local SPM packages in `repos/`, wrapped in `ci/deps/`). `MOONLIGHT_ENABLED` compilation condition gates all Moonlight code.
 - **FOVEATED_ENABLED:** gates all Foveated/PCVR code (default off, device-only). Build with `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) FOVEATED_ENABLED'` + `XROS_DEPLOYMENT_TARGET=26.4` — **keep `$(inherited)`** or swift-crypto's BoringSSL exclusion breaks. Simulator uses `Foveated/FoveatedStreamingMock.swift`; runtime needs the `com.apple.developer.foveated-streaming-session` entitlement.
 - **CI:** Builds all three editions on one runner (`.github/workflows/build.yml`) and publishes two: MIT IPA (moonlight/opus stubbed), Pro compile-check (built and discarded — a sideloaded Pro has no receipt, so its PCVR would sit in trial forever, but PCVR is a lot of code no other edition compiles), then Moonlight IPA (real deps). Local builds use `scripts/setup-deps.sh` (idempotent, applies six CI patches).

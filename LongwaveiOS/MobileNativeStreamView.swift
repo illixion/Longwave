@@ -83,15 +83,19 @@ struct MobileNativeStreamView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if showsChrome {
+                // Not while typing: the modifier strip above the keyboard is
+                // the chrome then, and this capsule would otherwise sit right
+                // where a login window keeps its password field.
+                if showsChrome && !typing {
                     toolbar
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .overlay(alignment: .topTrailing) { chromeToggle }
-            // The desktop must not be resized by the software keyboard — the
-            // video keeps its geometry and the strip rides above the keys.
+            // The keyboard shrinks the GeometryReader, so the video refits
+            // above the keys and whatever is being typed into stays visible;
+            // only the black backdrop extends under them.
             .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .safeAreaInset(edge: .bottom) {
@@ -218,7 +222,7 @@ struct MobileNativeStreamView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 18) {
+        MobileChromeBar {
             Button(action: disconnectAll) {
                 Image(systemName: "xmark")
             }
@@ -256,7 +260,7 @@ struct MobileNativeStreamView: View {
                 .accessibilityLabel("Audio")
             }
 
-            Divider().frame(height: 20)
+            Divider().frame(height: 24).padding(.horizontal, 6)
 
             Text("\(Int((viewport.zoom * 100).rounded()))%")
                 .font(.caption.monospacedDigit())
@@ -271,10 +275,6 @@ struct MobileNativeStreamView: View {
             .disabled(viewport.isDefault)
             .accessibilityLabel("Fit to screen")
         }
-        .font(.title3)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .glassEffect(in: .capsule)
     }
 
     @ViewBuilder

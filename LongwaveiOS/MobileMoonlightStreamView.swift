@@ -87,7 +87,10 @@ struct MobileMoonlightStreamView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if showsChrome {
+                // Not while typing: the modifier strip above the keyboard is
+                // the chrome then, and this capsule would otherwise sit right
+                // where a login window keeps its password field.
+                if showsChrome && !typing {
                     toolbar
                         .padding(.bottom, 8)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -172,7 +175,7 @@ struct MobileMoonlightStreamView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 18) {
+        MobileChromeBar {
             Button {
                 showDisconnectAlert = true
             } label: {
@@ -211,10 +214,6 @@ struct MobileMoonlightStreamView: View {
             .tint(showStats ? .accentColor : nil)
             .accessibilityLabel("Statistics")
         }
-        .font(.title3)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .glassEffect(in: .capsule)
     }
 
     @ViewBuilder

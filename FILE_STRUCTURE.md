@@ -95,6 +95,8 @@ LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS targ
 │                                         tap/2-finger tap/drag/2-finger scroll/pinch/3-finger pan
 ├── MobileKeyboardAccessory.swift       — Modifier strip over the system keyboard; resolves a typed
 │                                         glyph back to its physical key so ⌃/⌥/⌘ can apply to it
+├── MobileStreamChrome.swift            — The bottom capsule shared by all three streams: 44-pt hit
+│                                         targets, swallows taps between buttons (else they zoom)
 ├── MobileVirtualKeyboardSheet.swift    — Scales the shared ANSI grid to a portrait width
 ├── MobileAudioView.swift               — Audio tab: shared player panel minus the window-only chrome
 ├── Assets.xcassets/                    — iOS AppIcon (appiconset; the visionOS icon is layered) + accent

@@ -65,20 +65,20 @@ struct MobileKeyboardAccessory: View {
                         modifierButton(modifier, label: label)
                     }
 
-                    Divider().frame(height: 22)
+                    Divider().frame(height: 28)
 
                     ForEach(Array(Self.specials.enumerated()), id: \.offset) { _, entry in
-                        Button(entry.1) { press(entry.0) }
+                        Button { press(entry.0) } label: { stripLabel(entry.1) }
                             .buttonStyle(.bordered)
                             .disabled(!sink.supports(.key(entry.0)))
                     }
 
-                    Divider().frame(height: 22)
+                    Divider().frame(height: 28)
 
                     Button {
                         onOpenFullKeyboard()
                     } label: {
-                        Image(systemName: "keyboard.badge.ellipsis")
+                        stripLabel(systemImage: "keyboard.badge.ellipsis")
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Full keyboard")
@@ -87,13 +87,17 @@ struct MobileKeyboardAccessory: View {
                         releaseHeldModifiers()
                         isActive = false
                     } label: {
-                        Image(systemName: "keyboard.chevron.compact.down")
+                        stripLabel(systemImage: "keyboard.chevron.compact.down")
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Hide keyboard")
                 }
+                // Finger-sized: these sit right above the system keyboard and
+                // are tapped at typing speed, so they get key-like proportions
+                // rather than the compact bordered default.
+                .controlSize(.large)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             }
             .scrollIndicators(.hidden)
             .background(.bar)
@@ -103,6 +107,20 @@ struct MobileKeyboardAccessory: View {
 
     // MARK: - Strip buttons
 
+    /// Every strip button is at least 44 points wide and reads at title size,
+    /// so a one-glyph key like ⌘ is as easy to hit as "esc".
+    private func stripLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.title3.weight(.medium))
+            .frame(minWidth: 44)
+    }
+
+    private func stripLabel(systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.title3.weight(.medium))
+            .frame(minWidth: 44)
+    }
+
     @ViewBuilder
     private func modifierButton(_ modifier: VirtualModifiers, label: String) -> some View {
         // Same visual grammar as the full grid: a locked latch is genuinely held
@@ -110,14 +128,14 @@ struct MobileKeyboardAccessory: View {
         // waiting for the next key.
         switch latch.state(of: modifier) {
         case .locked:
-            Button(label) { tap(modifier) }
+            Button { tap(modifier) } label: { stripLabel(label) }
                 .buttonStyle(.borderedProminent)
         case .oneShot:
-            Button(label) { tap(modifier) }
+            Button { tap(modifier) } label: { stripLabel(label) }
                 .buttonStyle(.bordered)
                 .tint(.accentColor)
         case .off:
-            Button(label) { tap(modifier) }
+            Button { tap(modifier) } label: { stripLabel(label) }
                 .buttonStyle(.bordered)
         }
     }

@@ -84,6 +84,17 @@ struct SSHTerminalView: View {
             // terminal right away (unless the composer is actively focused).
             if keyboardMonitor.isConnected, !composerFocused { keyboardFocus.request() }
         }
+        // Rediscovering what tmux is still running on the host is a network
+        // round-trip, so after an app relaunch a restored window's `onAppear`
+        // routinely runs while `sessions` is still empty. The session then
+        // appears a moment later in the `.closed` state that `prepareLazy`
+        // leaves it in, with nothing left to connect it — which is the window
+        // that comes back reading "Closed" and stays that way until the
+        // Reconnect button is pressed. So connect on arrival as well as on
+        // appear; `ensureConnected` is idempotent for a live session.
+        .onChange(of: manager.session(sessionID) == nil) { _, missing in
+            if !missing { manager.session(sessionID)?.ensureConnected() }
+        }
         .onDisappear {
             manager.session(sessionID)?.windowDisappeared()
             keyboardMonitor.stop()

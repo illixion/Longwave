@@ -492,9 +492,9 @@ final class SSHTerminalManager {
         guard let s = session(id) else { return }
         let host = s.host, port = s.port, user = s.username, name = s.tmuxSessionName
         Task { [weak self] in
-            _ = try? await self?.runCommand(
+            _ = try? await self?.runTmux(
                 host: host, port: port, username: user,
-                command: "tmux kill-session -t \(Self.shellSingleQuote(name)) 2>/dev/null")
+                command: "tmux kill-session -t \(Self.target(name)) 2>/dev/null")
             s.restart()
         }
     }
@@ -502,9 +502,9 @@ final class SSHTerminalManager {
     /// Fire-and-forget `tmux kill-session` on the host (no-op if no such session).
     private func killTmux(host: String, port: Int, username: String, name: String) {
         Task { [weak self] in
-            _ = try? await self?.runCommand(
+            _ = try? await self?.runTmux(
                 host: host, port: port, username: username,
-                command: "tmux kill-session -t \(Self.shellSingleQuote(name)) 2>/dev/null")
+                command: "tmux kill-session -t \(Self.target(name)) 2>/dev/null")
         }
     }
 
@@ -532,6 +532,42 @@ final class SSHTerminalManager {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// A tmux `-t` target for exactly this session, quoted. The leading `=` is
+    /// tmux's exact-match prefix: without it `-t` falls back to *prefix*
+    /// matching, so `kill-session -t longwave` would happily take out
+    /// `longwave-reaper`, and an attach could land on a neighbouring session.
+    ///
+    /// Accepted by `has-session`, `attach-session`, `kill-session` and
+    /// `set-environment` — **not** by `set-option`, whose `-t` is a *pane*
+    /// target and which answers `no such session: =name`. Use `optionTarget`
+    /// there; a bare name is safe for it because tmux prefers an exact match
+    /// and the session has just been created under that exact name.
+    static func target(_ tmuxSession: String) -> String {
+        shellSingleQuote("=" + tmuxSession)
+    }
+
+    /// `set-option -t` target: quoted, but without the `=` exact-match prefix
+    /// that `set-option` rejects. Verified against tmux 3.6 — and it fails into
+    /// the `2>/dev/null` these lines carry, so getting it wrong would silently
+    /// drop the `@longwave` tag (breaking rediscovery and the reaper) and
+    /// `mouse on` (breaking scrollback) with no visible error at all.
+    static func optionTarget(_ tmuxSession: String) -> String {
+        shellSingleQuote(tmuxSession)
+    }
+
+    /// Wrap `inner` in a login + interactive shell.
+    ///
+    /// Interactive is not optional: an SSH *exec* channel runs the login shell
+    /// non-interactively, which on macOS sources neither `/etc/zprofile` nor
+    /// `~/.zshrc`, so `PATH` comes back as the bare system one. Homebrew's
+    /// `/opt/homebrew/bin` is absent from it and `tmux` is simply not found —
+    /// verified on this host, where `zsh -c 'command -v tmux'` finds nothing
+    /// and `zsh -lic` finds `/opt/homebrew/bin/tmux`. Every remote tmux call
+    /// goes through here for that reason.
+    static func loginShellCommand(_ inner: String) -> String {
+        "zsh -lic \(shellSingleQuote(inner))"
+    }
+
     /// The tmux create-or-attach line shared by managed Claude sessions and
     /// persistent shell sessions. Empty `client` → tmux runs its default shell.
     private static func tmuxLaunchLine(tmuxSession: String, folder: String,
@@ -548,6 +584,15 @@ final class SSHTerminalManager {
         for v in vars {
             line += "tmux set -gqa update-environment \(shellSingleQuote(v.name)) >/dev/null 2>&1; "
         }
+        // Create only if it isn't already there. NOT `tmux new -A -d`: with
+        // `-A`, an existing session turns the command into `attach-session`,
+        // and tmux then reads `-d` as attach's own flag rather than "stay
+        // detached" (the man page maps new-session's `-D` onto it). So the
+        // create line silently *attached* whenever the session already
+        // existed — verified: `session_attached` goes 0 → 1. `has-session`
+        // has no such double meaning. A simultaneous second launch loses the
+        // create race with a harmless "duplicate session" on discarded stderr.
+        line += "tmux has-session -t \(target(tmuxSession)) 2>/dev/null || "
         // Interactive shells honor TMOUT only while sitting at a prompt. It
         // lets abandoned shell sessions close themselves without interrupting
         // a command or agent that is still running.
@@ -558,14 +603,14 @@ final class SSHTerminalManager {
         for v in vars {
             line += "\(v.name)=\(shellSingleQuote(v.value)) "
         }
-        line += "tmux new -A -d -s \(tmuxSession)"
+        line += "tmux new -d -s \(tmuxSession)"
         if !folder.isEmpty { line += " -c \(shellSingleQuote(folder))" }
         if !client.isEmpty { line += " \(client)" }
         line += "; "
         // Tag sessions this app creates with a user option so rediscovery after
         // an app restart can tell them apart from the user's own stray tmux
         // sessions (which it must never list or offer to kill).
-        line += "tmux set-option -t \(tmuxSession) @longwave 1 >/dev/null 2>&1; "
+        line += "tmux set-option -t \(optionTarget(tmuxSession)) @longwave 1 >/dev/null 2>&1; "
         line += sessionOptions(tmuxSession: tmuxSession)
         // `exec` replaces this shell with the attach client, so the token-
         // bearing argv of `tmux new` is shed within milliseconds of launch.
@@ -573,7 +618,7 @@ final class SSHTerminalManager {
         // (tracking loss) so they can't pin the tmux window at the old size —
         // it also displaces any other legitimately attached client, accepted
         // for this app's one-window-per-session model.
-        line += "exec tmux attach -d -t \(tmuxSession)"
+        line += "exec tmux attach -d -t \(target(tmuxSession))"
         return line
     }
 
@@ -583,7 +628,7 @@ final class SSHTerminalManager {
         let client = clientCommand.isEmpty ? "claude" : clientCommand
         let inner = tmuxLaunchLine(tmuxSession: tmuxSession, folder: folder,
                                    client: client, environment: environment)
-        return "zsh -lic \(shellSingleQuote(inner))"
+        return loginShellCommand(inner)
     }
 
     /// Re-attach an already-running tmux session — no create, no command, no
@@ -593,8 +638,8 @@ final class SSHTerminalManager {
     /// older Longwave versions gain scrolling and the prompt timeout too.
     static func attachCommand(tmuxSession: String) -> String {
         let inner = sessionOptions(tmuxSession: tmuxSession)
-            + "exec tmux attach -d -t \(tmuxSession)"
-        return "zsh -lic \(shellSingleQuote(inner))"
+            + "exec tmux attach -d -t \(target(tmuxSession))"
+        return loginShellCommand(inner)
     }
 
     /// Options every app-managed session must have, including old sessions
@@ -605,7 +650,7 @@ final class SSHTerminalManager {
     /// (verified: `pane_current_command` is the `claude` binary, not a shell), so
     /// TMOUT is structurally incapable of closing one — that's the watchdog's job.
     private static func sessionOptions(tmuxSession: String) -> String {
-        "tmux set-environment -t \(tmuxSession) TMOUT \(promptIdleTimeoutSeconds) >/dev/null 2>&1; "
+        "tmux set-environment -t \(target(tmuxSession)) TMOUT \(promptIdleTimeoutSeconds) >/dev/null 2>&1; "
             + mouseOption(tmuxSession: tmuxSession)
             + reaperWatchdogCommand(ttlSeconds: staleSessionTTLSeconds,
                                     intervalSeconds: reaperIntervalSeconds)
@@ -625,7 +670,7 @@ final class SSHTerminalManager {
     /// Deliberately not `-g`: this is the app's own session, and the user's
     /// other tmux sessions on the host are none of its business.
     private static func mouseOption(tmuxSession: String) -> String {
-        "tmux set-option -t \(tmuxSession) mouse on >/dev/null 2>&1; "
+        "tmux set-option -t \(optionTarget(tmuxSession)) mouse on >/dev/null 2>&1; "
     }
 
     /// tmux-wrapped generic terminal session: survives connection drops like a
@@ -638,7 +683,7 @@ final class SSHTerminalManager {
         var fallback = shellCommand(launch: launch, environment: environment)
         if fallback.isEmpty { fallback = "exec \"$SHELL\" -l" }
         let inner = "if command -v tmux >/dev/null 2>&1; then \(tmuxPath); else \(fallback); fi"
-        return "zsh -lic \(shellSingleQuote(inner))"
+        return loginShellCommand(inner)
     }
 
     /// Builds a generic (non-tmux) session command carrying non-secret
@@ -713,12 +758,14 @@ final class SSHTerminalManager {
     /// detached against a 12h TTL. A host-side timer is the only thing that closes
     /// them without the app present.
     ///
-    /// `tmux new -A` is the whole concurrency story: attach-or-create can't
-    /// produce a duplicate, and it transparently restarts a watchdog that died, so
-    /// no lockfile or pidfile is needed and nothing is left on the host's disk.
-    /// The script is base64'd because it has to survive three levels of shell
-    /// quoting (`zsh -lic '…'` → `tmux new … sh -c "…"` → the loop itself);
-    /// encoded, it carries no quotes or `$` for an outer layer to chew on.
+    /// `has-session ||` is the whole concurrency story: it can't produce a
+    /// duplicate, and it transparently restarts a watchdog that died, so no
+    /// lockfile or pidfile is needed and nothing is left on the host's disk. Two
+    /// launches racing the guard is harmless — the loser's `new` fails with
+    /// "duplicate session" onto discarded stderr. The script is base64'd because
+    /// it has to survive three levels of shell quoting (`zsh -lic '…'` →
+    /// `tmux new … sh -c "…"` → the loop itself); encoded, it carries no quotes
+    /// or `$` for an outer layer to chew on.
     static func reaperWatchdogCommand(ttlSeconds: Int, intervalSeconds: Int) -> String {
         // `session_activity` is the idle signal: it advances on pane *output*, and
         // an agent waiting at its prompt is silent, so it stops climbing when the
@@ -734,7 +781,15 @@ final class SSHTerminalManager {
         done
         """
         let encoded = Data(script.utf8).base64EncodedString()
-        return "tmux new -A -d -s \(reaperSessionName) "
+        // `has-session ||` rather than `new -A -d` for the reason given in
+        // `tmuxLaunchLine`, and here it was the visible bug: this line runs at
+        // the end of every launch, so once a watchdog existed the next launch
+        // attached the user's terminal to *it* instead of leaving it detached.
+        // What you got was a bare shell under a `[longwave-reaper] 0:bash`
+        // status bar — input worked, the project session was nowhere, and the
+        // `exec tmux attach` below never ran because this line never returned.
+        return "tmux has-session -t \(target(reaperSessionName)) 2>/dev/null || "
+            + "tmux new -d -s \(reaperSessionName) "
             + "sh -c \"echo \(encoded)|base64 -d|sh\" >/dev/null 2>&1; "
     }
 
@@ -758,7 +813,7 @@ final class SSHTerminalManager {
     /// on any failure (no tmux, no server, host unreachable).
     func reapStaleSessions(host: String, port: Int, username: String) async {
         let command = Self.staleSessionReapCommand(ttlSeconds: Self.staleSessionTTLSeconds)
-        _ = try? await runCommand(host: host, port: port, username: username, command: command)
+        _ = try? await runTmux(host: host, port: port, username: username, command: command)
     }
 
     // MARK: - Session rediscovery (after app restart)
@@ -775,7 +830,7 @@ final class SSHTerminalManager {
         // marker (set on every session this app creates) filters out the user's
         // own stray tmux sessions; shell sessions (`vnc-` prefix) are skipped too.
         let command = "tmux list-sessions -F '#{session_name}\t#{session_path}\t#{@longwave}' 2>/dev/null"
-        guard let out = try? await runCommand(host: host, port: port, username: username, command: command) else {
+        guard let out = try? await runTmux(host: host, port: port, username: username, command: command) else {
             return
         }
         let key = try? deviceKey()
@@ -808,6 +863,23 @@ final class SSHTerminalManager {
             sessions.append(session)
             log.info("Rediscovered tmux session \(name, privacy: .public) on \(host, privacy: .public)")
         }
+    }
+
+    /// Run a remote command that needs the user's real `PATH` — i.e. anything
+    /// invoking `tmux`. `runCommand` alone is not enough: it goes down an SSH
+    /// exec channel, which runs a non-interactive shell that never sources the
+    /// files Homebrew's PATH lives in, so `tmux` isn't on it and every call
+    /// failed as `command not found` into the `2>/dev/null` these commands
+    /// carry. Silent no-ops were the result: "Close Session" left the agent
+    /// running, and rediscovery after a restart found nothing to restore.
+    ///
+    /// An interactive shell's rc files can print banners, so callers must parse
+    /// defensively — `discoverClaudeSessions` already requires three
+    /// tab-separated fields with the `@longwave` marker last, which no banner
+    /// line satisfies.
+    private func runTmux(host: String, port: Int, username: String, command: String) async throws -> String {
+        try await runCommand(host: host, port: port, username: username,
+                             command: Self.loginShellCommand(command))
     }
 
     private func runCommand(host: String, port: Int, username: String, command: String) async throws -> String {

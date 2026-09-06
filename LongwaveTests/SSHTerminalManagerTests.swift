@@ -12,10 +12,15 @@ final class SSHTerminalManagerTests: XCTestCase {
     func testClaudeCommandAttachesDetachingStaleClients() {
         let cmd = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/Users/me/proj")
         XCTAssertTrue(cmd.hasPrefix("zsh -lic '"))
-        XCTAssertTrue(cmd.contains("tmux new -A -d -s proj -c '\\''/Users/me/proj'\\'' claude"))
+        // Created only if absent. `tmux new -A -d` cannot be used: `-A` turns an
+        // existing session into an attach, and tmux then reads `-d` as
+        // attach-session's own flag instead of "stay detached", so the create
+        // line took over the terminal.
+        XCTAssertTrue(cmd.contains("tmux has-session -t '\\''=proj'\\'' 2>/dev/null || "))
+        XCTAssertTrue(cmd.contains("tmux new -d -s proj -c '\\''/Users/me/proj'\\'' claude"))
         // -d detaches stale clients from dropped connections so they can't
         // pin the tmux window at the old size.
-        XCTAssertTrue(cmd.contains("exec tmux attach -d -t proj"))
+        XCTAssertTrue(cmd.contains("exec tmux attach -d -t '\\''=proj'\\''"))
     }
 
     func testClaudeCommandInjectsEnvironmentInline() {
@@ -49,9 +54,9 @@ final class SSHTerminalManagerTests: XCTestCase {
         // Rediscovered sessions only re-attach: the target session is never
         // (re)created, and no env/token is injected. The one `tmux new` allowed
         // here is the idle watchdog's own session, which re-attach also starts.
-        XCTAssertFalse(cmd.contains("tmux new -A -d -s proj-copilot"))
+        XCTAssertFalse(cmd.contains("-s proj-copilot"))
         XCTAssertFalse(cmd.contains("secret"))
-        XCTAssertTrue(cmd.contains("exec tmux attach -d -t proj-copilot"))
+        XCTAssertTrue(cmd.contains("exec tmux attach -d -t '\\''=proj-copilot'\\''"))
     }
 
     /// tmux is a full-screen program, so it lives in the alternate screen where
@@ -60,13 +65,13 @@ final class SSHTerminalManagerTests: XCTestCase {
     /// to the shell as PageUp/PageDown (which zsh reads as history navigation).
     func testEverySessionTurnsOnTmuxMouseHandling() {
         let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
-        XCTAssertTrue(launched.contains("tmux set-option -t proj mouse on"))
+        XCTAssertTrue(launched.contains("tmux set-option -t '\\''proj'\\'' mouse on"))
 
         // Sessions rediscovered after an app restart were created before this
         // ran, so re-attaching has to set it too.
         let reattached = SSHTerminalManager.attachCommand(tmuxSession: "proj")
-        XCTAssertTrue(reattached.contains("tmux set-option -t proj mouse on"))
-        XCTAssertTrue(reattached.contains("exec tmux attach -d -t proj"))
+        XCTAssertTrue(reattached.contains("tmux set-option -t '\\''proj'\\'' mouse on"))
+        XCTAssertTrue(reattached.contains("exec tmux attach -d -t '\\''=proj'\\''"))
 
         // Scoped to this session — the user's own tmux sessions are none of the
         // app's business, so never `-g`.
@@ -77,12 +82,12 @@ final class SSHTerminalManagerTests: XCTestCase {
     func testEverySessionInstallsPromptIdleTimeout() {
         let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
         XCTAssertTrue(launched.contains("TMOUT=43200 tmux new"))
-        XCTAssertTrue(launched.contains("tmux set-environment -t proj TMOUT 43200"))
+        XCTAssertTrue(launched.contains("tmux set-environment -t '\\''=proj'\\'' TMOUT 43200"))
 
         // Existing sessions receive the session environment update on attach,
         // so newly opened panes inherit it after an app upgrade.
         let reattached = SSHTerminalManager.attachCommand(tmuxSession: "proj")
-        XCTAssertTrue(reattached.contains("tmux set-environment -t proj TMOUT 43200"))
+        XCTAssertTrue(reattached.contains("tmux set-environment -t '\\''=proj'\\'' TMOUT 43200"))
     }
 
     // MARK: - persistentShellCommand
@@ -93,14 +98,14 @@ final class SSHTerminalManagerTests: XCTestCase {
         XCTAssertTrue(cmd.contains("if command -v tmux >/dev/null 2>&1; then"))
         // Empty launch: tmux runs its default shell (no trailing command word
         // before the `;`), the fallback execs a login shell.
-        XCTAssertTrue(cmd.contains("tmux new -A -d -s vnc-mac; "))
+        XCTAssertTrue(cmd.contains("tmux new -d -s vnc-mac; "))
         XCTAssertTrue(cmd.contains("else exec \"$SHELL\" -l; fi"))
-        XCTAssertTrue(cmd.contains("exec tmux attach -d -t vnc-mac"))
+        XCTAssertTrue(cmd.contains("exec tmux attach -d -t '\\''=vnc-mac'\\''"))
     }
 
     func testPersistentShellCommandCarriesLaunchCommandToBothPaths() {
         let cmd = SSHTerminalManager.persistentShellCommand(tmuxSession: "vnc-x", launch: "htop")
-        XCTAssertTrue(cmd.contains("tmux new -A -d -s vnc-x htop"))
+        XCTAssertTrue(cmd.contains("tmux new -d -s vnc-x htop"))
         XCTAssertTrue(cmd.contains("else htop; fi"))
     }
 
@@ -111,6 +116,37 @@ final class SSHTerminalManagerTests: XCTestCase {
         )
         XCTAssertTrue(cmd.contains("FOO='\\''bar'\\'' tmux new"))
         XCTAssertTrue(cmd.contains("else FOO='\\''bar'\\'' exec \"$SHELL\" -l; fi"))
+    }
+
+    /// Regression: `tmux new -A -d` attaches when the session already exists.
+    /// The man page maps new-session's `-D` — not `-d` — onto attach-session's
+    /// detach-others flag, so with `-A` the `-d` here means nothing and tmux
+    /// hands the client the existing session. The reaper line at the end of
+    /// every launch hit this: a second launch landed the user in the watchdog's
+    /// `[longwave-reaper] 0:bash` shell and the real `exec tmux attach` after it
+    /// never ran. No generated command may use the idiom.
+    func testNoGeneratedCommandUsesAttachOrCreate() {
+        let commands = [
+            SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p"),
+            SSHTerminalManager.attachCommand(tmuxSession: "proj"),
+            SSHTerminalManager.persistentShellCommand(tmuxSession: "vnc-x", launch: "htop"),
+            SSHTerminalManager.reaperWatchdogCommand(ttlSeconds: 60, intervalSeconds: 10),
+        ]
+        for cmd in commands {
+            XCTAssertFalse(cmd.contains("new -A"), "attach-or-create attaches: \(cmd)")
+        }
+    }
+
+    /// Every `-t` carries tmux's `=` exact-match prefix. Without it `-t` falls
+    /// back to prefix matching, and `kill-session -t longwave` would take out
+    /// `longwave-reaper` along with it.
+    func testSessionTargetsAreExactMatches() {
+        XCTAssertEqual(SSHTerminalManager.target("proj"), "'=proj'")
+        // set-option's -t is a pane target and rejects `=` outright ("no such
+        // session: =proj"), into a discarded stderr — so it is quoted but bare.
+        XCTAssertEqual(SSHTerminalManager.optionTarget("proj"), "'proj'")
+        let cmd = SSHTerminalManager.claudeCommand(tmuxSession: "longwave", folder: "/p")
+        XCTAssertFalse(cmd.contains("-t longwave"), "unanchored target can prefix-match a sibling")
     }
 
     // MARK: - Per-agent session slugs

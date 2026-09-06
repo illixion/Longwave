@@ -37,24 +37,41 @@ final class SessionReaperTests: XCTestCase {
         return script
     }
 
-    /// `new -A` is what makes the watchdog single-instance and self-healing; a
-    /// plain `new` would stack one watchdog per launch.
-    func testWatchdogIsAttachOrCreate() {
-        XCTAssertTrue(watchdog.contains("tmux new -A -d -s"))
+    /// `has-session ||` is what makes the watchdog single-instance and
+    /// self-healing; a bare `new` would stack one watchdog per launch.
+    ///
+    /// It must *not* be `tmux new -A -d`. With `-A` an existing session turns
+    /// the command into an attach, and tmux reads `-d` as attach-session's
+    /// detach-others flag rather than "stay detached" (the man page maps
+    /// new-session's `-D` onto it). Since this line runs at the end of every
+    /// launch, that attached the user's terminal to the watchdog itself — a
+    /// bare shell under a `[longwave-reaper] 0:bash` status bar — and the
+    /// project's own `exec tmux attach` never ran.
+    func testWatchdogIsCreatedOnlyWhenAbsent() {
+        XCTAssertTrue(watchdog.contains("tmux has-session -t "))
+        XCTAssertTrue(watchdog.contains("2>/dev/null || tmux new -d -s "))
+        XCTAssertFalse(watchdog.contains("new -A"))
     }
 
     /// It must not tag itself: the tag is both the reap set and the rediscovery
     /// filter, so tagging would let it kill itself and show up as a user session.
     func testWatchdogSessionIsUntagged() {
         XCTAssertTrue(watchdog.contains(SSHTerminalManager.reaperSessionName))
-        XCTAssertFalse(watchdog.contains("set-option -t \(SSHTerminalManager.reaperSessionName) @longwave"))
+        XCTAssertFalse(watchdog.contains("@longwave"))
     }
 
     /// The encoded payload must not leak quotes or `$` into the outer command,
-    /// which is the entire reason it's encoded.
+    /// which is the entire reason it's encoded. Scoped to the payload: the
+    /// command around it legitimately quotes its `-t` target.
     func testWatchdogCommandCarriesNoShellMetacharacters() {
-        XCTAssertFalse(watchdog.contains("'"), "a single quote would break `zsh -lic '…'`")
-        XCTAssertFalse(watchdog.contains("$"), "an unescaped $ would be expanded by an outer shell")
+        guard let start = watchdog.range(of: "echo "),
+              let end = watchdog.range(of: "|base64") else {
+            XCTFail("payload delimiters not found")
+            return
+        }
+        let payload = watchdog[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(payload.contains("'"), "a single quote would break `zsh -lic '…'`")
+        XCTAssertFalse(payload.contains("$"), "an unescaped $ would be expanded by an outer shell")
     }
 
     func testWatchdogScriptReapsOnlyTaggedDetachedStaleSessions() throws {

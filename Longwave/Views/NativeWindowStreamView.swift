@@ -21,6 +21,8 @@ struct NativeWindowStreamView: View {
     @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
     @State private var clickCadence = DoubleClickCadence()
     @State private var dragLockStartedAt: Date?
+    @State private var previousDragTranslation: CGSize = .zero
+    @State private var scrollSteps = ScrollStepAccumulator()
 
     private var session: MacNativeWindowSession? {
         screenManager.windowSessions[windowID]
@@ -69,6 +71,21 @@ struct NativeWindowStreamView: View {
                         text: session.closedReason ?? "Connecting to \(sessionTitle(session))…",
                         failed: session.closedReason != nil
                     )
+                }
+
+                // Topmost, and deliberately not `allowsHitTesting(false)`: a
+                // scroll event is routed to the view under the pointer, so it
+                // has to be the one that's there. It claims no touches, which
+                // leaves the gestures below untouched.
+                IndirectScrollSurface(
+                    onScroll: { delta in indirectScroll(delta, session) },
+                    onScrollEnded: { scrollSteps.reset() }
+                )
+
+                // Local pointer dot for trackpad mode — the Mac's own cursor
+                // isn't visible until the pointer actually lands there.
+                if screenManager.touchMode == .relative, session.streamSize.width > 0 {
+                    cursorOverlay(session)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -138,17 +155,45 @@ struct NativeWindowStreamView: View {
         .glassBackgroundEffect()
     }
 
-    // MARK: - Input (mirrors NativeStreamView's absolute mode, per-window)
+    // MARK: - Input (mirrors NativeStreamView, per-window)
 
     private func translator(_ session: MacNativeWindowSession) -> GestureTranslator? {
         guard session.streamSize.width > 0 else { return nil }
         return GestureTranslator(framebufferSize: session.streamSize, viewSize: viewSize)
     }
 
+    /// Where the pointer currently is in this window's framebuffer. Each
+    /// window scene tracks its own — the manager's virtual cursor lives in the
+    /// desktop stream's coordinate space, which is a different picture.
+    private func pointer(_ session: MacNativeWindowSession) -> (x: UInt16, y: UInt16) {
+        lastPointerPoint ?? (
+            x: UInt16(clamping: Int(session.streamSize.width / 2)),
+            y: UInt16(clamping: Int(session.streamSize.height / 2))
+        )
+    }
+
+    /// Trackpad-mode motion: move the tracked pointer by a framebuffer-space
+    /// delta and tell the host about it.
+    private func movePointer(_ session: MacNativeWindowSession, dx: CGFloat, dy: CGFloat) {
+        guard session.streamSize.width > 0, session.streamSize.height > 0 else { return }
+        let current = pointer(session)
+        let newX = max(0, min(CGFloat(current.x) + dx, session.streamSize.width - 1))
+        let newY = max(0, min(CGFloat(current.y) + dy, session.streamSize.height - 1))
+        let point = (x: UInt16(clamping: Int(newX)), y: UInt16(clamping: Int(newY)))
+        lastPointerPoint = point
+        screenManager.sendWindowMouseMove(windowID: windowID, x: point.x, y: point.y)
+    }
+
     private func tapGesture(_ session: MacNativeWindowSession) -> some Gesture {
         SpatialTapGesture()
             .onEnded { value in
-                guard let raw = translator(session)?.viewToFramebuffer(value.location) else { return }
+                let isAbsolute = screenManager.touchMode == .absolute
+                // In trackpad mode the tap is a click of the button, not an
+                // aim — it lands wherever the pointer already is.
+                let resolved: (x: UInt16, y: UInt16)? = isAbsolute
+                    ? translator(session)?.viewToFramebuffer(value.location)
+                    : pointer(session)
+                guard let raw = resolved else { return }
                 if dragLocked {
                     // Lifting off the press-and-hold that started the lock can
                     // arrive here as a tap; that would release it instantly.
@@ -157,8 +202,9 @@ struct NativeWindowStreamView: View {
                     dragLocked = false
                 } else {
                     // Snap a quick second tap onto the first one's pixel so the
-                    // host reads the pair as a double-click.
-                    let point = clickCadence.resolve(raw)
+                    // host reads the pair as a double-click. Trackpad mode
+                    // already clicks twice at the same pointer.
+                    let point = isAbsolute ? clickCadence.resolve(raw) : raw
                     screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
                     screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
                 }
@@ -175,44 +221,96 @@ struct NativeWindowStreamView: View {
     private func dragGesture(_ session: MacNativeWindowSession) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
-                guard let point = translator(session)?.viewToFramebuffer(value.location) else { return }
-                if dragLocked {
-                    screenManager.sendWindowMouseMove(windowID: windowID, x: point.x, y: point.y)
-                } else if !isDragging {
-                    isDragging = true
-                    screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
+                if screenManager.touchMode == .absolute {
+                    guard let point = translator(session)?.viewToFramebuffer(value.location) else { return }
+                    lastPointerPoint = point
+                    if dragLocked {
+                        screenManager.sendWindowMouseMove(windowID: windowID, x: point.x, y: point.y)
+                    } else if !isDragging {
+                        isDragging = true
+                        screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
+                    } else {
+                        screenManager.sendWindowMouseMove(windowID: windowID, x: point.x, y: point.y)
+                    }
                 } else {
-                    screenManager.sendWindowMouseMove(windowID: windowID, x: point.x, y: point.y)
+                    // Trackpad mode: the drag pushes the pointer around; the
+                    // button only comes down for a drag lock, which is already
+                    // held by the time we get here.
+                    let dx = value.translation.width - previousDragTranslation.width
+                    let dy = value.translation.height - previousDragTranslation.height
+                    previousDragTranslation = value.translation
+                    if let delta = translator(session)?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
+                        movePointer(session, dx: delta.dx, dy: delta.dy)
+                    }
                 }
             }
             .onEnded { value in
-                if isDragging, !dragLocked,
+                if screenManager.touchMode == .absolute, isDragging, !dragLocked,
                    let point = translator(session)?.viewToFramebuffer(value.location) {
                     screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
                 }
                 isDragging = false
+                previousDragTranslation = .zero
             }
     }
 
+    /// Pinch = scroll wheel, at the tracked pointer — the gaze equivalent of a
+    /// wheel, for when there's no mouse to turn. See `indirectScroll` for the
+    /// mouse and trackpad path.
     private func scrollGesture(_ session: MacNativeWindowSession) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 let delta = value.magnification - 1.0
                 guard abs(delta) > 0.01, session.streamSize.width > 0 else { return }
                 let steps = Int16(max(1, min(127, abs(delta) * 10)))
-                let deltaY: Int16 = delta > 0 ? steps : -steps
-                let x = lastPointerPoint?.x ?? UInt16(session.streamSize.width / 2)
-                let y = lastPointerPoint?.y ?? UInt16(session.streamSize.height / 2)
-                screenManager.sendWindowScroll(windowID: windowID, x: x, y: y, deltaX: 0, deltaY: deltaY)
+                sendScroll(session, deltaX: 0, deltaY: delta > 0 ? steps : -steps)
             }
+    }
+
+    /// A paired mouse's wheel or a trackpad's two-finger scroll, in view
+    /// points, turned into the line steps the host takes.
+    private func indirectScroll(_ delta: CGSize, _ session: MacNativeWindowSession) {
+        guard session.streamSize.width > 0 else { return }
+        let steps = scrollSteps.steps(for: delta)
+        guard steps.dx != 0 || steps.dy != 0 else { return }
+        sendScroll(session, deltaX: steps.dx, deltaY: steps.dy)
+    }
+
+    private func sendScroll(_ session: MacNativeWindowSession, deltaX: Int16, deltaY: Int16) {
+        let point = pointer(session)
+        screenManager.sendWindowScroll(
+            windowID: windowID,
+            x: point.x,
+            y: point.y,
+            deltaX: deltaX,
+            deltaY: deltaY
+        )
     }
 
     /// Press and hold the left button so the next drag drags.
     private func beginDragLockAtCursor() {
-        guard !dragLocked, let point = lastPointerPoint else { return }
+        guard !dragLocked, let session, session.streamSize.width > 0 else { return }
+        // A long press carries no location of its own. Direct mode waits for a
+        // pointer it has actually seen rather than grabbing at the middle of
+        // the window; trackpad mode always has one.
+        if screenManager.touchMode == .absolute, lastPointerPoint == nil { return }
+        let point = pointer(session)
         screenManager.sendWindowMouseDown(windowID: windowID, button: .left, x: point.x, y: point.y)
         dragLocked = true
         dragLockStartedAt = Date()
+    }
+
+    /// Local pointer dot drawn at the tracked pointer, for trackpad mode.
+    private func cursorOverlay(_ session: MacNativeWindowSession) -> some View {
+        let point = pointer(session)
+        let location = translator(session)?.framebufferToView(x: point.x, y: point.y) ?? .zero
+
+        return Circle()
+            .fill(.white.opacity(0.7))
+            .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
+            .frame(width: 12, height: 12)
+            .position(location)
+            .allowsHitTesting(false)
     }
 }
 

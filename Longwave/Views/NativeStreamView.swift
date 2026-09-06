@@ -73,6 +73,7 @@ struct NativeStreamView: View {
     @State private var previousDragTranslation: CGSize = .zero
     @State private var clickCadence = DoubleClickCadence()
     @State private var dragLockStartedAt: Date?
+    @State private var scrollSteps = ScrollStepAccumulator()
 
     var body: some View {
         @Bindable var screenManager = screenManager
@@ -372,6 +373,16 @@ struct NativeStreamView: View {
                         .glassBackgroundEffect()
                     }
                 }
+                .overlay {
+                    // Topmost, and deliberately hit-testable: a scroll event is
+                    // routed to the view under the pointer, so it has to be the
+                    // one that's there. It claims no touches, which leaves the
+                    // gestures below untouched.
+                    IndirectScrollSurface(
+                        onScroll: indirectScroll,
+                        onScrollEnded: { scrollSteps.reset() }
+                    )
+                }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .contentShape(Rectangle())
                 // Press and hold = begin click+drag lock; single tap = left click
@@ -535,6 +546,28 @@ struct NativeStreamView: View {
                     screenManager.scrollAtVirtualCursor(deltaX: 0, deltaY: deltaY)
                 }
             }
+    }
+
+    /// A paired mouse's wheel or a trackpad's two-finger scroll, in view
+    /// points, turned into the line steps the host takes. The pinch above is
+    /// the gaze equivalent of a wheel; this is what an actual wheel produces,
+    /// and SwiftUI surfaces it to no gesture at all — see
+    /// `IndirectScrollSurface`.
+    private func indirectScroll(_ delta: CGSize) {
+        guard screenManager.streamSize.width > 0 else { return }
+        let steps = scrollSteps.steps(for: delta)
+        guard steps.dx != 0 || steps.dy != 0 else { return }
+        if screenManager.touchMode == .absolute {
+            // Wherever the pointer is, which with a mouse is exactly where the
+            // user meant to scroll — the pinch has to settle for the middle.
+            let point = lastPointerPoint ?? (
+                x: UInt16(clamping: Int(screenManager.streamSize.width / 2)),
+                y: UInt16(clamping: Int(screenManager.streamSize.height / 2))
+            )
+            screenManager.sendScroll(x: point.x, y: point.y, deltaX: steps.dx, deltaY: steps.dy)
+        } else {
+            screenManager.scrollAtVirtualCursor(deltaX: steps.dx, deltaY: steps.dy)
+        }
     }
 
     private func leftClick(at location: CGPoint) {

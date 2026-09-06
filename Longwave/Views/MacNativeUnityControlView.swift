@@ -29,18 +29,22 @@ struct MacNativeUnityControlView: View {
                 }
                 .toggleStyle(.button)
 
-                if screenManager.liveEnabled {
-                    Button {
-                        screenManager.touchMode = screenManager.touchMode == .absolute
-                            ? .relative : .absolute
-                    } label: {
-                        Label(
-                            screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
-                            systemImage: screenManager.touchMode == .absolute
-                                ? "hand.tap" : "rectangle.and.hand.point.up.left"
-                        )
-                    }
+                // Touch mode governs every streamed surface this session owns,
+                // window scenes included — so it stays available whether or not
+                // the desktop scene happens to be open. Right-click is the one
+                // that doesn't: it acts at the desktop's cursor.
+                Button {
+                    screenManager.touchMode = screenManager.touchMode == .absolute
+                        ? .relative : .absolute
+                } label: {
+                    Label(
+                        screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
+                        systemImage: screenManager.touchMode == .absolute
+                            ? "hand.tap" : "rectangle.and.hand.point.up.left"
+                    )
+                }
 
+                if screenManager.liveEnabled {
                     Button(action: screenManager.rightClickAtDesktopCursor) {
                         Label("Right-click", systemImage: "cursorarrow.click.2")
                     }

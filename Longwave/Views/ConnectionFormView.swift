@@ -51,12 +51,6 @@ struct ConnectionFormView: View {
     @State private var sshEnvVars: String = ""
     @State private var sshUseTmux: Bool = true
 
-    private enum Field: Hashable {
-        case hostname, port, username, password, label, companionToken, sshUsername, sshLaunchCommand
-        case sshClientCommand, sshEnvVars
-    }
-    @FocusState private var focusedField: Field?
-
     #if MOONLIGHT_ENABLED
     // Moonlight — Video
     @State private var moonlightResolution: MoonlightResolution = ConnectionDefaults.moonlightResolution
@@ -239,8 +233,6 @@ struct ConnectionFormView: View {
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .companionToken)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("Copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
                 .font(.caption)
@@ -264,16 +256,12 @@ struct ConnectionFormView: View {
                 .textContentType(.URL)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .hostname)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Native dials fixed per-service Companion ports (Screen/Audio),
             // never a user-edited one, so there's nothing to show here.
             if connectionType != .native {
                 TextField("Port", text: $port)
                     .keyboardType(.numberPad)
-                    .focused($focusedField, equals: .port)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if didDetectHotspotHost && hostname == LocalNetwork.windowsIcsGateway {
@@ -288,8 +276,6 @@ struct ConnectionFormView: View {
     private var labelSection: some View {
         Section("Label") {
             TextField("Display Name (optional)", text: $label)
-                .focused($focusedField, equals: .label)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -305,13 +291,9 @@ struct ConnectionFormView: View {
                     .textContentType(.username)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .focused($focusedField, equals: .username)
-                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 SecureField("Password", text: $password)
                     .textContentType(.password)
-                    .focused($focusedField, equals: .password)
-                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if isEditing && hasCredentials {
                     Button("Clear Saved Credentials", role: .destructive) {
@@ -384,8 +366,6 @@ struct ConnectionFormView: View {
                 .textContentType(.username)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .sshUsername)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("Key-based login. Add this device's SSH key (Projects tab → Copy Public Key) to ~/.ssh/authorized_keys on the host. The private key never leaves the Secure Enclave.")
                 .font(.caption)
@@ -397,8 +377,6 @@ struct ConnectionFormView: View {
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .sshLaunchCommand)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("Optional command to run on connect. Empty = an interactive login shell. To run Claude in a project folder, use the Projects tab instead.")
                 .font(.caption)
@@ -416,8 +394,6 @@ struct ConnectionFormView: View {
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .sshClientCommand)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("Command for the Projects tab's “Custom” agent — point it at any CLI. Claude and Copilot are built in with fixed commands. Pick the agent and set its login in the Projects tab.")
                 .font(.caption)
@@ -430,8 +406,6 @@ struct ConnectionFormView: View {
                 .lineLimit(2...6)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused($focusedField, equals: .sshEnvVars)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("Injected before the command runs (inline; readable by your own processes on the Mac, so keep these non-secret). Agent login tokens (Claude / Copilot / Custom) are set separately per agent in the Projects tab and kept in this device's keychain.")
                 .font(.caption)

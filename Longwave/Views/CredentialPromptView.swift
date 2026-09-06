@@ -9,9 +9,6 @@ struct CredentialPromptView: View {
     @State private var password: String = ""
     @State private var rememberPassword: Bool = false
 
-    private enum Field: Hashable { case username, password }
-    @FocusState private var focusedField: Field?
-
     private var requiresUsername: Bool {
         connectionManager.credentialAuthType.requiresUsername
     }
@@ -29,13 +26,9 @@ struct CredentialPromptView: View {
                             .textContentType(.username)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
-                            .focused($focusedField, equals: .username)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     SecureField("Password", text: $password)
                         .textContentType(.password)
-                        .focused($focusedField, equals: .password)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if canRemember {

@@ -241,8 +241,6 @@ struct ConnectionFormView: View {
                 .textInputAutocapitalization(.never)
                 .focused($focusedField, equals: .companionToken)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .companionToken }
 
             Text("Copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
                 .font(.caption)
@@ -268,8 +266,6 @@ struct ConnectionFormView: View {
                 .textInputAutocapitalization(.never)
                 .focused($focusedField, equals: .hostname)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .hostname }
 
             // Native dials fixed per-service Companion ports (Screen/Audio),
             // never a user-edited one, so there's nothing to show here.
@@ -278,8 +274,6 @@ struct ConnectionFormView: View {
                     .keyboardType(.numberPad)
                     .focused($focusedField, equals: .port)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-                    .onTapGesture { focusedField = .port }
             }
 
             if didDetectHotspotHost && hostname == LocalNetwork.windowsIcsGateway {
@@ -296,8 +290,6 @@ struct ConnectionFormView: View {
             TextField("Display Name (optional)", text: $label)
                 .focused($focusedField, equals: .label)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .label }
         }
     }
 
@@ -315,15 +307,11 @@ struct ConnectionFormView: View {
                     .textInputAutocapitalization(.never)
                     .focused($focusedField, equals: .username)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-                    .onTapGesture { focusedField = .username }
 
                 SecureField("Password", text: $password)
                     .textContentType(.password)
                     .focused($focusedField, equals: .password)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-                    .onTapGesture { focusedField = .password }
 
                 if isEditing && hasCredentials {
                     Button("Clear Saved Credentials", role: .destructive) {
@@ -398,8 +386,6 @@ struct ConnectionFormView: View {
                 .textInputAutocapitalization(.never)
                 .focused($focusedField, equals: .sshUsername)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .sshUsername }
 
             Text("Key-based login. Add this device's SSH key (Projects tab → Copy Public Key) to ~/.ssh/authorized_keys on the host. The private key never leaves the Secure Enclave.")
                 .font(.caption)
@@ -413,8 +399,6 @@ struct ConnectionFormView: View {
                 .textInputAutocapitalization(.never)
                 .focused($focusedField, equals: .sshLaunchCommand)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .sshLaunchCommand }
 
             Text("Optional command to run on connect. Empty = an interactive login shell. To run Claude in a project folder, use the Projects tab instead.")
                 .font(.caption)
@@ -434,8 +418,6 @@ struct ConnectionFormView: View {
                 .textInputAutocapitalization(.never)
                 .focused($focusedField, equals: .sshClientCommand)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-                .onTapGesture { focusedField = .sshClientCommand }
 
             Text("Command for the Projects tab's “Custom” agent — point it at any CLI. Claude and Copilot are built in with fixed commands. Pick the agent and set its login in the Projects tab.")
                 .font(.caption)

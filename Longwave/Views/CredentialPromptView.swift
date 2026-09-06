@@ -31,15 +31,11 @@ struct CredentialPromptView: View {
                             .textInputAutocapitalization(.never)
                             .focused($focusedField, equals: .username)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(.rect)
-                            .onTapGesture { focusedField = .username }
                     }
                     SecureField("Password", text: $password)
                         .textContentType(.password)
                         .focused($focusedField, equals: .password)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
-                        .onTapGesture { focusedField = .password }
                 }
 
                 if canRemember {

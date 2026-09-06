@@ -52,6 +52,10 @@ final class DictationController {
     private var volatile = ""
 
     private let engine = AVAudioEngine()
+    /// Whether a tap is installed on the engine's input node. Guards
+    /// `stopCapture` — see there for why merely *reading* `engine.inputNode` is
+    /// not free.
+    private var captureActive = false
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -187,11 +191,25 @@ final class DictationController {
             guard let converted = Self.convert(buffer, using: converter, to: analyzerFormat) else { return }
             continuation.yield(AnalyzerInput(buffer: converted))
         }
+        // Set before `start()` so a throw there still tears the tap down.
+        captureActive = true
         engine.prepare()
         try engine.start()
     }
 
+    /// Release the microphone. Does nothing at all unless capture was actually
+    /// started.
+    ///
+    /// The guard is the point: `engine.inputNode` is lazy, and *reading* it
+    /// configures the engine's input, which claims the audio session under
+    /// whatever category is current. For a controller that never dictated that
+    /// is the app default — non-mixable — so the read alone paused whatever
+    /// else the device was playing. `cancel()` runs unconditionally from
+    /// `onDisappear`, so closing a terminal or keyboard window silently paused
+    /// the user's music or video even though nothing here had ever recorded.
     private func stopCapture() {
+        guard captureActive else { return }
+        captureActive = false
         if engine.isRunning { engine.stop() }
         engine.inputNode.removeTap(onBus: 0)
     }

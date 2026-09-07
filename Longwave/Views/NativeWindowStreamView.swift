@@ -23,6 +23,9 @@ struct NativeWindowStreamView: View {
     @State private var dragLockStartedAt: Date?
     @State private var previousDragTranslation: CGSize = .zero
     @State private var scrollSteps = ScrollStepAccumulator()
+    /// True while both hands are pinched (and briefly after). The one-hand
+    /// gestures below all stand down — see `TwoHandPointerGesture`.
+    @State private var twoHandEngaged = false
 
     private var session: MacNativeWindowSession? {
         screenManager.windowSessions[windowID]
@@ -93,7 +96,13 @@ struct NativeWindowStreamView: View {
             .gesture(dragLockGesture)
             .gesture(tapGesture(session))
             .gesture(dragGesture(session))
-            .gesture(scrollGesture(session))
+            // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
+            .twoHandPointerGesture(
+                isEngaged: $twoHandEngaged,
+                onEngage: { cancelImplicitDrag(session) },
+                onScroll: { delta in indirectScroll(delta, session) },
+                onSecondaryClick: { rightClick(session) }
+            )
             .onContinuousHover { phase in
                 if case .active(let location) = phase,
                    let point = translator(session)?.viewToFramebuffer(location) {
@@ -187,6 +196,7 @@ struct NativeWindowStreamView: View {
     private func tapGesture(_ session: MacNativeWindowSession) -> some Gesture {
         SpatialTapGesture()
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 let isAbsolute = screenManager.touchMode == .absolute
                 // In trackpad mode the tap is a click of the button, not an
                 // aim — it lands wherever the pointer already is.
@@ -221,6 +231,7 @@ struct NativeWindowStreamView: View {
     private func dragGesture(_ session: MacNativeWindowSession) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
+                guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute {
                     guard let point = translator(session)?.viewToFramebuffer(value.location) else { return }
                     lastPointerPoint = point
@@ -245,6 +256,7 @@ struct NativeWindowStreamView: View {
                 }
             }
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute, isDragging, !dragLocked,
                    let point = translator(session)?.viewToFramebuffer(value.location) {
                     screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
@@ -254,21 +266,29 @@ struct NativeWindowStreamView: View {
             }
     }
 
-    /// Pinch = scroll wheel, at the tracked pointer — the gaze equivalent of a
-    /// wheel, for when there's no mouse to turn. See `indirectScroll` for the
-    /// mouse and trackpad path.
-    private func scrollGesture(_ session: MacNativeWindowSession) -> some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                let delta = value.magnification - 1.0
-                guard abs(delta) > 0.01, session.streamSize.width > 0 else { return }
-                let steps = Int16(max(1, min(127, abs(delta) * 10)))
-                sendScroll(session, deltaX: 0, deltaY: delta > 0 ? steps : -steps)
-            }
+    /// Secondary click at the tracked pointer — both hands pinched and
+    /// released, or the same thing the ornament's button does on the desktop.
+    private func rightClick(_ session: MacNativeWindowSession) {
+        guard session.streamSize.width > 0 else { return }
+        let point = pointer(session)
+        screenManager.sendWindowMouseDown(windowID: windowID, button: .right, x: point.x, y: point.y)
+        screenManager.sendWindowMouseUp(windowID: windowID, button: .right, x: point.x, y: point.y)
     }
 
-    /// A paired mouse's wheel or a trackpad's two-finger scroll, in view
-    /// points, turned into the line steps the host takes.
+    /// A second hand arriving turns whatever the first one was doing into a
+    /// two-hand gesture, so let go of the button an absolute drag pressed on its
+    /// own — a deliberate drag *lock* is left held, since scrolling mid-drag is
+    /// a real thing to want.
+    private func cancelImplicitDrag(_ session: MacNativeWindowSession) {
+        guard isDragging, !dragLocked else { return }
+        let point = pointer(session)
+        screenManager.sendWindowMouseUp(windowID: windowID, button: .left, x: point.x, y: point.y)
+        isDragging = false
+        previousDragTranslation = .zero
+    }
+
+    /// Scroll travel in view points — a wheel's, a trackpad's, or both hands'
+    /// — turned into the line steps the host takes.
     private func indirectScroll(_ delta: CGSize, _ session: MacNativeWindowSession) {
         guard session.streamSize.width > 0 else { return }
         let steps = scrollSteps.steps(for: delta)
@@ -289,7 +309,7 @@ struct NativeWindowStreamView: View {
 
     /// Press and hold the left button so the next drag drags.
     private func beginDragLockAtCursor() {
-        guard !dragLocked, let session, session.streamSize.width > 0 else { return }
+        guard !twoHandEngaged, !dragLocked, let session, session.streamSize.width > 0 else { return }
         // A long press carries no location of its own. Direct mode waits for a
         // pointer it has actually seen rather than grabbing at the middle of
         // the window; trackpad mode always has one.

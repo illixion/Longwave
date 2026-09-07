@@ -33,19 +33,21 @@ struct MacNativeKeyboardView: View {
             VStack(spacing: 16) {
                 header
 
-                VirtualKeyboardView(sink: sink)
+                HStack(alignment: .top, spacing: 24) {
+                    VirtualKeyboardView(sink: sink)
 
-                if showsScrollPad {
-                    // Gaze scrolling for the Mac's desktop — no mouse wheel. One
-                    // step is one scroll line, matching the stream view's pinch.
-                    ScrollPadView(
-                        onVerticalTick: { steps in
-                            screenManager.scrollAtVirtualCursor(deltaX: 0, deltaY: Int16(clamping: steps))
-                        },
-                        onHorizontalTick: { steps in
-                            screenManager.scrollAtVirtualCursor(deltaX: Int16(clamping: steps), deltaY: 0)
-                        }
-                    )
+                    if showsScrollPad {
+                        // Gaze scrolling for the Mac's desktop — no mouse wheel. One
+                        // step is one scroll line, matching the stream view's pinch.
+                        ScrollPadView(
+                            onVerticalTick: { steps in
+                                screenManager.scrollAtVirtualCursor(deltaX: 0, deltaY: Int16(clamping: steps))
+                            },
+                            onHorizontalTick: { steps in
+                                screenManager.scrollAtVirtualCursor(deltaX: Int16(clamping: steps), deltaY: 0)
+                            }
+                        )
+                    }
                 }
 
                 Spacer(minLength: 0)

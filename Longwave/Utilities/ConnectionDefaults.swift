@@ -11,7 +11,7 @@ enum ConnectionDefaults {
         static let vncPort = "default_vnc_port"
         static let terminalFontSize = "default_terminal_font_size"
         static let terminalQuickKeys = "terminal_quick_keys"
-        /// Whether the keyboard windows show the gaze scroll pad below the keys.
+        /// Whether the keyboard windows show the gaze scroll pad beside the keys.
         static let keyboardScrollPad = "keyboard_scroll_pad"
         /// Same, for the terminal keyboard — on by default, since scrollback is
         /// the thing people reach for most in a terminal.

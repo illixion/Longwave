@@ -66,6 +66,10 @@ struct MoonlightStreamView: View {
     @State private var dragLocked = false
     @State private var clickCadence = DoubleClickCadence()
     @State private var dragLockStartedAt: Date?
+    @State private var scrollSteps = ScrollStepAccumulator()
+    /// True while both hands are pinched (and briefly after), so the one-hand
+    /// gestures stand down — see `TwoHandPointerGesture`.
+    @State private var twoHandEngaged = false
 
     var body: some View {
         ZStack {
@@ -82,7 +86,17 @@ struct MoonlightStreamView: View {
                     VideoDisplayView(displayLayer: layer)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .gesture(mouseDragGesture(in: geometry.size))
-                        .gesture(scrollGesture)
+                        // Both hands: pinch-drag scrolls, pinch-and-release
+                        // right-clicks. Not suppressed for a connected mouse
+                        // the way the tap paths are — a pinch is nothing a
+                        // mouse can also deliver, so there's no double-click to
+                        // avoid, and the wheel and the hands can coexist.
+                        .twoHandPointerGesture(
+                            isEngaged: $twoHandEngaged,
+                            onEngage: cancelImplicitDrag,
+                            onScroll: scrollBy,
+                            onSecondaryClick: rightClickAtCurrentPosition
+                        )
                         .onContinuousHover { phase in
                             // Track whether the pointer is over the stream content
                             // (vs the app's controls) so GCMouse clicks on the
@@ -112,6 +126,7 @@ struct MoonlightStreamView: View {
                         // double-deliver each click as a tap too.
                         .gesture(dragLockGesture)
                         .gesture(SpatialTapGesture(count: 1).onEnded { value in
+                            guard !twoHandEngaged else { return }
                             singleTap(at: value.location, in: geometry.size)
                         })
                 }
@@ -247,7 +262,7 @@ struct MoonlightStreamView: View {
     private var dragLockGesture: some Gesture {
         LongPressGesture(minimumDuration: 0.55)
             .onEnded { _ in
-                guard !manager.isMouseConnected, !dragLocked else { return }
+                guard !manager.isMouseConnected, !twoHandEngaged, !dragLocked else { return }
                 manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
                 dragLocked = true
                 dragLockStartedAt = Date()
@@ -300,7 +315,7 @@ struct MoonlightStreamView: View {
     private func mouseDragGesture(in viewSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
-                guard !manager.isMouseConnected else { return }
+                guard !manager.isMouseConnected, !twoHandEngaged else { return }
                 if manager.touchMode == .absolute {
                     let (streamX, streamY) = mapToStreamCoordinates(value.location, in: viewSize)
                     manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
@@ -322,7 +337,7 @@ struct MoonlightStreamView: View {
             }
             .onEnded { value in
                 previousDragTranslation = .zero
-                guard !manager.isMouseConnected else { return }
+                guard !manager.isMouseConnected, !twoHandEngaged else { return }
                 // A plain click-and-drag releases on lift. A drag-lock keeps the
                 // button held until a single tap releases it.
                 if manager.touchMode == .absolute && absoluteDragActive && !dragLocked {
@@ -334,17 +349,35 @@ struct MoonlightStreamView: View {
             }
     }
 
-    // MARK: - Scroll Gesture
+    // MARK: - Scroll
 
-    private var scrollGesture: some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                let delta = value.magnification - 1.0
-                let scrollAmount = Int16(delta * 120)
-                if scrollAmount != 0 {
-                    manager.library.sendHighResScroll(scrollAmount)
-                }
-            }
+    /// Two-hand travel in view points, turned into high-res scroll events.
+    /// Replaces a `MagnifyGesture` that read the hands' *distance*: vertical
+    /// only, and indistinguishable from the opening of a two-hand right-click.
+    ///
+    /// One line is 20 high-res units, the same conversion the `GCMouse` bridge
+    /// and the keyboard's scroll pad use, and horizontal is negated for the
+    /// same reason it is there — a positive event scrolls right, while positive
+    /// travel means the content followed the hands to the right.
+    private func scrollBy(_ delta: CGSize) {
+        let steps = scrollSteps.steps(for: delta)
+        if steps.dy != 0 {
+            manager.library.sendHighResScroll(Int16(clamping: Int(steps.dy) * 20))
+        }
+        if steps.dx != 0 {
+            manager.library.sendHighResHScroll(Int16(clamping: Int(steps.dx) * -20))
+        }
+    }
+
+    /// A second hand arriving turns whatever the first one was doing into a
+    /// two-hand gesture, so let go of the button an absolute drag pressed on
+    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
+    /// real thing to want.
+    private func cancelImplicitDrag() {
+        guard absoluteDragActive, !dragLocked else { return }
+        manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
+        absoluteDragActive = false
+        previousDragTranslation = .zero
     }
 
     // MARK: - Controls Bar (Ornament)

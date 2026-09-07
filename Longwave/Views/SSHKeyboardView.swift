@@ -30,14 +30,18 @@ struct SSHKeyboardView: View {
             VStack(spacing: 16) {
                 header(session)
 
-                VirtualKeyboardView(sink: SSHKeyboardSink(session: session))
-                    // Raw key bytes aren't worth queueing the way composed text
-                    // is — better to show they can't be sent than to drop them.
-                    .disabled(!session.isReady)
+                HStack(alignment: .top, spacing: 24) {
+                    VirtualKeyboardView(sink: SSHKeyboardSink(session: session))
+                        // Raw key bytes aren't worth queueing the way composed text
+                        // is — better to show they can't be sent than to drop them.
+                        .disabled(!session.isReady)
 
-                if showsScrollPad {
-                    ScrollPadView { steps in
-                        session.scrollSteps(steps)
+                    if showsScrollPad {
+                        // Vertical only — a terminal has no horizontal axis, so
+                        // the plus loses its side arms here.
+                        ScrollPadView { steps in
+                            session.scrollSteps(steps)
+                        }
                     }
                 }
 

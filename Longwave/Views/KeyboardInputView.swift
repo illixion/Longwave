@@ -27,20 +27,26 @@ struct KeyboardInputView: View {
             VStack(spacing: 16) {
                 header
 
-                VirtualKeyboardView(sink: sink)
+                // The pad sits beside the key grid, not under it: the keyboard
+                // is wide and short, so the room to its right was empty, and a
+                // scroller below the keys is a long way from what you're
+                // scrolling.
+                HStack(alignment: .top, spacing: 24) {
+                    VirtualKeyboardView(sink: sink)
 
-                if showsScrollPad {
-                    // Gaze scrolling for the remote desktop — no mouse wheel.
-                    ScrollPadView(
-                        onVerticalTick: { steps in
-                            connectionManager.scrollAtVirtualCursor(
-                                wheel: steps > 0 ? .up : .down, steps: UInt32(abs(steps)))
-                        },
-                        onHorizontalTick: { steps in
-                            connectionManager.scrollAtVirtualCursor(
-                                wheel: steps > 0 ? .right : .left, steps: UInt32(abs(steps)))
-                        }
-                    )
+                    if showsScrollPad {
+                        // Gaze scrolling for the remote desktop — no mouse wheel.
+                        ScrollPadView(
+                            onVerticalTick: { steps in
+                                connectionManager.scrollAtVirtualCursor(
+                                    wheel: steps > 0 ? .up : .down, steps: UInt32(abs(steps)))
+                            },
+                            onHorizontalTick: { steps in
+                                connectionManager.scrollAtVirtualCursor(
+                                    wheel: steps > 0 ? .right : .left, steps: UInt32(abs(steps)))
+                            }
+                        )
+                    }
                 }
 
                 Spacer(minLength: 0)

@@ -16,6 +16,10 @@ struct RemoteDesktopView: View {
     // double-tap, which left no gesture free to double-click with.)
     @State private var dragLocked = false
     @State private var clickCadence = DoubleClickCadence()
+    @State private var scrollSteps = ScrollStepAccumulator()
+    /// True while both hands are pinched (and briefly after), so the one-hand
+    /// gestures stand down — see `TwoHandPointerGesture`.
+    @State private var twoHandEngaged = false
     @State private var dragLockStartedAt: Date?
 
     var body: some View {
@@ -104,15 +108,31 @@ struct RemoteDesktopView: View {
                         statusView
                     }
                 }
+                .overlay {
+                    // Topmost, and deliberately hit-testable: a scroll event is
+                    // routed to the view under the pointer, so it has to be the
+                    // one that's there. It claims no touches, which leaves the
+                    // gestures below untouched.
+                    IndirectScrollSurface(
+                        onScroll: scrollBy,
+                        onScrollEnded: { scrollSteps.reset() }
+                    )
+                }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .contentShape(Rectangle())
                 // Press and hold = begin click+drag lock; single tap = left
                 // click (or release a drag lock), and two quick taps
-                // double-click. Right click is the toolbar button.
+                // double-click. Both hands pinched = right click, or drag them
+                // to scroll; the toolbar button stays as the reachable route.
                 .gesture(dragLockGesture)
                 .gesture(tapGesture)
                 .gesture(dragGesture)
-                .gesture(scrollGesture)
+                .twoHandPointerGesture(
+                    isEngaged: $twoHandEngaged,
+                    onEngage: cancelImplicitDrag,
+                    onScroll: scrollBy,
+                    onSecondaryClick: rightClickAtCursor
+                )
                 .onContinuousHover { phase in
                     // Bluetooth-mouse / pointer motion without a button held.
                     // A DragGesture only fires while a button is down, so plain
@@ -275,6 +295,7 @@ struct RemoteDesktopView: View {
     private var tapGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 if dragLocked {
                     // Lifting off the press-and-hold that started the lock can
                     // arrive here as a tap; that would release it instantly.
@@ -301,6 +322,7 @@ struct RemoteDesktopView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
+                guard !twoHandEngaged else { return }
                 if connectionManager.touchMode == .absolute {
                     guard let point = translator?.viewToFramebuffer(value.location) else { return }
                     if dragLocked {
@@ -324,6 +346,7 @@ struct RemoteDesktopView: View {
                 }
             }
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 // Plain click-and-drag releases on lift; a drag lock stays held
                 // until a single tap releases it.
                 if connectionManager.touchMode == .absolute && isDragging && !dragLocked {
@@ -359,7 +382,7 @@ struct RemoteDesktopView: View {
 
     /// Press and hold the left button so the next drag drags.
     private func beginDragLockAtCursor() {
-        guard !dragLocked else { return }
+        guard !twoHandEngaged, !dragLocked else { return }
         connectionManager.pressMouseAtVirtualCursor(button: .left)
         dragLocked = true
         dragLockStartedAt = Date()
@@ -376,24 +399,42 @@ struct RemoteDesktopView: View {
         }
     }
 
-    /// Pinch = scroll wheel
-    private var scrollGesture: some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                let delta = value.magnification - 1.0
-                guard abs(delta) > 0.01 else { return }
+    /// Scroll travel in view points — a mouse wheel's, a trackpad's, or both
+    /// hands' midpoint — turned into wheel events at the cursor. Replaces a
+    /// `MagnifyGesture` that read the *distance* between the hands: one axis
+    /// only, and indistinguishable from the start of a two-hand right-click.
+    ///
+    /// Both axes go out at the virtual cursor, which the hover handler keeps on
+    /// the pointer in either touch mode — the old code aimed absolute-mode
+    /// scrolls at the middle of the framebuffer instead, which is rarely what
+    /// anyone was looking at.
+    private func scrollBy(_ delta: CGSize) {
+        let steps = scrollSteps.steps(for: delta)
+        if steps.dy != 0 {
+            connectionManager.scrollAtVirtualCursor(
+                wheel: steps.dy > 0 ? .up : .down,
+                steps: UInt32(abs(Int(steps.dy)))
+            )
+        }
+        if steps.dx != 0 {
+            // Positive travel means the content followed the hands to the
+            // right, which is a scroll towards the *left* of the document.
+            connectionManager.scrollAtVirtualCursor(
+                wheel: steps.dx > 0 ? .left : .right,
+                steps: UInt32(abs(Int(steps.dx)))
+            )
+        }
+    }
 
-                let wheel: VNCMouseWheel = delta > 0 ? .up : .down
-                let steps = UInt32(max(1, abs(delta) * 10))
-
-                if connectionManager.touchMode == .absolute {
-                    let centerX = UInt16(connectionManager.framebufferSize.width / 2)
-                    let centerY = UInt16(connectionManager.framebufferSize.height / 2)
-                    connectionManager.sendScroll(wheel: wheel, x: centerX, y: centerY, steps: steps)
-                } else {
-                    connectionManager.scrollAtVirtualCursor(wheel: wheel, steps: steps)
-                }
-            }
+    /// A second hand arriving turns whatever the first one was doing into a
+    /// two-hand gesture, so let go of the button an absolute drag pressed on
+    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
+    /// real thing to want.
+    private func cancelImplicitDrag() {
+        guard isDragging, !dragLocked else { return }
+        connectionManager.releaseMouseAtVirtualCursor(button: .left)
+        isDragging = false
+        previousDragTranslation = .zero
     }
 
     // MARK: - Helpers

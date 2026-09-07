@@ -74,6 +74,9 @@ struct NativeStreamView: View {
     @State private var clickCadence = DoubleClickCadence()
     @State private var dragLockStartedAt: Date?
     @State private var scrollSteps = ScrollStepAccumulator()
+    /// True while both hands are pinched (and briefly after), so the one-hand
+    /// gestures stand down — see `TwoHandPointerGesture`.
+    @State private var twoHandEngaged = false
 
     var body: some View {
         @Bindable var screenManager = screenManager
@@ -390,7 +393,13 @@ struct NativeStreamView: View {
                 .gesture(dragLockGesture)
                 .gesture(tapGesture)
                 .gesture(dragGesture)
-                .gesture(scrollGesture)
+                // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
+                .twoHandPointerGesture(
+                    isEngaged: $twoHandEngaged,
+                    onEngage: cancelImplicitDrag,
+                    onScroll: indirectScroll,
+                    onSecondaryClick: rightClickAtCursor
+                )
                 .onContinuousHover { phase in
                     // Bluetooth-mouse / gaze pointer motion without a button
                     // held — a DragGesture only fires while a button is down.
@@ -475,6 +484,7 @@ struct NativeStreamView: View {
     private var tapGesture: some Gesture {
         SpatialTapGesture()
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 if dragLocked {
                     // Lifting off the press-and-hold that *started* the lock
                     // can arrive here as a tap; that would release it instantly.
@@ -500,6 +510,7 @@ struct NativeStreamView: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
+                guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute {
                     guard let point = translator?.viewToFramebuffer(value.location) else { return }
                     if dragLocked {
@@ -520,6 +531,7 @@ struct NativeStreamView: View {
                 }
             }
             .onEnded { value in
+                guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute, isDragging, !dragLocked,
                    let point = translator?.viewToFramebuffer(value.location) {
                     screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
@@ -529,30 +541,27 @@ struct NativeStreamView: View {
             }
     }
 
-    /// Pinch = scroll wheel, centered on the stream in absolute mode, or at
-    /// the virtual cursor in trackpad mode (mirrors RemoteDesktopView).
-    private var scrollGesture: some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                let delta = value.magnification - 1.0
-                guard abs(delta) > 0.01, screenManager.streamSize.width > 0 else { return }
-                let steps = Int16(max(1, min(127, abs(delta) * 10)))
-                let deltaY: Int16 = delta > 0 ? steps : -steps
-                if screenManager.touchMode == .absolute {
-                    let centerX = UInt16(screenManager.streamSize.width / 2)
-                    let centerY = UInt16(screenManager.streamSize.height / 2)
-                    screenManager.sendScroll(x: centerX, y: centerY, deltaX: 0, deltaY: deltaY)
-                } else {
-                    screenManager.scrollAtVirtualCursor(deltaX: 0, deltaY: deltaY)
-                }
+    /// A second hand arriving turns whatever the first one was doing into a
+    /// two-hand gesture, so let go of the button an absolute drag pressed on
+    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
+    /// real thing to want.
+    private func cancelImplicitDrag() {
+        guard isDragging, !dragLocked else { return }
+        if screenManager.touchMode == .absolute {
+            if let point = lastPointerPoint {
+                screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
             }
+        } else {
+            screenManager.releaseMouseAtVirtualCursor(button: .left)
+        }
+        isDragging = false
+        previousDragTranslation = .zero
     }
 
-    /// A paired mouse's wheel or a trackpad's two-finger scroll, in view
-    /// points, turned into the line steps the host takes. The pinch above is
-    /// the gaze equivalent of a wheel; this is what an actual wheel produces,
-    /// and SwiftUI surfaces it to no gesture at all — see
-    /// `IndirectScrollSurface`.
+    /// Scroll travel in view points — a mouse wheel's, a trackpad's, or both
+    /// hands' midpoint — turned into the line steps the host takes. The wheel
+    /// reaches us through `IndirectScrollSurface`, since SwiftUI surfaces it to
+    /// no gesture at all; the hands through `TwoHandPointerGesture`.
     private func indirectScroll(_ delta: CGSize) {
         guard screenManager.streamSize.width > 0 else { return }
         let steps = scrollSteps.steps(for: delta)
@@ -588,7 +597,7 @@ struct NativeStreamView: View {
     /// pointer — the same "wherever the cursor is" rule the Right-click button
     /// uses, since a long press carries no location of its own.
     private func beginDragLockAtCursor() {
-        guard !dragLocked else { return }
+        guard !twoHandEngaged, !dragLocked else { return }
         if screenManager.touchMode == .absolute {
             guard let point = lastPointerPoint else { return }
             screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)

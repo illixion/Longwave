@@ -19,17 +19,19 @@ struct MoonlightKeyboardView: View {
             VStack(spacing: 16) {
                 header
 
-                VirtualKeyboardView(sink: sink)
+                HStack(alignment: .top, spacing: 24) {
+                    VirtualKeyboardView(sink: sink)
 
-                if showsScrollPad {
-                    ScrollPadView(
-                        onVerticalTick: { steps in
-                            manager.library.sendHighResScroll(Int16(clamping: steps * 20))
-                        },
-                        onHorizontalTick: { steps in
-                            manager.library.sendHighResHScroll(Int16(clamping: steps * 20))
-                        }
-                    )
+                    if showsScrollPad {
+                        ScrollPadView(
+                            onVerticalTick: { steps in
+                                manager.library.sendHighResScroll(Int16(clamping: steps * 20))
+                            },
+                            onHorizontalTick: { steps in
+                                manager.library.sendHighResHScroll(Int16(clamping: steps * 20))
+                            }
+                        )
+                    }
                 }
 
                 Spacer(minLength: 0)

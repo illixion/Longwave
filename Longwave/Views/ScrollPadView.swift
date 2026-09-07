@@ -1,68 +1,169 @@
 import SwiftUI
-import Combine
 
-/// A two-axis scroll "joystick" built from a vertical and a horizontal slider.
-/// Each slider springs back to center when released; while it's held off-center
-/// the pad emits periodic scroll ticks (step count proportional to how far it's
-/// pushed) via the callbacks. It lives in the keyboard windows so gaze users —
-/// who have no mouse wheel and no good scroll gesture — can still scroll.
+/// A plus-shaped scroll control: four arms around a hub, one per direction.
+/// Press an arm for a line, hold it to keep scrolling — faster the longer it's
+/// held. It lives beside the key grid in the keyboard windows so gaze users —
+/// who have no wheel, and for whom a two-hand pinch-drag isn't always practical
+/// — can still scroll.
+///
+/// It replaces a pair of spring-back sliders, which read as a mixing desk
+/// rather than a scroller, sat under the keyboard in a band of empty space, and
+/// needed a *drag* to do anything: the arms are plain press targets, which is
+/// both a bigger gaze target and one gesture simpler.
 struct ScrollPadView: View {
     /// Positive = scroll up; magnitude is the step count for this tick.
     var onVerticalTick: (Int) -> Void
     /// Positive = scroll right; magnitude is the step count for this tick.
     /// Omitted where there is no horizontal axis to scroll (a terminal), which
-    /// also drops the slider — an inert control is worse than no control.
+    /// also drops those arms — an inert control is worse than no control.
     var onHorizontalTick: ((Int) -> Void)?
 
-    @State private var vValue: Double = 0
-    @State private var hValue: Double = 0
-    @State private var ticker = Timer.publish(every: 0.06, on: .main, in: .common).autoconnect()
-
-    private let deadzone = 0.08
-    private let maxSteps = 6.0
-
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Label("Scroll", systemImage: "arrow.up.arrow.down")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 32) {
-                VStack(spacing: 6) {
-                    Slider(value: $vValue, in: -1...1) { editing in
-                        if !editing { vValue = 0 }
-                    }
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 180)
-                    .frame(width: 44, height: 196)
-                    Text("Vertical").font(.caption2).foregroundStyle(.secondary)
+            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    spacer
+                    ScrollArm(systemImage: "chevron.up") { onVerticalTick($0) }
+                    spacer
                 }
-
-                if onHorizontalTick != nil {
-                    VStack(spacing: 6) {
-                        Slider(value: $hValue, in: -1...1) { editing in
-                            if !editing { hValue = 0 }
-                        }
-                        .frame(width: 196)
-                        Text("Horizontal").font(.caption2).foregroundStyle(.secondary)
-                        Spacer().frame(height: 14)
+                GridRow {
+                    if let onHorizontalTick {
+                        ScrollArm(systemImage: "chevron.left") { onHorizontalTick(-$0) }
+                    } else {
+                        spacer
                     }
+
+                    hub
+
+                    if let onHorizontalTick {
+                        ScrollArm(systemImage: "chevron.right") { onHorizontalTick($0) }
+                    } else {
+                        spacer
+                    }
+                }
+                GridRow {
+                    spacer
+                    ScrollArm(systemImage: "chevron.down") { onVerticalTick(-$0) }
+                    spacer
                 }
             }
         }
-        .onReceive(ticker) { _ in
-            emit(vValue, onVerticalTick)
-            if let onHorizontalTick { emit(hValue, onHorizontalTick) }
-        }
-        .onDisappear {
-            vValue = 0
-            hValue = 0
+    }
+
+    private var spacer: some View {
+        Color.clear.frame(width: ScrollArm.side, height: ScrollArm.side)
+    }
+
+    /// Inert centre — it gives the plus its shape and marks where the arms
+    /// point from.
+    private var hub: some View {
+        Circle()
+            .fill(.tertiary)
+            .frame(width: 10, height: 10)
+            .frame(width: ScrollArm.side, height: ScrollArm.side)
+    }
+}
+
+/// One arm of the plus: a press target that ticks once immediately and then
+/// repeats while it's held.
+private struct ScrollArm: View {
+    let systemImage: String
+    /// Called with a positive step count; the arm's owner applies the sign.
+    let onTick: (Int) -> Void
+
+    static let side: CGFloat = 64
+
+    /// Key-repeat cadence: one tick on press, a pause to prove it's a hold,
+    /// then a steady stream that speeds up the longer the hold lasts.
+    private static let repeatDelay: Duration = .milliseconds(350)
+    private static let repeatInterval: Duration = .milliseconds(60)
+    private static let maxSteps = 6
+
+    @State private var isPressed = false
+    @State private var repeatTask: Task<Void, Never>?
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(isPressed ? AnyShapeStyle(.tint.opacity(0.35)) : AnyShapeStyle(.fill.tertiary))
+            .overlay {
+                Image(systemName: systemImage)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+            .frame(width: Self.side, height: Self.side)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .armHoverEffect()
+            // A Button fires on release, which is exactly the wrong moment for
+            // something that has to repeat while held. `minimumDistance: 0`
+            // reports the press itself.
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in press() }
+                    .onEnded { _ in lift() }
+            )
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityAddTraits(.isButton)
+            .onDisappear(perform: lift)
+    }
+
+    private var accessibilityLabel: String {
+        switch systemImage {
+        case "chevron.up": "Scroll up"
+        case "chevron.down": "Scroll down"
+        case "chevron.left": "Scroll left"
+        default: "Scroll right"
         }
     }
 
-    private func emit(_ value: Double, _ send: (Int) -> Void) {
-        guard abs(value) > deadzone else { return }
-        let steps = Int((value * maxSteps).rounded())
-        if steps != 0 { send(steps) }
+    private func press() {
+        guard !isPressed else { return }
+        isPressed = true
+        onTick(1)
+
+        repeatTask?.cancel()
+        repeatTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.repeatDelay)
+            var held = Duration.zero
+            while !Task.isCancelled {
+                held += Self.repeatInterval
+                // Ramps to `maxSteps` over a couple of seconds of holding, so a
+                // long page takes a hold rather than a hundred presses.
+                let steps = min(Self.maxSteps, 1 + Int(held.components.seconds * 2))
+                onTick(steps)
+                try? await Task.sleep(for: Self.repeatInterval)
+            }
+        }
     }
+
+    private func lift() {
+        repeatTask?.cancel()
+        repeatTask = nil
+        isPressed = false
+    }
+}
+
+private extension View {
+    /// The gaze/pointer highlight that tells you an arm is a target. visionOS
+    /// and iOS have it; macOS has no equivalent, and this file compiles there
+    /// too (the VNC and Native keyboards are shared).
+    @ViewBuilder
+    func armHoverEffect() -> some View {
+        #if os(macOS)
+        self
+        #else
+        self.hoverEffect()
+        #endif
+    }
+}
+
+#Preview {
+    ScrollPadView(
+        onVerticalTick: { print("v \($0)") },
+        onHorizontalTick: { print("h \($0)") }
+    )
+    .padding(40)
 }

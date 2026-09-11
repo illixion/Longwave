@@ -228,6 +228,31 @@ final class AudioStreamManager {
     private var lastReloadAt: Date?
     private static let maxRetryDelay: TimeInterval = 30
 
+    // iOS suspends the app shortly after it backgrounds unless something is
+    // actively justifying the "audio" background mode. A drop that happens
+    // while locked tears the receiver down first, so there's nothing left
+    // rendering audio to keep us alive while the backoff/health-recheck
+    // Task sleeps and reconnects — it just stalls until the user unlocks and
+    // reopens the app. Wrapping the retry window in a background task asks
+    // iOS for extra runway to actually finish the reconnect. Not needed on
+    // visionOS (no equivalent suspend-on-lock) or macOS (no UIApplication).
+    #if os(iOS)
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    private func beginBackgroundRetryWindow() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "pro.longwave.audio-reconnect") { [weak self] in
+            self?.endBackgroundRetryWindow()
+        }
+    }
+
+    private func endBackgroundRetryWindow() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+    #endif
+
     /// Token delivered via an AirDropped x-callback URL, waiting to be
     /// consumed by an open (or freshly opened) connection form. Set by the
     /// app's onOpenURL handler; cleared once a form fills its field.
@@ -338,6 +363,9 @@ final class AudioStreamManager {
         retryTask = nil
         healthRecheckTask?.cancel()
         healthRecheckTask = nil
+        #if os(iOS)
+        endBackgroundRetryWindow()
+        #endif
         receiver?.stop()
         receiver = nil
         state = .idle
@@ -417,6 +445,9 @@ final class AudioStreamManager {
     private func scheduleMusicHealthRecheck() {
         guard healthRecheckTask == nil else { return }
         AppLog.audioStream.line("Music mode: connection stale on restore — waiting for keepalive before reconnecting")
+        #if os(iOS)
+        beginBackgroundRetryWindow()
+        #endif
         healthRecheckTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             guard let self, !Task.isCancelled else { return }
@@ -424,6 +455,9 @@ final class AudioStreamManager {
             guard self.state == .streaming else { return }
             if self.isHealthy {
                 AppLog.audioStream.line("Music mode: keepalive arrived — connection alive, not reconnecting")
+                #if os(iOS)
+                self.endBackgroundRetryWindow()
+                #endif
             } else {
                 AppLog.audioStream.line("Music mode: still no data after grace — reconnecting")
                 self.reconnectLast()
@@ -457,6 +491,9 @@ final class AudioStreamManager {
             lastActivityAt = Date()
             retryDelay = 2
             refreshNowPlayingIntegration()
+            #if os(iOS)
+            endBackgroundRetryWindow()
+            #endif
             AppLog.audioStream.line("Connected: \(channels)ch @ \(Int(rate)) Hz")
         case .bytesReceived(let total):
             bytesReceived = total
@@ -513,6 +550,9 @@ final class AudioStreamManager {
             // be rejected again. The user must fix the token and reconnect.
             retryTask?.cancel()
             retryTask = nil
+            #if os(iOS)
+            endBackgroundRetryWindow()
+            #endif
             state = .error(reason)
             AppLog.audioStream.line("Authentication failed: \(reason)")
         case .lowLatencyEngaged:
@@ -556,6 +596,9 @@ final class AudioStreamManager {
         let delay = retryDelay
         retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
         AppLog.audioStream.line("Reconnecting in \(Int(delay)) s")
+        #if os(iOS)
+        beginBackgroundRetryWindow()
+        #endif
         retryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
@@ -977,11 +1020,20 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
     /// The interruption ended. Rebuild the engine and re-activate the session
     /// (the interruption deactivated it), and resume the Mac if the system
-    /// indicated we should. If not, we stay ready so a Control Center play
-    /// works immediately.
+    /// indicated we should. `shouldResume` is unreliable in practice — many
+    /// short, benign interruptions (Siri, a notification sound, a brief
+    /// route hiccup) end without it set, which otherwise left the stream
+    /// silently paused until the user found it and hit Control Center play.
+    /// So also resume whenever nothing else is actually holding the audio
+    /// session by the time the interruption clears.
     private nonisolated func handleInterruptionEnded(shouldResume: Bool) {
         scheduleAudioRebuild(delay: .milliseconds(150))
-        if shouldResume {
+        #if canImport(UIKit)
+        let resume = shouldResume || !AVAudioSession.sharedInstance().isOtherAudioPlaying
+        #else
+        let resume = shouldResume
+        #endif
+        if resume {
             send(.play)
         }
     }

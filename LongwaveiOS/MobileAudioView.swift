@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import RAVEMedia
 
 /// The Audio tab: the shared mini-player, plus the controls that still mean
@@ -18,17 +19,31 @@ struct MobileAudioView: View {
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.scenePhase) private var scenePhase
 
+    @Query(sort: \SavedConnection.lastConnected, order: .reverse)
+    private var savedConnections: [SavedConnection]
+
     @State private var showEQ = false
+
+    /// Audio-only Native connections, hidden from the Connections list on
+    /// iOS (see `ConnectionListView.visibleConnections`) so this tab is
+    /// their one entry point.
+    private var audioOnlyConnections: [SavedConnection] {
+        savedConnections.filter(\.isNativeAudioOnly)
+    }
 
     var body: some View {
         NavigationStack {
             Group {
                 if audioManager.state == .idle {
-                    ContentUnavailableView(
-                        "No Audio Stream",
-                        systemImage: "hifispeaker",
-                        description: Text("Start a Native connection with Audio enabled to stream your Mac's system audio here.")
-                    )
+                    if audioOnlyConnections.isEmpty {
+                        ContentUnavailableView(
+                            "No Audio Stream",
+                            systemImage: "hifispeaker",
+                            description: Text("Start a Native connection with Audio enabled to stream your Mac's system audio here.")
+                        )
+                    } else {
+                        connectionPicker
+                    }
                 } else {
                     player
                 }
@@ -39,6 +54,34 @@ struct MobileAudioView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { audioManager.ensureConnected() }
         }
+    }
+
+    private var connectionPicker: some View {
+        List(audioOnlyConnections) { connection in
+            Button {
+                connect(connection)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(connection.displayName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(connection.hostname)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func connect(_ connection: SavedConnection) {
+        audioManager.liveEnabled = true
+        audioManager.connect(
+            hostname: connection.hostname,
+            port: AudioStreamProtocol.defaultPort,
+            token: connection.companionToken,
+            title: connection.displayName,
+            lowLatency: connection.lowLatencyAudio
+        )
     }
 
     private var player: some View {

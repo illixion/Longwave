@@ -38,9 +38,16 @@ struct ConnectionListView: View {
     /// settings row it keeps (and adopts any left over from when this list was
     /// where you started a session). Showing it in both places would give a
     /// single session two sets of settings that disagree.
+    ///
+    /// On iOS, audio-only Native connections are hidden too: they belong to
+    /// the Audio tab (see `MobileAudioView`), and listing them here as well
+    /// just duplicates that tab with a row whose tap target does nothing
+    /// visible (it starts an audio stream with no screen to show for it).
     private var visibleConnections: [SavedConnection] {
         #if os(macOS)
         savedConnections.filter { $0.connectionType != .ssh }
+        #elseif os(iOS)
+        savedConnections.filter { $0.connectionTypeRawValue != "foveated" && !$0.isNativeAudioOnly }
         #else
         savedConnections.filter { $0.connectionTypeRawValue != "foveated" }
         #endif

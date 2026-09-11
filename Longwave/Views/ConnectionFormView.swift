@@ -224,6 +224,8 @@ struct ConnectionFormView: View {
             Text("Unity starts with a control window only. From there you can show the full desktop, open individual Mac windows, show or hide all windows, and opt into automatically showing newly visible windows.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #else
+            Toggle("Screen", isOn: $nativeScreenEnabled)
             #endif
             Toggle("Audio", isOn: $nativeAudioEnabled)
         }

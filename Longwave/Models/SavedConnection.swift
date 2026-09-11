@@ -483,6 +483,12 @@ final class SavedConnection {
         set { nativeUnityEnabledStorage = newValue }
     }
 
+    /// A Native connection with Audio on and Screen off — the iPhone/iPad
+    /// Audio tab's territory rather than the Connections list's.
+    var isNativeAudioOnly: Bool {
+        connectionType == .native && nativeAudioEnabled && !nativeScreenEnabled
+    }
+
     var nativeUnityAutoShow: Bool {
         get { nativeUnityAutoShowStorage ?? false }
         set { nativeUnityAutoShowStorage = newValue }

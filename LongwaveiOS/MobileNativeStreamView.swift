@@ -147,6 +147,17 @@ struct MobileNativeStreamView: View {
         dismiss()
     }
 
+    /// Turns Screen off for this session (mirrors the visionOS Native
+    /// window's live Screen toggle) without touching Audio. There is no
+    /// windowed layout to fall back into here, so once Screen is off this
+    /// full-screen cover has nothing left to show and dismisses — Audio, if
+    /// still live, keeps playing from the Audio tab.
+    private func stopScreen() {
+        screenManager.liveEnabled = false
+        screenManager.desktopToggleChanged(false)
+        dismiss()
+    }
+
     // MARK: - Video
 
     @ViewBuilder
@@ -227,6 +238,11 @@ struct MobileNativeStreamView: View {
                 Image(systemName: "xmark")
             }
             .accessibilityLabel("Disconnect")
+
+            Button(action: stopScreen) {
+                Image(systemName: "macwindow.on.rectangle")
+            }
+            .accessibilityLabel("Turn off Screen")
 
             Button {
                 screenManager.touchMode = screenManager.touchMode == .absolute ? .relative : .absolute

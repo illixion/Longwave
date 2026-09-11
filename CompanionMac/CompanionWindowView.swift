@@ -183,7 +183,7 @@ struct AccessTokenPane: View {
                               let service = NSSharingService(named: .sendViaAirDrop) else { return }
                         service.perform(withItems: [url])
                     } label: {
-                        Label("AirDrop to Vision Pro", systemImage: "square.and.arrow.up")
+                        Label("AirDrop to Device", systemImage: "square.and.arrow.up")
                     }
 
                     Spacer()

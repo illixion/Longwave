@@ -205,7 +205,7 @@ Moonlight streaming requires [moonlight-common-c](https://github.com/moonlight-s
 
 Open `Longwave.xcodeproj` in Xcode. The RAVE packages resolve automatically once they are checked out as siblings (see [RAVE Packages](#rave-packages)). Build and run on Apple Vision Pro or the visionOS Simulator.
 
-The project is **arm64-only** (`ARCHS = arm64` at the project level) — Apple deprecated x86_64 with macOS Tahoe. When building for the simulator from the command line, use a concrete destination (e.g. `-destination 'platform=visionOS Simulator,name=Apple Vision Pro'`) rather than a generic one.
+The visionOS target is **arm64-only** (`ARCHS = arm64` at the project level) — Apple deprecated x86_64 with macOS Tahoe. When building for the simulator from the command line, use a concrete destination (e.g. `-destination 'platform=visionOS Simulator,name=Apple Vision Pro'`) rather than a generic one.
 
 #### Building a specific edition
 

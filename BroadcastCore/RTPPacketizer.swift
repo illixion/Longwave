@@ -20,25 +20,6 @@ nonisolated enum RTPHeader {
     }
 }
 
-/// Splits an AVCC-formatted elementary stream (length-prefixed NAL units, as
-/// produced by VideoToolbox) into raw NAL units.
-nonisolated enum AVCCSplitter {
-    static func nalUnits(fromAVCC data: Data, lengthSize: Int = 4) -> [Data] {
-        let bytes = [UInt8](data)
-        var nalUnits: [Data] = []
-        var offset = 0
-        while offset + lengthSize <= bytes.count {
-            var length = 0
-            for i in 0..<lengthSize { length = (length << 8) | Int(bytes[offset + i]) }
-            offset += lengthSize
-            guard length > 0, offset + length <= bytes.count else { break }
-            nalUnits.append(Data(bytes[offset..<(offset + length)]))
-            offset += length
-        }
-        return nalUnits
-    }
-}
-
 /// Packetizes H.264 access units per RFC 6184. NAL units that fit in
 /// `maxPayloadSize` go out as single-NAL packets; larger ones are FU-A
 /// fragmented. The RTP marker bit is set on the last packet of each

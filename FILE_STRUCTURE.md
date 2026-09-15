@@ -107,7 +107,7 @@ BroadcastCore/                          — compiled into BOTH the app and the b
 ├── RTPPacketizer.swift                 — RTP/RTCP framing, H.264 RFC 6184 + Opus RFC 7587 (unit-tested)
 ├── SDPBuilder.swift                    — ANNOUNCE SDP from live SPS/PPS (unit-tested)
 ├── RTSPPublisher.swift                 — RTSP record client over NWConnection, interleaved RTP, Basic auth
-├── BroadcastVideoEncoder.swift         — VTCompressionSession H.264 (realtime, no B-frames, 1 s GOP)
+├── BroadcastVideoEncoder.swift         — RTP shape of RAVESDK's RAVEH264Encoder: NAL split + in-band SPS/PPS on IDRs
 └── BroadcastAudioEncoder.swift         — AVAudioConverter → native Opus (PCM-buffer + CMSampleBuffer entry points)
 
 BroadcastExtension/                     — LongwaveBroadcast target (ReplayKit broadcast upload extension)

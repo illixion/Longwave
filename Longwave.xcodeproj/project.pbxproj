@@ -16,6 +16,8 @@
 		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
 		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
 		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
+		AA07000000000000000000DF /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DE /* RAVECamera */; };
+		CCBB00000000000000000031 /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = CCBB00000000000000000030 /* RAVECamera */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
@@ -275,6 +277,7 @@
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
 				AA07000000000000000000DB /* RAVEMedia in Frameworks */,
+				AA07000000000000000000DF /* RAVECamera in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -296,6 +299,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CCBB00000000000000000031 /* RAVECamera in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -444,6 +448,7 @@
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
 				AA07000000000000000000DA /* RAVEMedia */,
+				AA07000000000000000000DE /* RAVECamera */,
 			);
 			productName = Longwave;
 			productReference = 1DC83C272F74524200BF0482 /* Longwave.app */;
@@ -582,6 +587,9 @@
 				CCBB00000000000000000002 /* BroadcastCore */,
 			);
 			name = LongwaveBroadcast;
+			packageProductDependencies = (
+				CCBB00000000000000000030 /* RAVECamera */,
+			);
 			productName = LongwaveBroadcast;
 			productReference = CCBB00000000000000000001 /* LongwaveBroadcast.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -1436,6 +1444,16 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA07000000000000000000DE /* RAVECamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECamera;
+		};
+		CCBB00000000000000000030 /* RAVECamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECamera;
+		};
 		AA07000000000000000000D6 /* RAVEUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;

@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import Observation
+import RAVECamera
 
 /// Orchestrates the broadcast pipeline:
 /// capture (camera + mic) → H.264/Opus encode → RTSP publish to mediamtx.
@@ -80,7 +81,7 @@ final class BroadcastManager {
 
     /// App-group defaults so the broadcast extension sees the same config.
     private let defaults = BroadcastShared.defaults
-    @ObservationIgnored private var capture: BroadcastCaptureSession?
+    @ObservationIgnored private var capture: RAVEPersonaCamera?
     @ObservationIgnored private var micCapture: BroadcastMicCapture?
     @ObservationIgnored private var videoEncoder: BroadcastVideoEncoder?
     @ObservationIgnored private var audioEncoder: BroadcastAudioEncoder?
@@ -151,7 +152,7 @@ final class BroadcastManager {
     }
 
     func refreshCameras() {
-        let devices = BroadcastCaptureSession.availableCameras()
+        let devices = RAVEPersonaCamera.availableCameras()
         cameras = devices.map { CameraOption(id: $0.uniqueID, name: $0.localizedName) }
         if selectedCameraID == nil || !cameras.contains(where: { $0.id == selectedCameraID }) {
             selectedCameraID = cameras.first?.id
@@ -181,12 +182,12 @@ final class BroadcastManager {
 
         refreshCameras()
         guard let cameraID = selectedCameraID,
-              let camera = BroadcastCaptureSession.availableCameras().first(where: { $0.uniqueID == cameraID }) else {
+              let camera = RAVEPersonaCamera.availableCameras().first(where: { $0.uniqueID == cameraID }) else {
             state = .error("No camera available")
             return
         }
 
-        let capture = BroadcastCaptureSession()
+        let capture = RAVEPersonaCamera()
         do {
             try capture.configure(camera: camera)
         } catch {

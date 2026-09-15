@@ -1,103 +1,13 @@
 import Foundation
 import AVFoundation
 
-/// Camera capture for the broadcast pipeline. visionOS exposes a reduced
-/// AVCapture surface (no session presets, no `AVCaptureAudioDataOutput`) —
-/// video comes from `AVCaptureVideoDataOutput` at the device's native
-/// format, and the mic is captured separately by `BroadcastMicCapture`.
-final class BroadcastCaptureSession: NSObject, @unchecked Sendable {
-
-    nonisolated(unsafe) var onVideoSample: ((CMSampleBuffer) -> Void)?
-
-    /// Exposed for the SwiftUI preview layer. Configure/start/stop only
-    /// through this class.
-    let session = AVCaptureSession()
-
-    private let sessionQueue = DispatchQueue(label: "pro.longwave.broadcast-session")
-    private let videoQueue = DispatchQueue(label: "pro.longwave.broadcast-video", qos: .userInteractive)
-
-    /// Every video capture device visionOS will give us. The exact device
-    /// types Persona / Mirror My View enumerate as are undocumented, so
-    /// merge discovery with the system default and log what we find.
-    nonisolated static func availableCameras() -> [AVCaptureDevice] {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera],
-            mediaType: .video, position: .unspecified)
-        var devices = discovery.devices
-        if let fallback = AVCaptureDevice.default(for: .video),
-           !devices.contains(where: { $0.uniqueID == fallback.uniqueID }) {
-            devices.append(fallback)
-        }
-        for device in devices {
-            AppLog.broadcast.line("📷 Video device: \(device.localizedName) [\(device.uniqueID)] type=\(device.deviceType.rawValue)")
-        }
-        return devices
-    }
-
-    enum ConfigurationError: Error, LocalizedError {
-        case inputRejected(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .inputRejected(let detail): "Capture setup failed: \(detail)"
-            }
-        }
-    }
-
-    nonisolated func configure(camera: AVCaptureDevice) throws {
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-
-        for input in session.inputs { session.removeInput(input) }
-        for output in session.outputs { session.removeOutput(output) }
-
-        do {
-            let videoInput = try AVCaptureDeviceInput(device: camera)
-            guard session.canAddInput(videoInput) else {
-                throw ConfigurationError.inputRejected("video input not accepted")
-            }
-            session.addInput(videoInput)
-        } catch let error as ConfigurationError {
-            throw error
-        } catch {
-            throw ConfigurationError.inputRejected(error.localizedDescription)
-        }
-
-        let videoOutput = AVCaptureVideoDataOutput()
-        // NV12 is VideoToolbox's preferred input; drop late frames rather
-        // than letting encode latency snowball.
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        ]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
-        guard session.canAddOutput(videoOutput) else {
-            throw ConfigurationError.inputRejected("video output not accepted")
-        }
-        session.addOutput(videoOutput)
-    }
-
-    nonisolated func start() {
-        sessionQueue.async { [self] in
-            guard !session.isRunning else { return }
-            session.startRunning()
-        }
-    }
-
-    nonisolated func stop() {
-        sessionQueue.async { [self] in
-            guard session.isRunning else { return }
-            session.stopRunning()
-        }
-    }
-}
-
-extension BroadcastCaptureSession: AVCaptureVideoDataOutputSampleBufferDelegate {
-    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
-                                   from connection: AVCaptureConnection) {
-        onVideoSample?(sampleBuffer)
-    }
-}
+// Camera capture for the broadcast pipeline is `RAVEPersonaCamera` from
+// RAVESDK's `RAVECamera` — the class that used to live here, lifted out once
+// Raven needed the same raw AVCapture frame (WebKit's `getUserMedia` reframes
+// the sensor and never offers the native 1920×1080). What stays app-side is
+// the microphone: visionOS has no `AVCaptureAudioDataOutput`, so the mic is
+// tapped from `AVAudioEngine`, and the audio-session choices below are
+// Longwave's own.
 
 /// Mic capture via an AVAudioEngine input tap (visionOS has no
 /// `AVCaptureAudioDataOutput`). Emits PCM buffers on the engine's render

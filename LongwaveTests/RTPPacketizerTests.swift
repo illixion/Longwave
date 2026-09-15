@@ -24,25 +24,8 @@ final class RTPPacketizerTests: XCTestCase {
         XCTAssertEqual([UInt8](header)[1], 97)
     }
 
-    // MARK: - AVCC splitting
-
-    func testAVCCSplitter() {
-        var avcc = Data()
-        let nal1: [UInt8] = [0x65, 0x01, 0x02]
-        let nal2: [UInt8] = [0x41, 0xFF]
-        avcc.append(contentsOf: [0, 0, 0, 3]); avcc.append(contentsOf: nal1)
-        avcc.append(contentsOf: [0, 0, 0, 2]); avcc.append(contentsOf: nal2)
-        let units = AVCCSplitter.nalUnits(fromAVCC: avcc)
-        XCTAssertEqual(units.count, 2)
-        XCTAssertEqual([UInt8](units[0]), nal1)
-        XCTAssertEqual([UInt8](units[1]), nal2)
-    }
-
-    func testAVCCSplitterTruncatedInput() {
-        var avcc = Data()
-        avcc.append(contentsOf: [0, 0, 0, 10, 0x65])    // claims 10 bytes, has 1
-        XCTAssertTrue(AVCCSplitter.nalUnits(fromAVCC: avcc).isEmpty)
-    }
+    // AVCC splitting moved to RAVESDK (`RAVEAVCC.nalUnits(fromAVCC:)`) along
+    // with the encoder; its tests live in `RAVECameraTests` there.
 
     // MARK: - H.264 single NAL
 

@@ -108,7 +108,7 @@ Longwave links two shared packages:
 
 | Package | Products used |
 |---|---|
-| [`RAVESDK`](https://github.com/illixion/RAVESDK) | `RAVEUI`, `RAVEConsole`, `RAVEMedia` |
+| [`RAVESDK`](https://github.com/illixion/RAVESDK) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` |
 | [`RAVEEngine`](https://github.com/illixion/RAVEEngine) | `RAVEInput`, `RAVEDiagnostics` |
 
 Both are referenced as **local** Swift packages by relative path —

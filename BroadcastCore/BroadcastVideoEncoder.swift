@@ -1,11 +1,17 @@
 import Foundation
 import CoreMedia
-import VideoToolbox
+import RAVECamera
 
-/// Hardware H.264 encoder for the broadcast pipeline. Mirrors the decode
-/// side of `MoonlightVideoRenderer`: VideoToolbox session, AVCC output
-/// split into raw NAL units. Runs entirely on the capture callback thread
-/// (the session is created lazily from the first frame's dimensions).
+/// The RTP-facing shape of `RAVEH264Encoder` (RAVESDK's `RAVECamera`): the
+/// session tuning — realtime, no B-frames, 1 s GOP — lives in the package,
+/// shared with Raven's screen-share extension. What this adds is what RTP
+/// wants and a WebCodecs decoder does not: each access unit split into raw
+/// NAL units (RFC 6184 payloads them one at a time), with SPS/PPS prepended
+/// in-band ahead of every IDR so readers that join mid-stream, and publishers
+/// coming back from a reconnect, decode without an out-of-band SDP refresh.
+///
+/// Runs entirely on the capture callback thread and VideoToolbox's output
+/// thread, like the encoder it wraps.
 final class BroadcastVideoEncoder: @unchecked Sendable {
 
     /// Fired once when SPS/PPS first become available (and again if they
@@ -16,121 +22,37 @@ final class BroadcastVideoEncoder: @unchecked Sendable {
     nonisolated(unsafe) var onEncodedFrame: ((_ nalUnits: [Data], _ pts: CMTime, _ keyframe: Bool) -> Void)?
     nonisolated(unsafe) var onError: ((String) -> Void)?
 
-    private let bitrate: Int
-    private let frameRate: Int
-    private nonisolated(unsafe) var session: VTCompressionSession?
-    private nonisolated(unsafe) var currentSPS: Data?
-    private nonisolated(unsafe) var currentPPS: Data?
+    private let encoder: RAVEH264Encoder
+    private nonisolated(unsafe) var parameterSets: RAVEH264Encoder.ParameterSets?
 
     nonisolated init(bitrate: Int, frameRate: Int = 30) {
-        self.bitrate = bitrate
-        self.frameRate = frameRate
+        encoder = RAVEH264Encoder(configuration: .init(bitrate: bitrate, frameRate: frameRate))
+        encoder.onParameterSets = { [weak self] sets in
+            guard let self else { return }
+            self.parameterSets = sets
+            self.onParameterSets?(sets.sps, sets.pps)
+        }
+        encoder.onAccessUnit = { [weak self] unit in
+            guard let self else { return }
+            var nalUnits = RAVEAVCC.nalUnits(fromAVCC: unit.data,
+                                             nalUnitLengthSize: self.parameterSets?.nalUnitLengthSize ?? 4)
+            guard !nalUnits.isEmpty else { return }
+            if unit.isKeyframe, let sets = self.parameterSets {
+                nalUnits.insert(contentsOf: [sets.sps, sets.pps], at: 0)
+            }
+            self.onEncodedFrame?(nalUnits, unit.presentationTime, unit.isKeyframe)
+        }
+        encoder.onError = { [weak self] message in
+            self?.onError?(message)
+        }
     }
 
     nonisolated func encode(_ sampleBuffer: CMSampleBuffer) {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        if session == nil {
-            createSession(width: CVPixelBufferGetWidth(pixelBuffer),
-                          height: CVPixelBufferGetHeight(pixelBuffer))
-        }
-        guard let session else { return }
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let status = VTCompressionSessionEncodeFrame(
-            session, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
-            duration: .invalid, frameProperties: nil, infoFlagsOut: nil
-        ) { [weak self] status, _, encodedBuffer in
-            guard let self, status == noErr, let encodedBuffer else { return }
-            self.emit(encodedBuffer)
-        }
-        if status != noErr {
-            onError?("VTCompressionSessionEncodeFrame failed (\(status))")
-        }
+        encoder.encode(sampleBuffer)
     }
 
     nonisolated func invalidate() {
-        if let session {
-            VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
-            VTCompressionSessionInvalidate(session)
-        }
-        session = nil
-    }
-
-    private nonisolated func createSession(width: Int, height: Int) {
-        var newSession: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
-            allocator: nil, width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
-            imageBufferAttributes: nil, compressedDataAllocator: nil,
-            outputCallback: nil, refcon: nil, compressionSessionOut: &newSession)
-        guard status == noErr, let newSession else {
-            onError?("VTCompressionSessionCreate failed (\(status))")
-            return
-        }
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel,
-                             value: kVTProfileLevel_H264_Main_AutoLevel)
-        // No B-frames: keeps PTS monotonic for direct RTP timestamping.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate,
-                             value: bitrate as CFNumber)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate,
-                             value: frameRate as CFNumber)
-        // 1 s GOP so WHEP/RTSP readers join and recover quickly.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-                             value: 1.0 as CFNumber)
-        VTCompressionSessionPrepareToEncodeFrames(newSession)
-        session = newSession
-        broadcastLog("🎥 H.264 encoder ready: \(width)x\(height) @ \(bitrate / 1_000_000) Mbps")
-    }
-
-    private nonisolated func emit(_ encodedBuffer: CMSampleBuffer) {
-        guard CMSampleBufferDataIsReady(encodedBuffer) else { return }
-
-        let keyframe: Bool = {
-            guard let attachments = CMSampleBufferGetSampleAttachmentsArray(encodedBuffer, createIfNecessary: false)
-                    as? [[CFString: Any]], let first = attachments.first else { return true }
-            return !(first[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-        }()
-
-        if let formatDescription = CMSampleBufferGetFormatDescription(encodedBuffer) {
-            refreshParameterSets(from: formatDescription)
-        }
-
-        guard let dataBuffer = CMSampleBufferGetDataBuffer(encodedBuffer) else { return }
-        let length = CMBlockBufferGetDataLength(dataBuffer)
-        var avcc = Data(count: length)
-        let copyStatus = avcc.withUnsafeMutableBytes { buffer -> OSStatus in
-            guard let baseAddress = buffer.baseAddress else { return -1 }
-            return CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: baseAddress)
-        }
-        guard copyStatus == noErr else { return }
-
-        var nalUnits = AVCCSplitter.nalUnits(fromAVCC: avcc)
-        guard !nalUnits.isEmpty else { return }
-        if keyframe, let sps = currentSPS, let pps = currentPPS {
-            // In-band parameter sets ahead of each IDR — lets readers that
-            // join mid-stream (and post-reconnect publishers) decode without
-            // out-of-band SDP refreshes.
-            nalUnits.insert(contentsOf: [sps, pps], at: 0)
-        }
-        onEncodedFrame?(nalUnits, CMSampleBufferGetPresentationTimeStamp(encodedBuffer), keyframe)
-    }
-
-    private nonisolated func refreshParameterSets(from formatDescription: CMFormatDescription) {
-        func parameterSet(at index: Int) -> Data? {
-            var pointer: UnsafePointer<UInt8>?
-            var size = 0
-            let status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                formatDescription, parameterSetIndex: index, parameterSetPointerOut: &pointer,
-                parameterSetSizeOut: &size, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
-            guard status == noErr, let pointer else { return nil }
-            return Data(bytes: pointer, count: size)
-        }
-        guard let sps = parameterSet(at: 0), let pps = parameterSet(at: 1) else { return }
-        if sps != currentSPS || pps != currentPPS {
-            currentSPS = sps
-            currentPPS = pps
-            onParameterSets?(sps, pps)
-        }
+        encoder.invalidate()
+        parameterSets = nil
     }
 }

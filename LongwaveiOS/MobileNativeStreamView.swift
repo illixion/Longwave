@@ -331,10 +331,12 @@ struct MobileNativeStreamView: View {
 
     private func dragBegan(at p: CGPoint, in size: CGSize) {
         lastDragPoint = p
-        guard !isRelative else {
-            screenManager.pressMouseAtVirtualCursor(button: .left)
-            return
-        }
+        // Touchpad mode never presses on drag start: a tap that jitters a few
+        // points during a `UIPanGestureRecognizer`'s `.began` would otherwise
+        // turn every click into a click-and-drag. The tap gesture's `onClick`
+        // already sends a full press+release; a genuine drag here only moves
+        // the cursor (see `dragMoved`).
+        guard !isRelative else { return }
         guard let fb = point(p, in: size) else { return }
         screenManager.sendMouseDown(button: .left, x: fb.x, y: fb.y)
     }
@@ -359,10 +361,7 @@ struct MobileNativeStreamView: View {
 
     private func dragEnded(at p: CGPoint, in size: CGSize) {
         defer { lastDragPoint = nil }
-        guard !isRelative else {
-            screenManager.releaseMouseAtVirtualCursor(button: .left)
-            return
-        }
+        guard !isRelative else { return }
         guard let fb = point(p, in: size) else { return }
         screenManager.sendMouseUp(button: .left, x: fb.x, y: fb.y)
     }

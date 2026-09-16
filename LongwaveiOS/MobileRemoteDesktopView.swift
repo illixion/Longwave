@@ -183,6 +183,14 @@ struct MobileRemoteDesktopView: View {
             .accessibilityLabel("Disconnect")
 
             Button {
+                connectionManager.touchMode = connectionManager.touchMode == .absolute ? .relative : .absolute
+            } label: {
+                Image(systemName: connectionManager.touchMode == .absolute
+                      ? "hand.tap" : "rectangle.and.hand.point.up.left")
+            }
+            .accessibilityLabel(connectionManager.touchMode == .absolute ? "Direct touch" : "Touchpad")
+
+            Button {
                 typing.toggle()
             } label: {
                 Image(systemName: "keyboard")
@@ -264,10 +272,12 @@ struct MobileRemoteDesktopView: View {
 
     private func dragBegan(at point: CGPoint, in size: CGSize) {
         lastDragPoint = point
-        guard !isRelative else {
-            connectionManager.pressMouseAtVirtualCursor(button: .left)
-            return
-        }
+        // Touchpad mode never presses on drag start: a tap that jitters a few
+        // points during a `UIPanGestureRecognizer`'s `.began` would otherwise
+        // turn every click into a click-and-drag. The tap gesture's `onClick`
+        // already sends a full press+release; a genuine drag here only moves
+        // the cursor (see `dragMoved`).
+        guard !isRelative else { return }
         guard let p = framebufferPoint(point, in: size) else { return }
         connectionManager.sendMouseMove(x: p.x, y: p.y)
         connectionManager.sendMouseDown(button: .left, x: p.x, y: p.y)
@@ -293,10 +303,7 @@ struct MobileRemoteDesktopView: View {
 
     private func dragEnded(at point: CGPoint, in size: CGSize) {
         defer { lastDragPoint = nil }
-        guard !isRelative else {
-            connectionManager.releaseMouseAtVirtualCursor(button: .left)
-            return
-        }
+        guard !isRelative else { return }
         guard let p = framebufferPoint(point, in: size) else { return }
         connectionManager.sendMouseUp(button: .left, x: p.x, y: p.y)
     }

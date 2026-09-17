@@ -1,8 +1,22 @@
 import SwiftUI
+import SwiftData
+import UniformTypeIdentifiers
 
 /// Settings tab: defaults applied when creating a new connection.
 /// Existing saved connections are not affected.
 struct SettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+
+    // Backup & Restore
+    @State private var isExportingBackup = false
+    @State private var showBackupExporter = false
+    @State private var backupDocument: LongwaveBackupDocument?
+    @State private var showBackupImporter = false
+    @State private var pendingImport: LongwaveBackup?
+    @State private var showImportConfirmation = false
+    @State private var showImportSuccess = false
+    @State private var importErrorMessage: String?
+
     // VNC
     @AppStorage(ConnectionDefaults.Keys.vncQuality) private var vncQualityRaw = ConnectionQuality.high.rawValue
     @AppStorage(ConnectionDefaults.Keys.vncTouchMode) private var vncTouchModeRaw = TouchMode.relative.rawValue
@@ -156,10 +170,123 @@ struct SettingsView: View {
                 }
                 #endif
 
+                Section("Backup") {
+                    Button {
+                        exportBackup()
+                    } label: {
+                        if isExportingBackup {
+                            HStack {
+                                ProgressView().scaleEffect(0.8)
+                                Text("Preparing…")
+                            }
+                        } else {
+                            Label("Export Backup", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    .disabled(isExportingBackup)
+
+                    Button {
+                        showBackupImporter = true
+                    } label: {
+                        Label("Import Backup…", systemImage: "square.and.arrow.down")
+                    }
+
+                    Text("Includes saved connections and settings, but never passwords or tokens.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("About") {
                     LabeledContent("Version", value: appVersionString)
                 }
             }
+            .fileExporter(
+                isPresented: $showBackupExporter,
+                document: backupDocument,
+                contentType: .json,
+                defaultFilename: "Longwave-Backup-\(backupDateString()).json"
+            ) { _ in
+                backupDocument = nil
+            }
+            .fileImporter(
+                isPresented: $showBackupImporter,
+                allowedContentTypes: [.json]
+            ) { result in
+                handleImportPick(result)
+            }
+            .alert("Import Backup?", isPresented: $showImportConfirmation, presenting: pendingImport) { backup in
+                Button("Cancel", role: .cancel) { pendingImport = nil }
+                Button("Import", role: .destructive) { applyImport(backup) }
+            } message: { backup in
+                Text("This replaces your saved connections and preferences with the \(backup.connections?.count ?? 0) connection(s) from this backup, dated \(backup.exportDate.formatted(date: .abbreviated, time: .shortened)).")
+            }
+            .alert("Backup Imported", isPresented: $showImportSuccess) {
+                Button("OK", role: .cancel) {}
+            }
+            .alert("Import Failed", isPresented: Binding(
+                get: { importErrorMessage != nil },
+                set: { if !$0 { importErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(importErrorMessage ?? "")
+            }
+    }
+
+    private func exportBackup() {
+        isExportingBackup = true
+        let backup = BackupManager.exportBackup(context: modelContext)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(backup) {
+            backupDocument = LongwaveBackupDocument(data: data)
+            showBackupExporter = true
+        }
+        isExportingBackup = false
+    }
+
+    private func handleImportPick(_ result: Result<URL, Error>) {
+        switch result {
+        case .failure(let error):
+            importErrorMessage = error.localizedDescription
+        case .success(let url):
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let backup = try decoder.decode(LongwaveBackup.self, from: data)
+                // Presenting an alert in the same runloop turn that dismisses
+                // fileImporter drops it silently, leaving a picker that closed
+                // and did nothing — so hop a beat before showing it.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    pendingImport = backup
+                    showImportConfirmation = true
+                }
+            } catch {
+                importErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func applyImport(_ backup: LongwaveBackup) {
+        do {
+            try BackupManager.restore(backup, context: modelContext)
+            pendingImport = nil
+            showImportSuccess = true
+        } catch {
+            pendingImport = nil
+            importErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func backupDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
 
     /// "0.1.0 (abc1234)" — commit baked in by scripts/set-build-info.sh

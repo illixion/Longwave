@@ -58,9 +58,14 @@ struct LongwaveMacApp: App {
         .menuBarExtraStyle(.window)
 
         // Single Settings window (Cmd-,): client defaults + all host config.
+        // Needs its own `.modelContainer` — `SettingsView`'s Backup section
+        // reads `modelContext`, and a Scene's container doesn't span other
+        // Scenes, only the one it's attached to (see the "main" WindowGroup
+        // above). Same underlying SwiftData store either way.
         Settings {
             MacSettingsView(controller: companionController, broadcastServer: broadcastServer)
         }
+        .modelContainer(for: SavedConnection.self)
 
         WindowGroup("Console", id: "console") {
             RAVEConsoleScreen()

@@ -93,29 +93,40 @@ final class WindowSessionRegistry {
     }
 
     /// Surfaces the main window and runs `close` only once main is actually on
-    /// screen.
+    /// screen — but only when this really would leave the app with zero
+    /// windows. Pass the ids of every window `close` is about to dismiss so
+    /// that can be checked against what's still open.
     ///
     /// visionOS refuses to let an app close its own last window, so every
-    /// session-teardown path has to open a main window first. But `openWindow`
-    /// is asynchronous — the scene is created a turn or more later — so a
-    /// `dismissWindow` issued in the same turn can still be evaluated while
-    /// the closing window *is* the last one, and the close is silently
+    /// session-teardown path has to open a main window first *when it's about
+    /// to be the last one standing*. Earlier this surfaced main unconditionally,
+    /// which was harmless when the OS silently blocked the close outright — but
+    /// under visionOS 27, closing succeeds and a later `openWindow(main)` call
+    /// (ours or, worse, the OS's own) can still land, so a session ending while
+    /// another window (e.g. an SSH terminal) is still open no longer needs main
+    /// at all and popping it up anyway is a regression, not a safety net.
+    ///
+    /// `openWindow` is asynchronous — the scene is created a turn or more later
+    /// — so a `dismissWindow` issued in the same turn can still be evaluated
+    /// while the closing window *is* the last one, and the close is silently
     /// dropped: the session window stays up (and, with the pushWindow
     /// back-stack gone, nothing else pops it). Waiting for the main window
     /// root's `onAppear` (i.e. `registerMainWindow()`) makes the handoff
     /// ordered instead of racy.
     ///
-    /// When main is already open this closes synchronously, so the common case
-    /// keeps its current single-turn behavior.
+    /// When main is already open, or another tracked window will still be open
+    /// afterward, this closes synchronously with no surfacing at all.
     func closeAfterSurfacingMain(
+        closing closingIDs: Set<String>,
         using openWindow: OpenWindowAction,
         _ close: @escaping @MainActor () -> Void
     ) {
-        openWindow(id: "main", value: MainWindowID.shared)
-        guard mainWindowCount == 0 else {
+        let otherWindowWillRemain = sessions.keys.contains { !closingIDs.contains($0) }
+        guard mainWindowCount == 0, !otherWindowWillRemain else {
             close()
             return
         }
+        openWindow(id: "main", value: MainWindowID.shared)
         Task { @MainActor in
             // Bounded wait: if the main window never materializes, close
             // anyway rather than leaving the user stuck in a dead session.

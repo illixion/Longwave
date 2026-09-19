@@ -90,6 +90,7 @@ struct LongwaveApp: App {
         }
         .defaultSize(width: 760, height: 480)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         // Popped out of the unified Native window by its pop-out button
         // (`NativeStreamView`); stays a separate window for as long as it's
@@ -107,6 +108,7 @@ struct LongwaveApp: App {
         // shows nothing, instead of a tall empty slab of system glass.
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in
             if let sessionID {
@@ -120,6 +122,7 @@ struct LongwaveApp: App {
         .windowResizability(.contentMinSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup("Terminal Keyboard", id: "ssh-keyboard", for: SSHSessionID.self) { $sessionID in
             if let sessionID {
@@ -132,6 +135,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 1180, height: 780)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup("Remote Desktop", id: "remote-desktop") {
             RemoteDesktopView()
@@ -143,6 +147,7 @@ struct LongwaveApp: App {
         .windowResizability(.contentMinSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup(
             "Native",
@@ -171,6 +176,7 @@ struct LongwaveApp: App {
         .windowResizability(.contentSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup(
             "Unity Controls",
@@ -191,6 +197,7 @@ struct LongwaveApp: App {
         .windowResizability(.contentSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         // Unity-style per-window streams: one chrome-free scene per streamed
         // host window, keyed by the host window ID. No ornament by design —
@@ -210,6 +217,7 @@ struct LongwaveApp: App {
         .windowResizability(.contentMinSize)
         .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         #if MOONLIGHT_ENABLED
         // One scene per Moonlight session (see `MoonlightSessionStore`): the value
@@ -226,6 +234,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 1920, height: 1080)
         .windowResizability(.contentMinSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
         #endif
 
         WindowGroup("Keyboard", id: "keyboard") {
@@ -237,6 +246,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         WindowGroup("Native Keyboard", id: "mac-native-keyboard") {
             MacNativeKeyboardView()
@@ -247,6 +257,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         #if MOONLIGHT_ENABLED
         WindowGroup("Moonlight Keyboard", id: "moonlight-keyboard", for: MoonlightSessionID.self) { $sessionID in
@@ -260,6 +271,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
         #endif
 
         #if FOVEATED_ENABLED
@@ -276,6 +288,7 @@ struct LongwaveApp: App {
         .defaultSize(width: 480, height: 520)
         .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         // The streamed immersive content. On device this binds to the session
         // so the system composites the foveated video; on the simulator the

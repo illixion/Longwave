@@ -957,7 +957,10 @@ struct NativeStreamView: View {
         screenManager.unityEnabled = false
         screenManager.forget()
         audioManager.userDisconnect()
-        WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+        WindowSessionRegistry.shared.closeAfterSurfacingMain(
+            closing: ["mac-native-keyboard", "mac-native-stream", "mac-native-unity-controls"],
+            using: openWindow
+        ) {
             dismissWindow(id: "mac-native-keyboard")
             dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
             dismissWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)

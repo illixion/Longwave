@@ -69,7 +69,7 @@ struct AudioStreamView: View {
                 // Surface the connection manager first and wait for it to
                 // exist: visionOS won't let an app close its own last window,
                 // so closing before main is on screen is silently ignored.
-                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                WindowSessionRegistry.shared.closeAfterSurfacingMain(closing: ["audio-stream"], using: openWindow) {
                     dismissWindow(id: "audio-stream")
                 }
             } label: {

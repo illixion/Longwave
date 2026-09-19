@@ -195,7 +195,10 @@ struct SSHTerminalView: View {
                 // Surface the connection manager first and wait for it:
                 // visionOS won't let an app close its own last window, so a
                 // terminal that is the only open window would refuse to close.
-                WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+                WindowSessionRegistry.shared.closeAfterSurfacingMain(
+                    closing: ["ssh-keyboard", "ssh-terminal"],
+                    using: openWindow
+                ) {
                     dismissWindow(id: "ssh-keyboard", value: sessionID)
                     dismissWindow(id: "ssh-terminal", value: sessionID)
                 }

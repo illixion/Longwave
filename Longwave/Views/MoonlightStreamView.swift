@@ -207,7 +207,10 @@ struct MoonlightStreamView: View {
     /// targets a known scene, and ordered behind the main window because
     /// visionOS won't let an app close its own last window.
     private func closeStreamWindow() {
-        WindowSessionRegistry.shared.closeAfterSurfacingMain(using: openWindow) {
+        WindowSessionRegistry.shared.closeAfterSurfacingMain(
+            closing: ["moonlight-keyboard", "moonlight-stream"],
+            using: openWindow
+        ) {
             dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
             dismissWindow(id: "moonlight-stream", value: manager.sessionID)
         }

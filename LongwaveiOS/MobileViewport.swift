@@ -101,6 +101,34 @@ struct MobileViewport: Equatable {
         pan = Self.clampedPan(proposed, drawn: layout(content: content, in: size).drawn, in: size)
     }
 
+    /// Nudges pan so a surface point (e.g. the touchpad's virtual cursor) stays
+    /// within `margin` of the visible edge — without this, moving the cursor in
+    /// relative/touchpad mode while zoomed in walks it straight off the part of
+    /// the surface that's actually drawn, with no way to see where it went.
+    mutating func follow(_ point: CGPoint, content: CGSize, in size: CGSize, margin: CGFloat = 40) {
+        guard zoom > 1.001 else { return }
+        let current = layout(content: content, in: size)
+        guard current.scale > 0 else { return }
+        let view = CGPoint(
+            x: current.origin.x + point.x * current.scale,
+            y: current.origin.y + point.y * current.scale
+        )
+        var shift = CGSize.zero
+        if view.x < margin {
+            shift.width = margin - view.x
+        } else if view.x > size.width - margin {
+            shift.width = (size.width - margin) - view.x
+        }
+        if view.y < margin {
+            shift.height = margin - view.y
+        } else if view.y > size.height - margin {
+            shift.height = (size.height - margin) - view.y
+        }
+        guard shift != .zero else { return }
+        let proposed = CGSize(width: pan.width + shift.width, height: pan.height + shift.height)
+        pan = Self.clampedPan(proposed, drawn: current.drawn, in: size)
+    }
+
     /// Toggles between fitting the surface and showing it at true pixel size,
     /// which is the zoom that actually matters for reading text.
     mutating func toggleZoom(content: CGSize, in size: CGSize) {

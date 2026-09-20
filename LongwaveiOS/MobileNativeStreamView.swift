@@ -67,7 +67,9 @@ struct MobileNativeStreamView: View {
                     }
                 )
 
-                if screenManager.state != .streaming {
+                if screenManager.isEnabled, !screenManager.liveEnabled {
+                    screenOffOverlay
+                } else if screenManager.state != .streaming {
                     statusOverlay
                 }
             }
@@ -125,6 +127,12 @@ struct MobileNativeStreamView: View {
             if audioManager.liveEnabled { audioManager.liveEnabled = false }
             audioManager.disconnect()
         }
+        // Mirrors the visionOS Native window's live Screen toggle: flipping
+        // `liveEnabled` (the toolbar toggle, or the "Turn Screen On" button
+        // below) is the single place that starts or stops the desktop stream.
+        .onChange(of: screenManager.liveEnabled) { _, on in
+            screenManager.desktopToggleChanged(on)
+        }
     }
 
     // MARK: - Session
@@ -144,17 +152,6 @@ struct MobileNativeStreamView: View {
     private func disconnectAll() {
         screenManager.forget()
         audioManager.userDisconnect()
-        dismiss()
-    }
-
-    /// Turns Screen off for this session (mirrors the visionOS Native
-    /// window's live Screen toggle) without touching Audio. There is no
-    /// windowed layout to fall back into here, so once Screen is off this
-    /// full-screen cover has nothing left to show and dismisses — Audio, if
-    /// still live, keeps playing from the Audio tab.
-    private func stopScreen() {
-        screenManager.liveEnabled = false
-        screenManager.desktopToggleChanged(false)
         dismiss()
     }
 
@@ -210,6 +207,25 @@ struct MobileNativeStreamView: View {
         .allowsHitTesting(false)
     }
 
+    /// Shown in place of the video when Screen has been turned off but the
+    /// session is still connected (Audio may still be live) — the only way
+    /// back in once Screen is off, since turning it off no longer dismisses
+    /// this cover.
+    private var screenOffOverlay: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+            Text("Screen is off")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Button("Turn Screen On") {
+                screenManager.liveEnabled = true
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
     private var inputWarningMessage: String? {
         switch screenManager.mouseAvailability {
         case .disabled: return "Mouse control is off — enable it in the host's Native settings."
@@ -233,16 +249,18 @@ struct MobileNativeStreamView: View {
     }
 
     private var toolbar: some View {
-        MobileChromeBar {
+        @Bindable var screenManager = screenManager
+        return MobileChromeBar {
             Button(action: disconnectAll) {
                 Image(systemName: "xmark")
             }
             .accessibilityLabel("Disconnect")
 
-            Button(action: stopScreen) {
-                Image(systemName: "macwindow.on.rectangle")
+            Toggle(isOn: $screenManager.liveEnabled) {
+                Image(systemName: screenManager.liveEnabled ? "macwindow.on.rectangle" : "macwindow")
             }
-            .accessibilityLabel("Turn off Screen")
+            .toggleStyle(.button)
+            .accessibilityLabel(screenManager.liveEnabled ? "Turn off Screen" : "Turn on Screen")
 
             Button {
                 screenManager.touchMode = screenManager.touchMode == .absolute ? .relative : .absolute
@@ -352,6 +370,10 @@ struct MobileNativeStreamView: View {
             screenManager.moveVirtualCursor(
                 dx: (p.x - previous.x) / layout.scale,
                 dy: (p.y - previous.y) / layout.scale
+            )
+            viewport.follow(
+                CGPoint(x: CGFloat(screenManager.virtualCursorX), y: CGFloat(screenManager.virtualCursorY)),
+                content: content, in: size
             )
             return
         }

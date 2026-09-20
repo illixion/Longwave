@@ -295,6 +295,10 @@ struct MobileRemoteDesktopView: View {
                 dx: (point.x - previous.x) / layout.scale,
                 dy: (point.y - previous.y) / layout.scale
             )
+            viewport.follow(
+                CGPoint(x: CGFloat(connectionManager.virtualCursorX), y: CGFloat(connectionManager.virtualCursorY)),
+                content: connectionManager.framebufferSize, in: size
+            )
             return
         }
         guard let p = framebufferPoint(point, in: size) else { return }

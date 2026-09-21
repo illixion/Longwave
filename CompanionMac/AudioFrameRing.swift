@@ -30,6 +30,13 @@ final class AudioFrameRing: @unchecked Sendable {
         var read = 0
         var filled = 0
         var dropped = 0
+        /// Deepest the ring has been since the last report. This is the
+        /// measurement that separates a Mac-side stall from a network one:
+        /// if the consumer thread is descheduled, captured audio piles up
+        /// here and then leaves in a burst, which the receiver cannot tell
+        /// apart from a Wi-Fi stall. Occupancy near `slotCount` with no
+        /// drops is exactly that case.
+        var highWater = 0
     }
 
     private let slotCount: Int
@@ -45,7 +52,7 @@ final class AudioFrameRing: @unchecked Sendable {
     /// producer can't log: `Logger` allocates, and it runs on the realtime
     /// thread.
     private var reportedDrops = 0
-    private var lastDropLogNanos: UInt64 = 0
+    private var lastHealthLogNanos: UInt64 = 0
 
     private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioFrameRing")
 
@@ -135,6 +142,7 @@ final class AudioFrameRing: @unchecked Sendable {
         cursor.withLock { c in
             c.write = (c.write + 1) % slotCount
             c.filled += 1
+            c.highWater = max(c.highWater, c.filled)
         }
         ready.signal()
         return true
@@ -157,25 +165,46 @@ final class AudioFrameRing: @unchecked Sendable {
             // The allocation the realtime thread isn't allowed to make.
             handler(Data(bytes: storage + slot * slotCapacity, count: lengths[slot]))
 
-            let dropped = cursor.withLock { c -> Int in
+            cursor.withLock { c in
                 c.read = (c.read + 1) % slotCount
                 c.filled -= 1
-                return c.dropped
             }
-            reportDropsIfNeeded(dropped)
+            reportHealthIfNeeded()
         }
     }
 
-    /// Surfaces producer-side drops from the consumer thread, throttled.
-    /// A drop here is audio that never reached the network at all, so it
-    /// presents to the listener exactly like a network dropout and has to be
-    /// distinguishable from one.
-    private func reportDropsIfNeeded(_ dropped: Int) {
-        guard dropped > reportedDrops else { return }
+    /// Periodic ring health from the consumer thread — the producer can't
+    /// log, since `Logger` allocates and it runs on the realtime thread.
+    ///
+    /// Occupancy is reported even when nothing is wrong: a drop is audio
+    /// that never reached the network at all and sounds exactly like a
+    /// network dropout, and a high-water mark approaching capacity *without*
+    /// drops is the same stall one notch earlier — delivered late, in a
+    /// burst, rather than lost.
+    private func reportHealthIfNeeded() {
         let now = DispatchTime.now().uptimeNanoseconds
-        guard now &- lastDropLogNanos > 5_000_000_000 else { return }
-        lastDropLogNanos = now
+        guard lastHealthLogNanos != 0 else {
+            lastHealthLogNanos = now
+            return
+        }
+        guard now &- lastHealthLogNanos > 10_000_000_000 else { return }
+        lastHealthLogNanos = now
+
+        let (dropped, highWater) = cursor.withLock { c -> (Int, Int) in
+            let snapshot = (c.dropped, c.highWater)
+            c.highWater = c.filled
+            return snapshot
+        }
+        let newDrops = dropped - reportedDrops
         reportedDrops = dropped
-        log.error("Audio frame ring overflowed — \(dropped) captured buffers dropped before the network saw them")
+        let held = Double(highWater * slotCapacity)
+
+        if newDrops > 0 {
+            log.error(
+                "Audio frame ring overflowed — \(newDrops) captured buffers dropped before the network saw them (\(dropped) total)"
+            )
+        } else {
+            log.notice("Audio frame ring: peak \(highWater)/\(self.slotCount) slots held (\(Int(held)) bytes), no drops")
+        }
     }
 }

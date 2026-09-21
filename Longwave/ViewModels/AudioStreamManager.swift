@@ -752,14 +752,27 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// larger; UDP drops a datagram instead of stalling and can run tight.
     private let baseTargetBufferSeconds: Double
     private let maxTargetBufferSeconds: Double
-    /// Grown by this much on each underrun, up to `maxTargetBufferSeconds`,
-    /// so a link that keeps glitching settles on a cushion that covers it
-    /// instead of underrunning forever at a cushion that never did.
-    private static let bufferGrowthStep: Double = 0.02
+    /// Underrun growth. Every underrun is an audible gap, so converging in a
+    /// couple of them matters more than converging precisely: the target
+    /// grows by half again (at least 40 ms) rather than inching up, because
+    /// the first on-device run stalled for ~150 ms against a 100 ms cushion
+    /// and +20 ms a time would have cost four more gaps to get there.
+    /// `bufferDecayStep` walks it back down per clean interval.
+    private static let bufferGrowthFactor: Double = 1.5
+    private static let bufferGrowthFloor: Double = 0.04
+    private static let bufferDecayStep: Double = 0.02
     /// Smoothing applied to the measured queue depth before it is used as the
     /// drift signal. Deliberately slow (~seconds): jitter must average out,
     /// clock drift must not.
     private static let depthSmoothing: Double = 0.002
+    /// Minimum buffers between drift nudges. Correcting on *every* buffer is
+    /// ~2000 ppm of authority against clock drift that is realistically under
+    /// 100 ppm, so the loop simply saturates and stops telling you anything —
+    /// which is exactly what the first on-device run showed (94 corrections a
+    /// second, sustained). One nudge per four buffers is still ~490 ppm, an
+    /// order of magnitude more than real drift needs. Bursts are the burst
+    /// trim's job, not this loop's.
+    private static let driftCorrectionInterval = 4
     private nonisolated(unsafe) var targetBufferSeconds: Double
 
     /// Sample frames scheduled on the player node but not yet played back,
@@ -790,6 +803,15 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private nonisolated(unsafe) var underrunsAtLastHealthLog = 0
     private nonisolated(unsafe) var trimmedFrames = 0
     private nonisolated(unsafe) var driftCorrections = 0
+    /// Buffers since the last drift nudge, for the rate limit below.
+    private nonisolated(unsafe) var buffersSinceDrift = 0
+    /// Wire sample frames received since the last health log, and the worst
+    /// inter-arrival gap in that window. Together these separate the two
+    /// things that look identical in a depth reading: the sender running at a
+    /// genuinely different rate (shows up in the effective input rate) and
+    /// the sender delivering the right amount in lumps (shows up in the gap).
+    private nonisolated(unsafe) var framesSinceHealthLog = 0
+    private nonisolated(unsafe) var maxArrivalGapNanos: UInt64 = 0
     /// Uptime (ns) of the last periodic buffer-health log and stats emit.
     private nonisolated(unsafe) var lastHealthLogNanos: UInt64 = 0
     private nonisolated(unsafe) var lastStatsNanos: UInt64 = 0
@@ -1656,18 +1678,41 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// Also relaxes the target again after a clean stretch, so one rough
     /// patch early on doesn't cost latency for the rest of the session.
     private nonisolated func logBufferHealth(depth: Int, now: UInt64) {
-        guard now &- lastHealthLogNanos > 10_000_000_000 else { return }
+        // First buffer of the session: start the window, don't report a
+        // rate measured against an uptime-length interval.
+        guard lastHealthLogNanos != 0 else {
+            lastHealthLogNanos = now
+            framesSinceHealthLog = 0
+            maxArrivalGapNanos = 0
+            return
+        }
+        let elapsed = Double(now &- lastHealthLogNanos) / 1_000_000_000
+        guard elapsed > 10 else { return }
         lastHealthLogNanos = now
+
         if underrunCount == underrunsAtLastHealthLog, targetBufferSeconds > baseTargetBufferSeconds {
             // Drift correction sheds the difference a sample at a time, so
             // this shrinks the cushion smoothly rather than cutting audio.
-            targetBufferSeconds = max(baseTargetBufferSeconds, targetBufferSeconds - Self.bufferGrowthStep)
+            targetBufferSeconds = max(baseTargetBufferSeconds, targetBufferSeconds - Self.bufferDecayStep)
         }
         underrunsAtLastHealthLog = underrunCount
+
+        // Effective input rate: wire frames delivered per second of *our*
+        // wall clock. Against the nominal sample rate this is the one number
+        // that says whether the sender is genuinely running fast (a rate
+        // mismatch the drift loop should chase) or merely delivering the
+        // right amount unevenly (a burst the cushion has to absorb) — the
+        // two are indistinguishable in a depth reading alone.
+        let inputRate = Double(framesSinceHealthLog) / elapsed
+        let maxGapMs = maxArrivalGapNanos / 1_000_000
+        framesSinceHealthLog = 0
+        maxArrivalGapNanos = 0
+
         let ms = { (frames: Double) in Int(frames / self.wireSampleRate * 1000) }
         AppLog.audioStream.line(
             "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
             + "target \(Int(targetBufferSeconds * 1000)) ms · "
+            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · "
             + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
         )
     }
@@ -1692,6 +1737,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
         guard wireFrames > 0 else { return }
 
         let nowNanos = DispatchTime.now().uptimeNanoseconds
+        framesSinceHealthLog += wireFrames
+        if lastScheduleNanos != 0 {
+            maxArrivalGapNanos = max(maxArrivalGapNanos, nowNanos &- lastScheduleNanos)
+        }
 
         // Resume after a silence gap: once the sender suppresses sustained
         // silence the node drains dry. Feeding it a single late buffer
@@ -1716,7 +1765,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // the node.
         if playing, depth <= 0 {
             underrunCount += 1
-            targetBufferSeconds = min(maxTargetBufferSeconds, targetBufferSeconds + Self.bufferGrowthStep)
+            targetBufferSeconds = min(
+                maxTargetBufferSeconds,
+                max(targetBufferSeconds + Self.bufferGrowthFloor, targetBufferSeconds * Self.bufferGrowthFactor)
+            )
             AppLog.audioStream.line(
                 "⚠️ Audio underrun #\(underrunCount) — rebuilding cushion at \(Int(targetBufferSeconds * 1000)) ms"
             )
@@ -1750,12 +1802,18 @@ final class AudioStreamReceiver: @unchecked Sendable {
             depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
             let target = Double(targetFrames)
             let tolerance = max(target * 0.2, 0.005 * wireSampleRate)
-            if depthAverage > target + tolerance {
-                adjust = -1
-            } else if depthAverage < target - tolerance {
-                adjust = 1
+            buffersSinceDrift += 1
+            if buffersSinceDrift >= Self.driftCorrectionInterval {
+                if depthAverage > target + tolerance {
+                    adjust = -1
+                } else if depthAverage < target - tolerance {
+                    adjust = 1
+                }
+                if adjust != 0 {
+                    driftCorrections += 1
+                    buffersSinceDrift = 0
+                }
             }
-            if adjust != 0 { driftCorrections += 1 }
         }
 
         let frameCount = AVAudioFrameCount(max(1, wireFrames + adjust))

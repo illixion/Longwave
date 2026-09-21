@@ -777,6 +777,22 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private static let stallDecay: Double = 0.9
     /// Decaying maximum of the observed inter-arrival gap, in seconds.
     private nonisolated(unsafe) var observedStallSeconds: Double = 0
+    /// Longest gap allowed to size the cushion. Beyond this it is an outage,
+    /// not jitter, and no sane amount of buffering covers it — but letting
+    /// one set the target pins the cushion at its ceiling for minutes
+    /// afterwards. (The sender's silence suppression produced a 1051-second
+    /// "gap", which did exactly that.)
+    private static let maxCushionableGapNanos: UInt64 = 350_000_000
+    /// A gap this long is the sender's silence suppression, not a fault.
+    private static let sourceSuppressionGapNanos: UInt64 = 1_000_000_000
+    /// How long the queue may stay empty before a real re-prime is worth its
+    /// silence. Below this, the post-stall burst is expected to refill it.
+    private static let starvationGraceNanos: UInt64 = 1_500_000_000
+    /// When the current starvation episode began (0 == not starved), so an
+    /// underrun is counted once per episode rather than once per buffer.
+    private nonisolated(unsafe) var starvedSinceNanos: UInt64 = 0
+    /// Worst gap in the window that is small enough to cushion against.
+    private nonisolated(unsafe) var cushionableGapNanos: UInt64 = 0
     /// Smoothing applied to the measured queue depth before it is used as the
     /// drift signal. Deliberately slow (~seconds): jitter must average out,
     /// clock drift must not.
@@ -834,6 +850,14 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// genuine starvation shows up when the `<= 0` test never trips. Those
     /// are the glitches heard with nothing in the log.
     private nonisolated(unsafe) var minDepthFrames = Int.max
+    /// Largest single TCP read in the window. This is what separates a
+    /// network stall from a receiver-side one, which are indistinguishable
+    /// in an arrival gap: both show up as a gap followed by a burst. If the
+    /// app simply stopped reading for ~165 ms, the socket buffered that
+    /// audio and hands it all back in one read (~47 KB at 48 kHz stereo
+    /// int24); if the network stalled, the data trickles in at the usual
+    /// frame size afterwards.
+    private nonisolated(unsafe) var maxReceiveBytes = 0
     /// Uptime (ns) of the last periodic buffer-health log and stats emit.
     private nonisolated(unsafe) var lastHealthLogNanos: UInt64 = 0
     private nonisolated(unsafe) var lastStatsNanos: UInt64 = 0
@@ -1153,6 +1177,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             guard let self, !self.stopped else { return }
 
             if let data, !data.isEmpty {
+                self.maxReceiveBytes = max(self.maxReceiveBytes, data.count)
                 self.pending.append(data)
                 self.totalBytes += data.count
                 self.processPending()
@@ -1543,6 +1568,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playing = false
         depthAverage = 0
         trimming = false
+        starvedSinceNanos = 0
         lastScheduleNanos = 0
         queueState.withLock { state in
             state.frames = 0
@@ -1680,6 +1706,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playing = false
         depthAverage = 0
         trimming = false
+        starvedSinceNanos = 0
     }
 
     /// Hard reset: stops the node, discards everything scheduled, and
@@ -1692,6 +1719,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playing = false
         depthAverage = 0
         trimming = false
+        starvedSinceNanos = 0
         queueState.withLock { state in
             state.frames = 0
             state.generation &+= 1
@@ -1721,15 +1749,18 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // at once — an under-sized cushion is a dropout on the next stall —
         // and fall a step at a time, so one quiet interval can't undo what a
         // recurring stall demonstrated.
-        let windowGapSeconds = Double(maxArrivalGapNanos) / 1_000_000_000
+        let windowGapSeconds = Double(cushionableGapNanos) / 1_000_000_000
         observedStallSeconds = max(observedStallSeconds * Self.stallDecay, windowGapSeconds)
         let demanded = min(
             maxTargetBufferSeconds,
             max(baseTargetBufferSeconds, observedStallSeconds * Self.stallMargin)
         )
+        // Converge on `demanded` proportionally rather than by a fixed step:
+        // a target driven to its ceiling by one bad patch took minutes to
+        // come back at 10 ms per interval, and that is all latency.
         targetBufferSeconds = demanded > targetBufferSeconds
             ? demanded
-            : max(demanded, targetBufferSeconds - Self.bufferDecayStep)
+            : max(demanded, targetBufferSeconds - max(Self.bufferDecayStep, (targetBufferSeconds - demanded) * 0.25))
 
         // Effective input rate: wire frames delivered per second of *our*
         // wall clock. Against the nominal sample rate this is the one number
@@ -1740,16 +1771,20 @@ final class AudioStreamReceiver: @unchecked Sendable {
         let inputRate = Double(framesSinceHealthLog) / elapsed
         let maxGapMs = maxArrivalGapNanos / 1_000_000
         let floor = minDepthFrames == Int.max ? 0 : minDepthFrames
+        let biggestRead = maxReceiveBytes
         framesSinceHealthLog = 0
         maxArrivalGapNanos = 0
+        cushionableGapNanos = 0
         minDepthFrames = Int.max
+        maxReceiveBytes = 0
 
         let ms = { (frames: Double) in Int(frames / self.wireSampleRate * 1000) }
         AppLog.audioStream.line(
             "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
             + "target \(Int(targetBufferSeconds * 1000)) ms · "
             + "floor \(ms(Double(floor))) ms · "
-            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · "
+            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms "
+            + "maxread \(biggestRead / 1024) KB · "
             + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
         )
     }
@@ -1775,18 +1810,23 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
         let nowNanos = DispatchTime.now().uptimeNanoseconds
         framesSinceHealthLog += wireFrames
-        if lastScheduleNanos != 0 {
-            maxArrivalGapNanos = max(maxArrivalGapNanos, nowNanos &- lastScheduleNanos)
+        let gapNanos = lastScheduleNanos == 0 ? 0 : nowNanos &- lastScheduleNanos
+        if gapNanos > 0 {
+            maxArrivalGapNanos = max(maxArrivalGapNanos, gapNanos)
+            if gapNanos <= Self.maxCushionableGapNanos {
+                cushionableGapNanos = max(cushionableGapNanos, gapNanos)
+            }
         }
 
-        // Resume after a silence gap: once the sender suppresses sustained
-        // silence the node drains dry. Feeding it a single late buffer
-        // underruns and pops — rebuild the cushion exactly like a fresh
-        // start. The threshold sits well above the ~10–20 ms frame cadence so
-        // only real suppression gaps trigger it.
-        if playing, lastScheduleNanos != 0, nowNanos &- lastScheduleNanos > 200_000_000 {
+        // The sender suppresses sustained silence, so a long absence is
+        // expected rather than a fault: the node has drained and has to be
+        // re-primed, but the link did nothing wrong and the cushion must not
+        // grow because of it. Only genuinely long gaps qualify — the old
+        // 200 ms threshold fired on ordinary stalls the cushion had already
+        // absorbed, and each firing added a whole target of silence on top.
+        if playing, gapNanos > Self.sourceSuppressionGapNanos {
             AppLog.audioStream.line(
-                "Audio resumed after a \((nowNanos &- lastScheduleNanos) / 1_000_000) ms source gap — rebuilding cushion"
+                "Audio resumed after a \(gapNanos / 1_000_000) ms source gap — re-priming"
             )
             rebuildCushion()
         }
@@ -1795,22 +1835,42 @@ final class AudioStreamReceiver: @unchecked Sendable {
         var depth = queueState.withLock { $0.frames }
         if playing { minDepthFrames = min(minDepthFrames, depth) }
 
-        // Underrun. The node played everything we gave it and is now
-        // rendering silence with its clock still running, so the cushion is
-        // zero and stays zero: every later jitter spike would be audible and
-        // nothing would ever rebuild it. Widen the target a little and
-        // prebuffer again — see `rebuildCushion` for why this must not cut
-        // the node.
+        // Underrun: the node played everything and is rendering silence with
+        // its clock still running.
+        //
+        // Ride it out rather than re-priming on the spot. A stall on this
+        // link is always followed by a burst — a deficit window is invariably
+        // followed by a surplus one, average rate exactly nominal — so the
+        // cushion refills by itself. Pausing to re-prime instead *adds* the
+        // whole target as silence on top of the outage, and when gaps arrive
+        // back to back that stacking is what turned a bad patch into a large
+        // dropout: seven re-primes in 3.4 s, each one paying 300-400 ms for a
+        // gap of about the same length.
+        //
+        // The safety net is time, not the first sample: if the queue is still
+        // empty after `starvationGraceNanos` the sender is not catching up,
+        // and only then is a real re-prime worth its silence. That still
+        // fixes the original fault, where the cushion was lost for good and
+        // nothing ever rebuilt it.
         if playing, depth <= 0 {
-            underrunCount += 1
-            targetBufferSeconds = min(
-                maxTargetBufferSeconds,
-                max(targetBufferSeconds + Self.bufferGrowthFloor, targetBufferSeconds * Self.bufferGrowthFactor)
-            )
-            AppLog.audioStream.line(
-                "⚠️ Audio underrun #\(underrunCount) — rebuilding cushion at \(Int(targetBufferSeconds * 1000)) ms"
-            )
-            rebuildCushion()
+            if starvedSinceNanos == 0 {
+                starvedSinceNanos = nowNanos
+                underrunCount += 1
+                targetBufferSeconds = min(
+                    maxTargetBufferSeconds,
+                    max(targetBufferSeconds + Self.bufferGrowthFloor, targetBufferSeconds * Self.bufferGrowthFactor)
+                )
+                AppLog.audioStream.line(
+                    "⚠️ Audio underrun #\(underrunCount) — riding out, target now \(Int(targetBufferSeconds * 1000)) ms"
+                )
+            } else if nowNanos &- starvedSinceNanos > Self.starvationGraceNanos {
+                AppLog.audioStream.line(
+                    "⚠️ Queue still empty after \((nowNanos &- starvedSinceNanos) / 1_000_000) ms — re-priming"
+                )
+                rebuildCushion()
+            }
+        } else if depth > 0 {
+            starvedSinceNanos = 0
         }
 
         // Burst trim: bound the latency a recovered stall leaves behind.

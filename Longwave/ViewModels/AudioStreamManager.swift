@@ -752,15 +752,31 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// larger; UDP drops a datagram instead of stalling and can run tight.
     private let baseTargetBufferSeconds: Double
     private let maxTargetBufferSeconds: Double
-    /// Underrun growth. Every underrun is an audible gap, so converging in a
-    /// couple of them matters more than converging precisely: the target
-    /// grows by half again (at least 40 ms) rather than inching up, because
-    /// the first on-device run stalled for ~150 ms against a 100 ms cushion
-    /// and +20 ms a time would have cost four more gaps to get there.
-    /// `bufferDecayStep` walks it back down per clean interval.
+    /// Underrun growth, for the case that can't wait for the next health
+    /// tick: the target grows by half again (at least 40 ms) on the spot.
     private static let bufferGrowthFactor: Double = 1.5
     private static let bufferGrowthFloor: Double = 0.04
-    private static let bufferDecayStep: Double = 0.02
+    /// How fast the target walks back down once the link no longer demands
+    /// it. Slow, because being 50 ms over costs latency nobody notices and
+    /// being 5 ms under costs a dropout everybody does.
+    private static let bufferDecayStep: Double = 0.01
+
+    /// The cushion has to cover the worst stall the link actually produces,
+    /// and on this link that is a *measurement*, not a guess: the first run
+    /// with gap instrumentation showed a recurring ~165 ms delivery stall
+    /// (inter-arrival gaps of 160-176 ms, every window, with the missing
+    /// frames arriving as a burst in the next one — average rate exactly
+    /// nominal). A fixed 100 ms target could not cover that, and the old
+    /// decay walked it back down to 100 after every underrun, which
+    /// guaranteed the next one: four underruns in fifteen minutes, evenly
+    /// spaced. So the target now tracks the observed stall instead.
+    private static let stallMargin: Double = 1.3
+    /// Per-interval decay of the remembered stall, so the cushion follows a
+    /// link that gets better as well as one that gets worse (~halves in a
+    /// minute of clean running).
+    private static let stallDecay: Double = 0.9
+    /// Decaying maximum of the observed inter-arrival gap, in seconds.
+    private nonisolated(unsafe) var observedStallSeconds: Double = 0
     /// Smoothing applied to the measured queue depth before it is used as the
     /// drift signal. Deliberately slow (~seconds): jitter must average out,
     /// clock drift must not.
@@ -812,6 +828,12 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// the sender delivering the right amount in lumps (shows up in the gap).
     private nonisolated(unsafe) var framesSinceHealthLog = 0
     private nonisolated(unsafe) var maxArrivalGapNanos: UInt64 = 0
+    /// Shallowest the queue got during the window. Reported because the
+    /// depth reading is biased *high* — `.dataPlayedBack` fires only after
+    /// the output latency has elapsed — so a low-but-positive floor is how
+    /// genuine starvation shows up when the `<= 0` test never trips. Those
+    /// are the glitches heard with nothing in the log.
+    private nonisolated(unsafe) var minDepthFrames = Int.max
     /// Uptime (ns) of the last periodic buffer-health log and stats emit.
     private nonisolated(unsafe) var lastHealthLogNanos: UInt64 = 0
     private nonisolated(unsafe) var lastStatsNanos: UInt64 = 0
@@ -846,7 +868,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
         self.lowLatency = lowLatency
         self.mode = mode
         self.baseTargetBufferSeconds = lowLatency ? 0.040 : 0.100
-        self.maxTargetBufferSeconds = lowLatency ? 0.120 : 0.300
+        // Headroom for the stall-driven target to actually reach what the
+        // link demands. A capped cushion that still underruns is the worst
+        // of both: the latency without the robustness it was paid for.
+        self.maxTargetBufferSeconds = lowLatency ? 0.200 : 0.400
         self.targetBufferSeconds = lowLatency ? 0.040 : 0.100
         self.volume = volume
         self.eqSettings = eq
@@ -1690,12 +1715,21 @@ final class AudioStreamReceiver: @unchecked Sendable {
         guard elapsed > 10 else { return }
         lastHealthLogNanos = now
 
-        if underrunCount == underrunsAtLastHealthLog, targetBufferSeconds > baseTargetBufferSeconds {
-            // Drift correction sheds the difference a sample at a time, so
-            // this shrinks the cushion smoothly rather than cutting audio.
-            targetBufferSeconds = max(baseTargetBufferSeconds, targetBufferSeconds - Self.bufferDecayStep)
-        }
         underrunsAtLastHealthLog = underrunCount
+
+        // Size the cushion from the stall the link actually produces. Rise
+        // at once — an under-sized cushion is a dropout on the next stall —
+        // and fall a step at a time, so one quiet interval can't undo what a
+        // recurring stall demonstrated.
+        let windowGapSeconds = Double(maxArrivalGapNanos) / 1_000_000_000
+        observedStallSeconds = max(observedStallSeconds * Self.stallDecay, windowGapSeconds)
+        let demanded = min(
+            maxTargetBufferSeconds,
+            max(baseTargetBufferSeconds, observedStallSeconds * Self.stallMargin)
+        )
+        targetBufferSeconds = demanded > targetBufferSeconds
+            ? demanded
+            : max(demanded, targetBufferSeconds - Self.bufferDecayStep)
 
         // Effective input rate: wire frames delivered per second of *our*
         // wall clock. Against the nominal sample rate this is the one number
@@ -1705,13 +1739,16 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // two are indistinguishable in a depth reading alone.
         let inputRate = Double(framesSinceHealthLog) / elapsed
         let maxGapMs = maxArrivalGapNanos / 1_000_000
+        let floor = minDepthFrames == Int.max ? 0 : minDepthFrames
         framesSinceHealthLog = 0
         maxArrivalGapNanos = 0
+        minDepthFrames = Int.max
 
         let ms = { (frames: Double) in Int(frames / self.wireSampleRate * 1000) }
         AppLog.audioStream.line(
             "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
             + "target \(Int(targetBufferSeconds * 1000)) ms · "
+            + "floor \(ms(Double(floor))) ms · "
             + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · "
             + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
         )
@@ -1756,6 +1793,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         lastScheduleNanos = nowNanos
 
         var depth = queueState.withLock { $0.frames }
+        if playing { minDepthFrames = min(minDepthFrames, depth) }
 
         // Underrun. The node played everything we gave it and is now
         // rendering silence with its clock still running, so the cushion is

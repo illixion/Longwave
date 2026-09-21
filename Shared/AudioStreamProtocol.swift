@@ -172,19 +172,30 @@ nonisolated enum PCM24 {
     /// representation and writes it at `byteOffset`. The caller guarantees
     /// three bytes are in bounds. Allocation-free — the sender calls this
     /// from the Core Audio realtime thread, where `malloc` is forbidden.
+    /// Conversion statistics gathered on the realtime thread. `peak` is what
+    /// says whether the clipping matters: a mixdown touching 1.01 loses
+    /// essentially nothing, while one hitting 1.4 is flattening 29% off every
+    /// transient and is plainly audible. A count alone cannot tell them apart.
+    struct EncodeStats {
+        var clipped = 0
+        var peak: Float32 = 0
+    }
+
     @inline(__always)
     static func write(
         _ sample: Float32,
         to destination: UnsafeMutableRawBufferPointer,
         at byteOffset: Int,
-        clipped: inout Int
+        stats: inout EncodeStats
     ) {
         // A float mixdown can legitimately exceed ±1 when several loud
         // sources sum, and the wire format cannot carry that — so the clamp
         // below is hard clipping, which crackles on peaks and sounds like a
-        // buffering fault while having nothing to do with buffering. Counted
+        // buffering fault while having nothing to do with buffering. Measured
         // so the two can be told apart from the log.
-        if sample > 1 || sample < -1 { clipped &+= 1 }
+        let magnitude = abs(sample)
+        if magnitude > stats.peak { stats.peak = magnitude }
+        if magnitude > 1 { stats.clipped &+= 1 }
         var s = Int32((max(-1, min(1, sample)) * scale).rounded())
         if s > maxSample { s = maxSample } else if s < minSample { s = minSample }
         let u = UInt32(bitPattern: s)

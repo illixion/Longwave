@@ -70,6 +70,9 @@ final class SystemAudioTap: @unchecked Sendable {
     /// and reported from the ring's consumer thread. See `PCM24.write`.
     private nonisolated(unsafe) var clippedSamples = 0
     private nonisolated(unsafe) var reportedClippedSamples = 0
+    /// Loudest magnitude seen since the last report — the number that says
+    /// whether the clipping is cosmetic or audible.
+    private nonisolated(unsafe) var peakSample: Float = 0
     private nonisolated(unsafe) var lastClipLogNanos: UInt64 = 0
     private let log = Logger(subsystem: "pro.longwave.companion", category: "SystemAudioTap")
 
@@ -83,6 +86,7 @@ final class SystemAudioTap: @unchecked Sendable {
         suppressingSilence = false
         clippedSamples = 0
         reportedClippedSamples = 0
+        peakSample = 0
 
         // 1. System-wide stereo mixdown tap of all processes
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
@@ -256,17 +260,18 @@ final class SystemAudioTap: @unchecked Sendable {
         }
         guard !suppressingSilence else { return }
 
-        var clipped = 0
+        var stats = PCM24.EncodeStats()
         ring.write { destination in
             Self.encodePCM(
                 from: bufferList,
                 isNonInterleaved: isNonInterleaved,
                 channelCount: channelCount,
                 into: destination,
-                clipped: &clipped
+                stats: &stats
             )
         }
-        clippedSamples &+= clipped
+        clippedSamples &+= stats.clipped
+        if stats.peak > peakSample { peakSample = stats.peak }
     }
 
     /// Reports hard-clamped samples from the ring's consumer thread (the
@@ -281,7 +286,13 @@ final class SystemAudioTap: @unchecked Sendable {
         lastClipLogNanos = now
         let delta = total - reportedClippedSamples
         reportedClippedSamples = total
-        log.error("Mixdown exceeds full scale — \(delta) samples hard-clipped in the last interval (\(total) total)")
+        let peak = peakSample
+        peakSample = 0
+        let overBy = 20 * log10(max(peak, 1))
+        let message = "Mixdown exceeds full scale — \(delta) samples hard-clipped in the last interval "
+            + "(\(total) total), peak \(String(format: "%.3f", peak)) "
+            + "(+\(String(format: "%.2f", overBy)) dBFS)"
+        log.error("\(message, privacy: .public)")
     }
 
     /// Cheaply reports whether a buffer is exact digital silence and how many
@@ -333,7 +344,7 @@ final class SystemAudioTap: @unchecked Sendable {
         isNonInterleaved: Bool,
         channelCount: Int,
         into destination: UnsafeMutableRawBufferPointer,
-        clipped: inout Int
+        stats: inout PCM24.EncodeStats
     ) -> Int {
         let buffers = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: bufferList)
@@ -349,7 +360,7 @@ final class SystemAudioTap: @unchecked Sendable {
             guard count * stride <= destination.count else { return 0 }
             let floats = base.assumingMemoryBound(to: Float32.self)
             for i in 0..<count {
-                PCM24.write(floats[i], to: destination, at: i * stride, clipped: &clipped)
+                PCM24.write(floats[i], to: destination, at: i * stride, stats: &stats)
             }
             return count * stride
         }
@@ -363,7 +374,7 @@ final class SystemAudioTap: @unchecked Sendable {
         for channel in 0..<min(channelCount, buffers.count) {
             guard let base = buffers[channel].mData?.assumingMemoryBound(to: Float32.self) else { continue }
             for frame in 0..<frameCount {
-                PCM24.write(base[frame], to: destination, at: (frame * channelCount + channel) * stride, clipped: &clipped)
+                PCM24.write(base[frame], to: destination, at: (frame * channelCount + channel) * stride, stats: &stats)
             }
         }
         return byteCount

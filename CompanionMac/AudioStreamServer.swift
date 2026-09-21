@@ -13,9 +13,17 @@ import os
 /// dropped (latency cap) rather than queueing unbounded.
 final class AudioStreamServer: @unchecked Sendable {
 
-    /// ~0.7 s of 48 kHz stereo int24 — beyond this a client is lagging
-    /// badly and queueing more would only grow its latency.
-    private static let maxPendingBytes = 200_000
+    /// ~0.4 s of 48 kHz stereo int24 — beyond this a client is lagging badly
+    /// and queueing more would only grow its latency. Deliberately well under
+    /// a second: every byte queued here is latency the receiver must either
+    /// play out or trim, and TCP will re-deliver a burst the moment the link
+    /// recovers.
+    private static let maxPendingBytes = 120_000
+
+    /// Cap on metadata (artwork + now-playing) queued for one client. Past
+    /// this the client is too far behind for stale artwork to be worth
+    /// sending, so the queue is dropped in favour of the newest state.
+    private static let maxPendingMetadataBytes = 2 * AudioStreamProtocol.maxArtworkBytes
 
     nonisolated(unsafe) var onClientCountChange: (@Sendable (Int) -> Void)?
     /// Media transport command received from the client (fires on `queue`).
@@ -42,6 +50,20 @@ final class AudioStreamServer: @unchecked Sendable {
         /// keepalive tick. Gates the silence heartbeat so the beat is sent
         /// only while the source is actually silent (no PCM this interval).
         var sentPCMSinceBeat = false
+        /// Ordered queue of metadata frames (artwork chunks, then the
+        /// matching now-playing frame) waiting to be dribbled into the TCP
+        /// stream between PCM frames. Artwork shares the single ordered TCP
+        /// stream with audio, so handing a whole ~150 KB JPEG to one `send`
+        /// puts it in front of every subsequent PCM frame until it drains —
+        /// reliably longer than the receiver's jitter cushion, i.e. an
+        /// audible dropout on every track change. Pacing it behind the audio
+        /// cadence keeps the head-of-line delay under a millisecond.
+        var pendingMetadata: [Data] = []
+        var pendingMetadataBytes = 0
+        /// PCM frames discarded because this client was past the latency cap,
+        /// and the last time that was reported.
+        var droppedPCMFrames = 0
+        var lastDropLogNanos: UInt64 = 0
         init(connection: NWConnection) { self.connection = connection }
     }
 
@@ -62,10 +84,11 @@ final class AudioStreamServer: @unchecked Sendable {
 
     private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioStreamServer")
 
-    /// Latest pre-encoded metadata frames, replayed to newly connected
-    /// clients right after the header. Mutated only on `queue`.
+    /// Latest now-playing state, replayed to newly connected clients right
+    /// after the header. Artwork is kept as raw bytes (not a pre-encoded
+    /// frame) because it is re-chunked per client. Mutated only on `queue`.
     private nonisolated(unsafe) var currentNowPlayingFrame: Data?
-    private nonisolated(unsafe) var currentArtworkFrame: Data?
+    private nonisolated(unsafe) var currentArtwork: Data?
 
     nonisolated init(port: UInt16, token: String) {
         self.port = port
@@ -99,6 +122,10 @@ final class AudioStreamServer: @unchecked Sendable {
             for client in self.clients.values where client.headerSent {
                 let silent = !client.sentPCMSinceBeat
                 client.sentPCMSinceBeat = false
+                // Metadata is normally paced by the PCM cadence; with no
+                // audio flowing there is nothing to pace against, and nothing
+                // to head-of-line-block either, so flush it here instead.
+                if silent { self.drainMetadata(client, limit: 8) }
                 guard silent else { continue }
                 if let udp = client.udp {
                     udp.send(content: Self.keepAliveFrame, completion: .contentProcessed { _ in })
@@ -126,27 +153,61 @@ final class AudioStreamServer: @unchecked Sendable {
         }
     }
 
-    /// Publishes new now-playing metadata. Pre-encoded frames are stored
-    /// for replay-on-connect and sent to the connected client immediately.
-    /// Metadata frames bypass the PCM latency cap — they're rare and must
-    /// not be dropped. Pass a nil artwork frame when artwork is unchanged;
-    /// pass nil info to clear (e.g. Music quit).
-    nonisolated func updateMetadata(infoFrame: Data?, artworkFrame: Data?) {
+    /// Publishes new now-playing metadata. State is stored for replay to
+    /// late-joining clients, and queued (not blasted) to the connected one.
+    ///
+    /// Queued rather than sent outright because artwork and PCM share one
+    /// ordered TCP stream: a whole JPEG handed to `send` sits in front of
+    /// every subsequent audio frame until it drains. `drainMetadata` dribbles
+    /// it out a chunk at a time between PCM frames instead.
+    ///
+    /// Pass a nil artwork frame when artwork is unchanged; pass nil info to
+    /// clear (e.g. Music quit).
+    nonisolated func updateMetadata(infoFrame: Data?, artwork: Data?) {
         queue.async { [self] in
-            if let artworkFrame {
-                currentArtworkFrame = artworkFrame
+            if let artwork {
+                currentArtwork = artwork
             } else if infoFrame == nil {
-                currentArtworkFrame = nil
+                currentArtwork = nil
             }
             currentNowPlayingFrame = infoFrame
+
+            // Artwork first, so the receiver can pair it with the artworkID
+            // carried by the info frame that follows.
+            var frames: [Data] = []
+            if let artwork { frames.append(contentsOf: AudioStreamProtocol.encodeArtworkFrames(artwork)) }
+            if let infoFrame { frames.append(infoFrame) }
+            guard !frames.isEmpty else { return }
             for client in clients.values where client.headerSent {
-                if let artworkFrame {
-                    client.connection.send(content: artworkFrame, completion: .contentProcessed { _ in })
-                }
-                if let infoFrame {
-                    client.connection.send(content: infoFrame, completion: .contentProcessed { _ in })
-                }
+                enqueueMetadata(frames, to: client)
             }
+        }
+    }
+
+    /// Queues metadata frames for a client, dropping anything still pending
+    /// if the client has fallen far enough behind that stale artwork is no
+    /// longer worth the bytes. Runs on `queue`.
+    private nonisolated func enqueueMetadata(_ frames: [Data], to client: Client) {
+        if client.pendingMetadataBytes > Self.maxPendingMetadataBytes {
+            log.error("Client is behind on metadata — dropping \(client.pendingMetadata.count) queued frames")
+            client.pendingMetadata.removeAll()
+            client.pendingMetadataBytes = 0
+        }
+        client.pendingMetadata.append(contentsOf: frames)
+        client.pendingMetadataBytes += frames.reduce(0) { $0 + $1.count }
+    }
+
+    /// Sends up to `limit` queued metadata frames. Called from the PCM path
+    /// (so delivery is paced by the audio cadence, one small chunk between
+    /// audio frames) and from the keepalive tick. Runs on `queue`.
+    private nonisolated func drainMetadata(_ client: Client, limit: Int) {
+        guard client.headerSent else { return }
+        var sent = 0
+        while sent < limit, !client.pendingMetadata.isEmpty {
+            let frame = client.pendingMetadata.removeFirst()
+            client.pendingMetadataBytes -= frame.count
+            client.connection.send(content: frame, completion: .contentProcessed { _ in })
+            sent += 1
         }
     }
 
@@ -178,16 +239,38 @@ final class AudioStreamServer: @unchecked Sendable {
                             self?.log.error("UDP datagram send failed (\(datagram.count) bytes): \(String(describing: error))")
                         })
                     }
+                    // PCM isn't on the TCP stream, so nothing is behind
+                    // metadata there — deliver it promptly.
+                    drainMetadata(client, limit: 4)
                     continue
                 }
-                // Latency cap: drop frames for clients that can't keep up
-                guard client.pendingBytes < Self.maxPendingBytes else { continue }
+                // Latency cap: drop frames for clients that can't keep up.
+                // A drop is a hole in the audio with no gap signal on the
+                // wire, so it must be visible here rather than silent.
+                guard client.pendingBytes < Self.maxPendingBytes else {
+                    noteDroppedPCM(client)
+                    continue
+                }
                 client.pendingBytes += frame.count
                 client.connection.send(content: frame, completion: .contentProcessed { [weak self, weak client] _ in
                     self?.queue.async { client?.pendingBytes -= frame.count }
                 })
+                // One metadata chunk per audio frame: enough to deliver a
+                // cover in a fraction of a second, small enough that the
+                // audio behind it is delayed by well under a millisecond.
+                drainMetadata(client, limit: 1)
             }
         }
+    }
+
+    /// Records a PCM frame dropped at the latency cap, reporting the running
+    /// total at most once every 5 s. Runs on `queue`.
+    private nonisolated func noteDroppedPCM(_ client: Client) {
+        client.droppedPCMFrames += 1
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now &- client.lastDropLogNanos > 5_000_000_000 else { return }
+        client.lastDropLogNanos = now
+        log.error("Client behind the \(Self.maxPendingBytes)-byte latency cap — \(client.droppedPCMFrames) PCM frames dropped so far")
     }
 
     /// Conservative single-datagram PCM payload budget for the DTLS path:
@@ -371,14 +454,17 @@ final class AudioStreamServer: @unchecked Sendable {
         guard client.ready, !client.headerSent else { return }
         client.connection.send(content: header.encoded(), completion: .contentProcessed { _ in })
         client.headerSent = true
-        // Replay current now-playing state (artwork first so the receiver
-        // can pair it with the info's artworkID).
-        if let artwork = currentArtworkFrame {
-            client.connection.send(content: artwork, completion: .contentProcessed { _ in })
+        // Replay current now-playing state (artwork first so the receiver can
+        // pair it with the info's artworkID). Queued, not sent outright: a
+        // fresh client is about to start receiving PCM, and blocking its
+        // first second of audio behind a JPEG is exactly the head-of-line
+        // stall the queue exists to avoid.
+        var frames: [Data] = []
+        if let artwork = currentArtwork {
+            frames.append(contentsOf: AudioStreamProtocol.encodeArtworkFrames(artwork))
         }
-        if let info = currentNowPlayingFrame {
-            client.connection.send(content: info, completion: .contentProcessed { _ in })
-        }
+        if let info = currentNowPlayingFrame { frames.append(info) }
+        if !frames.isEmpty { enqueueMetadata(frames, to: client) }
     }
 
     private nonisolated func remove(_ connection: NWConnection) {

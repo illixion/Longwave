@@ -722,6 +722,14 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// Count of PCM datagrams received over UDP — gates the fallback timer.
     private nonisolated(unsafe) var udpFramesReceived = 0
     private nonisolated(unsafe) var pending = Data()
+    /// Bytes at the front of `pending` already parsed, relative to its
+    /// `startIndex`. Advancing an index is O(1); `removeFirst` memmoves the
+    /// whole remainder on *every* frame, which at ~100 frames/s behind 64 KB
+    /// reads was several MB/s of pointless copying on the same queue that
+    /// schedules audio. Compacted in `compactPending` once it's worth a copy.
+    private nonisolated(unsafe) var pendingOffset = 0
+    /// Reassembly buffer for chunked artwork (see `AudioStreamProtocol`).
+    private nonisolated(unsafe) var artworkAssembly = Data()
     private nonisolated(unsafe) var header: AudioStreamHeader?
     private nonisolated(unsafe) var stopped = false
 
@@ -729,11 +737,62 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private nonisolated(unsafe) var playerNode: AVAudioPlayerNode?
     private nonisolated(unsafe) var audioFormat: AVAudioFormat?
 
-    /// Frames scheduled before starting playback, to absorb network jitter.
-    /// At a typical ~10 ms device IO cadence the standard buffer is ~40 ms;
-    /// low-latency mode trades robustness for a ~20 ms buffer.
-    private let prebufferFrameCount: Int
-    private nonisolated(unsafe) var scheduledFrames = 0
+    /// Jitter cushion held before playback starts, and maintained thereafter,
+    /// expressed in **seconds of audio** rather than a count of scheduled
+    /// buffers.
+    ///
+    /// A buffer count meant wildly different things on the two transports:
+    /// the sender splits each PCM blob into ~1.1 KB datagrams for the DTLS
+    /// path, so "2 buffers" was roughly 7 ms of audio there versus ~43 ms for
+    /// "4 buffers" on TCP — which is most of why low-latency mode fell apart
+    /// under load. It also drifted with the Mac's IO buffer size, which was
+    /// never pinned.
+    ///
+    /// TCP has to ride out a Wi-Fi retransmit without stalling, so it starts
+    /// larger; UDP drops a datagram instead of stalling and can run tight.
+    private let baseTargetBufferSeconds: Double
+    private let maxTargetBufferSeconds: Double
+    /// Grown by this much on each underrun, up to `maxTargetBufferSeconds`,
+    /// so a link that keeps glitching settles on a cushion that covers it
+    /// instead of underrunning forever at a cushion that never did.
+    private static let bufferGrowthStep: Double = 0.02
+    /// Smoothing applied to the measured queue depth before it is used as the
+    /// drift signal. Deliberately slow (~seconds): jitter must average out,
+    /// clock drift must not.
+    private static let depthSmoothing: Double = 0.002
+    private nonisolated(unsafe) var targetBufferSeconds: Double
+
+    /// Sample frames scheduled on the player node but not yet played back,
+    /// with a generation stamp so completion callbacks belonging to a flushed
+    /// node can't decrement the new one's depth.
+    ///
+    /// This is the measurement everything below runs on. `AVAudioPlayerNode`
+    /// exposes no depth query, and counting *scheduled* buffers — what this
+    /// used to do — can never observe an underrun: a starved node does not
+    /// stop, it renders silence and keeps its clock running, so the cushion
+    /// is silently gone for good and every later jitter spike is audible.
+    /// Written from the render thread as well as `queue`, hence the lock.
+    private struct QueueState: Sendable {
+        var frames = 0
+        var generation = 0
+    }
+    private let queueState = OSAllocatedUnfairLock(initialState: QueueState())
+
+    /// True once the cushion filled and the node was told to play.
+    private nonisolated(unsafe) var playing = false
+    /// Smoothed queue depth in sample frames — the drift signal.
+    private nonisolated(unsafe) var depthAverage: Double = 0
+    /// True while shedding a backlog (see the ceiling check in `schedule`).
+    private nonisolated(unsafe) var trimming = false
+    private nonisolated(unsafe) var underrunCount = 0
+    /// `underrunCount` as of the last health tick, so a clean stretch can be
+    /// recognised and the grown target relaxed again.
+    private nonisolated(unsafe) var underrunsAtLastHealthLog = 0
+    private nonisolated(unsafe) var trimmedFrames = 0
+    private nonisolated(unsafe) var driftCorrections = 0
+    /// Uptime (ns) of the last periodic buffer-health log and stats emit.
+    private nonisolated(unsafe) var lastHealthLogNanos: UInt64 = 0
+    private nonisolated(unsafe) var lastStatsNanos: UInt64 = 0
     private nonisolated(unsafe) var totalBytes = 0
     /// Last `.audioActivity` emit (uptime ns), to throttle the ping to ~5/s.
     private nonisolated(unsafe) var lastAudioActivityNanos: UInt64 = 0
@@ -764,7 +823,9 @@ final class AudioStreamReceiver: @unchecked Sendable {
         self.token = token
         self.lowLatency = lowLatency
         self.mode = mode
-        self.prebufferFrameCount = lowLatency ? 2 : 4
+        self.baseTargetBufferSeconds = lowLatency ? 0.040 : 0.100
+        self.maxTargetBufferSeconds = lowLatency ? 0.120 : 0.300
+        self.targetBufferSeconds = lowLatency ? 0.040 : 0.100
         self.volume = volume
         self.eqSettings = eq
         self.spatialAudioMode = spatialAudioMode
@@ -1063,12 +1124,13 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private nonisolated func processPending() {
         // Header first
         if header == nil {
-            guard pending.count >= AudioStreamProtocol.headerSize else { return }
-            guard let parsed = AudioStreamHeader(parsing: pending) else {
+            let remaining = pending[(pending.startIndex + pendingOffset)...]
+            guard remaining.count >= AudioStreamProtocol.headerSize else { return }
+            guard let parsed = AudioStreamHeader(parsing: remaining) else {
                 fail("Invalid stream header — is the sender the Longwave Companion?")
                 return
             }
-            pending.removeFirst(AudioStreamProtocol.headerSize)
+            pendingOffset += AudioStreamProtocol.headerSize
             header = parsed
             guard setupAudio(header: parsed) else {
                 fail("Unsupported audio format (\(parsed.channelCount)ch @ \(parsed.sampleRate) Hz)")
@@ -1079,17 +1141,22 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
 
         // Then typed, length-prefixed frames
-        while let length = AudioStreamProtocol.decodeFrameLength(pending) {
+        while true {
+            let base = pending.startIndex + pendingOffset
+            let remaining = pending[base...]
+            guard let length = AudioStreamProtocol.decodeFrameLength(remaining) else { break }
             guard length >= 1, length <= AudioStreamProtocol.maxFrameBytes else {
                 fail("Malformed frame (\(length) bytes)")
                 return
             }
             let frameEnd = AudioStreamProtocol.frameLengthPrefixSize + Int(length)
-            guard pending.count >= frameEnd else { return }
+            guard remaining.count >= frameEnd else { break }
 
-            let type = pending[pending.startIndex.advanced(by: AudioStreamProtocol.frameLengthPrefixSize)]
-            let payload = pending.subdata(in: pending.startIndex.advanced(by: AudioStreamProtocol.frameLengthPrefixSize + 1)..<pending.startIndex.advanced(by: frameEnd))
-            pending.removeFirst(frameEnd)
+            let type = pending[base + AudioStreamProtocol.frameLengthPrefixSize]
+            let payload = pending.subdata(
+                in: (base + AudioStreamProtocol.frameLengthPrefixSize + 1)..<(base + frameEnd)
+            )
+            pendingOffset += frameEnd
 
             switch AudioStreamProtocol.FrameType(rawValue: type) {
             case .pcm:
@@ -1103,7 +1170,18 @@ final class AudioStreamReceiver: @unchecked Sendable {
                     AppLog.audioStream.line("Skipping malformed now-playing frame (\(payload.count) bytes)")
                 }
             case .artwork:
-                onEvent?(.artwork(payload))
+                // Chunked as of protocol v7: a 1-byte continuation flag then
+                // the chunk bytes. See AudioStreamProtocol for why artwork
+                // can't be handed over in one piece.
+                guard let final = payload.first else { break }
+                artworkAssembly.append(payload.dropFirst())
+                if artworkAssembly.count > AudioStreamProtocol.maxArtworkBytes {
+                    AppLog.audioStream.line("Artwork exceeded \(AudioStreamProtocol.maxArtworkBytes) bytes — discarding")
+                    artworkAssembly = Data()
+                } else if final == 1 {
+                    onEvent?(.artwork(artworkAssembly))
+                    artworkAssembly = Data()
+                }
             case .keepAlive:
                 // Silence heartbeat from the sender (no PCM while quiet).
                 // Refresh liveness so the health probe doesn't mistake a
@@ -1113,6 +1191,21 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 break // not receiver-bound / unknown — skip
             }
         }
+        compactPending()
+    }
+
+    /// Drops the already-parsed prefix of `pending`, but only when the copy
+    /// buys something — otherwise the O(1) cursor is left to do its job.
+    private nonisolated func compactPending() {
+        guard pendingOffset > 0 else { return }
+        if pendingOffset >= pending.count {
+            pending.removeAll(keepingCapacity: true)
+        } else if pendingOffset >= 64 * 1024 {
+            pending = Data(pending[(pending.startIndex + pendingOffset)...])
+        } else {
+            return
+        }
+        pendingOffset = 0
     }
 
     // MARK: - Low-latency UDP path
@@ -1242,9 +1335,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
             if paused {
                 playerNode?.pause()
             } else {
-                // Restart with the normal jitter prebuffer.
-                playerNode?.stop()
-                scheduledFrames = 0
+                // Restart with the normal jitter cushion. Anything still
+                // queued from before the pause is stale, and its playback
+                // completions must not count against the new cushion.
+                resetPlayback()
                 lastScheduleNanos = 0
             }
         }
@@ -1397,7 +1491,16 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playerNode = player
         eqNode = eq
         audioFormat = format
-        scheduledFrames = 0
+        // Fresh node, fresh cushion. The target keeps any growth an earlier
+        // underrun earned — a link that needed 140 ms before needs it now.
+        playing = false
+        depthAverage = 0
+        trimming = false
+        lastScheduleNanos = 0
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
 
         // Engine config change = audio path shifted underneath us (VoIP
         // route, sample-rate switch, device change). Engine-only rebuild
@@ -1472,6 +1575,14 @@ final class AudioStreamReceiver: @unchecked Sendable {
             NotificationCenter.default.removeObserver(engineObserver)
         }
         engineObserver = nil
+        // Invalidate any outstanding playback completions before the node
+        // goes away, so a late callback can't decrement a rebuilt node's
+        // depth into a spurious underrun.
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
+        playing = false
         playerNode?.stop()
         audioEngine?.stop()
         if let engine = audioEngine, let player = playerNode {
@@ -1486,6 +1597,59 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playerNode = nil
         eqNode = nil
         audioFormat = nil
+    }
+
+    // MARK: - Jitter cushion
+
+    private nonisolated var wireSampleRate: Double { header?.sampleRate ?? 48_000 }
+
+    /// Cushion we aim to keep queued on the player node, in sample frames.
+    private nonisolated var targetFrames: Int {
+        max(1, Int(targetBufferSeconds * wireSampleRate))
+    }
+
+    /// Hard ceiling. Past this the stream is running long — a TCP stall that
+    /// cleared and dumped its backlog at once, or the sender's clock simply
+    /// outpacing ours — and whole buffers are dropped until it's back in
+    /// range. Single-sample drift correction sheds a half-second backlog far
+    /// too slowly to be the only mechanism.
+    private nonisolated var ceilingFrames: Int {
+        max(targetFrames * 3, targetFrames + Int(0.150 * wireSampleRate))
+    }
+
+    /// Stops the node, discards everything scheduled, and re-enters the
+    /// prebuffer state. Bumps the queue generation so completion callbacks
+    /// from the flushed buffers don't corrupt the new depth. Runs on `queue`.
+    private nonisolated func resetPlayback() {
+        playerNode?.stop()
+        playing = false
+        depthAverage = 0
+        trimming = false
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
+    }
+
+    /// Periodic one-liner so a real-device session can be read back from the
+    /// log: what the cushion is actually running at, and what it has cost.
+    /// Also relaxes the target again after a clean stretch, so one rough
+    /// patch early on doesn't cost latency for the rest of the session.
+    private nonisolated func logBufferHealth(depth: Int, now: UInt64) {
+        guard now &- lastHealthLogNanos > 10_000_000_000 else { return }
+        lastHealthLogNanos = now
+        if underrunCount == underrunsAtLastHealthLog, targetBufferSeconds > baseTargetBufferSeconds {
+            // Drift correction sheds the difference a sample at a time, so
+            // this shrinks the cushion smoothly rather than cutting audio.
+            targetBufferSeconds = max(baseTargetBufferSeconds, targetBufferSeconds - Self.bufferGrowthStep)
+        }
+        underrunsAtLastHealthLog = underrunCount
+        let ms = { (frames: Double) in Int(frames / self.wireSampleRate * 1000) }
+        AppLog.audioStream.line(
+            "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
+            + "target \(Int(targetBufferSeconds * 1000)) ms · "
+            + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
+        )
     }
 
     private nonisolated func schedule(_ payload: Data) {
@@ -1504,20 +1668,89 @@ final class AudioStreamReceiver: @unchecked Sendable {
         let channels = Int(format.channelCount)
         let bytesPerWireFrame = channels * AudioStreamProtocol.bytesPerSample
         guard payload.count % bytesPerWireFrame == 0 else { return }
-        let frameCount = AVAudioFrameCount(payload.count / bytesPerWireFrame)
-        guard frameCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        let wireFrames = payload.count / bytesPerWireFrame
+        guard wireFrames > 0 else { return }
+
+        let nowNanos = DispatchTime.now().uptimeNanoseconds
+
+        // Resume after a silence gap: once the sender suppresses sustained
+        // silence the node drains dry. Feeding it a single late buffer
+        // underruns and pops — rebuild the cushion exactly like a fresh
+        // start. The threshold sits well above the ~10–20 ms frame cadence so
+        // only real suppression gaps trigger it.
+        if playing, lastScheduleNanos != 0, nowNanos &- lastScheduleNanos > 200_000_000 {
+            resetPlayback()
+        }
+        lastScheduleNanos = nowNanos
+
+        var depth = queueState.withLock { $0.frames }
+
+        // Underrun. The node played everything we gave it and is now
+        // rendering silence with its clock still running, so the cushion is
+        // zero and stays zero: every later jitter spike would be audible and
+        // nothing would ever rebuild it. Stop, widen the target a little, and
+        // prebuffer again.
+        if playing, depth <= 0 {
+            underrunCount += 1
+            targetBufferSeconds = min(maxTargetBufferSeconds, targetBufferSeconds + Self.bufferGrowthStep)
+            AppLog.audioStream.line(
+                "⚠️ Audio underrun #\(underrunCount) — rebuilding cushion at \(Int(targetBufferSeconds * 1000)) ms"
+            )
+            resetPlayback()
+            depth = 0
+        }
+
+        // Burst trim: bound the latency a recovered stall leaves behind.
+        if playing, depth > ceilingFrames {
+            if !trimming {
+                trimming = true
+                AppLog.audioStream.line(
+                    "⚠️ Audio queue at \(Int(Double(depth) / wireSampleRate * 1000)) ms — trimming to target"
+                )
+            }
+            trimmedFrames += wireFrames
+            return
+        }
+        trimming = false
+
+        // Drift correction. The Mac's capture clock and this device's output
+        // clock are independent and differ by tens of ppm, which silently
+        // eats (or inflates) the cushion over minutes — the reason a session
+        // that starts clean develops dropouts with nothing else changing.
+        // Nudge by a single sample frame per buffer: a ~20 µs discontinuity,
+        // inaudible, and at ~100 buffers/s good for ~2000 ppm of correction,
+        // orders of magnitude more than any real clock mismatch. The
+        // *smoothed* depth is what's compared, so ordinary jitter never
+        // triggers it.
+        var adjust = 0
+        if playing {
+            depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
+            let target = Double(targetFrames)
+            let tolerance = max(target * 0.2, 0.005 * wireSampleRate)
+            if depthAverage > target + tolerance {
+                adjust = -1
+            } else if depthAverage < target - tolerance {
+                adjust = 1
+            }
+            if adjust != 0 { driftCorrections += 1 }
+        }
+
+        let frameCount = AVAudioFrameCount(max(1, wireFrames + adjust))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
         buffer.frameLength = frameCount
 
         // Decode interleaved wire int24 → Float32, deinterleaving into the
-        // engine's per-channel buffers.
+        // engine's per-channel buffers. Reading `min(frame, wireFrames - 1)`
+        // is what applies the drift nudge: −1 drops the last input frame,
+        // +1 repeats it.
         payload.withUnsafeBytes { raw in
             guard let channelData = buffer.floatChannelData else { return }
             let bytes = raw.bindMemory(to: UInt8.self)
             for channel in 0..<channels {
                 let out = channelData[channel]
                 for frame in 0..<Int(frameCount) {
-                    out[frame] = PCM24.sample(bytes, at: (frame * channels + channel) * AudioStreamProtocol.bytesPerSample)
+                    let source = min(frame, wireFrames - 1)
+                    out[frame] = PCM24.sample(bytes, at: (source * channels + channel) * AudioStreamProtocol.bytesPerSample)
                 }
             }
         }
@@ -1528,22 +1761,31 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // early-exits, so real audio costs next to nothing.
         let isSilentFrame = !payload.contains { $0 != 0 }
 
-        // Resume after a silence gap: once the sender suppresses sustained
-        // silence the player node drains dry. Feeding it a single late buffer
-        // underruns and pops (worst on the small low-latency UDP cushion) —
-        // reset so the jitter prebuffer is rebuilt before playback resumes,
-        // exactly like a fresh start. The threshold sits well above the
-        // ~10–20 ms frame cadence so only real suppression gaps trigger it.
-        let nowNanos = DispatchTime.now().uptimeNanoseconds
-        if scheduledFrames >= prebufferFrameCount, lastScheduleNanos != 0,
-           nowNanos &- lastScheduleNanos > 200_000_000 {
-            playerNode.stop()
-            scheduledFrames = 0
+        let scheduledCount = Int(frameCount)
+        let generation = queueState.withLock { state -> Int in
+            state.frames += scheduledCount
+            return state.generation
         }
-        lastScheduleNanos = nowNanos
+        // `.dataPlayedBack` is what makes the depth real: it fires when the
+        // samples have actually been rendered, not when the node accepted
+        // them. The generation check discards callbacks for buffers a
+        // `resetPlayback` already flushed.
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [queueState] _ in
+            queueState.withLock { state in
+                guard state.generation == generation else { return }
+                state.frames -= scheduledCount
+            }
+        }
 
-        playerNode.scheduleBuffer(buffer)
-        scheduledFrames += 1
+        // Hold playback until the cushion has accumulated.
+        if !playing {
+            let filled = queueState.withLock { $0.frames }
+            if filled >= targetFrames {
+                playing = true
+                depthAverage = Double(filled)
+                playerNode.play()
+            }
+        }
 
         // Drive the animated glyph off *actual sound*. The sender keeps the
         // stream warm with exact-silence frames across short gaps (so playback
@@ -1555,14 +1797,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
             onEvent?(.audioActivity)
         }
 
-        // Hold playback until a small jitter buffer has accumulated
-        if scheduledFrames == prebufferFrameCount {
-            playerNode.play()
-        }
-
-        // Throttled stats update (~every 0.5 s at 10 ms frames)
-        if scheduledFrames % 50 == 0 {
+        if nowNanos &- lastStatsNanos > 500_000_000 {
+            lastStatsNanos = nowNanos
             onEvent?(.bytesReceived(totalBytes))
         }
+        logBufferHealth(depth: depth, now: nowNanos)
     }
 }

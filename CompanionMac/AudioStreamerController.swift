@@ -216,6 +216,17 @@ final class AudioStreamerController {
     /// and shows no system audio-recording indicator.
     private var serverRunning = false
 
+    /// Held for as long as streaming is on. The Companion is an `LSUIElement`
+    /// agent with no windows, which makes it a prime App Nap candidate — and
+    /// App Nap coalesces timers and demotes dispatch queues, including the
+    /// `.userInteractive` queue that encrypts and writes every audio frame.
+    /// The Core Audio IOProc is separately realtime-scheduled and unaffected,
+    /// so the symptom is not silence but intermittent late packets, i.e.
+    /// dropouts on a receiver whose jitter cushion is tens of milliseconds.
+    /// `.idleSystemSleepDisabled` keeps the Mac from sleeping mid-stream;
+    /// display sleep is deliberately not blocked.
+    private var streamingActivity: (any NSObjectProtocol)?
+
     var isRunning: Bool {
         get { serverRunning }
         set {
@@ -293,6 +304,10 @@ final class AudioStreamerController {
     func start() {
         stop()
         lastError = nil
+        streamingActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+            reason: "Streaming system audio to Longwave"
+        )
 
         // Bring up the server and Music bridge only — no audio tap yet. The
         // tap is created lazily when a client connects (handleClientCountChange),
@@ -403,6 +418,10 @@ final class AudioStreamerController {
     }
 
     func stop() {
+        if let streamingActivity {
+            ProcessInfo.processInfo.endActivity(streamingActivity)
+            self.streamingActivity = nil
+        }
         pendingStopTapTask?.cancel()
         pendingStopTapTask = nil
         stopTap()
@@ -421,7 +440,8 @@ final class AudioStreamerController {
         updateMenuBarLabelPolling()
         let infoFrame = info?.encoded().map { AudioStreamProtocol.encodeFrame(.nowPlaying, $0) }
             ?? NowPlayingInfo(isPlaying: false).encoded().map { AudioStreamProtocol.encodeFrame(.nowPlaying, $0) }
-        let artworkFrame = artwork.map { AudioStreamProtocol.encodeFrame(.artwork, $0) }
-        server?.updateMetadata(infoFrame: infoFrame, artworkFrame: artworkFrame)
+        // Raw bytes, not a frame: the server chunks artwork per client so it
+        // can be paced between PCM frames instead of blocking them.
+        server?.updateMetadata(infoFrame: infoFrame, artwork: artwork)
     }
 }

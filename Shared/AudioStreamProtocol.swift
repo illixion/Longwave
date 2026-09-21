@@ -30,7 +30,7 @@ import Security
 ///
 /// Header layout (16 bytes):
 ///   0-3   magic "VVAS"
-///   4     protocol version (6)
+///   4     protocol version (7)
 ///   5     channel count
 ///   6-7   reserved (0)
 ///   8-15  sample rate, Float64 bit pattern
@@ -51,7 +51,7 @@ import Security
 /// header parse (no older-version compatibility path).
 nonisolated enum AudioStreamProtocol {
     static let magic: [UInt8] = Array("VVAS".utf8)
-    static let version: UInt8 = 6
+    static let version: UInt8 = 7
     static let headerSize = 16
     static let frameLengthPrefixSize = 4
     static let defaultPort: UInt16 = 4855
@@ -59,6 +59,34 @@ nonisolated enum AudioStreamProtocol {
     static let bytesPerSample = 3
     /// Sanity cap for a single frame (1 MB ≈ 1.75 s of 48 kHz stereo int24)
     static let maxFrameBytes: UInt32 = 1 << 20
+    /// Bytes of artwork carried by one `artwork` frame. Sized so a chunk
+    /// queued ahead of PCM delays it by well under a millisecond of link
+    /// time, while still delivering a typical cover in a fraction of a second.
+    static let artworkChunkBytes = 8 * 1024
+    /// Reassembly cap on the receiver. The sender scales artwork to a 600 px
+    /// JPEG, so this is orders of magnitude of headroom — it exists only so a
+    /// malformed or hostile stream can't grow the buffer without bound.
+    static let maxArtworkBytes = 4 * 1024 * 1024
+
+    /// Splits artwork bytes into `artwork` frames ready to send, in order.
+    /// Empty input yields a single final empty chunk, which clears the
+    /// receiver's artwork.
+    static func encodeArtworkFrames(_ artwork: Data) -> [Data] {
+        var frames: [Data] = []
+        var offset = artwork.startIndex
+        repeat {
+            let end = min(
+                artwork.index(offset, offsetBy: artworkChunkBytes, limitedBy: artwork.endIndex) ?? artwork.endIndex,
+                artwork.endIndex
+            )
+            var payload = Data(capacity: 1 + (end - offset))
+            payload.append(end == artwork.endIndex ? 1 : 0)
+            payload.append(artwork[offset..<end])
+            frames.append(encodeFrame(.artwork, payload))
+            offset = end
+        } while offset < artwork.endIndex
+        return frames
+    }
 
     enum FrameType: UInt8, Sendable {
         /// Interleaved signed 24-bit little-endian PCM samples (sender →
@@ -66,8 +94,18 @@ nonisolated enum AudioStreamProtocol {
         case pcm = 0x00
         /// NowPlayingInfo JSON (sender → receiver).
         case nowPlaying = 0x01
-        /// Scaled JPEG artwork bytes; always immediately precedes the
-        /// nowPlaying frame carrying the matching artworkID (sender → receiver).
+        /// One chunk of scaled JPEG artwork (sender → receiver). Payload is
+        /// a 1-byte continuation flag (1 == final chunk, 0 == more follows)
+        /// followed by the chunk bytes; the receiver concatenates until the
+        /// final flag. The complete artwork always immediately precedes the
+        /// nowPlaying frame carrying the matching artworkID.
+        ///
+        /// Chunked as of v7 because artwork rides the *same ordered TCP
+        /// stream* as PCM: a whole ~150 KB JPEG handed to one `send` sits in
+        /// front of every subsequent audio frame until it drains, which on a
+        /// Wi-Fi link is comfortably longer than the receiver's jitter
+        /// cushion — an audible dropout on every track change. Small chunks
+        /// dribbled out between PCM frames cost ~0.6 ms of link time each.
         case artwork = 0x02
         /// MediaCommandMessage JSON (receiver → sender).
         case command = 0x03
@@ -130,8 +168,22 @@ nonisolated enum PCM24 {
     static let maxSample: Int32 = 8_388_607  // 2²³ − 1
     static let minSample: Int32 = -8_388_608 // −2²³
 
+    /// Converts one normalized Float32 sample to its little-endian int24
+    /// representation and writes it at `byteOffset`. The caller guarantees
+    /// three bytes are in bounds. Allocation-free — the sender calls this
+    /// from the Core Audio realtime thread, where `malloc` is forbidden.
+    @inline(__always)
+    static func write(_ sample: Float32, to destination: UnsafeMutableRawBufferPointer, at byteOffset: Int) {
+        var s = Int32((max(-1, min(1, sample)) * scale).rounded())
+        if s > maxSample { s = maxSample } else if s < minSample { s = minSample }
+        let u = UInt32(bitPattern: s)
+        destination[byteOffset] = UInt8(u & 0xff)
+        destination[byteOffset &+ 1] = UInt8((u >> 8) & 0xff)
+        destination[byteOffset &+ 2] = UInt8((u >> 16) & 0xff)
+    }
+
     /// Packs interleaved normalized Float32 samples into little-endian int24.
-    /// Runs on a realtime audio thread on the sender — allocation-light.
+    /// Allocates — use `write(_:to:at:)` on a realtime audio thread.
     static func encode(_ floats: UnsafeBufferPointer<Float32>) -> Data {
         var out = Data(count: floats.count * 3)
         out.withUnsafeMutableBytes { raw in

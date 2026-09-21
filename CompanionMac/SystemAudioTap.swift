@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import AudioToolbox
+import os
 
 /// Captures system-wide audio output via a Core Audio process tap
 /// (macOS 14.2+) — no virtual audio driver (BlackHole etc.) required.
@@ -65,6 +66,13 @@ final class SystemAudioTap: @unchecked Sendable {
     private nonisolated(unsafe) var silentFrames = 0
     private nonisolated(unsafe) var suppressingSilence = false
 
+    /// Samples the int24 conversion had to hard-clamp, written by the IOProc
+    /// and reported from the ring's consumer thread. See `PCM24.write`.
+    private nonisolated(unsafe) var clippedSamples = 0
+    private nonisolated(unsafe) var reportedClippedSamples = 0
+    private nonisolated(unsafe) var lastClipLogNanos: UInt64 = 0
+    private let log = Logger(subsystem: "pro.longwave.companion", category: "SystemAudioTap")
+
     nonisolated init() {}
 
     /// Creates the tap + aggregate device and starts IO.
@@ -73,6 +81,8 @@ final class SystemAudioTap: @unchecked Sendable {
         stop()
         silentFrames = 0
         suppressingSilence = false
+        clippedSamples = 0
+        reportedClippedSamples = 0
 
         // 1. System-wide stereo mixdown tap of all processes
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
@@ -159,7 +169,9 @@ final class SystemAudioTap: @unchecked Sendable {
         let slotCapacity = max(Int(bufferFrames) * 4, 4096) * channelCount * AudioStreamProtocol.bytesPerSample
         let ring = AudioFrameRing(slotCapacity: slotCapacity)
         ring.start { [weak self] data in
-            self?.onAudio?(data)
+            guard let self else { return }
+            self.onAudio?(data)
+            self.reportClippingIfNeeded()
         }
         self.ring = ring
 
@@ -244,14 +256,32 @@ final class SystemAudioTap: @unchecked Sendable {
         }
         guard !suppressingSilence else { return }
 
+        var clipped = 0
         ring.write { destination in
             Self.encodePCM(
                 from: bufferList,
                 isNonInterleaved: isNonInterleaved,
                 channelCount: channelCount,
-                into: destination
+                into: destination,
+                clipped: &clipped
             )
         }
+        clippedSamples &+= clipped
+    }
+
+    /// Reports hard-clamped samples from the ring's consumer thread (the
+    /// IOProc can't log), throttled. Non-zero means the Mac is feeding the
+    /// tap a mixdown hotter than full scale, which crackles on peaks — a
+    /// different fault from anything in the jitter path.
+    private nonisolated func reportClippingIfNeeded() {
+        let total = clippedSamples
+        guard total > reportedClippedSamples else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now &- lastClipLogNanos > 5_000_000_000 else { return }
+        lastClipLogNanos = now
+        let delta = total - reportedClippedSamples
+        reportedClippedSamples = total
+        log.error("Mixdown exceeds full scale — \(delta) samples hard-clipped in the last interval (\(total) total)")
     }
 
     /// Cheaply reports whether a buffer is exact digital silence and how many
@@ -302,7 +332,8 @@ final class SystemAudioTap: @unchecked Sendable {
         from bufferList: UnsafePointer<AudioBufferList>,
         isNonInterleaved: Bool,
         channelCount: Int,
-        into destination: UnsafeMutableRawBufferPointer
+        into destination: UnsafeMutableRawBufferPointer,
+        clipped: inout Int
     ) -> Int {
         let buffers = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: bufferList)
@@ -318,7 +349,7 @@ final class SystemAudioTap: @unchecked Sendable {
             guard count * stride <= destination.count else { return 0 }
             let floats = base.assumingMemoryBound(to: Float32.self)
             for i in 0..<count {
-                PCM24.write(floats[i], to: destination, at: i * stride)
+                PCM24.write(floats[i], to: destination, at: i * stride, clipped: &clipped)
             }
             return count * stride
         }
@@ -332,7 +363,7 @@ final class SystemAudioTap: @unchecked Sendable {
         for channel in 0..<min(channelCount, buffers.count) {
             guard let base = buffers[channel].mData?.assumingMemoryBound(to: Float32.self) else { continue }
             for frame in 0..<frameCount {
-                PCM24.write(base[frame], to: destination, at: (frame * channelCount + channel) * stride)
+                PCM24.write(base[frame], to: destination, at: (frame * channelCount + channel) * stride, clipped: &clipped)
             }
         }
         return byteCount

@@ -9,8 +9,8 @@ import os
 /// Audio drops the buffer outright. That is a hole punched in the stream at
 /// the *source*, before any network is involved, so it shows up identically
 /// on the TCP and UDP paths and correlates with system load rather than with
-/// link quality. The previous path allocated twice per callback: once in
-/// `PCM24.encode` for the int24 blob, and once for the `DispatchQueue.async`
+/// link quality. The previous path allocated twice per callback: once for the
+/// int24 blob it built as a `Data`, and once for the `DispatchQueue.async`
 /// closure context used to hand it off.
 ///
 /// Instead the IOProc writes int24 samples straight into a slot it already
@@ -40,6 +40,12 @@ final class AudioFrameRing: @unchecked Sendable {
     private let ready = DispatchSemaphore(value: 0)
     private let finished = DispatchSemaphore(value: 0)
     private let running = OSAllocatedUnfairLock(initialState: false)
+
+    /// Drop bookkeeping for the consumer thread's throttled reporting. The
+    /// producer can't log: `Logger` allocates, and it runs on the realtime
+    /// thread.
+    private var reportedDrops = 0
+    private var lastDropLogNanos: UInt64 = 0
 
     private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioFrameRing")
 
@@ -80,11 +86,13 @@ final class AudioFrameRing: @unchecked Sendable {
             self?.consume(handler)
         }
         thread.name = "pro.longwave.companion.audio-ring"
+        // QoS only — deliberately *not* `threadPriority`. Setting an explicit
+        // thread priority on an `NSThread` resets its quality-of-service to
+        // the default class, which would demote the one thread standing
+        // between a captured buffer and the socket to ordinary work. When it
+        // gets descheduled the ring backs up and then drops, which reaches
+        // the listener as a hole in the audio.
         thread.qualityOfService = .userInteractive
-        // Just under the realtime IOProc, comfortably above ordinary work:
-        // this thread is the only thing standing between a captured buffer
-        // and the socket.
-        thread.threadPriority = 0.9
         thread.start()
     }
 
@@ -149,10 +157,25 @@ final class AudioFrameRing: @unchecked Sendable {
             // The allocation the realtime thread isn't allowed to make.
             handler(Data(bytes: storage + slot * slotCapacity, count: lengths[slot]))
 
-            cursor.withLock { c in
+            let dropped = cursor.withLock { c -> Int in
                 c.read = (c.read + 1) % slotCount
                 c.filled -= 1
+                return c.dropped
             }
+            reportDropsIfNeeded(dropped)
         }
+    }
+
+    /// Surfaces producer-side drops from the consumer thread, throttled.
+    /// A drop here is audio that never reached the network at all, so it
+    /// presents to the listener exactly like a network dropout and has to be
+    /// distinguishable from one.
+    private func reportDropsIfNeeded(_ dropped: Int) {
+        guard dropped > reportedDrops else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now &- lastDropLogNanos > 5_000_000_000 else { return }
+        lastDropLogNanos = now
+        reportedDrops = dropped
+        log.error("Audio frame ring overflowed — \(dropped) captured buffers dropped before the network saw them")
     }
 }

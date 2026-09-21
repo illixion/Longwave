@@ -173,33 +173,24 @@ nonisolated enum PCM24 {
     /// three bytes are in bounds. Allocation-free — the sender calls this
     /// from the Core Audio realtime thread, where `malloc` is forbidden.
     @inline(__always)
-    static func write(_ sample: Float32, to destination: UnsafeMutableRawBufferPointer, at byteOffset: Int) {
+    static func write(
+        _ sample: Float32,
+        to destination: UnsafeMutableRawBufferPointer,
+        at byteOffset: Int,
+        clipped: inout Int
+    ) {
+        // A float mixdown can legitimately exceed ±1 when several loud
+        // sources sum, and the wire format cannot carry that — so the clamp
+        // below is hard clipping, which crackles on peaks and sounds like a
+        // buffering fault while having nothing to do with buffering. Counted
+        // so the two can be told apart from the log.
+        if sample > 1 || sample < -1 { clipped &+= 1 }
         var s = Int32((max(-1, min(1, sample)) * scale).rounded())
         if s > maxSample { s = maxSample } else if s < minSample { s = minSample }
         let u = UInt32(bitPattern: s)
         destination[byteOffset] = UInt8(u & 0xff)
         destination[byteOffset &+ 1] = UInt8((u >> 8) & 0xff)
         destination[byteOffset &+ 2] = UInt8((u >> 16) & 0xff)
-    }
-
-    /// Packs interleaved normalized Float32 samples into little-endian int24.
-    /// Allocates — use `write(_:to:at:)` on a realtime audio thread.
-    static func encode(_ floats: UnsafeBufferPointer<Float32>) -> Data {
-        var out = Data(count: floats.count * 3)
-        out.withUnsafeMutableBytes { raw in
-            let dst = raw.bindMemory(to: UInt8.self)
-            var j = 0
-            for f in floats {
-                var s = Int32((max(-1, min(1, f)) * scale).rounded())
-                if s > maxSample { s = maxSample } else if s < minSample { s = minSample }
-                let u = UInt32(bitPattern: s)
-                dst[j] = UInt8(u & 0xff)
-                dst[j &+ 1] = UInt8((u >> 8) & 0xff)
-                dst[j &+ 2] = UInt8((u >> 16) & 0xff)
-                j &+= 3
-            }
-        }
-        return out
     }
 
     /// Reads one little-endian int24 sample at byte offset `i` and returns it

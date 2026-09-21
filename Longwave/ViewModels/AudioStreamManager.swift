@@ -1617,9 +1617,29 @@ final class AudioStreamReceiver: @unchecked Sendable {
         max(targetFrames * 3, targetFrames + Int(0.150 * wireSampleRate))
     }
 
-    /// Stops the node, discards everything scheduled, and re-enters the
-    /// prebuffer state. Bumps the queue generation so completion callbacks
-    /// from the flushed buffers don't corrupt the new depth. Runs on `queue`.
+    /// Re-enters the prebuffer state after the node has run dry, *without*
+    /// cutting it. Runs on `queue`.
+    ///
+    /// Deliberately `pause()`, not `stop()`. By the time this is called the
+    /// node has already drained and is rendering silence, so pausing there is
+    /// silence-to-silence and inaudible — whereas `stop()` halts mid-waveform
+    /// and resets the timeline, so the gap acquires a step discontinuity at
+    /// each end: two clicks bracketing every recovery. `pause()` also keeps
+    /// the scheduled queue and its pending completions intact, so the depth
+    /// counter stays valid and no generation bump is needed; buffers
+    /// scheduled from here simply accumulate until the cushion is back.
+    private nonisolated func rebuildCushion() {
+        playerNode?.pause()
+        playing = false
+        depthAverage = 0
+        trimming = false
+    }
+
+    /// Hard reset: stops the node, discards everything scheduled, and
+    /// re-enters the prebuffer state. Bumps the queue generation so
+    /// completion callbacks from the flushed buffers don't corrupt the new
+    /// depth. For the cases where the queued audio is genuinely stale (local
+    /// unpause, engine rebuild) rather than merely late. Runs on `queue`.
     private nonisolated func resetPlayback() {
         playerNode?.stop()
         playing = false
@@ -1679,7 +1699,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // start. The threshold sits well above the ~10–20 ms frame cadence so
         // only real suppression gaps trigger it.
         if playing, lastScheduleNanos != 0, nowNanos &- lastScheduleNanos > 200_000_000 {
-            resetPlayback()
+            AppLog.audioStream.line(
+                "Audio resumed after a \((nowNanos &- lastScheduleNanos) / 1_000_000) ms source gap — rebuilding cushion"
+            )
+            rebuildCushion()
         }
         lastScheduleNanos = nowNanos
 
@@ -1688,16 +1711,16 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // Underrun. The node played everything we gave it and is now
         // rendering silence with its clock still running, so the cushion is
         // zero and stays zero: every later jitter spike would be audible and
-        // nothing would ever rebuild it. Stop, widen the target a little, and
-        // prebuffer again.
+        // nothing would ever rebuild it. Widen the target a little and
+        // prebuffer again — see `rebuildCushion` for why this must not cut
+        // the node.
         if playing, depth <= 0 {
             underrunCount += 1
             targetBufferSeconds = min(maxTargetBufferSeconds, targetBufferSeconds + Self.bufferGrowthStep)
             AppLog.audioStream.line(
                 "⚠️ Audio underrun #\(underrunCount) — rebuilding cushion at \(Int(targetBufferSeconds * 1000)) ms"
             )
-            resetPlayback()
-            depth = 0
+            rebuildCushion()
         }
 
         // Burst trim: bound the latency a recovered stall leaves behind.
@@ -1740,17 +1763,44 @@ final class AudioStreamReceiver: @unchecked Sendable {
         buffer.frameLength = frameCount
 
         // Decode interleaved wire int24 → Float32, deinterleaving into the
-        // engine's per-channel buffers. Reading `min(frame, wireFrames - 1)`
-        // is what applies the drift nudge: −1 drops the last input frame,
-        // +1 repeats it.
+        // engine's per-channel buffers.
+        let outFrames = Int(frameCount)
+        let sampleStride = AudioStreamProtocol.bytesPerSample
         payload.withUnsafeBytes { raw in
             guard let channelData = buffer.floatChannelData else { return }
             let bytes = raw.bindMemory(to: UInt8.self)
+            guard adjust != 0 else {
+                for channel in 0..<channels {
+                    let out = channelData[channel]
+                    for frame in 0..<outFrames {
+                        out[frame] = PCM24.sample(bytes, at: (frame * channels + channel) * sampleStride)
+                    }
+                }
+                return
+            }
+            // Applying the drift nudge by *resampling* the buffer, not by
+            // dropping or repeating a sample frame.
+            //
+            // Dropping one sample is a step discontinuity whose height is the
+            // adjacent-sample delta — on music that is a broadband click
+            // around −20 dBFS, and fired once per buffer (~94/s while the
+            // average sits outside the tolerance band) it is a buzz, not the
+            // "inaudible 20 µs" it looks like on paper. Linear interpolation
+            // spreads the same ±1 frame across the whole buffer instead: a
+            // ~0.2% rate change lasting 10 ms. The endpoints still map to the
+            // first and last input frames, so consecutive buffers join with
+            // no discontinuity at the seam.
+            let step = Double(wireFrames - 1) / Double(max(1, outFrames - 1))
             for channel in 0..<channels {
                 let out = channelData[channel]
-                for frame in 0..<Int(frameCount) {
-                    let source = min(frame, wireFrames - 1)
-                    out[frame] = PCM24.sample(bytes, at: (source * channels + channel) * AudioStreamProtocol.bytesPerSample)
+                for frame in 0..<outFrames {
+                    let position = Double(frame) * step
+                    let low = min(Int(position), wireFrames - 1)
+                    let high = min(low + 1, wireFrames - 1)
+                    let fraction = Float(position - Double(low))
+                    let a = PCM24.sample(bytes, at: (low * channels + channel) * sampleStride)
+                    let b = PCM24.sample(bytes, at: (high * channels + channel) * sampleStride)
+                    out[frame] = a + (b - a) * fraction
                 }
             }
         }
@@ -1777,7 +1827,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
             }
         }
 
-        // Hold playback until the cushion has accumulated.
+        // Hold playback until the cushion has accumulated. Works for both
+        // entry paths: before the first `play()` the node is stopped, and
+        // after `rebuildCushion` it is paused — either way scheduled buffers
+        // queue up instead of being consumed, and `play()` releases them.
         if !playing {
             let filled = queueState.withLock { $0.frames }
             if filled >= targetFrames {

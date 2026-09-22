@@ -93,6 +93,12 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Asks the encoder for a key frame on its next capture — see
+    /// `MacHEVCEncoder.requestKeyFrame`.
+    nonisolated func requestKeyFrame() {
+        encoder?.requestKeyFrame()
+    }
+
     func stop() async {
         if let stream {
             try? await stream.stopCapture()
@@ -288,6 +294,12 @@ final class MacNativeWindowStreamCoordinator {
                 self.closeStream(windowID: windowID, reason: error.localizedDescription)
             }
         }
+    }
+
+    /// Forces a key frame on a running stream, for a viewer that just
+    /// subscribed to one another viewer already started.
+    func requestKeyFrame(windowID: UInt32) {
+        streamers[windowID]?.requestKeyFrame()
     }
 
     func stopStream(windowID: UInt32) {

@@ -84,7 +84,8 @@ final class MacNativeSessionStore {
     /// Tears a session down and forgets it — the hard close behind every
     /// Disconnect button. Its windows are dismissed by the caller.
     func end(_ id: MacNativeSessionID) {
-        releaseAudio(id)
+        audioPlayers[id]?.userDisconnect()
+        audioPlayers[id] = nil
         managers[id]?.forget()
         managers[id] = nil
         sessionIDs.removeAll { $0 == id }
@@ -118,72 +119,30 @@ final class MacNativeSessionStore {
         return connectedSessions.last?.id
     }
 
-    // MARK: - Audio ownership
+    // MARK: - Audio
 
-    /// Which session the app's one companion audio stream currently belongs to.
+    /// One audio player per session, created on demand alongside the screen
+    /// manager. Deliberately not observed, for the same reason as `managers`.
+    @ObservationIgnored private var audioPlayers: [MacNativeSessionID: AudioStreamManager] = [:]
+
+    /// This session's audio player.
     ///
-    /// Screen is per session; audio is not, and shouldn't be — there is one
-    /// pair of ears, one `MPNowPlayingInfoCenter`, and Music mode takes the
-    /// audio session exclusively. So `AudioStreamManager` stays a single
-    /// player and this records whose it is, which is what keeps a second
-    /// session's window from showing (or worse, switching off) the first
-    /// session's stream.
-    private(set) var audioOwnerID: MacNativeSessionID?
-
-    /// Whether `id` may drive the audio player: it already owns it, or nobody
-    /// does yet.
-    func ownsAudio(_ id: MacNativeSessionID) -> Bool {
-        audioOwnerID == nil || audioOwnerID == id
+    /// Audio used to be one player for the whole app, with the store recording
+    /// which session was allowed to use it — so a second session could connect
+    /// its screen but not its sound. There is no reason for that: several
+    /// streams mix perfectly well. What genuinely cannot be shared is Music
+    /// mode, which takes the audio session exclusively and owns the one Now
+    /// Playing entry, so `AudioStreamManager` grants that to a single player
+    /// and runs every other one in Speaker mode — see its `effectiveAudioMode`.
+    func audioPlayer(for id: MacNativeSessionID) -> AudioStreamManager {
+        if let existing = audioPlayers[id] { return existing }
+        let player = AudioStreamManager(scope: id.connectionID.uuidString)
+        audioPlayers[id] = player
+        return player
     }
 
-    /// Takes the audio player for this session — the Audio toggle in its
-    /// window, or connecting a Native connection that has Audio enabled.
-    func claimAudio(_ id: MacNativeSessionID) {
-        audioOwnerID = id
-    }
-
-    /// Gives the audio player up, if this session is holding it.
-    func releaseAudio(_ id: MacNativeSessionID) {
-        guard audioOwnerID == id else { return }
-        audioOwnerID = nil
-    }
-
-    /// Points the one audio player at this session and starts it — what an
-    /// Audio toggle turning on does.
-    ///
-    /// Claiming alone is not enough when the player is already streaming for
-    /// another session: `liveEnabled` is already `true`, so it doesn't change,
-    /// so the views' `onChange` never fires and the stream would keep playing
-    /// the *other* host's audio under this window's label.
-    func takeAudio(
-        _ id: MacNativeSessionID,
-        player: AudioStreamManager,
-        connection: SavedConnection?
-    ) {
-        // Before touching `liveEnabled`, so the owning window's `onChange` —
-        // which is gated on ownership — is this one.
-        claimAudio(id)
-        if let connection {
-            player.prepareTarget(
-                hostname: connection.hostname,
-                port: AudioStreamProtocol.defaultPort,
-                token: connection.companionToken,
-                title: connection.displayName,
-                lowLatency: connection.lowLatencyAudio
-            )
-        }
-        if player.liveEnabled {
-            player.reconnectLast()
-        } else {
-            player.liveEnabled = true
-        }
-    }
-
-    /// Stops the audio player and gives it back — the Audio toggle turning off.
-    func dropAudio(_ id: MacNativeSessionID, player: AudioStreamManager) {
-        guard ownsAudio(id) else { return }
-        releaseAudio(id)
-        player.liveEnabled = false
+    func existingAudioPlayer(for id: MacNativeSessionID) -> AudioStreamManager? {
+        audioPlayers[id]
     }
 
     /// Host names of every live session — the Sessions tab's subtitle.

@@ -44,6 +44,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
     // whole-desktop stream; anything else is a per-window stream.
     nonisolated(unsafe) var onWindowStreamStart: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onWindowStreamStop: (@Sendable (UInt32) -> Void)?
+    /// A viewer joined a stream that is already running, so the encoder is
+    /// mid-GOP and nothing it sends will decode until the next key frame.
+    nonisolated(unsafe) var onKeyFrameNeeded: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onWindowMouseMove: (@Sendable (UInt32, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onWindowMouseDown:
@@ -210,22 +213,31 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
     }
 
-    /// Ends every viewer's session with the same error — capture died, so
-    /// there is nothing left to show any of them.
-    nonisolated func disconnectAll(withError message: String) {
+    /// Ends the session of every viewer watching the *desktop* stream, with
+    /// the same error — the desktop capture died, so there is nothing left to
+    /// show them.
+    ///
+    /// Scoped rather than "everyone": with several viewers, one of them may be
+    /// watching only per-window streams (or be connected for audio and input
+    /// alone), and those are unaffected by the desktop capture failing.
+    nonisolated func disconnectDesktopViewers(withError message: String) {
         queue.async { [self] in
-            let leaving = clients
+            let leaving = clients.filter {
+                $0.wantsStream(MacNativeStreamProtocol.desktopStreamID)
+            }
             guard !leaving.isEmpty else { return }
-            clients = []
+            clients.removeAll { client in leaving.contains { $0 === client } }
             for client in leaving {
+                client.isActive = false
                 sendError(message, to: client)
             }
-            // Every subscription went with them.
-            for streamID in Set(leaving.flatMap { $0.subscriptions })
-                .union([MacNativeStreamProtocol.desktopStreamID]) {
+            // Stop only what no remaining viewer still wants.
+            for streamID in Set(leaving.flatMap(\.subscriptions))
+                .union([MacNativeStreamProtocol.desktopStreamID])
+            where subscriberCount(streamID) == 0 {
                 onWindowStreamStop?(streamID)
             }
-            onClientsChanged?([])
+            onClientsChanged?(clients.map(\.summary))
         }
     }
 
@@ -486,9 +498,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 if wasRunning {
                     // Someone else already has this stream going, so the
                     // capture side will not announce its format again — hand
-                    // this viewer the cached one, and the key-frame gate above
-                    // holds its decoder until the next one (≤1 s).
+                    // this viewer the cached one, and ask the encoder for a
+                    // key frame so the gate above opens on the next frame
+                    // rather than at the end of the current GOP.
                     sendCachedFormat(of: windowID, to: client)
+                    onKeyFrameNeeded?(windowID)
                 } else {
                     onWindowStreamStart?(windowID)
                 }
@@ -595,15 +609,20 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
         sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
         sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
+        // Before any stream start below: starting the desktop capture reads
+        // the chroma every viewer can decode, and that answer is derived from
+        // this very callback. Announcing the viewer set afterwards would start
+        // the capture at the old set's chroma and immediately restart it.
+        onClientConnected?(deviceName, wantsScreen)
+        onClientsChanged?(clients.map(\.summary))
         if !client.isV2, wantsScreen {
             if desktopWasRunning {
                 sendCachedFormat(of: MacNativeStreamProtocol.desktopStreamID, to: client)
+                onKeyFrameNeeded?(MacNativeStreamProtocol.desktopStreamID)
             } else {
                 onWindowStreamStart?(MacNativeStreamProtocol.desktopStreamID)
             }
         }
-        onClientConnected?(deviceName, wantsScreen)
-        onClientsChanged?(clients.map(\.summary))
     }
 
     private nonisolated func sendRequired(_ data: Data, to client: Client?) {

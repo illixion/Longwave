@@ -54,6 +54,8 @@ final class MacHEVCEncoder: @unchecked Sendable {
     private nonisolated(unsafe) var sessionHeight = 0
     private nonisolated(unsafe) var lastFormatDescription: Data?
     private nonisolated(unsafe) var sequence: UInt64 = 0
+    /// Set by `requestKeyFrame`, consumed by the next `encode`.
+    private nonisolated(unsafe) var forceNextKeyFrame = false
 
     nonisolated init(
         bitrate: Int = 24_000_000,
@@ -94,13 +96,19 @@ final class MacHEVCEncoder: @unchecked Sendable {
             )
         }
 
+        var frameProperties: CFDictionary?
+        if forceNextKeyFrame {
+            forceNextKeyFrame = false
+            frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
+        }
+
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: pts,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: frameProperties,
             infoFlagsOut: nil
         ) { [weak self] status, _, encodedBuffer in
             guard let self else { return }
@@ -113,6 +121,16 @@ final class MacHEVCEncoder: @unchecked Sendable {
         if status != noErr {
             onError?("VTCompressionSessionEncodeFrame failed (\(status))")
         }
+    }
+
+    /// Asks for the next encoded frame to be a key frame.
+    ///
+    /// The stream is fanned out to several viewers, and one joining a stream
+    /// the others already have running would otherwise sit on a black window
+    /// until the next scheduled key frame — up to a whole second at the
+    /// configured interval. Forcing one costs a single larger frame.
+    nonisolated func requestKeyFrame() {
+        forceNextKeyFrame = true
     }
 
     /// Retargets the bitrate for the *next* compression session. A resized

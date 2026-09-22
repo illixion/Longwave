@@ -127,9 +127,9 @@ struct MobileAudioView: View {
             Button {
                 audioManager.toggleAudioMode()
             } label: {
-                Image(systemName: audioManager.audioMode == .music ? "music.note" : "hifispeaker")
+                Image(systemName: audioManager.audioModeSymbol)
             }
-            .accessibilityLabel(audioManager.audioMode == .music ? "Music mode" : "Speaker mode")
+            .accessibilityLabel(audioManager.audioModeLabel)
 
             Button {
                 showEQ.toggle()

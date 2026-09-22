@@ -110,6 +110,26 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        // The same pop-out for a Native session's own player. It needs its own
+        // scene rather than reusing "audio-stream" above, because which player
+        // it shows is part of its identity: two sessions can have their audio
+        // popped out at once, and each window has to keep playing its own.
+        WindowGroup("Native Audio", id: "mac-native-audio", for: MacNativeSessionID.self) { $sessionID in
+            if let sessionID {
+                AudioStreamView()
+                    .environment(macNativeSessions.audioPlayer(for: sessionID))
+                    .trackWindowSession(
+                        id: "mac-native-audio",
+                        instance: sessionID.registryInstance
+                    )
+            }
+        }
+        .defaultSize(width: 400, height: 600)
+        .windowResizability(.contentSize)
+        .windowStyle(.plain)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         WindowGroup("Terminal", id: "ssh-terminal", for: SSHSessionID.self) { $sessionID in
             if let sessionID {
                 SSHTerminalView(sessionID: sessionID)
@@ -161,7 +181,9 @@ struct LongwaveApp: App {
                 NativeStreamView(sessionID: sessionID)
                     .environment(macNativeSessions.session(for: sessionID))
                     .environment(macNativeSessions)
-                    .environment(audioManager)
+                    // This session's own audio player, not the app's shared
+                    // one — see `MacNativeSessionStore.audioPlayer(for:)`.
+                    .environment(macNativeSessions.audioPlayer(for: sessionID))
                     .trackWindowSession(id: "mac-native-stream", instance: sessionID.registryInstance)
             }
         }
@@ -191,7 +213,7 @@ struct LongwaveApp: App {
                 MacNativeUnityControlView(sessionID: sessionID)
                     .environment(macNativeSessions.session(for: sessionID))
                     .environment(macNativeSessions)
-                    .environment(audioManager)
+                    .environment(macNativeSessions.audioPlayer(for: sessionID))
                     .trackWindowSession(
                         id: "mac-native-unity-controls",
                         instance: sessionID.registryInstance

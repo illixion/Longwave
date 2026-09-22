@@ -95,11 +95,13 @@ struct AudioStreamView: View {
             Button {
                 audioManager.toggleAudioMode()
             } label: {
-                Image(systemName: audioManager.audioMode == .music ? "music.note" : "hifispeaker")
+                Image(systemName: audioManager.audioModeSymbol)
             }
-            .help(audioManager.audioMode == .music
-                  ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
-                  : "Speaker Mode — mixes with other audio and auto-recovers")
+            .help(audioManager.isForcedToSpeaker
+                  ? audioManager.audioModeLabel
+                  : audioManager.effectiveAudioMode == .music
+                    ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
+                    : "Speaker Mode — mixes with other audio and auto-recovers")
 
             Button {
                 showEQ.toggle()

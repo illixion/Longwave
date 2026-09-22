@@ -98,7 +98,7 @@ struct SessionsView: View {
 
     /// Window kinds that exist once per session rather than once per app.
     private static let nativeSessionWindowIDs: Set<String> = [
-        "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard"
+        "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard", "mac-native-audio"
     ]
 
     /// Moonlight and Native windows are keyed per session; the focused one —
@@ -139,7 +139,7 @@ struct SessionsView: View {
             return connectionManager.connectionTitle
         case "audio-stream":
             return audioManager.connectionTitle
-        case "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard":
+        case "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard", "mac-native-audio":
             let titles = macNativeSessions.connectedTitles
             return titles.isEmpty ? nil : titles.joined(separator: ", ")
         #if MOONLIGHT_ENABLED

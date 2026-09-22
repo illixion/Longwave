@@ -298,31 +298,26 @@ struct ConnectionListView: View {
             manager.connect(to: connection)
         }
         #endif
-        // There is one audio player for the whole app (see
-        // `MacNativeSessionStore.audioOwnerID`). A connection that wants audio
-        // takes it; one that doesn't leaves whatever is already playing alone
-        // rather than retargeting — or switching off — another session's stream.
+        // This session's own audio player. Several sessions stream at once
+        // and mix; the only thing they can't share is Music mode, which
+        // `AudioStreamManager` grants to one player and denies to the rest.
+        let audioPlayer = macNativeSessions.audioPlayer(for: sessionID)
+        audioPlayer.prepareTarget(
+            hostname: connection.hostname,
+            port: AudioStreamProtocol.defaultPort,
+            token: connection.companionToken,
+            title: connection.displayName,
+            lowLatency: connection.lowLatencyAudio
+        )
+        audioPlayer.liveEnabled = connection.nativeAudioEnabled
         if connection.nativeAudioEnabled {
-            macNativeSessions.claimAudio(sessionID)
-        }
-        if macNativeSessions.ownsAudio(sessionID) {
-            audioManager.prepareTarget(
+            audioPlayer.connect(
                 hostname: connection.hostname,
                 port: AudioStreamProtocol.defaultPort,
                 token: connection.companionToken,
                 title: connection.displayName,
                 lowLatency: connection.lowLatencyAudio
             )
-            audioManager.liveEnabled = connection.nativeAudioEnabled
-            if connection.nativeAudioEnabled {
-                audioManager.connect(
-                    hostname: connection.hostname,
-                    port: AudioStreamProtocol.defaultPort,
-                    token: connection.companionToken,
-                    title: connection.displayName,
-                    lowLatency: connection.lowLatencyAudio
-                )
-            }
         }
         if unity {
             #if os(visionOS)

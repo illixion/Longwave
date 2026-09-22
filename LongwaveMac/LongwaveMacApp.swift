@@ -105,7 +105,9 @@ struct LongwaveMacApp: App {
                 MacNativeStreamWindowView(sessionID: sessionID)
                     .environment(macNativeSessions.session(for: sessionID))
                     .environment(macNativeSessions)
-                    .environment(audioManager)
+                    // This session's own audio player, not the app's shared
+                    // one — see `MacNativeSessionStore.audioPlayer(for:)`.
+                    .environment(macNativeSessions.audioPlayer(for: sessionID))
                     .trackWindowSession(id: "mac-native-stream", instance: sessionID.registryInstance)
             }
         }

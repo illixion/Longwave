@@ -248,8 +248,14 @@ final class WindowSessionRegistry {
         #if os(visionOS)
         kinds.append(WindowKind(id: "mac-native-unity-controls", title: "Unity Controls", systemImage: "slider.horizontal.3"))
         #endif
-        // Opens via the Native window's pop-out button.
+        // The app's shared player, popped out of the VNC/standalone audio UI.
         kinds.append(WindowKind(id: "audio-stream", title: "Audio Stream", systemImage: "hifispeaker"))
+        #if os(visionOS)
+        // A Native session's own player, popped out of its Native window. A
+        // separate kind because it is a separate player — see
+        // `MacNativeSessionStore.audioPlayer(for:)`.
+        kinds.append(WindowKind(id: "mac-native-audio", title: "Native Audio", systemImage: "hifispeaker"))
+        #endif
         kinds.append(WindowKind(id: "keyboard", title: "Keyboard", systemImage: "keyboard"))
         kinds.append(WindowKind(id: "mac-native-keyboard", title: "Native Keyboard", systemImage: "keyboard"))
         #if MOONLIGHT_ENABLED

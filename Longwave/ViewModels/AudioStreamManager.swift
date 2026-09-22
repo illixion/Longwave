@@ -45,7 +45,9 @@ enum SpatialAudioMode: String, Sendable, CaseIterable {
     /// `nil` for `.auto` — the caller should skip the `setIntendedSpatialExperience`
     /// call entirely rather than pass this through, since there's no "system
     /// default" case in that API.
-    var avSpatialExperience: (any AVAudioSessionSpatialExperience)? {
+    /// `nonisolated`: a pure mapping, read from the receiver's own queue and
+    /// from `AudioSessionCoordinator`, neither of which is the main actor.
+    nonisolated var avSpatialExperience: (any AVAudioSessionSpatialExperience)? {
         switch self {
         case .auto: return nil
         case .on: return .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic)
@@ -76,13 +78,22 @@ final class AudioStreamManager {
     var state: ConnectionState = .idle
     var connectionTitle: String = ""
 
-    /// Player mode (Speaker vs Music). Persisted. Changing it mid-stream
-    /// rebuilds the receiver (the session config differs) and re-syncs the
-    /// Now Playing / Control Center integration.
-    var audioMode: AudioMode = AudioMode(rawValue: UserDefaults.standard.string(forKey: "audioMode") ?? "") ?? .speaker {
+    /// The mode the user picked for this player (Speaker vs Music), persisted
+    /// per player. Whether Music is what actually runs is a separate question
+    /// — see `effectiveAudioMode`. Changing it mid-stream rebuilds the
+    /// receiver (the session config differs) and re-syncs the Now Playing /
+    /// Control Center integration.
+    var audioMode: AudioMode {
         didSet {
             guard audioMode != oldValue else { return }
-            UserDefaults.standard.set(audioMode.rawValue, forKey: "audioMode")
+            UserDefaults.standard.set(audioMode.rawValue, forKey: keys.audioMode)
+            // Picking Music here is an explicit choice, so it takes the slot
+            // from whoever had it rather than quietly doing nothing.
+            if audioMode == .music {
+                claimMusicMode(steal: true)
+            } else {
+                releaseMusicMode()
+            }
             if state == .streaming || state == .connecting {
                 reconnectLast() // rebuild with the new session category
             }
@@ -92,7 +103,33 @@ final class AudioStreamManager {
 
     /// Flips between the two modes (mini-player button).
     func toggleAudioMode() {
+        // Already asking for Music and not getting it: the press takes the
+        // slot from whoever has it, rather than "turning off" a mode that
+        // isn't running anyway.
+        if isForcedToSpeaker {
+            claimMusicMode(steal: true)
+            effectiveModeChanged()
+            return
+        }
         audioMode = (audioMode == .music) ? .speaker : .music
+    }
+
+    /// Glyph for the mode button — what is actually playing, not what was
+    /// asked for, so a stream running in Speaker never shows a music note.
+    var audioModeSymbol: String {
+        effectiveAudioMode == .music ? "music.note" : "hifispeaker"
+    }
+
+    /// One line for the mode button's help text / accessibility label,
+    /// including why Music mode isn't running when it was asked for.
+    var audioModeLabel: String {
+        guard isForcedToSpeaker else {
+            return effectiveAudioMode == .music ? "Music Mode" : "Speaker Mode"
+        }
+        if let holder = musicModeHolderTitle {
+            return "Speaker Mode — \(holder) is using Music Mode"
+        }
+        return "Speaker Mode — another session is using Music Mode"
     }
 
     /// Whether decoded audio is spatialized (head-tracked) at the session
@@ -122,8 +159,17 @@ final class AudioStreamManager {
     }
 
     /// Whether Control Center remote-command targets have been installed yet
-    /// (added once, then just enabled/disabled per mode).
-    private var remoteCommandsConfigured = false
+    /// (added once, then just enabled/disabled per mode). Static, because
+    /// `MPRemoteCommandCenter` is one object for the whole app: a second
+    /// player adding its own targets would make one Control Center press
+    /// reach every player at once.
+    private static var remoteCommandsConfigured = false
+
+    /// The player whose stream the Now Playing entry currently describes.
+    /// There is one entry and one transport for the app, so a player that
+    /// isn't this one must leave both alone — a Speaker stream stopping used
+    /// to wipe the Music stream's Control Center card.
+    private static weak var nowPlayingOwner: AudioStreamManager?
 
     /// Now-playing state mirrored from the Mac's Music.app (nil when
     /// nothing is playing or Music is closed).
@@ -140,9 +186,9 @@ final class AudioStreamManager {
     /// it engages the internal mute (drops incoming PCM so no backlog builds
     /// while silenced); any positive value resumes playback and applies the
     /// gain. The slider *is* the mute.
-    var volume: Double = UserDefaults.standard.object(forKey: "audioVolume") as? Double ?? 1.0 {
+    var volume: Double {
         didSet {
-            UserDefaults.standard.set(volume, forKey: "audioVolume")
+            UserDefaults.standard.set(volume, forKey: keys.volume)
             let muted = volume <= 0
             if muted != isMuted {
                 isMuted = muted
@@ -264,13 +310,67 @@ final class AudioStreamManager {
         pendingImportedToken = token
     }
 
-    private enum DefaultsKeys {
-        static let host = "lastAudioHost"
-        static let port = "lastAudioPort"
-        static let title = "lastAudioTitle"
-        static let token = "lastAudioToken"
-        static let lowLatency = "lastAudioLowLatency"
-        static let liveEnabled = "nativeAudioLiveEnabled"
+    /// Where this player's preferences and last target live.
+    ///
+    /// The app's shared player keeps the original, unsuffixed keys, so an
+    /// upgrade finds everything where it left it. A Native session's own
+    /// player suffixes each key with its connection id, so two sessions
+    /// streaming at once remember their own host, volume, mode and live
+    /// toggle instead of overwriting each other's.
+    private struct DefaultsKeys {
+        let host: String
+        let port: String
+        let title: String
+        let token: String
+        let lowLatency: String
+        let liveEnabled: String
+        let audioMode: String
+        let volume: String
+
+        init(scope: String?) {
+            func key(_ base: String) -> String {
+                guard let scope else { return base }
+                return "\(base).\(scope)"
+            }
+            host = key("lastAudioHost")
+            port = key("lastAudioPort")
+            title = key("lastAudioTitle")
+            token = key("lastAudioToken")
+            lowLatency = key("lastAudioLowLatency")
+            liveEnabled = key("nativeAudioLiveEnabled")
+            audioMode = key("audioMode")
+            volume = key("audioVolume")
+        }
+    }
+
+    /// Nil for the app's shared player; a Native session's connection id for
+    /// one of its own.
+    let scope: String?
+    private let keys: DefaultsKeys
+
+    /// - Parameter scope: `nil` for the app's shared player (VNC, the
+    ///   standalone Audio Stream window, the iPhone's Audio tab); a stable
+    ///   per-session string for a Native session's own player.
+    init(scope: String? = nil) {
+        self.scope = scope
+        let keys = DefaultsKeys(scope: scope)
+        self.keys = keys
+        let defaults = UserDefaults.standard
+        // A scoped player that has never been used inherits the shared
+        // player's preferences, so a session opened after the multi-session
+        // change starts where the single player left off rather than at the
+        // factory defaults.
+        let shared = DefaultsKeys(scope: nil)
+        audioMode = AudioMode(
+            rawValue: defaults.string(forKey: keys.audioMode)
+                ?? defaults.string(forKey: shared.audioMode) ?? ""
+        ) ?? .speaker
+        volume = defaults.object(forKey: keys.volume) as? Double
+            ?? defaults.object(forKey: shared.volume) as? Double
+            ?? 1.0
+        liveEnabled = defaults.bool(forKey: keys.liveEnabled)
+        isMuted = volume <= 0
+        AudioStreamManager.register(self)
     }
 
     /// The Native window's live Audio toggle, persisted separately from
@@ -278,10 +378,10 @@ final class AudioStreamManager {
     /// `state` idle, but only this flag says whether Audio should resume
     /// after a scene reactivation or a full space-restoration relaunch (a
     /// fresh `AudioStreamManager` with no in-memory state).
-    var liveEnabled: Bool = UserDefaults.standard.bool(forKey: AudioStreamManager.DefaultsKeys.liveEnabled) {
+    var liveEnabled: Bool {
         didSet {
             guard liveEnabled != oldValue else { return }
-            UserDefaults.standard.set(liveEnabled, forKey: DefaultsKeys.liveEnabled)
+            UserDefaults.standard.set(liveEnabled, forKey: keys.liveEnabled)
         }
     }
 
@@ -315,15 +415,22 @@ final class AudioStreamManager {
         // Remember the target so the stream can resume after the app is
         // relaunched by visionOS space restoration of a snapped window.
         let defaults = UserDefaults.standard
-        defaults.set(hostname, forKey: DefaultsKeys.host)
-        defaults.set(Int(port), forKey: DefaultsKeys.port)
-        defaults.set(title, forKey: DefaultsKeys.title)
-        defaults.set(token, forKey: DefaultsKeys.token)
-        defaults.set(lowLatency, forKey: DefaultsKeys.lowLatency)
+        defaults.set(hostname, forKey: keys.host)
+        defaults.set(Int(port), forKey: keys.port)
+        defaults.set(title, forKey: keys.title)
+        defaults.set(token, forKey: keys.token)
+        defaults.set(lowLatency, forKey: keys.lowLatency)
     }
 
     func connect(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool = false) {
-        disconnect()
+        // Not `disconnect()`: a reconnect must not put the Music slot back in
+        // the pool, or every rebuild (a reload, a health re-check) would hand
+        // it to another session.
+        disconnect(releasingMusicMode: false)
+        // The receiver's mode is fixed at construction, so the slot has to be
+        // settled first. Only if it's free — taking it is an explicit choice
+        // the user makes in `audioMode`, not something connecting does.
+        if audioMode == .music { claimMusicMode(steal: false) }
         lowLatencyOverride = nil
         connectionTitle = title
         state = .connecting
@@ -345,7 +452,7 @@ final class AudioStreamManager {
 
         rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
 
-        let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: audioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
+        let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: effectiveAudioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
         receiver.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handle(event)
@@ -357,6 +464,10 @@ final class AudioStreamManager {
     }
 
     func disconnect() {
+        disconnect(releasingMusicMode: true)
+    }
+
+    private func disconnect(releasingMusicMode: Bool) {
         pendingCloseTask?.cancel()
         pendingCloseTask = nil
         retryTask?.cancel()
@@ -371,17 +482,18 @@ final class AudioStreamManager {
         state = .idle
         isReceivingAudio = false
         clearNowPlayingIntegration()
+        if releasingMusicMode { releaseMusicMode() }
     }
 
     /// Explicit user disconnect: also forget the last connection so the
     /// stream doesn't auto-resurrect on the next window restore.
     func userDisconnect() {
         let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: DefaultsKeys.host)
-        defaults.removeObject(forKey: DefaultsKeys.port)
-        defaults.removeObject(forKey: DefaultsKeys.title)
-        defaults.removeObject(forKey: DefaultsKeys.token)
-        defaults.removeObject(forKey: DefaultsKeys.lowLatency)
+        defaults.removeObject(forKey: keys.host)
+        defaults.removeObject(forKey: keys.port)
+        defaults.removeObject(forKey: keys.title)
+        defaults.removeObject(forKey: keys.token)
+        defaults.removeObject(forKey: keys.lowLatency)
         liveEnabled = false
         disconnect()
     }
@@ -389,17 +501,17 @@ final class AudioStreamManager {
     /// Reconnects to the last-used sender, if one is remembered.
     func reconnectLast() {
         let defaults = UserDefaults.standard
-        guard let host = defaults.string(forKey: DefaultsKeys.host),
-              let port = UInt16(exactly: defaults.integer(forKey: DefaultsKeys.port)),
+        guard let host = defaults.string(forKey: keys.host),
+              let port = UInt16(exactly: defaults.integer(forKey: keys.port)),
               port > 0 else { return }
         // A pending fallback override (UDP failed) forces TCP for this
         // reconnect without disturbing the saved preference.
-        let lowLatency = lowLatencyOverride ?? defaults.bool(forKey: DefaultsKeys.lowLatency)
+        let lowLatency = lowLatencyOverride ?? defaults.bool(forKey: keys.lowLatency)
         connect(
             hostname: host,
             port: port,
-            token: defaults.string(forKey: DefaultsKeys.token) ?? "",
-            title: defaults.string(forKey: DefaultsKeys.title) ?? "",
+            token: defaults.string(forKey: keys.token) ?? "",
+            title: defaults.string(forKey: keys.title) ?? "",
             lowLatency: lowLatency
         )
     }
@@ -429,7 +541,7 @@ final class AudioStreamManager {
             // heartbeats during silence, a live-but-quiet connection refreshes
             // its health within ~0.5 s of resume; give it a grace window to
             // prove it, and only reconnect if it stays silent (truly dead).
-            if audioMode == .speaker {
+            if effectiveAudioMode == .speaker {
                 AppLog.audioStream.line("Connection unhealthy after scene activation — reconnecting")
                 reconnectLast()
             } else {
@@ -519,7 +631,7 @@ final class AudioStreamManager {
                 artworkImage = PlatformImage(data: pendingArtwork)
             } // same artworkID as before and no new artwork frame: keep current image
             pendingArtwork = nil
-            if audioMode == .music { updateNowPlayingInfo() }
+            if effectiveAudioMode == .music { updateNowPlayingInfo() }
         case .artwork(let data):
             pendingArtwork = data
         case .reloadRequested(let reason):
@@ -554,6 +666,7 @@ final class AudioStreamManager {
             endBackgroundRetryWindow()
             #endif
             state = .error(reason)
+            releaseMusicMode()
             AppLog.audioStream.line("Authentication failed: \(reason)")
         case .lowLatencyEngaged:
             lowLatencyActive = true
@@ -606,6 +719,105 @@ final class AudioStreamManager {
         }
     }
 
+    // MARK: - Music-mode arbitration
+
+    /// Every player that has ever been created, so the Music slot can be
+    /// handed on when its holder goes away. Weak: a Native session's player
+    /// lives and dies with the session.
+    private final class WeakPlayer {
+        weak var value: AudioStreamManager?
+        init(_ value: AudioStreamManager) { self.value = value }
+    }
+
+    private static var players: [WeakPlayer] = []
+    /// The one player currently allowed to run in Music mode, if any.
+    private static weak var musicHolder: AudioStreamManager?
+
+    private static func register(_ player: AudioStreamManager) {
+        players.removeAll { $0.value == nil }
+        players.append(WeakPlayer(player))
+    }
+
+    private static var livePlayers: [AudioStreamManager] {
+        players.compactMap(\.value)
+    }
+
+    /// Whether this player holds the process-wide Music slot. Stored (rather
+    /// than derived from the static) so the views observing
+    /// `effectiveAudioMode` see it change.
+    private(set) var holdsMusicMode = false
+
+    /// The mode this player is actually running in.
+    ///
+    /// Music mode is exclusive by construction: it takes the audio session
+    /// away from everything else, and the app has exactly one Now Playing
+    /// entry and one Control Center transport to give it. With several Native
+    /// sessions streaming at once, letting each of them ask for that would
+    /// mean the newest one silently cutting off the others. So the preference
+    /// is per player and the grant is process-wide — one player runs in Music,
+    /// every other one runs in Speaker, which is mixable, so the streams play
+    /// together.
+    var effectiveAudioMode: AudioMode {
+        audioMode == .music && holdsMusicMode ? .music : .speaker
+    }
+
+    /// True when this player asked for Music mode but another one is holding
+    /// it, so this stream is mixing in Speaker mode instead. Surfaced in the
+    /// player UI — otherwise the Music button looks stuck.
+    var isForcedToSpeaker: Bool {
+        audioMode == .music && !holdsMusicMode
+    }
+
+    /// The player currently in Music mode, when it isn't this one — for the
+    /// "…because <host> has it" half of the explanation.
+    var musicModeHolderTitle: String? {
+        guard isForcedToSpeaker, let holder = Self.musicHolder, holder !== self else { return nil }
+        return holder.connectionTitle.isEmpty ? nil : holder.connectionTitle
+    }
+
+    /// Takes the Music slot. `steal` is for an explicit user choice: picking
+    /// Music in this player's UI moves it here and drops whoever had it into
+    /// Speaker mode. Connecting only ever takes a free slot.
+    private func claimMusicMode(steal: Bool) {
+        if let holder = Self.musicHolder, holder !== self {
+            guard steal else { return }
+            Self.musicHolder = self
+            holdsMusicMode = true
+            holder.holdsMusicMode = false
+            holder.effectiveModeChanged()
+            return
+        }
+        Self.musicHolder = self
+        holdsMusicMode = true
+    }
+
+    /// Gives the Music slot up and offers it to another live player that
+    /// wants it — the longest-running one first.
+    private func releaseMusicMode() {
+        let wasHolder = Self.musicHolder === self
+        holdsMusicMode = false
+        // Only the holder hands the slot on. Any other player stopping is not
+        // an occasion to reconnect someone else's stream.
+        guard wasHolder else { return }
+        Self.musicHolder = nil
+        guard let next = Self.livePlayers.first(where: {
+            $0 !== self && $0.audioMode == .music && $0.state != .idle
+        }) else { return }
+        Self.musicHolder = next
+        next.holdsMusicMode = true
+        next.effectiveModeChanged()
+    }
+
+    /// This player's session category just changed under it. The receiver
+    /// fixes its mode at construction, so the live one has to be rebuilt —
+    /// a brief gap in that stream, and the only alternative is leaving it in
+    /// a mode it is no longer entitled to.
+    private func effectiveModeChanged() {
+        refreshNowPlayingIntegration()
+        guard state == .streaming || state == .connecting else { return }
+        reconnectLast()
+    }
+
     // MARK: - Now Playing / Control Center (Music Mode)
 
     /// Aligns the Now Playing / Control Center integration with the current
@@ -613,36 +825,46 @@ final class AudioStreamManager {
     /// center; Speaker Mode tears it down (a mixable session is ineligible for
     /// Now Playing anyway — see the audio-session notes in CLAUDE.md).
     private func refreshNowPlayingIntegration() {
-        if audioMode == .music, state == .streaming {
+        if effectiveAudioMode == .music, state == .streaming {
+            Self.nowPlayingOwner = self
             configureRemoteCommands()
             setRemoteCommandsEnabled(true)
             updateNowPlayingInfo()
         } else {
-            setRemoteCommandsEnabled(false)
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            clearNowPlayingIntegration()
         }
     }
 
     private func clearNowPlayingIntegration() {
+        guard Self.nowPlayingOwner === self else { return }
+        Self.nowPlayingOwner = nil
         setRemoteCommandsEnabled(false)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     /// Installs the Control Center transport handlers once; each maps to a
     /// MediaCommand sent to the Mac's Music.app over the stream.
+    /// Installs the targets once for the whole app, each forwarding to
+    /// whichever player owns the Now Playing entry at the time — not to the
+    /// player that happened to install them, which may since have dropped to
+    /// Speaker mode or gone away entirely.
     private func configureRemoteCommands() {
-        guard !remoteCommandsConfigured else { return }
-        remoteCommandsConfigured = true
+        guard !Self.remoteCommandsConfigured else { return }
+        Self.remoteCommandsConfigured = true
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in self?.sendCommand(.play); return .success }
-        center.pauseCommand.addTarget { [weak self] _ in self?.sendCommand(.pause); return .success }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.sendCommand(.toggle); return .success }
-        center.nextTrackCommand.addTarget { [weak self] _ in self?.sendCommand(.next); return .success }
-        center.previousTrackCommand.addTarget { [weak self] _ in self?.sendCommand(.previous); return .success }
+        func forward(_ command: MediaCommand) -> MPRemoteCommandHandlerStatus {
+            AudioStreamManager.nowPlayingOwner?.sendCommand(command)
+            return .success
+        }
+        center.playCommand.addTarget { _ in forward(.play) }
+        center.pauseCommand.addTarget { _ in forward(.pause) }
+        center.togglePlayPauseCommand.addTarget { _ in forward(.toggle) }
+        center.nextTrackCommand.addTarget { _ in forward(.next) }
+        center.previousTrackCommand.addTarget { _ in forward(.previous) }
     }
 
     private func setRemoteCommandsEnabled(_ enabled: Bool) {
-        guard remoteCommandsConfigured else { return }
+        guard Self.remoteCommandsConfigured else { return }
         let center = MPRemoteCommandCenter.shared()
         for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
                         center.nextTrackCommand, center.previousTrackCommand] {
@@ -653,7 +875,8 @@ final class AudioStreamManager {
     /// Pushes the current track metadata into the system Now Playing info
     /// center (Music Mode only) so it surfaces in Control Center.
     private func updateNowPlayingInfo() {
-        guard audioMode == .music else { return }
+        guard effectiveAudioMode == .music else { return }
+        Self.nowPlayingOwner = self
         var info: [String: Any] = [:]
         if let np = nowPlaying {
             if let title = np.title { info[MPMediaItemPropertyTitle] = title }
@@ -1031,6 +1254,8 @@ final class AudioStreamReceiver: @unchecked Sendable {
         ) { [weak self] _ in
             AppLog.audioStream.line("Media services reset — rebuilding engine")
             self?.sessionConfigured = false // session state was wiped
+            // …and so was the category the coordinator thinks it applied.
+            AudioSessionCoordinator.shared.forgetAppliedState()
             self?.scheduleAudioRebuild(delay: .milliseconds(100))
         })
         // Diagnostics: visionOS rerouting our output to the People channel
@@ -1129,10 +1354,9 @@ final class AudioStreamReceiver: @unchecked Sendable {
             sessionObservers.removeAll()
             teardownAudio()
             #if canImport(UIKit)
-            if mode == .music {
-                // Release exclusive focus so other apps resume.
-                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            }
+            // Leaving re-resolves the process session for whoever is left —
+            // and releases it outright when this was the last stream playing.
+            AudioSessionCoordinator.shared.leave(self)
             #endif
         }
     }
@@ -1461,45 +1685,25 @@ final class AudioStreamReceiver: @unchecked Sendable {
         #if canImport(UIKit)
         let session = AVAudioSession.sharedInstance()
 
-        // Configure the session only once per receiver. Re-asserting the
-        // category mid-stream (e.g. while a VoIP call owns the voice
-        // channel) yanks the system audio config out from under the other
-        // app — the cause of "GMeet loses audio until speaker test".
+        // Declare this receiver's mode once, and let the coordinator decide
+        // what the process session should be — there may be several receivers
+        // live at once and only one session between them. Re-asserting the
+        // category mid-stream (e.g. while a VoIP call owns the voice channel)
+        // yanks the system audio config out from under the other app — the
+        // cause of "GMeet loses audio until speaker test" — so the
+        // coordinator only touches it when the resolved answer changes.
+        //
+        // AVAudioEngine isn't a Now Playing candidate, so the per-app
+        // Spatialize Stereo system setting doesn't apply here: the user's
+        // `spatialAudioMode` toggle is this stream's only control over
+        // head-tracked rendering vs flat bypass.
         if !sessionConfigured {
             sessionConfigured = true
-            // AVAudioEngine isn't a Now Playing candidate so the per-app
-            // Spatialize Stereo system setting doesn't apply here — the
-            // user's `spatialAudioMode` toggle is this stream's only
-            // control over head-tracked rendering vs flat bypass. `.auto`
-            // skips the call outright and leaves the session at whatever the
-            // system resolves for an app that never states an opinion.
-            // Speaker mode uses .mixWithOthers to coexist with other apps and
-            // VoIP calls (ineligible for Now Playing as a trade-off). Music
-            // mode takes exclusive focus (no mix) so it *is* a Now Playing /
-            // Control Center app (see AudioStreamManager's MP integration).
-            do {
-                let options: AVAudioSession.CategoryOptions = mode == .music ? [] : [.mixWithOthers]
-                try session.setCategory(.playback, mode: .default, options: options)
-                // Both calls are visionOS-only, and neither has an iOS
-                // counterpart that is needed: iOS does not route AVAudioEngine
-                // output through AutomaticSpatialAudio, so there is no intended
-                // experience to declare, and Now Playing candidacy is a
-                // visionOS notion about windows the wearer has looked away
-                // from. iOS ducking follows the category alone.
-                #if os(visionOS)
-                if let experience = spatialAudioMode.avSpatialExperience {
-                    try session.setIntendedSpatialExperience(experience)
-                }
-                if mode == .speaker {
-                    // Keep a mixable session running (un-ducked) when the user
-                    // looks at other windows. Music mode is a real Now Playing
-                    // app via MPNowPlayingInfoCenter, so this isn't needed.
-                    try session.setIsNowPlayingCandidate(true)
-                }
-                #endif
-            } catch {
-                AppLog.audioStream.line("Failed to configure audio session: \(error)")
-            }
+            AudioSessionCoordinator.shared.join(
+                self,
+                mode: mode,
+                spatialAudioMode: spatialAudioMode
+            )
         }
 
         // Activate on every (re)build. After an interruption (e.g. a VoIP

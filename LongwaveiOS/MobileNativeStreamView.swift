@@ -128,7 +128,7 @@ struct MobileNativeStreamView: View {
             if phase == .active { resumeIfNeeded() }
         }
         .onChange(of: screenManager.hostServesAudio) { _, servesAudio in
-            guard !servesAudio, sessions.ownsAudio(sessionID) else { return }
+            guard !servesAudio else { return }
             if audioManager.liveEnabled { audioManager.liveEnabled = false }
             audioManager.disconnect()
         }
@@ -155,18 +155,13 @@ struct MobileNativeStreamView: View {
     }
 
     private func disconnectAll() {
-        if sessions.ownsAudio(sessionID) {
-            audioManager.userDisconnect()
-        }
+        // `end` disconnects this session's audio player too.
         sessions.end(sessionID)
         dismiss()
     }
 
-    /// One audio player, several Native sessions: this screen shows audio only
-    /// while its session holds it.
-    private var audioLive: Bool {
-        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
-    }
+    /// This session's own audio player, injected by the scene.
+    private var audioLive: Bool { audioManager.liveEnabled }
 
     // MARK: - Video
 
@@ -297,7 +292,7 @@ struct MobileNativeStreamView: View {
             .tint(typing ? .accentColor : nil)
             .accessibilityLabel("Keyboard")
 
-            if screenManager.hostServesAudio, audioLive || (sessions.ownsAudio(sessionID) && audioManager.state != .idle) {
+            if screenManager.hostServesAudio, audioLive || audioManager.state != .idle {
                 Button {
                     showingAudioPanel = true
                 } label: {

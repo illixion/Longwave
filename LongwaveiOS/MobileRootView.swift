@@ -76,6 +76,8 @@ struct MobileRootView: View {
         .fullScreenCover(item: $presentedNativeSession) { id in
             MobileNativeStreamView(sessionID: id)
                 .environment(macNativeSessions.session(for: id))
+                // This session's own audio player, not the app's shared one.
+                .environment(macNativeSessions.audioPlayer(for: id))
         }
         .onChange(of: macNativeSessions.activeID) { _, id in
             if let id {

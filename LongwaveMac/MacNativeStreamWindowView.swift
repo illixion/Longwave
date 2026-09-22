@@ -32,25 +32,28 @@ struct MacNativeStreamWindowView: View {
     @State private var showAudioPanel = false
     @State private var showEQ = false
 
-    /// One audio player, several Native sessions: this window shows and drives
-    /// audio only while its session holds it (`MacNativeSessionStore`).
-    private var audioLive: Bool {
-        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
-    }
+    /// This session's own audio player, injected by the scene. Sessions mix;
+    /// only Music mode is exclusive, and `AudioStreamManager` arbitrates it.
+    private var audioLive: Bool { audioManager.liveEnabled }
 
     private var audioBinding: Binding<Bool> {
         Binding(
             get: { audioLive },
             set: { on in
-                if on {
-                    sessions.takeAudio(
-                        sessionID,
-                        player: audioManager,
-                        connection: screenManager.connection
-                    )
-                } else {
-                    sessions.dropAudio(sessionID, player: audioManager)
+                guard on else {
+                    audioManager.liveEnabled = false
+                    return
                 }
+                if let connection = screenManager.connection {
+                    audioManager.prepareTarget(
+                        hostname: connection.hostname,
+                        port: AudioStreamProtocol.defaultPort,
+                        token: connection.companionToken,
+                        title: connection.displayName,
+                        lowLatency: connection.lowLatencyAudio
+                    )
+                }
+                audioManager.liveEnabled = true
             }
         )
     }
@@ -80,8 +83,6 @@ struct MacNativeStreamWindowView: View {
             screenManager.desktopToggleChanged(on)
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
-            // Every open Native window sees this; only the owner acts.
-            guard sessions.ownsAudio(sessionID) else { return }
             if on {
                 // A host that serves no audio would leave this on
                 // "Connecting…" forever; refuse the toggle instead.
@@ -101,9 +102,7 @@ struct MacNativeStreamWindowView: View {
             // Closing the window is the whole session on a Mac — there is no
             // other scene keeping it alive.
             dismissWindow(id: "mac-native-keyboard", value: sessionID)
-            if sessions.ownsAudio(sessionID) {
-                audioManager.userDisconnect()
-            }
+            // `end` disconnects this session's audio player too.
             sessions.end(sessionID)
         }
     }
@@ -124,15 +123,12 @@ struct MacNativeStreamWindowView: View {
     }
 
     private func applyAudioAvailability(_ servesAudio: Bool) {
-        guard !servesAudio, sessions.ownsAudio(sessionID) else { return }
+        guard !servesAudio else { return }
         if audioManager.liveEnabled { audioManager.liveEnabled = false }
         audioManager.disconnect()
     }
 
     private func disconnectAll() {
-        if sessions.ownsAudio(sessionID) {
-            audioManager.userDisconnect()
-        }
         sessions.end(sessionID)
         dismissWindow(id: "mac-native-keyboard", value: sessionID)
         dismissWindow(id: "mac-native-stream", value: sessionID)
@@ -231,9 +227,9 @@ struct MacNativeStreamWindowView: View {
                 Button {
                     audioManager.toggleAudioMode()
                 } label: {
-                    Image(systemName: audioManager.audioMode == .music ? "music.note" : "hifispeaker")
+                    Image(systemName: audioManager.audioModeSymbol)
                 }
-                .help(audioManager.audioMode == .music ? "Music Mode" : "Speaker Mode")
+                .help(audioManager.audioModeLabel)
 
                 Button {
                     showEQ.toggle()

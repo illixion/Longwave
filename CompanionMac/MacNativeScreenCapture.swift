@@ -113,6 +113,13 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         startDisplayRefresh()
     }
 
+    /// Asks the encoder for a key frame on its next capture — what a viewer
+    /// joining an already-running desktop stream needs to start decoding
+    /// without waiting out the key-frame interval.
+    func requestKeyFrame() {
+        encoder?.requestKeyFrame()
+    }
+
     func stop() async {
         generation += 1
         refreshTask?.cancel()

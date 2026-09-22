@@ -83,28 +83,32 @@ struct NativeStreamView: View {
     /// gestures stand down — see `TwoHandPointerGesture`.
     @State private var twoHandEngaged = false
 
-    /// The app has one audio player and several Native sessions, so this
-    /// window shows (and drives) audio only while its session is the one
-    /// holding it — see `MacNativeSessionStore.audioOwnerID`.
-    private var audioLive: Bool {
-        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
-    }
+    /// This session's own audio, injected by the scene. Several sessions can
+    /// stream at once and they mix; only Music mode is exclusive, and that is
+    /// arbitrated inside `AudioStreamManager`.
+    private var audioLive: Bool { audioManager.liveEnabled }
 
-    /// The Audio toggle: turning it on takes the player for this session,
-    /// turning it off gives it back.
+    /// The Audio toggle. Turning it on points this session's player at this
+    /// session's host — `prepareTarget` first, because the window can be
+    /// opened with Audio off and the player then has nothing to reconnect to.
     private var audioBinding: Binding<Bool> {
         Binding(
             get: { audioLive },
             set: { on in
-                if on {
-                    sessions.takeAudio(
-                        sessionID,
-                        player: audioManager,
-                        connection: screenManager.connection
-                    )
-                } else {
-                    sessions.dropAudio(sessionID, player: audioManager)
+                guard on else {
+                    audioManager.liveEnabled = false
+                    return
                 }
+                if let connection = screenManager.connection {
+                    audioManager.prepareTarget(
+                        hostname: connection.hostname,
+                        port: AudioStreamProtocol.defaultPort,
+                        token: connection.companionToken,
+                        title: connection.displayName,
+                        lowLatency: connection.lowLatencyAudio
+                    )
+                }
+                audioManager.liveEnabled = true
             }
         )
     }
@@ -121,6 +125,10 @@ struct NativeStreamView: View {
 
     private var unityControlsWindowKey: String {
         WindowSessionRegistry.key("mac-native-unity-controls", instance: sessionID.registryInstance)
+    }
+
+    private var audioWindowKey: String {
+        WindowSessionRegistry.key("mac-native-audio", instance: sessionID.registryInstance)
     }
 
     var body: some View {
@@ -173,9 +181,7 @@ struct NativeStreamView: View {
             // from the explicit Disconnect button below.
             if !screenManager.unityEnabled {
                 screenManager.disconnect()
-                if sessions.ownsAudio(sessionID) {
-                    audioManager.windowDisappeared()
-                }
+                audioManager.windowDisappeared()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -207,7 +213,7 @@ struct NativeStreamView: View {
         .onChange(of: audioManager.liveEnabled) { _, on in
             // Every open Native window sees this change; only the session that
             // owns the player acts on it.
-            guard !screenManager.unityEnabled, sessions.ownsAudio(sessionID) else { return }
+            guard !screenManager.unityEnabled else { return }
             if on {
                 // A host that serves no audio would leave this on
                 // "Connecting…" forever; refuse the toggle instead.
@@ -237,7 +243,7 @@ struct NativeStreamView: View {
     /// Windows hosts don't, so drop a hopeful audio connection rather than
     /// leaving the player spinning on "Connecting…".
     private func applyAudioAvailability(_ servesAudio: Bool) {
-        guard !servesAudio, sessions.ownsAudio(sessionID) else { return }
+        guard !servesAudio else { return }
         if audioManager.liveEnabled { audioManager.liveEnabled = false }
         audioManager.disconnect()
     }
@@ -366,15 +372,15 @@ struct NativeStreamView: View {
     /// instant it's closed, with no separate persisted flag to fall out of
     /// sync.
     private var audioPoppedOut: Bool {
-        WindowSessionRegistry.shared.sessions["audio-stream"] != nil
+        WindowSessionRegistry.shared.isOpen("mac-native-audio", instance: sessionID.registryInstance)
     }
 
     private func popOutAudio() {
-        openWindow(id: "audio-stream")
+        openWindow(id: "mac-native-audio", value: sessionID)
     }
 
     private func foldAudioBackIn() {
-        dismissWindow(id: "audio-stream")
+        dismissWindow(id: "mac-native-audio", value: sessionID)
     }
 
     private var audioPoppedOutContent: some View {
@@ -744,9 +750,9 @@ struct NativeStreamView: View {
                 Button {
                     audioManager.toggleAudioMode()
                 } label: {
-                    Image(systemName: audioManager.audioMode == .music ? "music.note" : "hifispeaker")
+                    Image(systemName: audioManager.audioModeSymbol)
                 }
-                .help(audioManager.audioMode == .music ? "Music Mode" : "Speaker Mode")
+                .help(audioManager.audioModeLabel)
 
                 Button {
                     showEQ.toggle()
@@ -835,11 +841,13 @@ struct NativeStreamView: View {
             Button {
                 audioManager.toggleAudioMode()
             } label: {
-                Image(systemName: audioManager.audioMode == .music ? "music.note" : "hifispeaker")
+                Image(systemName: audioManager.audioModeSymbol)
             }
-            .help(audioManager.audioMode == .music
-                  ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
-                  : "Speaker Mode — mixes with other audio and auto-recovers")
+            .help(audioManager.isForcedToSpeaker
+                  ? audioManager.audioModeLabel
+                  : audioManager.effectiveAudioMode == .music
+                    ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
+                    : "Speaker Mode — mixes with other audio and auto-recovers")
 
             Button {
                 showEQ.toggle()
@@ -1004,18 +1012,17 @@ struct NativeStreamView: View {
             )
         }
         screenManager.unityEnabled = false
-        // Ends this session only: another host's Native window keeps streaming.
-        if sessions.ownsAudio(sessionID) {
-            audioManager.userDisconnect()
-        }
+        // Ends this session only: another host's Native window keeps streaming,
+        // audio included. `end` disconnects this session's player.
         sessions.end(sessionID)
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
-            closing: [keyboardWindowKey, streamWindowKey, unityControlsWindowKey],
+            closing: [keyboardWindowKey, streamWindowKey, unityControlsWindowKey, audioWindowKey],
             using: openWindow
         ) {
             dismissWindow(id: "mac-native-keyboard", value: sessionID)
             dismissWindow(id: "mac-native-stream", value: sessionID)
             dismissWindow(id: "mac-native-unity-controls", value: sessionID)
+            dismissWindow(id: "mac-native-audio", value: sessionID)
         }
     }
 }

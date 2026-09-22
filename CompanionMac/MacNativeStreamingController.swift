@@ -162,6 +162,7 @@ final class MacNativeStreamingController {
         let previousServer = server
         server = nil
         connectedDeviceNames = []
+        viewersDecodeHEVC422 = false
         stopCapture()
         stopWindowStreams()
 
@@ -291,6 +292,16 @@ final class MacNativeStreamingController {
                 }
             }
         }
+        server.onKeyFrameNeeded = { [weak self] windowID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                if windowID == MacNativeStreamProtocol.desktopStreamID {
+                    self.capture?.requestKeyFrame()
+                } else {
+                    self.windowStreams.requestKeyFrame(windowID: windowID)
+                }
+            }
+        }
         server.onFocusWindow = { [weak self] windowID in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation,
@@ -382,6 +393,7 @@ final class MacNativeStreamingController {
         server = nil
         oldServer?.stop()
         connectedDeviceNames = []
+        viewersDecodeHEVC422 = false
         stopCapture()
         stopWindowStreams()
     }
@@ -443,7 +455,7 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }
                 self.lastError = message
-                self.server?.disconnectAll(withError: message)
+                self.server?.disconnectDesktopViewers(withError: message)
                 self.stopCapture()
             }
         }
@@ -469,7 +481,7 @@ final class MacNativeStreamingController {
                 self.capture = nil
                 isCapturing = false
                 lastError = error.localizedDescription
-                server?.disconnectAll(withError: error.localizedDescription)
+                server?.disconnectDesktopViewers(withError: error.localizedDescription)
             }
         }
     }

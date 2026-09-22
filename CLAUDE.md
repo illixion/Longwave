@@ -74,6 +74,15 @@ single-scene app, and still end up with the right surface. Adding a shared view
 that opens a window therefore needs no iOS change; adding one that *is* a window
 does.
 
+**Native sessions are per connection, like Moonlight's.** `MacNativeSessionStore`
+keys one `MacNativeStreamManager` per saved connection and every Native scene —
+the stream window, Unity Controls, the keyboard, each per-window scene — is
+value-typed by `MacNativeSessionID`, so two hosts stream side by side. The
+companion hosts match: a hello *joins* the viewer set instead of replacing it,
+with one capture and one encode per stream fanned out and subscriptions
+reference-counted. Audio is the one thing that stays shared, with an explicit
+owner in the store — see the Native bullets in [[KNOWN_CONSTRAINTS.md]].
+
 **Guards say what they mean.** SSH and the terminal settings read `!os(macOS)`,
 not `os(visionOS)` — the Mac client is the one that drops them. Reach for
 `os(visionOS)` only for something the other platforms genuinely lack, and check

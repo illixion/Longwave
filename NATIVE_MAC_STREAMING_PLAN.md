@@ -53,11 +53,14 @@ Implemented:
   VideoToolbox exposes no such HEVC profile. See [[KNOWN_CONSTRAINTS.md]].
 - Exact CoreMedia format-description transport, so the receiver rebuilds the
   format the encoder actually produced rather than approximating it.
-- Opaque visionOS playback in a single value-typed window, corner-rounded so the
-  display reads as a panel rather than a pasted-in rectangle.
+- Opaque visionOS playback in a window per session (value-typed by
+  `MacNativeSessionID`), corner-rounded so the display reads as a panel rather
+  than a pasted-in rectangle.
 - Domain-separated encrypted transport on port 4857.
-- One authenticated viewer at a time; a new viewer replaces the previous one.
-- macOS connection/takeover notifications.
+- Several authenticated viewers at once, sharing one capture and one encode per
+  stream; subscriptions are reference-counted, so the capture side still starts
+  and stops each stream exactly once.
+- macOS connection notifications.
 - Manual LAN, hostname, IP, or Tailscale addressing and Bonjour advertisement.
 
 ### Why it stopped being transparent
@@ -87,7 +90,9 @@ Verify on a physical Vision Pro:
    distance from the display's origin.
 4. Menu-bar and Dock menus open and can be clicked through.
 5. Window resizing preserves aspect ratio; letterboxing is black, not garbage.
-6. A second authenticated viewer replaces the first and both UIs report it.
+6. A second authenticated viewer joins alongside the first: both keep their
+   picture, the companion lists both, and the first viewer leaving does not stop
+   the second one's stream.
 7. Capture or decoder failures close the session with a useful error.
 8. A per-window stream still preserves alpha (rounded corners, shadow, vibrancy).
 9. The companion's Screen Status pane reports "4:2:2 10-bit, hardware encode"

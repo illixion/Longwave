@@ -5,7 +5,11 @@ import SwiftUI
 /// inventory into value-keyed visionOS scenes and keeps the controls available
 /// even when the full desktop scene is not open.
 struct MacNativeUnityControlView: View {
+    /// Which Native session these controls drive — the scene's value.
+    let sessionID: MacNativeSessionID
+
     @Environment(MacNativeStreamManager.self) private var screenManager
+    @Environment(MacNativeSessionStore.self) private var sessions
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -56,7 +60,7 @@ struct MacNativeUnityControlView: View {
                 }
                 .tint(isKeyboardWindowOpen ? .accentColor : nil)
 
-                Toggle(isOn: $audioManager.liveEnabled) {
+                Toggle(isOn: audioBinding) {
                     Label("Audio", systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash")
                 }
                 .toggleStyle(.button)
@@ -65,7 +69,7 @@ struct MacNativeUnityControlView: View {
                 // A Unity session has no ornament and no inline player — the
                 // desktop scene it would live on is usually closed — so the
                 // mini player has to be reachable from here or not at all.
-                if audioManager.liveEnabled {
+                if audioLive {
                     Button(action: togglePlayerWindow) {
                         Label(
                             "Player",
@@ -95,6 +99,8 @@ struct MacNativeUnityControlView: View {
             reconcileWindows(with: windows)
         }
         .onChange(of: audioManager.liveEnabled) { _, enabled in
+            // Only the session holding the one audio player acts on this.
+            guard sessions.ownsAudio(sessionID) else { return }
             if enabled {
                 guard screenManager.hostServesAudio else {
                     audioManager.liveEnabled = false
@@ -233,8 +239,43 @@ struct MacNativeUnityControlView: View {
         .disabled(isAtCapacity)
     }
 
+    /// The app has one audio player shared by every Native session — this
+    /// session shows and drives it only while it holds it.
+    private var audioLive: Bool {
+        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
+    }
+
+    private var audioBinding: Binding<Bool> {
+        Binding(
+            get: { audioLive },
+            set: { on in
+                if on {
+                    sessions.takeAudio(
+                        sessionID,
+                        player: audioManager,
+                        connection: screenManager.connection
+                    )
+                } else {
+                    sessions.dropAudio(sessionID, player: audioManager)
+                }
+            }
+        )
+    }
+
+    private var streamWindowKey: String {
+        WindowSessionRegistry.key("mac-native-stream", instance: sessionID.registryInstance)
+    }
+
+    private var keyboardWindowKey: String {
+        WindowSessionRegistry.key("mac-native-keyboard", instance: sessionID.registryInstance)
+    }
+
+    private var unityControlsWindowKey: String {
+        WindowSessionRegistry.key("mac-native-unity-controls", instance: sessionID.registryInstance)
+    }
+
     private var isKeyboardWindowOpen: Bool {
-        WindowSessionRegistry.shared.sessions["mac-native-keyboard"] != nil
+        WindowSessionRegistry.shared.sessions[keyboardWindowKey] != nil
     }
 
     /// Tracked off the live registry rather than a flag of our own, the same
@@ -274,17 +315,17 @@ struct MacNativeUnityControlView: View {
         screenManager.liveEnabled = show
         screenManager.desktopToggleChanged(show)
         if show {
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+            openWindow(id: "mac-native-stream", value: sessionID)
         } else {
-            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+            dismissWindow(id: "mac-native-stream", value: sessionID)
         }
     }
 
     private func toggleKeyboardWindow() {
         if isKeyboardWindowOpen {
-            dismissWindow(id: "mac-native-keyboard")
+            dismissWindow(id: "mac-native-keyboard", value: sessionID)
         } else {
-            openWindow(id: "mac-native-keyboard")
+            openWindow(id: "mac-native-keyboard", value: sessionID)
         }
     }
 
@@ -298,7 +339,7 @@ struct MacNativeUnityControlView: View {
 
     private func resumeSession() {
         screenManager.ensureSessionConnected()
-        if audioManager.liveEnabled {
+        if audioLive {
             audioManager.ensureConnected()
         }
     }
@@ -312,7 +353,7 @@ struct MacNativeUnityControlView: View {
             screenManager.markUnityWindowHidden(windowID, suppressAutoShow: false)
             dismissWindow(
                 id: "mac-native-window",
-                value: MacNativeWindowStreamID(windowID: windowID)
+                value: MacNativeWindowStreamID(session: sessionID, windowID: windowID)
             )
         }
         screenManager.pruneUnityWindowState(availableWindowIDs: availableIDs)
@@ -349,7 +390,7 @@ struct MacNativeUnityControlView: View {
         screenManager.markUnityWindowVisible(windowID)
         openWindow(
             id: "mac-native-window",
-            value: MacNativeWindowStreamID(windowID: windowID)
+            value: MacNativeWindowStreamID(session: sessionID, windowID: windowID)
         )
     }
 
@@ -357,7 +398,7 @@ struct MacNativeUnityControlView: View {
         screenManager.markUnityWindowHidden(windowID, suppressAutoShow: suppressAutoShow)
         dismissWindow(
             id: "mac-native-window",
-            value: MacNativeWindowStreamID(windowID: windowID)
+            value: MacNativeWindowStreamID(session: sessionID, windowID: windowID)
         )
     }
 
@@ -370,8 +411,8 @@ struct MacNativeUnityControlView: View {
             try? await Task.sleep(for: .milliseconds(150))
             guard screenManager.unityEnabled,
                   screenManager.connection != nil,
-                  WindowSessionRegistry.shared.sessions["mac-native-unity-controls"] == nil else { return }
-            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+                  WindowSessionRegistry.shared.sessions[unityControlsWindowKey] == nil else { return }
+            openWindow(id: "mac-native-unity-controls", value: sessionID)
         }
     }
 
@@ -382,19 +423,27 @@ struct MacNativeUnityControlView: View {
             screenManager.markUnityWindowHidden(windowID, suppressAutoShow: false)
             dismissWindow(
                 id: "mac-native-window",
-                value: MacNativeWindowStreamID(windowID: windowID)
+                value: MacNativeWindowStreamID(session: sessionID, windowID: windowID)
             )
         }
-        screenManager.forget()
-        audioManager.userDisconnect()
+        let ownsAudio = sessions.ownsAudio(sessionID)
+        if ownsAudio {
+            audioManager.userDisconnect()
+        }
+        sessions.end(sessionID)
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
-            closing: ["audio-stream", "mac-native-keyboard", "mac-native-stream", "mac-native-unity-controls"],
+            closing: Set(
+                [keyboardWindowKey, streamWindowKey, unityControlsWindowKey]
+                    + (ownsAudio ? ["audio-stream"] : [])
+            ),
             using: openWindow
         ) {
-            dismissWindow(id: "audio-stream")
-            dismissWindow(id: "mac-native-keyboard")
-            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-            dismissWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            if ownsAudio {
+                dismissWindow(id: "audio-stream")
+            }
+            dismissWindow(id: "mac-native-keyboard", value: sessionID)
+            dismissWindow(id: "mac-native-stream", value: sessionID)
+            dismissWindow(id: "mac-native-unity-controls", value: sessionID)
         }
     }
 }

@@ -132,12 +132,28 @@ final class MacNativeStreamManager {
     /// `state` disconnected, but only this flag says whether Screen should
     /// resume after a scene reactivation or a full space-restoration
     /// relaunch (a fresh `MacNativeStreamManager` with no in-memory state).
-    private static let liveEnabledKey = "nativeScreenLiveEnabled"
-    var liveEnabled: Bool = UserDefaults.standard.bool(forKey: MacNativeStreamManager.liveEnabledKey) {
+    /// Per session, not per app: several Native sessions run at once (see
+    /// `MacNativeSessionStore`), and one shared key would have the last one to
+    /// toggle Screen decide whether every other session resumes it.
+    private let liveEnabledKey: String
+    var liveEnabled: Bool {
         didSet {
             guard liveEnabled != oldValue else { return }
-            UserDefaults.standard.set(liveEnabled, forKey: Self.liveEnabledKey)
+            UserDefaults.standard.set(liveEnabled, forKey: liveEnabledKey)
         }
+    }
+
+    /// This session's identity — what its windows are keyed by, and what
+    /// scopes its entries in `WindowSessionRegistry`. Nil only for the
+    /// throwaway managers tests and the Unity layout demo build by hand.
+    let sessionID: MacNativeSessionID?
+
+    init(sessionID: MacNativeSessionID? = nil) {
+        self.sessionID = sessionID
+        let key = sessionID.map { "nativeScreenLiveEnabled.\($0.connectionID.uuidString)" }
+            ?? "nativeScreenLiveEnabled"
+        self.liveEnabledKey = key
+        self.liveEnabled = UserDefaults.standard.bool(forKey: key)
     }
 
     private var client: MacNativeStreamClient?

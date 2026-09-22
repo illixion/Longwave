@@ -7,16 +7,23 @@ using Org.BouncyCastle.Tls;
 namespace Longwave.WindowsCompanion.Backend.NativeStream;
 
 /// <summary>
-/// Authenticated newest-client-wins TCP server for the native stream — the
-/// Windows counterpart of <c>MacNativeStreamServer</c>. Every connection runs
-/// the TLS-PSK handshake first; a new viewer replaces the active one only
-/// after a valid hello. This host only speaks protocol v2 (multiplexed
-/// streams); v1 clients get an error frame.
+/// Authenticated multi-viewer TCP server for the native stream — the Windows
+/// counterpart of <c>MacNativeStreamServer</c>. Every connection runs the
+/// TLS-PSK handshake first and joins the viewer set on a valid hello. This
+/// host only speaks protocol v2 (multiplexed streams); v1 clients get an error
+/// frame.
+///
+/// It used to be newest-client-wins, so a second viewer ended the first one's
+/// session. One capture and one encode per stream now fan out to every viewer
+/// subscribed to it, and <see cref="WindowStreamStart"/> /
+/// <see cref="WindowStreamStop"/> are reference-counted so the capture side
+/// still sees one start and one stop per stream.
 /// </summary>
 public sealed class NativeStreamServer : IDisposable
 {
-    public event Action<string, string?>? ClientActivated; // device name, replaced name
-    public event Action? ClientDisconnected;
+    public event Action<string>? ClientConnected; // device name
+    /// <summary>Every viewer currently connected, in join order.</summary>
+    public event Action<IReadOnlyList<string>>? ClientsChanged;
     public event Action<uint>? WindowStreamStart;
     public event Action<uint>? WindowStreamStop;
     public event Action<uint>? FocusWindow;
@@ -33,9 +40,16 @@ public sealed class NativeStreamServer : IDisposable
     private readonly ushort _port;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancel;
-    private Client? _active;
+    /// Viewers past their handshake, in join order. Guarded by <c>_gate</c>,
+    /// which also guards every client's <c>Subscriptions</c>.
+    private readonly List<Client> _clients = new();
     private readonly object _gate = new();
     private volatile byte[]? _inventoryFrame;
+    /// The last format blob published for each running stream, so a viewer
+    /// that subscribes to a stream someone else already started can decode it
+    /// without waiting for the capture side to announce the format again
+    /// (it never will — the stream is already going).
+    private readonly Dictionary<uint, byte[]> _windowFormats = new();
     private byte _mouseStatus = (byte)NativeStreamProtocol.RemoteControlStatus.Disabled;
     private byte _keyboardStatus = (byte)NativeStreamProtocol.RemoteControlStatus.Disabled;
 
@@ -79,11 +93,14 @@ public sealed class NativeStreamServer : IDisposable
     {
         _cancel?.Cancel();
         _listener?.Stop();
+        Client[] leaving;
         lock (_gate)
         {
-            _active?.Dispose();
-            _active = null;
+            leaving = _clients.ToArray();
+            _clients.Clear();
+            _windowFormats.Clear();
         }
+        foreach (var client in leaving) client.Dispose();
     }
 
     public void Dispose() => Stop();
@@ -113,48 +130,78 @@ public sealed class NativeStreamServer : IDisposable
 
     public void BroadcastWindowFormat(uint windowId, byte[] parameterSets)
     {
-        Client? client;
-        lock (_gate) { client = _active; }
-        if (client is null || !client.Subscriptions.Contains(windowId)) return;
-        lock (client.AwaitingKeyFrame) { client.AwaitingKeyFrame.Add(windowId); }
-        Enqueue(client, NativeStreamProtocol.EncodeWindowFormatDescription(
-            windowId, NativeStreamProtocol.FormatKind.HevcParameterSets, parameterSets));
+        lock (_gate) { _windowFormats[windowId] = parameterSets; }
+        var frame = NativeStreamProtocol.EncodeWindowFormatDescription(
+            windowId, NativeStreamProtocol.FormatKind.HevcParameterSets, parameterSets);
+        foreach (var client in SubscribersOf(windowId))
+        {
+            lock (client.AwaitingKeyFrame) { client.AwaitingKeyFrame.Add(windowId); }
+            Enqueue(client, frame);
+        }
     }
 
     public void BroadcastWindowFrame(uint windowId, byte[] data, bool isKeyFrame, ulong sequence, ulong ptsNanos)
     {
-        Client? client;
-        lock (_gate) { client = _active; }
-        if (client is null || !client.Subscriptions.Contains(windowId)) return;
-        if (Volatile.Read(ref client.PendingBytes) > MaxPendingBytes) return;
-
-        lock (client.AwaitingKeyFrame)
+        var subscribers = SubscribersOf(windowId);
+        if (subscribers.Length == 0) return;
+        // One encode, one framing, N sockets.
+        var frame = NativeStreamProtocol.EncodeWindowVideoFrame(
+            windowId, data, isKeyFrame, sequence, ptsNanos);
+        foreach (var client in subscribers)
         {
-            if (client.AwaitingKeyFrame.Contains(windowId))
+            // Backpressure is per viewer: a headset on a bad link drops
+            // frames without stalling anyone else.
+            if (Volatile.Read(ref client.PendingBytes) > MaxPendingBytes) continue;
+            lock (client.AwaitingKeyFrame)
             {
-                if (!isKeyFrame) return;
-                client.AwaitingKeyFrame.Remove(windowId);
+                if (client.AwaitingKeyFrame.Contains(windowId))
+                {
+                    if (!isKeyFrame) continue;
+                    client.AwaitingKeyFrame.Remove(windowId);
+                }
             }
+            Enqueue(client, frame);
         }
-        Enqueue(client, NativeStreamProtocol.EncodeWindowVideoFrame(
-            windowId, data, isKeyFrame, sequence, ptsNanos));
     }
 
     public void SendWindowClosed(uint windowId, string? reason)
     {
-        Client? client;
-        lock (_gate) { client = _active; }
-        if (client is null) return;
-        client.Subscriptions.Remove(windowId);
-        Enqueue(client, NativeStreamProtocol.EncodeWindowClosed(windowId, reason));
+        Client[] snapshot;
+        lock (_gate)
+        {
+            _windowFormats.Remove(windowId);
+            snapshot = _clients.ToArray();
+            foreach (var client in snapshot) client.Subscriptions.Remove(windowId);
+        }
+        var frame = NativeStreamProtocol.EncodeWindowClosed(windowId, reason);
+        foreach (var client in snapshot) Enqueue(client, frame);
     }
 
     private void SendRequired(byte[] frame)
     {
-        Client? client;
-        lock (_gate) { client = _active; }
-        if (client is null) return;
-        Enqueue(client, frame);
+        foreach (var client in Snapshot()) Enqueue(client, frame);
+    }
+
+    private Client[] Snapshot()
+    {
+        lock (_gate) { return _clients.ToArray(); }
+    }
+
+    /// <summary>Viewers subscribed to one stream, snapshotted under the lock
+    /// that also guards every subscription change.</summary>
+    private Client[] SubscribersOf(uint windowId)
+    {
+        lock (_gate)
+        {
+            return _clients.Where(c => c.Subscriptions.Contains(windowId)).ToArray();
+        }
+    }
+
+    /// <summary>How many viewers want this stream — what decides whether the
+    /// capture side is told to start or stop it. Caller holds <c>_gate</c>.</summary>
+    private int SubscriberCountLocked(uint windowId)
+    {
+        return _clients.Count(c => c.Subscriptions.Contains(windowId));
     }
 
     private void Enqueue(Client client, byte[] frame)
@@ -191,8 +238,8 @@ public sealed class NativeStreamServer : IDisposable
             }
             tcp.NoDelay = true;
             // Handshake + receive on a dedicated thread — BC's TLS layer and
-            // the framed protocol are synchronous, and there's at most one
-            // real viewer plus the occasional prober.
+            // the framed protocol are synchronous, and the viewer count is a
+            // handful plus the occasional prober.
             var thread = new Thread(() => ServeClient(tcp, ct)) { IsBackground = true };
             thread.Start();
         }
@@ -259,7 +306,9 @@ public sealed class NativeStreamServer : IDisposable
 
     private void HandleFrame(Client client, NativeStreamProtocol.FrameType type, byte[] payload)
     {
-        var isActive = ReferenceEquals(ActiveClient(), client);
+        // Any viewer past its hello may drive the stream and the input: they
+        // are all the same authenticated user on the same PC.
+        var isActive = IsJoined(client);
         switch (type)
         {
             case NativeStreamProtocol.FrameType.Hello:
@@ -284,17 +333,44 @@ public sealed class NativeStreamServer : IDisposable
             case NativeStreamProtocol.FrameType.WindowStreamStart when isActive:
             {
                 if (NativeStreamProtocol.DecodeWindowId(payload) is not { } id) break;
-                if (!client.Subscriptions.Add(id)) break;
+                bool alreadyRunning;
+                byte[]? cachedFormat;
+                lock (_gate)
+                {
+                    if (!client.Subscriptions.Add(id)) break;
+                    alreadyRunning = SubscriberCountLocked(id) > 1;
+                    _windowFormats.TryGetValue(id, out cachedFormat);
+                }
                 lock (client.AwaitingKeyFrame) { client.AwaitingKeyFrame.Add(id); }
-                WindowStreamStart?.Invoke(id);
+                if (alreadyRunning)
+                {
+                    // Another viewer already started this stream, so no fresh
+                    // format frame is coming — hand over the cached one and let
+                    // the key-frame gate hold the decoder until the next IDR.
+                    if (cachedFormat is not null)
+                    {
+                        Enqueue(client, NativeStreamProtocol.EncodeWindowFormatDescription(
+                            id, NativeStreamProtocol.FormatKind.HevcParameterSets, cachedFormat));
+                    }
+                }
+                else
+                {
+                    WindowStreamStart?.Invoke(id);
+                }
                 break;
             }
             case NativeStreamProtocol.FrameType.WindowStreamStop when isActive:
             {
                 if (NativeStreamProtocol.DecodeWindowId(payload) is not { } id) break;
-                if (!client.Subscriptions.Remove(id)) break;
+                bool last;
+                lock (_gate)
+                {
+                    if (!client.Subscriptions.Remove(id)) break;
+                    last = SubscriberCountLocked(id) == 0;
+                }
                 lock (client.AwaitingKeyFrame) { client.AwaitingKeyFrame.Remove(id); }
-                WindowStreamStop?.Invoke(id);
+                // Only when the last viewer of this stream lets go.
+                if (last) WindowStreamStop?.Invoke(id);
                 break;
             }
             case NativeStreamProtocol.FrameType.FocusWindow when isActive:
@@ -349,30 +425,20 @@ public sealed class NativeStreamServer : IDisposable
         }
     }
 
-    private Client? ActiveClient()
+    private bool IsJoined(Client client)
     {
-        lock (_gate) { return _active; }
+        lock (_gate) { return _clients.Contains(client); }
     }
 
     private void Promote(Client client, string deviceName)
     {
-        Client? previous;
-        string? previousName;
+        string[] names;
         lock (_gate)
         {
-            if (ReferenceEquals(_active, client)) return;
-            previous = _active;
-            previousName = previous?.DeviceName;
+            if (_clients.Contains(client)) return;
             client.DeviceName = deviceName;
-            _active = client;
-        }
-
-        if (previous is not null)
-        {
-            Enqueue(previous, NativeStreamProtocol.EncodeReplaced(deviceName));
-            // Give the frame a moment to flush, then drop the old viewer.
-            var stale = previous;
-            Task.Delay(250).ContinueWith(_ => stale.Dispose());
+            _clients.Add(client);
+            names = _clients.Select(c => c.DeviceName ?? "Unknown").ToArray();
         }
 
         Enqueue(client, NativeStreamProtocol.EncodeHelloAck(new NativeStreamProtocol.HelloAck()));
@@ -386,22 +452,27 @@ public sealed class NativeStreamServer : IDisposable
             NativeStreamProtocol.FrameType.KeyboardStatus, new[] { _keyboardStatus }));
 
         _log.LogInformation("Native stream viewer connected: {Device}", deviceName);
-        ClientActivated?.Invoke(deviceName, previousName);
+        ClientConnected?.Invoke(deviceName);
+        ClientsChanged?.Invoke(names);
     }
 
     private void Remove(Client client)
     {
-        bool wasActive;
+        bool wasJoined;
+        uint[] orphaned;
+        string[] names;
         lock (_gate)
         {
-            wasActive = ReferenceEquals(_active, client);
-            if (wasActive) _active = null;
+            wasJoined = _clients.Remove(client);
+            // Streams this viewer was the last one watching.
+            orphaned = client.Subscriptions.Where(id => SubscriberCountLocked(id) == 0).ToArray();
+            names = _clients.Select(c => c.DeviceName ?? "Unknown").ToArray();
         }
         client.Dispose();
-        if (wasActive)
-        {
-            _log.LogInformation("Native stream viewer disconnected.");
-            ClientDisconnected?.Invoke();
-        }
+        if (!wasJoined) return;
+
+        _log.LogInformation("Native stream viewer disconnected: {Device}", client.DeviceName);
+        foreach (var id in orphaned) WindowStreamStop?.Invoke(id);
+        ClientsChanged?.Invoke(names);
     }
 }

@@ -11,7 +11,7 @@ struct LongwaveMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
-    @State private var macNativeManager = MacNativeStreamManager()
+    @State private var macNativeSessions = MacNativeSessionStore()
     #if MOONLIGHT_ENABLED
     @State private var moonlightSessions = MoonlightSessionStore()
     #endif
@@ -27,7 +27,7 @@ struct LongwaveMacApp: App {
             MacMainView()
                 .environment(connectionManager)
                 .environment(audioManager)
-                .environment(macNativeManager)
+                .environment(macNativeSessions)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)
                 #endif
@@ -96,23 +96,27 @@ struct LongwaveMacApp: App {
         }
         .defaultSize(width: 800, height: 440)
 
-        // The Native (desktop stream + audio) window — value-typed with one
-        // constant identity like on visionOS, so a connection reactivates the
-        // one window. Per-window Unity scenes stay visionOS-only.
-        WindowGroup("Native", id: "mac-native-stream", for: MacNativeWindowID.self) { _ in
-            MacNativeStreamWindowView()
-                .environment(macNativeManager)
-                .environment(audioManager)
-                .trackWindowSession(id: "mac-native-stream")
-        } defaultValue: {
-            .shared
+        // The Native (desktop stream + audio) window — one per session like on
+        // visionOS, keyed by the connection, so a second host opens its own
+        // window instead of taking this one. Per-window Unity scenes stay
+        // visionOS-only.
+        WindowGroup("Native", id: "mac-native-stream", for: MacNativeSessionID.self) { $sessionID in
+            if let sessionID {
+                MacNativeStreamWindowView(sessionID: sessionID)
+                    .environment(macNativeSessions.session(for: sessionID))
+                    .environment(macNativeSessions)
+                    .environment(audioManager)
+                    .trackWindowSession(id: "mac-native-stream", instance: sessionID.registryInstance)
+            }
         }
         .defaultSize(width: 1440, height: 900)
 
-        WindowGroup("Native Keyboard", id: "mac-native-keyboard") {
-            MacNativeKeyboardView()
-                .environment(macNativeManager)
-                .trackWindowSession(id: "mac-native-keyboard")
+        WindowGroup("Native Keyboard", id: "mac-native-keyboard", for: MacNativeSessionID.self) { $sessionID in
+            if let sessionID {
+                MacNativeKeyboardView()
+                    .environment(macNativeSessions.session(for: sessionID))
+                    .trackWindowSession(id: "mac-native-keyboard", instance: sessionID.registryInstance)
+            }
         }
         .defaultSize(width: 800, height: 440)
 

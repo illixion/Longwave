@@ -2,22 +2,37 @@ import Foundation
 import Network
 import os
 
-/// Authenticated newest-client-wins server for the native Mac stream. A new
-/// client replaces the active viewer only after completing TLS and sending its
-/// hello, so an unauthenticated socket cannot kick off the current user.
+/// Authenticated multi-viewer server for the native Mac stream. Every client
+/// that completes TLS and sends its hello joins the set of viewers; an
+/// unauthenticated socket sees nothing and can inject nothing.
+///
+/// This used to be newest-client-wins — a second viewer replaced the first,
+/// which meant picking up the iPhone ended the session on the headset. Nothing
+/// about the stream is single-viewer: one capture and one encode fan out to
+/// however many sockets are subscribed, so the cost of the second viewer is
+/// the bytes on the wire. What *is* shared is the pointer and the keyboard,
+/// and that is by design — every viewer is the same authenticated user driving
+/// the same Mac.
 final class MacNativeStreamServer: @unchecked Sendable {
-    nonisolated(unsafe) var onClientActivated:
-        (@Sendable (
-            _ deviceName: String,
-            _ replacedDeviceName: String?,
-            _ protocolVersion: Int,
-            _ wantsScreen: Bool,
-            _ decodesHEVC422: Bool
-        ) -> Void)?
-    nonisolated(unsafe) var onClientDisconnected: (@Sendable () -> Void)?
+    /// One connected viewer, as the controller needs to see it.
+    struct ClientSummary: Sendable {
+        let deviceName: String
+        let protocolVersion: Int
+        let decodesHEVC422: Bool
+
+        var isV2: Bool { protocolVersion >= 2 }
+    }
+
+    /// A viewer finished its handshake — for the "connected" notification.
+    nonisolated(unsafe) var onClientConnected:
+        (@Sendable (_ deviceName: String, _ wantsScreen: Bool) -> Void)?
+    /// The viewer set changed (someone joined or left) — for status text and
+    /// for the chroma decision, which depends on what *every* viewer decodes.
+    nonisolated(unsafe) var onClientsChanged: (@Sendable (_ clients: [ClientSummary]) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
 
-    // Remote control — only ever fired for the active (promoted) client.
+    // Remote control — fired for any promoted client. They all drive the same
+    // cursor, which is what sharing a desktop means.
     nonisolated(unsafe) var onMouseMove: (@Sendable (UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onMouseDown: (@Sendable (MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onMouseUp: (@Sendable (MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
@@ -45,6 +60,12 @@ final class MacNativeStreamServer: @unchecked Sendable {
         var deviceName: String?
         var protocolVersion = 1
         var pendingBytes = 0
+        /// True once the hello landed and this client joined the viewer set.
+        var isActive = false
+        /// v1 has no subscriptions: it takes the desktop stream unless its
+        /// hello said otherwise.
+        var wantsDesktopV1 = true
+        var decodesHEVC422 = false
         /// Per stream ID; the v1 desktop stream uses `desktopStreamID`.
         var awaitingKeyFrame: [UInt32: Bool] = [MacNativeStreamProtocol.desktopStreamID: true]
         /// v2 stream subscriptions. A v1 client is implicitly subscribed to
@@ -57,7 +78,15 @@ final class MacNativeStreamServer: @unchecked Sendable {
             if isV2 {
                 return subscriptions.contains(windowID)
             }
-            return windowID == MacNativeStreamProtocol.desktopStreamID
+            return windowID == MacNativeStreamProtocol.desktopStreamID && wantsDesktopV1
+        }
+
+        var summary: ClientSummary {
+            ClientSummary(
+                deviceName: deviceName ?? "Unknown",
+                protocolVersion: protocolVersion,
+                decodesHEVC422: decodesHEVC422
+            )
         }
 
         init(connection: NWConnection) {
@@ -77,8 +106,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
     )
 
     private nonisolated(unsafe) var listener: NWListener?
-    private nonisolated(unsafe) var activeClient: Client?
-    private nonisolated(unsafe) var pendingClient: Client?
+    /// Every viewer past its handshake, in the order they joined.
+    private nonisolated(unsafe) var clients: [Client] = []
+    /// Sockets that have completed TLS but not yet said hello. They receive
+    /// nothing and may inject nothing.
+    private nonisolated(unsafe) var pendingClients: [Client] = []
     /// The desktop stream's raw format-description blob — kept raw so it can
     /// be re-framed for either a v1 (legacy frame) or v2 (multiplexed frame)
     /// client at promotion time.
@@ -86,6 +118,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// The current window inventory, pre-encoded — sent to v2 clients on
     /// promotion and on change.
     private nonisolated(unsafe) var currentInventoryFrame: Data?
+    /// Per-window format blobs, kept for the same reason as the desktop's: a
+    /// viewer that subscribes to a stream another viewer already started gets
+    /// no fresh format frame from the capture side, so it needs the cached one
+    /// before the next key frame means anything.
+    private nonisolated(unsafe) var currentWindowFormats: [UInt32: Data] = [:]
     private nonisolated(unsafe) var mouseAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var keyboardAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var stoppingListener: NWListener?
@@ -133,12 +170,14 @@ final class MacNativeStreamServer: @unchecked Sendable {
             stoppingListener = listener
             listener.cancel()
             self.listener = nil
-            activeClient?.connection.cancel()
-            pendingClient?.connection.cancel()
-            activeClient = nil
-            pendingClient = nil
+            for client in clients + pendingClients {
+                client.connection.cancel()
+            }
+            clients = []
+            pendingClients = []
             currentDesktopFormat = nil
             currentInventoryFrame = nil
+            currentWindowFormats = [:]
             queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [self] in
                 guard stopCompletion != nil else { return }
                 finishStop()
@@ -152,8 +191,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated func setMouseAvailability(_ status: UInt8) {
         queue.async { [self] in
             mouseAvailability = status
-            guard let activeClient else { return }
-            sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([status])), to: activeClient)
+            let frame = MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([status]))
+            for client in clients {
+                sendRequired(frame, to: client)
+            }
         }
     }
 
@@ -162,17 +203,29 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated func setKeyboardAvailability(_ status: UInt8) {
         queue.async { [self] in
             keyboardAvailability = status
-            guard let activeClient else { return }
-            sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([status])), to: activeClient)
+            let frame = MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([status]))
+            for client in clients {
+                sendRequired(frame, to: client)
+            }
         }
     }
 
-    nonisolated func disconnectActive(withError message: String) {
+    /// Ends every viewer's session with the same error — capture died, so
+    /// there is nothing left to show any of them.
+    nonisolated func disconnectAll(withError message: String) {
         queue.async { [self] in
-            guard let client = activeClient else { return }
-            activeClient = nil
-            sendError(message, to: client)
-            onClientDisconnected?()
+            let leaving = clients
+            guard !leaving.isEmpty else { return }
+            clients = []
+            for client in leaving {
+                sendError(message, to: client)
+            }
+            // Every subscription went with them.
+            for streamID in Set(leaving.flatMap { $0.subscriptions })
+                .union([MacNativeStreamProtocol.desktopStreamID]) {
+                onWindowStreamStop?(streamID)
+            }
+            onClientsChanged?([])
         }
     }
 
@@ -182,10 +235,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated func broadcastFormatDescription(_ data: Data) {
         queue.async { [self] in
             currentDesktopFormat = data
-            guard let client = activeClient,
-                  client.wantsStream(MacNativeStreamProtocol.desktopStreamID) else { return }
-            client.awaitingKeyFrame[MacNativeStreamProtocol.desktopStreamID] = true
-            sendRequired(Self.desktopFormatFrame(data, for: client), to: client)
+            for client in clients
+            where client.wantsStream(MacNativeStreamProtocol.desktopStreamID) {
+                client.awaitingKeyFrame[MacNativeStreamProtocol.desktopStreamID] = true
+                sendRequired(Self.desktopFormatFrame(data, for: client), to: client)
+            }
         }
     }
 
@@ -207,30 +261,42 @@ final class MacNativeStreamServer: @unchecked Sendable {
         timestampNanoseconds: UInt64
     ) {
         queue.async { [self] in
-            guard let client = activeClient else { return }
-            let frame: Data
-            if client.isV2 {
-                frame = MacNativeStreamProtocol.encodeWindowVideoFrame(
-                    windowID: MacNativeStreamProtocol.desktopStreamID,
-                    data,
+            guard !clients.isEmpty else { return }
+            // Two framings of one encoded frame, built at most once each: the
+            // viewers can be a mix of protocol versions.
+            var v1Frame: Data?
+            var v2Frame: Data?
+            for client in clients {
+                let frame: Data
+                if client.isV2 {
+                    if v2Frame == nil {
+                        v2Frame = MacNativeStreamProtocol.encodeWindowVideoFrame(
+                            windowID: MacNativeStreamProtocol.desktopStreamID,
+                            data,
+                            isKeyFrame: isKeyFrame,
+                            sequence: sequence,
+                            timestampNanoseconds: timestampNanoseconds
+                        )
+                    }
+                    frame = v2Frame!
+                } else {
+                    if v1Frame == nil {
+                        v1Frame = MacNativeStreamProtocol.encodeVideoFrame(
+                            data,
+                            isKeyFrame: isKeyFrame,
+                            sequence: sequence,
+                            timestampNanoseconds: timestampNanoseconds
+                        )
+                    }
+                    frame = v1Frame!
+                }
+                deliver(
+                    frame,
+                    streamID: MacNativeStreamProtocol.desktopStreamID,
                     isKeyFrame: isKeyFrame,
-                    sequence: sequence,
-                    timestampNanoseconds: timestampNanoseconds
-                )
-            } else {
-                frame = MacNativeStreamProtocol.encodeVideoFrame(
-                    data,
-                    isKeyFrame: isKeyFrame,
-                    sequence: sequence,
-                    timestampNanoseconds: timestampNanoseconds
+                    to: client
                 )
             }
-            deliver(
-                frame,
-                streamID: MacNativeStreamProtocol.desktopStreamID,
-                isKeyFrame: isKeyFrame,
-                to: client
-            )
         }
     }
 
@@ -242,8 +308,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
         let frame = MacNativeStreamProtocol.encodeWindowInventory(windows)
         queue.async { [self] in
             currentInventoryFrame = frame
-            guard let client = activeClient, client.isV2 else { return }
-            sendRequired(frame, to: client)
+            for client in clients where client.isV2 {
+                sendRequired(frame, to: client)
+            }
         }
     }
 
@@ -258,9 +325,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
             data: data
         )
         queue.async { [self] in
-            guard let client = activeClient, client.wantsStream(windowID) else { return }
-            client.awaitingKeyFrame[windowID] = true
-            sendRequired(frame, to: client)
+            currentWindowFormats[windowID] = data
+            for client in clients where client.wantsStream(windowID) {
+                client.awaitingKeyFrame[windowID] = true
+                sendRequired(frame, to: client)
+            }
         }
     }
 
@@ -279,8 +348,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
             timestampNanoseconds: timestampNanoseconds
         )
         queue.async { [self] in
-            guard let client = activeClient else { return }
-            deliver(frame, streamID: windowID, isKeyFrame: isKeyFrame, to: client)
+            for client in clients {
+                deliver(frame, streamID: windowID, isKeyFrame: isKeyFrame, to: client)
+            }
         }
     }
 
@@ -288,13 +358,13 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// failed, budget exceeded) and forgets its subscription.
     nonisolated func sendWindowClosed(windowID: UInt32, reason: String?) {
         queue.async { [self] in
-            guard let client = activeClient, client.isV2 else { return }
-            client.subscriptions.remove(windowID)
-            client.awaitingKeyFrame[windowID] = nil
-            sendRequired(
-                MacNativeStreamProtocol.encodeWindowClosed(windowID: windowID, reason: reason),
-                to: client
-            )
+            currentWindowFormats[windowID] = nil
+            let frame = MacNativeStreamProtocol.encodeWindowClosed(windowID: windowID, reason: reason)
+            for client in clients where client.isV2 {
+                client.subscriptions.remove(windowID)
+                client.awaitingKeyFrame[windowID] = nil
+                sendRequired(frame, to: client)
+            }
         }
     }
 
@@ -328,9 +398,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
     }
 
     private nonisolated func accept(_ connection: NWConnection) {
-        pendingClient?.connection.cancel()
         let client = Client(connection: connection)
-        pendingClient = client
+        pendingClients.append(client)
 
         connection.stateUpdateHandler = { [weak self, weak client] state in
             guard let self, let client else { return }
@@ -385,63 +454,100 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 )
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
-            // Remote control: only the promoted/active client may inject —
-            // a pending (not-yet-authenticated-as-current) client is ignored.
+            // Remote control: any promoted viewer may inject — they are all
+            // the same authenticated user. A pending (pre-hello) socket is
+            // ignored.
             case MacNativeStreamProtocol.FrameType.mouseMove.rawValue:
-                guard activeClient === client, let point = MacNativeStreamProtocol.decodeMouseMove(frame.payload) else { break }
+                guard client.isActive, let point = MacNativeStreamProtocol.decodeMouseMove(frame.payload) else { break }
                 onMouseMove?(point.x, point.y)
             case MacNativeStreamProtocol.FrameType.mouseDown.rawValue:
-                guard activeClient === client, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                guard client.isActive, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
                 onMouseDown?(event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.mouseUp.rawValue:
-                guard activeClient === client, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                guard client.isActive, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
                 onMouseUp?(event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.scroll.rawValue:
-                guard activeClient === client, let event = MacNativeStreamProtocol.decodeScroll(frame.payload) else { break }
+                guard client.isActive, let event = MacNativeStreamProtocol.decodeScroll(frame.payload) else { break }
                 onScroll?(event.x, event.y, event.deltaX, event.deltaY)
             case MacNativeStreamProtocol.FrameType.keyDown.rawValue:
-                guard activeClient === client, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                guard client.isActive, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
                 onKeyDown?(event.keyCode, event.modifiers)
             case MacNativeStreamProtocol.FrameType.keyUp.rawValue:
-                guard activeClient === client, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                guard client.isActive, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
                 onKeyUp?(event.keyCode, event.modifiers)
             // v2 multiplexed streams — again active-client-only.
             case MacNativeStreamProtocol.FrameType.windowStreamStart.rawValue:
-                guard activeClient === client, client.isV2,
+                guard client.isActive, client.isV2,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 guard !client.subscriptions.contains(windowID) else { break }
+                let wasRunning = subscriberCount(windowID) > 0
                 client.subscriptions.insert(windowID)
                 client.awaitingKeyFrame[windowID] = true
-                onWindowStreamStart?(windowID)
+                if wasRunning {
+                    // Someone else already has this stream going, so the
+                    // capture side will not announce its format again — hand
+                    // this viewer the cached one, and the key-frame gate above
+                    // holds its decoder until the next one (≤1 s).
+                    sendCachedFormat(of: windowID, to: client)
+                } else {
+                    onWindowStreamStart?(windowID)
+                }
             case MacNativeStreamProtocol.FrameType.windowStreamStop.rawValue:
-                guard activeClient === client, client.isV2,
+                guard client.isActive, client.isV2,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 guard client.subscriptions.remove(windowID) != nil else { break }
                 client.awaitingKeyFrame[windowID] = nil
-                onWindowStreamStop?(windowID)
+                // Only when the last viewer of this stream lets go.
+                if subscriberCount(windowID) == 0 {
+                    onWindowStreamStop?(windowID)
+                }
             case MacNativeStreamProtocol.FrameType.focusWindow.rawValue:
-                guard activeClient === client,
+                guard client.isActive,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 onFocusWindow?(windowID)
             case MacNativeStreamProtocol.FrameType.windowMouseMove.rawValue:
-                guard activeClient === client,
+                guard client.isActive,
                       let event = MacNativeStreamProtocol.decodeWindowMouseMove(frame.payload) else { break }
                 onWindowMouseMove?(event.windowID, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowMouseDown.rawValue:
-                guard activeClient === client,
+                guard client.isActive,
                       let event = MacNativeStreamProtocol.decodeWindowMouseButton(frame.payload) else { break }
                 onWindowMouseDown?(event.windowID, event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowMouseUp.rawValue:
-                guard activeClient === client,
+                guard client.isActive,
                       let event = MacNativeStreamProtocol.decodeWindowMouseButton(frame.payload) else { break }
                 onWindowMouseUp?(event.windowID, event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowScroll.rawValue:
-                guard activeClient === client,
+                guard client.isActive,
                       let event = MacNativeStreamProtocol.decodeWindowScroll(frame.payload) else { break }
                 onWindowScroll?(event.windowID, event.x, event.y, event.deltaX, event.deltaY)
             default:
                 break
             }
+        }
+    }
+
+    /// How many viewers currently want this stream — what decides whether the
+    /// capture side is asked to start or stop it.
+    private nonisolated func subscriberCount(_ windowID: UInt32) -> Int {
+        clients.count { $0.wantsStream(windowID) }
+    }
+
+    /// Sends the cached format blob for a stream that is already running, so a
+    /// viewer joining it mid-flight can decode.
+    private nonisolated func sendCachedFormat(of windowID: UInt32, to client: Client) {
+        if windowID == MacNativeStreamProtocol.desktopStreamID {
+            guard let currentDesktopFormat else { return }
+            sendRequired(Self.desktopFormatFrame(currentDesktopFormat, for: client), to: client)
+        } else if let data = currentWindowFormats[windowID] {
+            sendRequired(
+                MacNativeStreamProtocol.encodeWindowFormatDescription(
+                    windowID: windowID,
+                    kind: .coreMediaImageDescription,
+                    data: data
+                ),
+                to: client
+            )
         }
     }
 
@@ -452,29 +558,21 @@ final class MacNativeStreamServer: @unchecked Sendable {
         wantsScreen: Bool,
         decodesHEVC422: Bool
     ) {
-        guard pendingClient === client || activeClient === client else { return }
-        if activeClient === client { return }
+        guard !client.isActive,
+              let pendingIndex = pendingClients.firstIndex(where: { $0 === client }) else { return }
 
-        let previous = activeClient
-        let previousName = previous?.deviceName
         client.deviceName = deviceName
         client.protocolVersion = min(protocolVersion, MacNativeStreamProtocol.protocolVersion)
+        client.decodesHEVC422 = decodesHEVC422
+        client.wantsDesktopV1 = wantsScreen
         client.awaitingKeyFrame = [MacNativeStreamProtocol.desktopStreamID: true]
         client.subscriptions = []
-        activeClient = client
-        if pendingClient === client {
-            pendingClient = nil
-        }
-
-        if let previous {
-            let replacement = MacNativeStreamProtocol.encodeFrame(
-                .replaced,
-                Data(deviceName.utf8)
-            )
-            previous.connection.send(content: replacement, completion: .contentProcessed { _ in
-                previous.connection.cancel()
-            })
-        }
+        // v1 has no subscribe frame — joining *is* its desktop subscription,
+        // so count the transition before it is added to the viewer set.
+        let desktopWasRunning = subscriberCount(MacNativeStreamProtocol.desktopStreamID) > 0
+        pendingClients.remove(at: pendingIndex)
+        client.isActive = true
+        clients.append(client)
 
         if client.isV2 {
             sendRequired(MacNativeStreamProtocol.encodeHelloAck(.init(
@@ -491,20 +589,21 @@ final class MacNativeStreamServer: @unchecked Sendable {
             // No format frame yet — a v2 client gets stream formats as it
             // subscribes.
         } else {
+            // v1's desktop format is sent below, with the subscription this
+            // hello implies — and only when it actually asked for Screen.
             sendRequired(MacNativeStreamProtocol.encodeFrame(.helloAck), to: client)
-            if let currentDesktopFormat {
-                sendRequired(Self.desktopFormatFrame(currentDesktopFormat, for: client), to: client)
-            }
         }
         sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
         sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
-        onClientActivated?(
-            deviceName,
-            previousName,
-            client.protocolVersion,
-            wantsScreen,
-            decodesHEVC422
-        )
+        if !client.isV2, wantsScreen {
+            if desktopWasRunning {
+                sendCachedFormat(of: MacNativeStreamProtocol.desktopStreamID, to: client)
+            } else {
+                onWindowStreamStart?(MacNativeStreamProtocol.desktopStreamID)
+            }
+        }
+        onClientConnected?(deviceName, wantsScreen)
+        onClientsChanged?(clients.map(\.summary))
     }
 
     private nonisolated func sendRequired(_ data: Data, to client: Client?) {
@@ -526,16 +625,22 @@ final class MacNativeStreamServer: @unchecked Sendable {
 
     private nonisolated func remove(_ client: Client) {
         queue.async { [self] in
-            if pendingClient === client {
-                pendingClient = nil
-            }
-            guard activeClient === client else {
+            pendingClients.removeAll { $0 === client }
+            guard let index = clients.firstIndex(where: { $0 === client }) else {
                 client.connection.cancel()
                 return
             }
-            activeClient = nil
+            let streams = client.isV2
+                ? client.subscriptions
+                : (client.wantsDesktopV1 ? [MacNativeStreamProtocol.desktopStreamID] : [])
+            clients.remove(at: index)
+            client.isActive = false
             client.connection.cancel()
-            onClientDisconnected?()
+            // Stop only what no other viewer still wants.
+            for streamID in streams where subscriberCount(streamID) == 0 {
+                onWindowStreamStop?(streamID)
+            }
+            onClientsChanged?(clients.map(\.summary))
         }
     }
 

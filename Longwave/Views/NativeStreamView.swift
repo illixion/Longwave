@@ -50,7 +50,12 @@ private struct MacNativeVideoView: UIViewRepresentable {
 /// per-window picker when Screen and Audio are both off on a v2 host, or a
 /// placeholder when nothing is available at all.
 struct NativeStreamView: View {
+    /// Which Native session this window belongs to — the scene's value. The
+    /// manager below is this session's, injected by the scene.
+    let sessionID: MacNativeSessionID
+
     @Environment(MacNativeStreamManager.self) private var screenManager
+    @Environment(MacNativeSessionStore.self) private var sessions
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -78,6 +83,46 @@ struct NativeStreamView: View {
     /// gestures stand down — see `TwoHandPointerGesture`.
     @State private var twoHandEngaged = false
 
+    /// The app has one audio player and several Native sessions, so this
+    /// window shows (and drives) audio only while its session is the one
+    /// holding it — see `MacNativeSessionStore.audioOwnerID`.
+    private var audioLive: Bool {
+        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
+    }
+
+    /// The Audio toggle: turning it on takes the player for this session,
+    /// turning it off gives it back.
+    private var audioBinding: Binding<Bool> {
+        Binding(
+            get: { audioLive },
+            set: { on in
+                if on {
+                    sessions.takeAudio(
+                        sessionID,
+                        player: audioManager,
+                        connection: screenManager.connection
+                    )
+                } else {
+                    sessions.dropAudio(sessionID, player: audioManager)
+                }
+            }
+        )
+    }
+
+    /// Registry keys for this session's windows — `mac-native-stream` alone
+    /// would answer for every session's.
+    private var streamWindowKey: String {
+        WindowSessionRegistry.key("mac-native-stream", instance: sessionID.registryInstance)
+    }
+
+    private var keyboardWindowKey: String {
+        WindowSessionRegistry.key("mac-native-keyboard", instance: sessionID.registryInstance)
+    }
+
+    private var unityControlsWindowKey: String {
+        WindowSessionRegistry.key("mac-native-unity-controls", instance: sessionID.registryInstance)
+    }
+
     var body: some View {
         @Bindable var screenManager = screenManager
         @Bindable var audioManager = audioManager
@@ -93,7 +138,7 @@ struct NativeStreamView: View {
             // itself.
             if screenManager.liveEnabled {
                 screenContent
-            } else if audioManager.liveEnabled {
+            } else if audioLive {
                 if audioPoppedOut {
                     audioPoppedOutContent
                 } else {
@@ -108,7 +153,7 @@ struct NativeStreamView: View {
         .ornament(attachmentAnchor: .scene(.bottom)) {
             if screenManager.unityEnabled {
                 EmptyView()
-            } else if audioManager.liveEnabled, !screenManager.liveEnabled {
+            } else if audioLive, !screenManager.liveEnabled {
                 // Audio-only (or popped out): the Screen/Audio toggles and
                 // Disconnect don't apply to this compact view — matches the
                 // old standalone Audio Stream window, which had no ornament
@@ -116,7 +161,7 @@ struct NativeStreamView: View {
                 // `audioUtilityRow` instead, as it did there).
                 homeOnlyControls
             } else {
-                controls(screenOn: $screenManager.liveEnabled, audioOn: $audioManager.liveEnabled)
+                controls(screenOn: $screenManager.liveEnabled, audioOn: audioBinding)
             }
         }
         .onAppear {
@@ -128,7 +173,9 @@ struct NativeStreamView: View {
             // from the explicit Disconnect button below.
             if !screenManager.unityEnabled {
                 screenManager.disconnect()
-                audioManager.windowDisappeared()
+                if sessions.ownsAudio(sessionID) {
+                    audioManager.windowDisappeared()
+                }
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -158,7 +205,9 @@ struct NativeStreamView: View {
             }
         }
         .onChange(of: audioManager.liveEnabled) { _, on in
-            guard !screenManager.unityEnabled else { return }
+            // Every open Native window sees this change; only the session that
+            // owns the player acts on it.
+            guard !screenManager.unityEnabled, sessions.ownsAudio(sessionID) else { return }
             if on {
                 // A host that serves no audio would leave this on
                 // "Connecting…" forever; refuse the toggle instead.
@@ -188,7 +237,7 @@ struct NativeStreamView: View {
     /// Windows hosts don't, so drop a hopeful audio connection rather than
     /// leaving the player spinning on "Connecting…".
     private func applyAudioAvailability(_ servesAudio: Bool) {
-        guard !servesAudio else { return }
+        guard !servesAudio, sessions.ownsAudio(sessionID) else { return }
         if audioManager.liveEnabled { audioManager.liveEnabled = false }
         audioManager.disconnect()
     }
@@ -198,7 +247,7 @@ struct NativeStreamView: View {
     /// (a fresh manager with no in-memory state). A no-op when already
     /// running, so this is safe to call on every appear/activation.
     private func resumeIfNeeded() {
-        if audioManager.liveEnabled {
+        if audioLive {
             if screenManager.hostServesAudio {
                 audioManager.ensureConnected()
             } else {
@@ -292,12 +341,12 @@ struct NativeStreamView: View {
                 if isOpen {
                     dismissWindow(
                         id: "mac-native-window",
-                        value: MacNativeWindowStreamID(windowID: window.id)
+                        value: MacNativeWindowStreamID(session: sessionID, windowID: window.id)
                     )
                 } else {
                     openWindow(
                         id: "mac-native-window",
-                        value: MacNativeWindowStreamID(windowID: window.id)
+                        value: MacNativeWindowStreamID(session: sessionID, windowID: window.id)
                     )
                 }
             }
@@ -430,7 +479,7 @@ struct NativeStreamView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if audioManager.liveEnabled {
+            if audioLive {
                 if audioPoppedOut {
                     poppedOutAudioChip
                         .padding(24)
@@ -934,14 +983,14 @@ struct NativeStreamView: View {
     /// tracked live off `WindowSessionRegistry`, so the button reads as a real
     /// toggle instead of only ever opening it (mirrors `RemoteDesktopView`).
     private var isKeyboardWindowOpen: Bool {
-        WindowSessionRegistry.shared.sessions["mac-native-keyboard"] != nil
+        WindowSessionRegistry.shared.sessions[keyboardWindowKey] != nil
     }
 
     private func toggleKeyboardWindow() {
         if isKeyboardWindowOpen {
-            dismissWindow(id: "mac-native-keyboard")
+            dismissWindow(id: "mac-native-keyboard", value: sessionID)
         } else {
-            openWindow(id: "mac-native-keyboard")
+            openWindow(id: "mac-native-keyboard", value: sessionID)
         }
     }
 
@@ -951,19 +1000,22 @@ struct NativeStreamView: View {
         for windowID in screenManager.windowSessions.keys {
             dismissWindow(
                 id: "mac-native-window",
-                value: MacNativeWindowStreamID(windowID: windowID)
+                value: MacNativeWindowStreamID(session: sessionID, windowID: windowID)
             )
         }
         screenManager.unityEnabled = false
-        screenManager.forget()
-        audioManager.userDisconnect()
+        // Ends this session only: another host's Native window keeps streaming.
+        if sessions.ownsAudio(sessionID) {
+            audioManager.userDisconnect()
+        }
+        sessions.end(sessionID)
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
-            closing: ["mac-native-keyboard", "mac-native-stream", "mac-native-unity-controls"],
+            closing: [keyboardWindowKey, streamWindowKey, unityControlsWindowKey],
             using: openWindow
         ) {
-            dismissWindow(id: "mac-native-keyboard")
-            dismissWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-            dismissWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            dismissWindow(id: "mac-native-keyboard", value: sessionID)
+            dismissWindow(id: "mac-native-stream", value: sessionID)
+            dismissWindow(id: "mac-native-unity-controls", value: sessionID)
         }
     }
 }

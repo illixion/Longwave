@@ -13,7 +13,12 @@ import UIKit
 /// view supplies zoom + pan (a phone is far smaller than the Mac it shows), the
 /// `MobilePointerSurface` touch model, and the chrome.
 struct MobileNativeStreamView: View {
+    /// Which Native session fills the screen — a phone shows one at a time,
+    /// but the store can hold several (see `MacNativeSessionStore`).
+    let sessionID: MacNativeSessionID
+
     @Environment(MacNativeStreamManager.self) private var screenManager
+    @Environment(MacNativeSessionStore.self) private var sessions
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -123,7 +128,7 @@ struct MobileNativeStreamView: View {
             if phase == .active { resumeIfNeeded() }
         }
         .onChange(of: screenManager.hostServesAudio) { _, servesAudio in
-            guard !servesAudio else { return }
+            guard !servesAudio, sessions.ownsAudio(sessionID) else { return }
             if audioManager.liveEnabled { audioManager.liveEnabled = false }
             audioManager.disconnect()
         }
@@ -141,7 +146,7 @@ struct MobileNativeStreamView: View {
     /// case after the app comes back from the background. A no-op when already
     /// running, so this is safe to call on every appear/activation.
     private func resumeIfNeeded() {
-        if audioManager.liveEnabled, screenManager.hostServesAudio {
+        if audioLive, screenManager.hostServesAudio {
             audioManager.ensureConnected()
         }
         if screenManager.liveEnabled, !screenManager.isEnabled, let connection = screenManager.connection {
@@ -150,9 +155,17 @@ struct MobileNativeStreamView: View {
     }
 
     private func disconnectAll() {
-        screenManager.forget()
-        audioManager.userDisconnect()
+        if sessions.ownsAudio(sessionID) {
+            audioManager.userDisconnect()
+        }
+        sessions.end(sessionID)
         dismiss()
+    }
+
+    /// One audio player, several Native sessions: this screen shows audio only
+    /// while its session holds it.
+    private var audioLive: Bool {
+        sessions.ownsAudio(sessionID) && audioManager.liveEnabled
     }
 
     // MARK: - Video
@@ -284,7 +297,7 @@ struct MobileNativeStreamView: View {
             .tint(typing ? .accentColor : nil)
             .accessibilityLabel("Keyboard")
 
-            if screenManager.hostServesAudio, audioManager.liveEnabled || audioManager.state != .idle {
+            if screenManager.hostServesAudio, audioLive || (sessions.ownsAudio(sessionID) && audioManager.state != .idle) {
                 Button {
                     showingAudioPanel = true
                 } label: {

@@ -13,14 +13,17 @@ struct MobileRootView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(SSHTerminalManager.self) private var sshManager
-    @Environment(MacNativeStreamManager.self) private var macNativeManager
+    @Environment(MacNativeSessionStore.self) private var macNativeSessions
     #if MOONLIGHT_ENABLED
     @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
 
     @State private var selectedTab: MobileTab = .connections
     @State private var showingDesktop = false
-    @State private var showingNativeScreen = false
+    /// The Native session whose stream fills the screen. One at a time here:
+    /// a phone has one screen, so the store's several sessions become
+    /// "whichever one is live", the same way Moonlight's do below.
+    @State private var presentedNativeSession: MacNativeSessionID?
     @State private var presentedSession: SSHSessionID?
     #if MOONLIGHT_ENABLED
     /// The Moonlight session whose stream fills the screen. One at a time here:
@@ -70,19 +73,20 @@ struct MobileRootView: View {
         // manager: `ConnectionListView` connects it and opens a window that
         // doesn't exist here. Audio-only Native connections never connect the
         // screen manager, so they stay in the Audio tab.
-        .fullScreenCover(isPresented: $showingNativeScreen) {
-            MobileNativeStreamView()
+        .fullScreenCover(item: $presentedNativeSession) { id in
+            MobileNativeStreamView(sessionID: id)
+                .environment(macNativeSessions.session(for: id))
         }
-        .onChange(of: macNativeManager.isEnabled) { _, enabled in
-            if enabled {
-                showingNativeScreen = true
-            } else if showingNativeScreen {
+        .onChange(of: macNativeSessions.activeID) { _, id in
+            if let id {
+                presentedNativeSession = id
+            } else if presentedNativeSession != nil {
                 // Leave the stream up briefly so its own error state is
                 // readable before the cover drops.
                 Task {
                     try? await Task.sleep(for: .seconds(1))
-                    if !macNativeManager.isEnabled {
-                        showingNativeScreen = false
+                    if macNativeSessions.activeID == nil {
+                        presentedNativeSession = nil
                     }
                 }
             }

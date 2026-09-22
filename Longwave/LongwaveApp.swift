@@ -9,7 +9,7 @@ struct LongwaveApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
-    @State private var macNativeManager = MacNativeStreamManager()
+    @State private var macNativeSessions = MacNativeSessionStore()
     @State private var sshManager = SSHTerminalManager()
     @State private var broadcastManager = BroadcastManager()
     #if MOONLIGHT_ENABLED
@@ -42,7 +42,7 @@ struct LongwaveApp: App {
             MainView()
                 .environment(connectionManager)
                 .environment(audioManager)
-                .environment(macNativeManager)
+                .environment(macNativeSessions)
                 .environment(sshManager)
                 .environment(broadcastManager)
                 #if MOONLIGHT_ENABLED
@@ -50,7 +50,7 @@ struct LongwaveApp: App {
                 #endif
                 .trackMainWindow()
                 #if DEBUG
-                .unityControlsLayoutDemo(macNativeManager, audioManager)
+                .unityControlsLayoutDemo(macNativeSessions, audioManager)
                 #endif
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)
@@ -149,17 +149,21 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        // One Native window per session (see `MacNativeSessionStore`): the value
+        // names the session, and the view keeps reading a single manager from the
+        // environment exactly as it did when there was only one.
         WindowGroup(
             "Native",
             id: "mac-native-stream",
-            for: MacNativeWindowID.self
-        ) { _ in
-            NativeStreamView()
-                .environment(macNativeManager)
-                .environment(audioManager)
-                .trackWindowSession(id: "mac-native-stream")
-        } defaultValue: {
-            .shared
+            for: MacNativeSessionID.self
+        ) { $sessionID in
+            if let sessionID {
+                NativeStreamView(sessionID: sessionID)
+                    .environment(macNativeSessions.session(for: sessionID))
+                    .environment(macNativeSessions)
+                    .environment(audioManager)
+                    .trackWindowSession(id: "mac-native-stream", instance: sessionID.registryInstance)
+            }
         }
         .defaultSize(width: 1440, height: 900)
         // .contentSize, not .contentMinSize: this one window group swaps
@@ -181,14 +185,18 @@ struct LongwaveApp: App {
         WindowGroup(
             "Unity Controls",
             id: "mac-native-unity-controls",
-            for: MacNativeUnityControlID.self
-        ) { _ in
-            MacNativeUnityControlView()
-                .environment(macNativeManager)
-                .environment(audioManager)
-                .trackWindowSession(id: "mac-native-unity-controls")
-        } defaultValue: {
-            .shared
+            for: MacNativeSessionID.self
+        ) { $sessionID in
+            if let sessionID {
+                MacNativeUnityControlView(sessionID: sessionID)
+                    .environment(macNativeSessions.session(for: sessionID))
+                    .environment(macNativeSessions)
+                    .environment(audioManager)
+                    .trackWindowSession(
+                        id: "mac-native-unity-controls",
+                        instance: sessionID.registryInstance
+                    )
+            }
         }
         // Height is a first-frame hint only — `.contentSize` re-measures, and
         // `MacNativeUnityControlView` now reports a determinate height for its
@@ -209,8 +217,8 @@ struct LongwaveApp: App {
             for: MacNativeWindowStreamID.self
         ) { $streamID in
             if let streamID {
-                NativeWindowStreamView(windowID: streamID.windowID)
-                    .environment(macNativeManager)
+                NativeWindowStreamView(streamID: streamID)
+                    .environment(macNativeSessions.session(for: streamID.session))
             }
         }
         .defaultSize(width: 960, height: 720)
@@ -248,11 +256,16 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
-        WindowGroup("Native Keyboard", id: "mac-native-keyboard") {
-            MacNativeKeyboardView()
-                .homeOrnament()
-                .environment(macNativeManager)
-                .trackWindowSession(id: "mac-native-keyboard")
+        WindowGroup("Native Keyboard", id: "mac-native-keyboard", for: MacNativeSessionID.self) { $sessionID in
+            if let sessionID {
+                MacNativeKeyboardView()
+                    .homeOrnament()
+                    .environment(macNativeSessions.session(for: sessionID))
+                    .trackWindowSession(
+                        id: "mac-native-keyboard",
+                        instance: sessionID.registryInstance
+                    )
+            }
         }
         .defaultSize(width: 1180, height: 540)
         .windowResizability(.contentSize)
@@ -348,31 +361,32 @@ private struct UnityControlsLayoutDemo: ViewModifier {
     // Handed in rather than read from the environment: this modifier is
     // applied outside the `.environment(...)` calls that publish the manager,
     // so an `@Environment` lookup here would trap on a missing value.
-    let macNativeManager: MacNativeStreamManager
+    let macNativeSessions: MacNativeSessionStore
     let audioManager: AudioStreamManager
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
         content.task {
             guard MacNativeStreamManager.isUnityUIDemo else { return }
-            macNativeManager.seedUnityUIDemo()
+            let sessionID = MacNativeSessionID(UUID())
+            macNativeSessions.session(for: sessionID).seedUnityUIDemo()
             // Audio on, so the row's Player pop-out button is in the shot —
             // it is the one control that only exists while audio is live.
             audioManager.liveEnabled = true
             // Desktop first so the control panel opens in front of it —
             // the panel is the thing under review.
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
-            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            openWindow(id: "mac-native-stream", value: sessionID)
+            openWindow(id: "mac-native-unity-controls", value: sessionID)
         }
     }
 }
 
 private extension View {
     func unityControlsLayoutDemo(
-        _ manager: MacNativeStreamManager,
+        _ sessions: MacNativeSessionStore,
         _ audioManager: AudioStreamManager
     ) -> some View {
-        modifier(UnityControlsLayoutDemo(macNativeManager: manager, audioManager: audioManager))
+        modifier(UnityControlsLayoutDemo(macNativeSessions: sessions, audioManager: audioManager))
     }
 }
 #endif

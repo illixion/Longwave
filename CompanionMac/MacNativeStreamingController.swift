@@ -24,7 +24,9 @@ final class MacNativeStreamingController {
         }
     }
 
-    private(set) var connectedDeviceName: String?
+    /// Every viewer currently connected, in join order. Several at once is
+    /// normal now — one capture and one encode fan out to all of them.
+    private(set) var connectedDeviceNames: [String] = []
     private(set) var lastError: String?
     private(set) var isCapturing = false
     /// What the live desktop capture negotiated — worth surfacing, because the
@@ -78,10 +80,17 @@ final class MacNativeStreamingController {
     /// puts every click at twice its intended offset.
     private var displayFrame: CGRect = .zero
     private var displayPixelScale: CGFloat = 1
-    /// Whether the connected viewer said it can hardware-decode 4:2:2. Reset
-    /// by every hello, so a takeover by a less capable headset drops the
-    /// desktop stream back to 4:2:0 on its next start.
-    private var viewerDecodesHEVC422 = false
+    /// Whether *every* connected viewer said it can hardware-decode 4:2:2.
+    /// There is one encode for all of them, so the odd one out decides: a
+    /// 4:2:0-only viewer joining a 4:2:2 session restarts the capture at 4:2:0
+    /// rather than sending it a picture it cannot decode.
+    private var viewersDecodeHEVC422 = false
+    /// What the running capture was started with, so a change in the viewer
+    /// set only restarts it when it actually differs.
+    private var captureChroma: MacHEVCEncoder.Chroma = .yuv420
+    /// Whether the window-stream coordinator (inventory + per-window capture)
+    /// is running — it starts with the first v2 viewer, not with each one.
+    private var windowStreamsRunning = false
 
     private func globalPoint(x: UInt16, y: UInt16) -> CGPoint {
         CGPoint(
@@ -115,8 +124,8 @@ final class MacNativeStreamingController {
     }
 
     var statusText: String {
-        if let connectedDeviceName {
-            return "Streaming to \(connectedDeviceName)"
+        if !connectedDeviceNames.isEmpty {
+            return "Streaming to \(connectedDeviceNames.joined(separator: ", "))"
         }
         return enabled ? "Listening on port \(port)" : "Disabled"
     }
@@ -152,9 +161,9 @@ final class MacNativeStreamingController {
         let generation = serverGeneration
         let previousServer = server
         server = nil
-        connectedDeviceName = nil
+        connectedDeviceNames = []
         stopCapture()
-        windowStreams.stop()
+        stopWindowStreams()
 
         guard !token.isEmpty else {
             lastError = "The companion access token is empty."
@@ -182,47 +191,37 @@ final class MacNativeStreamingController {
 
     private func launchServer(generation: Int) {
         let server = MacNativeStreamServer(port: port, token: token)
-        server.onClientActivated = { [weak self] deviceName, replacedName, protocolVersion, wantsScreen, decodesHEVC422 in
+        server.onClientConnected = { [weak self] deviceName, wantsScreen in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
-                self.connectedDeviceName = deviceName
-                // Per viewer, and only ever raised by a viewer that has probed
-                // its own hardware decoder — see `MacNativeVideoCapability`.
-                self.viewerDecodesHEVC422 = decodesHEVC422
                 // A session that's audio-only from the start (the Native
                 // window's Screen toggle already off when it connected) skips
                 // the notification — it's redundant on every headset don,
                 // unlike an actual screen connection.
                 if wantsScreen {
-                    MacNativeStreamNotifications.shared.connected(
-                        deviceName: deviceName,
-                        replacedDeviceName: replacedName
-                    )
-                }
-                if protocolVersion >= 2 {
-                    // A v2 viewer subscribes to the streams it wants; a
-                    // takeover starts from a clean slate (the new viewer has
-                    // no subscriptions yet).
-                    self.stopCapture()
-                    self.windowStreams.stop()
-                    self.windowStreams.start()
-                } else {
-                    self.windowStreams.stop()
-                    // v1 has no per-stream subscription — it always wants the
-                    // desktop pushed unconditionally, unless it just told us
-                    // otherwise via `wantsScreen`.
-                    if wantsScreen, self.capture == nil {
-                        self.startCapture()
-                    }
+                    MacNativeStreamNotifications.shared.connected(deviceName: deviceName)
                 }
             }
         }
-        server.onClientDisconnected = { [weak self] in
+        // Whoever is watching right now. Capture itself is driven by stream
+        // subscriptions (below), which are reference-counted across viewers —
+        // this is only the things that depend on *who* is connected.
+        server.onClientsChanged = { [weak self] clients in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
-                self.connectedDeviceName = nil
-                self.stopCapture()
-                self.windowStreams.stop()
+                self.connectedDeviceNames = clients.map(\.deviceName)
+                // Only ever raised by a viewer that has probed its own
+                // hardware decoder — see `MacNativeVideoCapability`.
+                self.viewersDecodeHEVC422 = !clients.isEmpty
+                    && clients.allSatisfy(\.decodesHEVC422)
+                // The inventory runs for as long as at least one v2 viewer is
+                // around to receive it.
+                if clients.contains(where: \.isV2) {
+                    self.startWindowStreams()
+                } else {
+                    self.stopWindowStreams()
+                }
+                self.applyDesktopChromaChange()
             }
         }
         server.onError = { [weak self] message in
@@ -382,15 +381,46 @@ final class MacNativeStreamingController {
         let oldServer = server
         server = nil
         oldServer?.stop()
-        connectedDeviceName = nil
+        connectedDeviceNames = []
         stopCapture()
+        stopWindowStreams()
+    }
+
+    private func startWindowStreams() {
+        guard !windowStreamsRunning else { return }
+        windowStreamsRunning = true
+        windowStreams.start()
+    }
+
+    private func stopWindowStreams() {
+        guard windowStreamsRunning else {
+            windowStreams.stop()
+            return
+        }
+        windowStreamsRunning = false
         windowStreams.stop()
+    }
+
+    /// Restarts a running desktop capture when the viewer set changes what
+    /// chroma every one of them can decode. A brief black frame for the
+    /// viewers already watching, and the only alternative is sending one of
+    /// them a stream it cannot decode at all.
+    private func applyDesktopChromaChange() {
+        // Never with an empty viewer set: the stream-stop callback that tears
+        // the capture down is a separate hop, so restarting here could race it
+        // and leave a capture running for nobody.
+        guard !connectedDeviceNames.isEmpty else { return }
+        let wanted: MacHEVCEncoder.Chroma = viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
+        guard capture != nil, wanted != captureChroma else { return }
+        stopCapture()
+        startCapture()
     }
 
     private func startCapture() {
         captureGeneration += 1
         let generation = captureGeneration
-        let chroma: MacHEVCEncoder.Chroma = viewerDecodesHEVC422 ? .yuv422_10 : .yuv420
+        let chroma: MacHEVCEncoder.Chroma = viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
+        captureChroma = chroma
         let capture = MacNativeScreenCapture(chroma: chroma)
         capture.onVideoSummary = { [weak self] summary in
             Task { @MainActor [weak self] in
@@ -413,7 +443,7 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }
                 self.lastError = message
-                self.server?.disconnectActive(withError: message)
+                self.server?.disconnectAll(withError: message)
                 self.stopCapture()
             }
         }
@@ -439,7 +469,7 @@ final class MacNativeStreamingController {
                 self.capture = nil
                 isCapturing = false
                 lastError = error.localizedDescription
-                server?.disconnectActive(withError: error.localizedDescription)
+                server?.disconnectAll(withError: error.localizedDescription)
             }
         }
     }

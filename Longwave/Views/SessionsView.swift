@@ -9,7 +9,7 @@ import SwiftUI
 struct SessionsView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
-    @Environment(MacNativeStreamManager.self) private var macNativeManager
+    @Environment(MacNativeSessionStore.self) private var macNativeSessions
     #if MOONLIGHT_ENABLED
     @Environment(MoonlightSessionStore.self) private var moonlightSessions
     #endif
@@ -96,8 +96,14 @@ struct SessionsView: View {
         .padding(.vertical, 6)
     }
 
-    /// Moonlight windows are keyed per session; the one holding input focus is
-    /// the one the user is playing on, so that is what a Summon or close targets.
+    /// Window kinds that exist once per session rather than once per app.
+    private static let nativeSessionWindowIDs: Set<String> = [
+        "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard"
+    ]
+
+    /// Moonlight and Native windows are keyed per session; the focused one —
+    /// the stream being played, the Native connection started last — is what a
+    /// Summon or close targets.
     private func surface(_ id: String) {
         #if MOONLIGHT_ENABLED
         if id == "moonlight-stream" || id == "moonlight-keyboard" {
@@ -105,6 +111,10 @@ struct SessionsView: View {
             return
         }
         #endif
+        if Self.nativeSessionWindowIDs.contains(id), let sessionID = macNativeSessions.focusedID {
+            openWindow(id: id, value: sessionID)
+            return
+        }
         WindowSessionRegistry.surface(id, using: openWindow)
     }
 
@@ -115,6 +125,10 @@ struct SessionsView: View {
             return
         }
         #endif
+        if Self.nativeSessionWindowIDs.contains(id), let sessionID = macNativeSessions.focusedID {
+            dismissWindow(id: id, value: sessionID)
+            return
+        }
         dismissWindow(id: id)
     }
 
@@ -126,7 +140,8 @@ struct SessionsView: View {
         case "audio-stream":
             return audioManager.connectionTitle
         case "mac-native-stream", "mac-native-unity-controls", "mac-native-keyboard":
-            return macNativeManager.title
+            let titles = macNativeSessions.connectedTitles
+            return titles.isEmpty ? nil : titles.joined(separator: ", ")
         #if MOONLIGHT_ENABLED
         case "moonlight-stream":
             let hosts = moonlightSessions.streamingSessions.compactMap { $0.serverInfo?.hostname }

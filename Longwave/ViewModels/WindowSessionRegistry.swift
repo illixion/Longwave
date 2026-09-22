@@ -18,18 +18,13 @@ enum PCVRWindowID: Int, Codable, Hashable {
     case shared = 0
 }
 
-enum MacNativeWindowID: Int, Codable, Hashable {
-    case shared = 0
-}
-
-enum MacNativeUnityControlID: Int, Codable, Hashable {
-    case shared = 0
-}
-
 /// Value key for the per-window (Unity-style) Native scenes — one visionOS
-/// window per streamed host window, keyed by the host's window ID so
-/// repeated opens of the same host window reactivate its one scene.
+/// window per streamed host window, keyed by the session it belongs to *and*
+/// the host's window ID, so repeated opens of the same host window reactivate
+/// its one scene and two hosts that happen to number a window alike still get
+/// a scene each.
 struct MacNativeWindowStreamID: Codable, Hashable {
+    let session: MacNativeSessionID
     let windowID: UInt32
 }
 
@@ -44,11 +39,18 @@ struct MacNativeWindowStreamID: Codable, Hashable {
 final class WindowSessionRegistry {
     static let shared = WindowSessionRegistry()
 
-    /// Open window ids → `true` when the window is in the user's current room
+    /// Open window keys → `true` when the window is in the user's current room
     /// (its scene phase is `.active`), `false` when snapped in another room.
+    ///
+    /// A key is a scene id, optionally scoped to one session
+    /// (`"mac-native-stream#<uuid>"` — see `key(_:instance:)`). Windows that
+    /// exist once per app keep their bare id as the key, so `sessions["audio-stream"]`
+    /// still reads the way it always did; per-session windows are asked about
+    /// with `isOpen(_:instance:)`, because "is *a* Native keyboard open" is not
+    /// the question any one session's controls are asking.
     private(set) var sessions: [String: Bool] = [:]
 
-    /// How many open windows share each id. Moonlight opens one stream window
+    /// How many open windows share each key. Moonlight opens one stream window
     /// per session under the same id, so the entry has to outlive the first of
     /// them to close.
     private var openCounts: [String: Int] = [:]
@@ -146,11 +148,31 @@ final class WindowSessionRegistry {
     private static let mainWindowWaitTimeoutMS = 3_000
 
     /// Window ids the user can summon, in display order. Excludes "main"
-    /// (the Sessions list itself lives there) and any window not open.
+    /// (the Sessions list itself lives there) and any window not open. A
+    /// per-session window kind is listed once however many sessions have one
+    /// open — the Sessions tab summons the focused session's.
     var summonableIDs: [String] {
-        WindowSessionRegistry.catalog
+        let openKinds = Set(sessions.keys.map(Self.kindOf))
+        return WindowSessionRegistry.catalog
             .map(\.id)
-            .filter { sessions[$0] != nil }
+            .filter { openKinds.contains($0) }
+    }
+
+    /// The registry key for one window: its scene id, scoped to a session when
+    /// several can be open at once.
+    static func key(_ id: String, instance: String?) -> String {
+        guard let instance else { return id }
+        return "\(id)#\(instance)"
+    }
+
+    /// The scene id a key belongs to — the part before the session scope.
+    static func kindOf(_ key: String) -> String {
+        key.split(separator: "#", maxSplits: 1).first.map(String.init) ?? key
+    }
+
+    /// Whether one session's window of this kind is open.
+    func isOpen(_ id: String, instance: String?) -> Bool {
+        sessions[Self.key(id, instance: instance)] != nil
     }
 
     func register(_ id: String) {
@@ -173,8 +195,13 @@ final class WindowSessionRegistry {
         sessions[id] = active
     }
 
+    /// Whether a window of this kind is in the user's current room. With
+    /// several sessions open, any one of them being reachable is what the
+    /// Sessions tab reports — the Summon button targets the focused session.
     func isInActiveRoom(_ id: String) -> Bool {
-        sessions[id] ?? true
+        let matching = sessions.filter { Self.kindOf($0.key) == id }
+        guard !matching.isEmpty else { return true }
+        return matching.values.contains(true)
     }
 
     // MARK: - Display catalog
@@ -186,12 +213,14 @@ final class WindowSessionRegistry {
     /// Sessions tab iterates the catalog) must go through this: `openWindow(id:)` alone
     /// against a `WindowGroup(for:)` does nothing at all, and a plain id against a
     /// value-matched group is exactly the duplicate-window bug this exists to prevent.
+    ///
+    /// The per-session groups (Moonlight's and Native's) are not here: their value
+    /// names *which* session, which this can't know. The Sessions tab resolves those
+    /// against the focused session before calling `openWindow` itself.
     static func surface(_ id: String, using openWindow: OpenWindowAction) {
         switch id {
         case "main": openWindow(id: id, value: MainWindowID.shared)
         case "foveated-controls": openWindow(id: id, value: PCVRWindowID.shared)
-        case "mac-native-unity-controls": openWindow(id: id, value: MacNativeUnityControlID.shared)
-        case "mac-native-stream": openWindow(id: id, value: MacNativeWindowID.shared)
         default: openWindow(id: id)
         }
     }
@@ -239,23 +268,26 @@ final class WindowSessionRegistry {
 /// its room status (scene phase) up to date. Apply to each window's root view.
 private struct TrackWindowSession: ViewModifier {
     let id: String
+    let instance: String?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
+
+    private var key: String { WindowSessionRegistry.key(id, instance: instance) }
 
     func body(content: Content) -> some View {
         content
             .onAppear {
-                WindowSessionRegistry.shared.register(id)
+                WindowSessionRegistry.shared.register(key)
                 // Keep a live openWindow reference from whichever scene is
                 // rendered, so the main window can be summoned even when only
                 // pop-outs remain connected.
                 WindowSessionRegistry.shared.openWindow = openWindow
             }
             .onDisappear {
-                WindowSessionRegistry.shared.unregister(id)
+                WindowSessionRegistry.shared.unregister(key)
             }
             .onChange(of: scenePhase) { _, phase in
-                WindowSessionRegistry.shared.setActiveRoom(id, phase == .active)
+                WindowSessionRegistry.shared.setActiveRoom(key, phase == .active)
             }
     }
 }
@@ -279,9 +311,10 @@ private struct TrackMainWindow: ViewModifier {
 
 extension View {
     /// Tracks this window in `WindowSessionRegistry` so it can be summoned
-    /// from the Sessions tab.
-    func trackWindowSession(id: String) -> some View {
-        modifier(TrackWindowSession(id: id))
+    /// from the Sessions tab. `instance` scopes the entry to one session for
+    /// the window kinds that can be open several times at once.
+    func trackWindowSession(id: String, instance: String? = nil) -> some View {
+        modifier(TrackWindowSession(id: id, instance: instance))
     }
 
     /// Tracks the main window so a home-screen re-launch can re-summon it when

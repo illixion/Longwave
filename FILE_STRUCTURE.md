@@ -9,6 +9,7 @@ Longwave/
 │   ├── VNCConnectionManager.swift      — VNC connection bridge, @Observable
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing)
 │   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, display layer (all clients)
+│   ├── MacNativeSessionStore.swift     — One Native session per saved connection; scene keys, audio ownership
 │   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
 │   ├── MoonlightConnectionManager.swift — Moonlight orchestrator for one session, state machine, @Observable
 │   └── MoonlightSessionStore.swift     — One Moonlight session per linked library copy; picks the session for a row, mirrors input focus

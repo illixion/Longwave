@@ -13,14 +13,12 @@ final class MacNativeStreamNotifications: NSObject, UNUserNotificationCenterDele
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func connected(deviceName: String, replacedDeviceName: String?) {
+    /// One viewer joined. There is no "replaced" case any more — viewers now
+    /// watch alongside each other instead of taking each other's place.
+    func connected(deviceName: String) {
         let content = UNMutableNotificationContent()
         content.title = "Native Screen Connected"
-        if let replacedDeviceName {
-            content.body = "\(deviceName) connected and replaced \(replacedDeviceName)."
-        } else {
-            content.body = "\(deviceName) connected."
-        }
+        content.body = "\(deviceName) connected."
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "mac-native-\(UUID().uuidString)",

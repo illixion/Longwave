@@ -10,7 +10,11 @@ import UIKit
 /// Native controller window; closing this scene (window bar) unsubscribes
 /// its stream.
 struct NativeWindowStreamView: View {
-    let windowID: UInt32
+    /// Which session's window this scene shows — the scene's value, carried
+    /// whole so the view can dismiss itself by the same key it was opened with.
+    let streamID: MacNativeWindowStreamID
+
+    private var windowID: UInt32 { streamID.windowID }
 
     @Environment(MacNativeStreamManager.self) private var screenManager
     @Environment(\.dismissWindow) private var dismissWindow
@@ -59,7 +63,7 @@ struct NativeWindowStreamView: View {
             // The host ended this stream (window closed, app quit, budget) —
             // take the scene down with it so no orphan window lingers.
             guard reason != nil else { return }
-            dismissWindow(id: "mac-native-window", value: MacNativeWindowStreamID(windowID: windowID))
+            dismissWindow(id: "mac-native-window", value: streamID)
         }
     }
 

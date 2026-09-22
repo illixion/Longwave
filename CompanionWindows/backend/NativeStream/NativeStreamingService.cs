@@ -30,7 +30,9 @@ public sealed class NativeStreamingService : BackgroundService
     private Dictionary<uint, WindowInventory.Entry> _inventory = new();
     private List<NativeStreamProtocol.WindowInfo> _lastPublished = new();
     private Timer? _inventoryTimer;
-    private string? _connectedDevice;
+    /// Every viewer currently connected, in join order — several at once is
+    /// normal: one capture and one encode per stream fan out to all of them.
+    private IReadOnlyList<string> _connectedDevices = Array.Empty<string>();
     private string? _lastError;
 
     public event Action? StatusChanged;
@@ -119,7 +121,7 @@ public sealed class NativeStreamingService : BackgroundService
         Running = IsRunning,
         Port = NativeStreamProtocol.DefaultPort,
         Token = Token,
-        ConnectedDevice = _connectedDevice,
+        ConnectedDevice = _connectedDevices.Count == 0 ? null : string.Join(", ", _connectedDevices),
         LastError = _lastError,
         MouseControlEnabled = MouseControlEnabled,
         KeyboardControlEnabled = KeyboardControlEnabled,
@@ -199,8 +201,8 @@ public sealed class NativeStreamingService : BackgroundService
             try
             {
                 var server = new NativeStreamServer(_log, Token);
-                server.ClientActivated += OnClientActivated;
-                server.ClientDisconnected += OnClientDisconnected;
+                server.ClientConnected += OnClientConnected;
+                server.ClientsChanged += OnClientsChanged;
                 server.WindowStreamStart += OnWindowStreamStart;
                 server.WindowStreamStop += id => StopStream(id);
                 server.FocusWindow += OnFocusWindow;
@@ -230,7 +232,7 @@ public sealed class NativeStreamingService : BackgroundService
             ReleaseGraphicsResources();
             _server?.Dispose();
             _server = null;
-            _connectedDevice = null;
+            _connectedDevices = Array.Empty<string>();
         }
         StatusChanged?.Invoke();
     }
@@ -276,33 +278,41 @@ public sealed class NativeStreamingService : BackgroundService
         _device = null;
     }
 
-    private void OnClientActivated(string deviceName, string? replaced)
+    private void OnClientConnected(string deviceName)
     {
-        lock (_gate)
-        {
-            _connectedDevice = deviceName;
-            // Fresh viewer, fresh subscriptions — drop any leftover streams.
-            foreach (var stream in _streams.Values) stream.Dispose();
-            _streams.Clear();
-            _lastPublished = new List<NativeStreamProtocol.WindowInfo>();
-            _inventoryTimer ??= new Timer(_ => PollInventory(), null, 0, 1000);
-        }
         PushInputAvailability();
-        StatusChanged?.Invoke();
     }
 
-    private void OnClientDisconnected()
+    /// <summary>
+    /// The viewer set changed. Streams themselves are reference-counted by the
+    /// server, so a viewer arriving must not disturb what the others are
+    /// already watching — this only starts the inventory poll with the first
+    /// viewer and tears the session down with the last.
+    /// </summary>
+    private void OnClientsChanged(IReadOnlyList<string> devices)
     {
+        var idle = devices.Count == 0;
         lock (_gate)
         {
-            _connectedDevice = null;
-            _inventoryTimer?.Dispose();
-            _inventoryTimer = null;
-            ReleaseGraphicsResources();
+            _connectedDevices = devices;
+            if (idle)
+            {
+                _inventoryTimer?.Dispose();
+                _inventoryTimer = null;
+                ReleaseGraphicsResources();
+            }
+            else if (_inventoryTimer is null)
+            {
+                _lastPublished = new List<NativeStreamProtocol.WindowInfo>();
+                _inventoryTimer = new Timer(_ => PollInventory(), null, 0, 1000);
+            }
         }
-        // An idle host should look idle: hand back the heap the session grew,
-        // not just the GPU resources released above.
-        TrimHeap();
+        if (idle)
+        {
+            // An idle host should look idle: hand back the heap the session
+            // grew, not just the GPU resources released above.
+            TrimHeap();
+        }
         StatusChanged?.Invoke();
     }
 

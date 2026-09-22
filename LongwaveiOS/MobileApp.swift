@@ -36,7 +36,7 @@ struct LongwaveMobileApp: App {
     @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
-    @State private var macNativeManager = MacNativeStreamManager()
+    @State private var macNativeSessions = MacNativeSessionStore()
     @State private var sshManager = SSHTerminalManager()
     #if MOONLIGHT_ENABLED
     @State private var moonlightSessions = MoonlightSessionStore()
@@ -47,7 +47,7 @@ struct LongwaveMobileApp: App {
             MobileRootView()
                 .environment(connectionManager)
                 .environment(audioManager)
-                .environment(macNativeManager)
+                .environment(macNativeSessions)
                 .environment(sshManager)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)

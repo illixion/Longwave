@@ -6,7 +6,7 @@ struct ConnectionListView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
-    @Environment(MacNativeStreamManager.self) private var macNativeManager
+    @Environment(MacNativeSessionStore.self) private var macNativeSessions
     // Not macOS rather than visionOS-only: the Mac client drops SSH because it
     // has a real terminal a Cmd-Tab away. iPhone and iPad do not, so they keep it.
     #if !os(macOS)
@@ -277,47 +277,59 @@ struct ConnectionListView: View {
     /// other clients have nothing to do with that session, so an audio-only
     /// connection there is audio only.
     private func connectNative(_ connection: SavedConnection) {
-        macNativeManager.prepare(for: connection)
+        // One session per connection, so a second host streams alongside the
+        // first instead of taking its socket and its window.
+        let (sessionID, manager) = macNativeSessions.begin(connection)
+        manager.prepare(for: connection)
         #if os(visionOS)
         let unity = connection.nativeUnityEnabled
         #else
         let unity = false
-        macNativeManager.unityEnabled = false
+        manager.unityEnabled = false
         #endif
         // Unity Controls owns the session and starts with the full desktop
         // hidden. Non-Unity Native connections retain their saved Screen
         // startup behavior.
-        macNativeManager.liveEnabled = unity ? false : connection.nativeScreenEnabled
+        manager.liveEnabled = unity ? false : connection.nativeScreenEnabled
         #if os(visionOS)
-        macNativeManager.connect(to: connection)
+        manager.connect(to: connection)
         #else
-        if macNativeManager.liveEnabled {
-            macNativeManager.connect(to: connection)
+        if manager.liveEnabled {
+            manager.connect(to: connection)
         }
         #endif
-        audioManager.prepareTarget(
-            hostname: connection.hostname,
-            port: AudioStreamProtocol.defaultPort,
-            token: connection.companionToken,
-            title: connection.displayName,
-            lowLatency: connection.lowLatencyAudio
-        )
-        audioManager.liveEnabled = connection.nativeAudioEnabled
+        // There is one audio player for the whole app (see
+        // `MacNativeSessionStore.audioOwnerID`). A connection that wants audio
+        // takes it; one that doesn't leaves whatever is already playing alone
+        // rather than retargeting — or switching off — another session's stream.
         if connection.nativeAudioEnabled {
-            audioManager.connect(
+            macNativeSessions.claimAudio(sessionID)
+        }
+        if macNativeSessions.ownsAudio(sessionID) {
+            audioManager.prepareTarget(
                 hostname: connection.hostname,
                 port: AudioStreamProtocol.defaultPort,
                 token: connection.companionToken,
                 title: connection.displayName,
                 lowLatency: connection.lowLatencyAudio
             )
+            audioManager.liveEnabled = connection.nativeAudioEnabled
+            if connection.nativeAudioEnabled {
+                audioManager.connect(
+                    hostname: connection.hostname,
+                    port: AudioStreamProtocol.defaultPort,
+                    token: connection.companionToken,
+                    title: connection.displayName,
+                    lowLatency: connection.lowLatencyAudio
+                )
+            }
         }
         if unity {
             #if os(visionOS)
-            openWindow(id: "mac-native-unity-controls", value: MacNativeUnityControlID.shared)
+            openWindow(id: "mac-native-unity-controls", value: sessionID)
             #endif
         } else if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
-            openWindow(id: "mac-native-stream", value: MacNativeWindowID.shared)
+            openWindow(id: "mac-native-stream", value: sessionID)
         }
     }
 

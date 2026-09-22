@@ -37,6 +37,7 @@ struct CompanionWindowView: View {
             controller.refreshKeys()
             controller.injection.refreshAccessibility()
             controller.macNativeStreaming.input.refreshAccessibility()
+            controller.macNativeStreaming.refreshVirtualDisplayConflict()
         }
     }
 }
@@ -83,6 +84,11 @@ struct NativePane: View {
 
                         Toggle("Turn off the Mac's displays while streaming", isOn: $controller.macNativeStreaming.virtualDisplayExclusive)
                             .help("Disconnects the built-in and external displays for as long as the stream runs, exactly as Mac Virtual Display does. They come back when the stream ends or the companion quits.")
+
+                        if let conflict = controller.macNativeStreaming.virtualDisplayConflict {
+                            Label("\(conflict) — the stream will follow its display instead until it disconnects.", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                        }
                     }
                 } header: {
                     Text("Virtual Display")

@@ -77,8 +77,17 @@ final class MacNativeStreamingController {
 
     /// The live virtual display, if the running capture is streaming one.
     private var virtualDisplay: MacNativeVirtualDisplay?
-    /// One line for the Native pane: what the virtual display came up as.
+    /// One line for the Native pane: what the virtual display came up as,
+    /// or why it was skipped.
     private(set) var virtualDisplaySummary: String?
+    /// Why the virtual display would be skipped if a stream started now —
+    /// a Mac Virtual Display session owning the display stack. Refreshed
+    /// when the Native pane appears and whenever a capture starts.
+    private(set) var virtualDisplayConflict: String?
+
+    func refreshVirtualDisplayConflict() {
+        virtualDisplayConflict = MacNativeVirtualDisplay.activeSessionConflict()
+    }
 
     private var virtualDisplayConfiguration: MacNativeVirtualDisplay.Configuration? {
         guard virtualDisplayEnabled else { return nil }
@@ -507,18 +516,31 @@ final class MacNativeStreamingController {
         captureChroma = chroma
 
         // The virtual display comes first: it has to exist (and be online)
-        // before ScreenCaptureKit can be pointed at it.
+        // before ScreenCaptureKit can be pointed at it. Not while Mac Virtual
+        // Display is connected, though — its exclusive display defers every
+        // other display change until the session ends, so ours would neither
+        // take over nor go away. The stream then follows the main display,
+        // which is Mac VD's, and the pane says why.
         var virtualDisplay: MacNativeVirtualDisplay?
+        var skippedReason: String?
+        refreshVirtualDisplayConflict()
         if let configuration = virtualDisplayConfiguration {
-            do {
-                virtualDisplay = try MacNativeVirtualDisplay(configuration: configuration)
-            } catch {
-                lastError = error.localizedDescription
-                server?.disconnectDesktopViewers(withError: error.localizedDescription)
-                return
+            if let conflict = virtualDisplayConflict {
+                skippedReason = conflict
+            } else {
+                do {
+                    virtualDisplay = try MacNativeVirtualDisplay(configuration: configuration)
+                } catch {
+                    lastError = error.localizedDescription
+                    server?.disconnectDesktopViewers(withError: error.localizedDescription)
+                    return
+                }
             }
         }
         self.virtualDisplay = virtualDisplay
+        if let skippedReason {
+            virtualDisplaySummary = "Skipped — \(skippedReason)"
+        }
 
         let capture = MacNativeScreenCapture(chroma: chroma, displayID: virtualDisplay?.displayID)
         capture.onVideoSummary = { [weak self] summary in

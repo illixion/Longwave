@@ -138,6 +138,61 @@ final class MacNativeVirtualDisplay {
         }
     }
 
+    // MARK: - Conflicts
+
+    /// Why a virtual display must not be created right now, or `nil`.
+    ///
+    /// Mac Virtual Display owns the display stack while it is connected: its
+    /// display is exclusive, so WindowServer defers every other display's
+    /// connect and disconnect until it ends. A virtual display created in
+    /// that state comes up alongside Mac VD's, and releasing it does nothing
+    /// until the Mac VD session closes — so a stream that started this way
+    /// leaves a ghost display behind, and an exclusive request would fight
+    /// the user's own session. Two independent signals, either sufficient:
+    /// the power assertion `SidecarDisplayAgent` holds for the whole session,
+    /// and a Sidecar-identity display being the only one online (Mac VD is
+    /// always exclusive; an iPad Sidecar display is not and coexists).
+    static func activeSessionConflict() -> String? {
+        if holdsMacVirtualDisplayAssertion() {
+            return "Mac Virtual Display is connected"
+        }
+        let online = onlineDisplays()
+        if online.count == 1, let only = online.first,
+           CGDisplayVendorNumber(only) == sidecarVendor, CGDisplayModelNumber(only) == sidecarModel {
+            return "Mac Virtual Display is connected"
+        }
+        return nil
+    }
+
+    /// The name `SidecarDisplayAgent` gives its PreventUserIdleDisplaySleep
+    /// assertion while a Mac Virtual Display session is up (visible in
+    /// `pmset -g assertions`).
+    private static let macVirtualDisplayAssertion = "com.apple.sidecar.macVirtualDisplayPreventDisplaySleep"
+    private static let sidecarVendor: UInt32 = 0x6161_706C  // "appl"
+    private static let sidecarModel: UInt32 = 0x6950_6164   // "iPad"
+
+    private static func holdsMacVirtualDisplayAssertion() -> Bool {
+        var assertions: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&assertions) == kIOReturnSuccess,
+              let byProcess = assertions?.takeRetainedValue() as? [AnyHashable: Any] else {
+            return false
+        }
+        for case let list as [[String: Any]] in byProcess.values {
+            if list.contains(where: { ($0[kIOPMAssertionNameKey] as? String) == macVirtualDisplayAssertion }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func onlineDisplays() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetOnlineDisplayList(count, &ids, &count)
+        return Array(ids.prefix(Int(count)))
+    }
+
     // MARK: - Identity
 
     private static let vendorID: UInt32 = 0x4C57  // "LW"

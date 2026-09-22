@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Longwave KVM dongle — ESP-IDF configuration defaults
+# Target: ESP32-D0WD-V3 (classic ESP32), 4 MB flash, CH340 USB-UART bridge.
+# ---------------------------------------------------------------------------
+
+# --- Console / serial link -------------------------------------------------
+# The binary command protocol AND the ESP_LOG console share UART0, so both must
+# run at the same baud. The framer resynchronises on the 0xA5 start byte, and
+# log output is plain ASCII, so log lines never look like a frame.
+# NOTE: ESP_CONSOLE_UART_BAUDRATE only has a Kconfig prompt under
+# ESP_CONSOLE_UART_CUSTOM, and a promptless symbol cannot be set from
+# sdkconfig.defaults — with ESP_CONSOLE_UART_DEFAULT the baud silently stays at
+# 115200 and the log comes out as garbage when read at 921600. So: CUSTOM, with
+# UART0's stock ESP32 pins spelled out.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=1
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=3
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+
+# --- Flash / partitions ----------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Bluetooth: controller + NimBLE host -----------------------------------
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=n
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=n
+CONFIG_BTDM_CTRL_MODE_BTDM=n
+
+# Peripheral only, one connection.
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# GAP identity. visionOS shows this name in Settings > Bluetooth.
+CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="Longwave KVM"
+# GAP appearance 0x03C1 = Human Interface Device / Keyboard.
+CONFIG_BT_NIMBLE_SVC_GAP_APPEARANCE=961
+
+# Security: LE Secure Connections + bonding. Apple refuses HID over an
+# unencrypted link, and the bond must persist across reboots.
+CONFIG_BT_NIMBLE_SM_LEGACY=y
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_MAX_BONDS=4
+CONFIG_BT_NIMBLE_MAX_CCCDS=8
+
+# Larger ATT MTU so the report map (one ~160 byte descriptor) reads in one go.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
+
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# --- Runtime ---------------------------------------------------------------
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+CONFIG_FREERTOS_HZ=1000
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Brown-out at the default level resets the board when the radio TXes on a
+# weak USB supply; drop the threshold rather than chase phantom reboots.
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_5=y

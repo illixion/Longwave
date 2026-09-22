@@ -13,6 +13,8 @@ Longwave is a remote desktop and game streaming app for **visionOS** built in Sw
 
 **Clients**: the **visionOS app** (`Longwave/`) is the product; **LongwaveMac** (`LongwaveMac/`) and **LongwaveiOS** (`LongwaveiOS/`) are separate targets that reuse `Longwave/` + `Shared/` and supply their own scene graph. See "Platform clients" below.
 
+**KVM dongle** (`Firmware/kvm-dongle/`, ESP-IDF + NimBLE, classic ESP32 over a CH340 UART bridge): a BLE HID keyboard + mouse + consumer-control device the Vision Pro pairs with like any Bluetooth keyboard, fed HID reports from the Mac over USB serial (`PROTOCOL.md`, 460800 baud — the CH340 cannot do 921600). It exists because visionOS has no input-injection API for apps; this is the only route for Mac → headset keyboard/pointer. `tools/kvmctl.py` drives it from the shell. The report descriptor is frozen once shipped: visionOS caches it at pairing time. The Companion side that captures Mac input and forwards it is not written yet.
+
 **Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **Longwave Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
 
 ## Editions

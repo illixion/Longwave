@@ -10,6 +10,10 @@ final class AudioStreamerController {
     // `var`, not `let`: `NativePane` binds through it as `$controller.macNativeStreaming.enabled`,
     // which needs a WritableKeyPath — a `let` property only produces a plain KeyPath.
     var macNativeStreaming = MacNativeStreamingController()
+    /// The KVM dongle — this Mac's keyboard and mouse, relayed to the headset
+    /// over Bluetooth HID. `var` for the same reason as above: `KVMPane` binds
+    /// through it.
+    var kvm = KVMBridgeController()
 
     /// Remembers whether the user had streaming on, so the menu bar app
     /// resumes it automatically on the next launch (e.g. after login).

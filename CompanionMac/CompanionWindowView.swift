@@ -28,6 +28,8 @@ struct CompanionWindowView: View {
                 .tabItem { Label("Remote", systemImage: "terminal") }
             KeyboardPane(controller: controller)
                 .tabItem { Label("Keyboard", systemImage: "keyboard") }
+            KVMPane(controller: controller)
+                .tabItem { Label("KVM", systemImage: "cable.connector") }
         }
         .formStyle(.grouped)
         // Fixed window size (System Settings convention) so tall panes scroll
@@ -410,5 +412,142 @@ struct KeyboardPane: View {
                 Text("Text-only injection (no modifier keys) keeps remote typing from triggering shortcuts. In Longwave it carries typing for a VNC connection linked to this companion, and for the Native stream — where \"Allow keyboard shortcuts\" in the Native tab adds real key presses on top.")
             }
         }
+    }
+}
+
+// MARK: - KVM (this Mac's keyboard and mouse, on the headset)
+
+/// The other direction from every other pane here: instead of letting the
+/// headset drive this Mac, it hands this Mac's keyboard and mouse to the
+/// headset through the USB dongle, which the headset sees as an ordinary
+/// Bluetooth keyboard and pointer. visionOS has no input-injection API for
+/// apps, so a real HID device is the only way in.
+struct KVMPane: View {
+    @Bindable var controller: AudioStreamerController
+
+    private var kvm: KVMBridgeController { controller.kvm }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Dongle", selection: $controller.kvm.portPath) {
+                    if kvm.ports.isEmpty {
+                        Text("No serial device found").tag("")
+                    }
+                    ForEach(kvm.ports, id: \.self) { path in
+                        Text(path.replacingOccurrences(of: "/dev/", with: "")).tag(path)
+                    }
+                }
+                .disabled(kvm.isConnected)
+
+                HStack {
+                    Button(kvm.isConnected ? "Disconnect" : "Connect") {
+                        if kvm.isConnected {
+                            kvm.disconnect()
+                        } else {
+                            Task { await kvm.connect() }
+                        }
+                    }
+                    .disabled(kvm.isConnecting || (!kvm.isConnected && kvm.ports.isEmpty))
+
+                    Button("Rescan") { kvm.refreshPorts() }
+                        .disabled(kvm.isConnected)
+
+                    Spacer()
+                    Text(kvm.summary)
+                        .foregroundStyle(kvm.isCapturing ? .green : .secondary)
+                }
+
+                Toggle("Connect automatically", isOn: $controller.kvm.autoConnect)
+
+                if let error = kvm.lastError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .font(.callout)
+                }
+            } header: {
+                Text("Dongle")
+            } footer: {
+                Text("The ESP32 board from Firmware/kvm-dongle, over its USB serial link. Connecting claims the port exclusively, so kvmctl.py can't be running at the same time.")
+            }
+
+            if let status = kvm.status {
+                Section("Headset") {
+                    LabeledContent("Bluetooth", value: status.state.title)
+                    LabeledContent("Paired", value: status.hasBond ? "Yes (\(status.bondCount))" : "No")
+                    LabeledContent("Listening for", value: subscriptionSummary(status))
+                    LabeledContent("Dongle address", value: status.address)
+                        .font(.system(.body, design: .monospaced))
+                    LabeledContent("Firmware", value: status.firmware)
+                    if let roundTrip = kvm.roundTrip {
+                        LabeledContent("Round trip", value: "\(roundTrip.milliseconds) ms")
+                    }
+                }
+            }
+
+            Section {
+                Toggle("Send this Mac's keyboard and mouse to the headset",
+                       isOn: Binding(get: { kvm.isCapturing },
+                                     set: { kvm.setCapturing($0) }))
+                    .disabled(!kvm.headsetIsListening)
+
+                Slider(value: $controller.kvm.pointerSpeed, in: 0.25...3.0, step: 0.25) {
+                    Text("Pointer speed")
+                } minimumValueLabel: {
+                    Text("Slow").font(.caption)
+                } maximumValueLabel: {
+                    Text("Fast").font(.caption)
+                }
+
+                HStack {
+                    Button("Type Test Phrase") { Task { await kvm.sendTestPhrase() } }
+                    Button("Measure Round Trip") { Task { await kvm.measureRoundTrip() } }
+                    Button("Release Everything") { Task { await kvm.releaseEverything() } }
+                }
+                .disabled(!kvm.isConnected || kvm.isCapturing)
+            } header: {
+                Text("Input")
+            } footer: {
+                Text("While this is on, the Mac sees none of it — every key and every movement goes to the headset instead, and the Mac's pointer stays put. Press \(KVMBridgeController.toggleShortcutDescription) to hand input back; the same shortcut turns it on again. Needs the Accessibility permission, like the other input features here.")
+            }
+
+            if !kvm.recentActivity.isEmpty {
+                Section("Recent") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(kvm.recentActivity.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Forget Pairing", role: .destructive) {
+                    Task { await kvm.forgetPairing() }
+                }
+                .disabled(!kvm.isConnected)
+            } footer: {
+                Text("Clears the dongle's half of the pairing. Also forget “Longwave KVM” on the headset, or it keeps trying to reconnect with a key the dongle no longer holds.")
+            }
+        }
+        .onAppear { kvm.refreshPorts() }
+    }
+
+    private func subscriptionSummary(_ status: KVMDongleLink.Status) -> String {
+        var parts: [String] = []
+        if status.keyboardSubscribed { parts.append("keyboard") }
+        if status.mouseSubscribed { parts.append("pointer") }
+        if status.consumerSubscribed { parts.append("media keys") }
+        return parts.isEmpty ? "Nothing yet" : parts.joined(separator: ", ")
+    }
+}
+
+private extension Duration {
+    var milliseconds: String {
+        String(format: "%.2f", Double(components.attoseconds) / 1e15 + Double(components.seconds) * 1000)
     }
 }

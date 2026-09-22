@@ -24,6 +24,8 @@ struct MacSettingsView: View {
                 .tabItem { Label("Remote", systemImage: "terminal") }
             KeyboardPane(controller: controller)
                 .tabItem { Label("Keyboard", systemImage: "keyboard") }
+            KVMPane(controller: controller)
+                .tabItem { Label("KVM", systemImage: "cable.connector") }
         }
         .formStyle(.grouped)
         // Fixed size (System Settings convention) so tall panes scroll inside

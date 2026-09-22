@@ -14,8 +14,12 @@ point of view it is a serial port that takes HID reports.
                 (PROTOCOL.md)                (bonded, encrypted)
 ```
 
-**Status: flashed and advertising. Not yet paired with a headset** — pairing is
-a human step, see [§6](#6-pairing-with-the-vision-pro).
+**Status: paired with a Vision Pro and relaying.** The Mac half ships in the
+companion app's **KVM** tab (`CompanionMac/KVMBridgeController.swift` and
+friends), which claims the port, shows what the headset is doing, and — on
+⌃⌥⌘K — hands this Mac's keyboard, pointer and media keys over to the headset
+until the same shortcut takes them back. `kvmctl.py` remains the reference
+client and the way to drive the board without the app.
 
 ---
 
@@ -227,9 +231,11 @@ is correct, not a fault.
 ### If visionOS refuses to pair
 
 * **It does not appear in the list at all.** Check `status` says `advertising`.
-  If it says `idle`, the radio came up but advertising failed — reset the board
-  and read the log with `idf.py monitor`. If it says `connected`, something
-  else grabbed it; run `kvmctl.py forget` and power-cycle.
+  `idle` means the radio is up but nothing is discoverable; since 0.1.1 a
+  watchdog re-arms advertising within five seconds of that, so an `idle` that
+  persists is a real failure — read the log with `idf.py monitor`. If it says
+  `connected`, something else grabbed it; run `kvmctl.py forget` and
+  power-cycle.
 * **It appears, but pairing fails or it drops straight back to the list.** The
   usual cause is a stale half-bond: the headset kept a key the dongle no longer
   has, or vice versa. Clear **both** sides — `kvmctl.py forget` on the dongle,
@@ -334,9 +340,12 @@ GPIO 2, the on-board LED on ESP32 DevKitC / NodeMCU-32S boards. Set
   the framer resynchronises on `0xA5` — but a client must discard non-frame
   bytes rather than error on them. The first ~1 KB after a reset is the mask-ROM
   bootloader talking at a fixed 115200 and will look like garbage.
-* **Opening the serial port resets the board**, because macOS asserts DTR/RTS.
-  Expect a `BOOT` event and ~300 ms of unavailability whenever a client
-  connects.
+* **The headset subscribes to reports on its own schedule.** Seen on visionOS:
+  connected, encrypted and bonded, with none of the three report
+  characteristics subscribed, so every report came back `NOT_SUBSCRIBED`. A
+  client should treat the subscription bits — not the connection — as the
+  question of whether input will arrive, and should not assume all three switch
+  on together.
 
 ---
 
@@ -354,6 +363,16 @@ Done on the attached board:
 * every `NACK` path — bad checksum, wrong length, unknown command, not
   connected — and resynchronisation after injected junk bytes
 * `forget` clearing bonds while leaving the dongle advertising
+* pairing, bonding and encryption against a real Vision Pro, and typing and
+  pointer movement arriving on it (`kvmctl.py type` and `square`)
+* the Swift client in the companion — port discovery, open, status, 50 pings at
+  2.86 ms average (matching `kvmctl.py`), 20 key frames back to back at 3.0 ms
+  each in order, `NACK` decoding, clean close
+* **opening the serial port does *not* reset this board.** The README used to
+  say it did, on the usual DTR/RTS reasoning; two consecutive opens through
+  `AppleUSBCHCOM` left the uptime counter running (1062 s → 1065 s) with no
+  `BOOT` event. Clients should still tolerate a reset — another bridge will do
+  it — but must not count on one to resynchronise.
 
 **Not verified**, because it needs a headset or eyes on the board:
 

@@ -58,9 +58,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// profile is a property of the compression session, and a viewer swap
     /// restarts the whole thing anyway.
     private let chroma: MacHEVCEncoder.Chroma
+    /// The display to capture, when it is not simply the main one — the
+    /// companion's virtual display, which may not have been promoted to main
+    /// yet when capture starts. `nil` follows `CGMainDisplayID()`.
+    private let preferredDisplayID: CGDirectDisplayID?
 
-    nonisolated init(chroma: MacHEVCEncoder.Chroma = .yuv420) {
+    nonisolated init(chroma: MacHEVCEncoder.Chroma = .yuv420, displayID: CGDirectDisplayID? = nil) {
         self.chroma = chroma
+        self.preferredDisplayID = displayID
         super.init()
     }
 
@@ -68,7 +73,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         generation += 1
         let myGeneration = generation
         guard stream == nil else { return }
-        let display = try await Self.mainDisplay()
+        let display = try await Self.captureDisplay(preferring: preferredDisplayID)
         guard myGeneration == generation else { return }
 
         let filter = Self.makeFilter(display: display)
@@ -142,17 +147,37 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return filter
     }
 
-    /// The display the stream follows: the main one, or the first available.
-    private nonisolated static func mainDisplay() async throws -> SCDisplay {
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
-            onScreenWindowsOnly: false
-        )
-        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
-                ?? content.displays.first else {
-            throw CaptureError.noDisplay
+    /// The display the stream follows: the preferred one when asked for one,
+    /// else the main one, else the first available. A preferred display is
+    /// retried for a moment rather than substituted — a virtual display that
+    /// just came online can take ScreenCaptureKit a few hundred milliseconds
+    /// to list, and falling back to the main display would silently stream
+    /// the wrong desktop.
+    private nonisolated static func captureDisplay(
+        preferring preferredID: CGDirectDisplayID?
+    ) async throws -> SCDisplay {
+        for attempt in 0..<20 {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: false
+            )
+            if let preferredID {
+                if let display = content.displays.first(where: { $0.displayID == preferredID }) {
+                    return display
+                }
+                if attempt < 19 {
+                    try await Task.sleep(for: .milliseconds(150))
+                    continue
+                }
+                throw CaptureError.displayNotCapturable(preferredID)
+            }
+            guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+                    ?? content.displays.first else {
+                throw CaptureError.noDisplay
+            }
+            return display
         }
-        return display
+        throw CaptureError.noDisplay
     }
 
     /// Beyond this the encoder, the link and the headset's decoder all start
@@ -254,9 +279,15 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
 
     private enum CaptureError: LocalizedError {
         case noDisplay
+        case displayNotCapturable(CGDirectDisplayID)
 
         var errorDescription: String? {
-            "No capturable Mac display is available."
+            switch self {
+            case .noDisplay:
+                return "No capturable Mac display is available."
+            case .displayNotCapturable(let id):
+                return "The virtual display (\(id)) never became capturable."
+            }
         }
     }
 }

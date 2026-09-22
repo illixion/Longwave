@@ -24,6 +24,78 @@ final class MacNativeStreamingController {
         }
     }
 
+    // MARK: Virtual display
+
+    private static let virtualDisplayEnabledKey = "macNativeVirtualDisplayEnabled"
+    private static let virtualDisplayPresetKey = "macNativeVirtualDisplayPreset"
+    private static let virtualDisplayExclusiveKey = "macNativeVirtualDisplayExclusive"
+
+    /// Stream a display the Mac renders just for the headset instead of
+    /// whatever monitor happens to be main — the Mac Virtual Display model.
+    var virtualDisplayEnabled: Bool {
+        get {
+            access(keyPath: \.virtualDisplayEnabled)
+            return UserDefaults.standard.bool(forKey: Self.virtualDisplayEnabledKey)
+        }
+        set {
+            withMutation(keyPath: \.virtualDisplayEnabled) {
+                UserDefaults.standard.set(newValue, forKey: Self.virtualDisplayEnabledKey)
+            }
+            restartCaptureIfRunning()
+        }
+    }
+
+    var virtualDisplayPreset: MacNativeVirtualDisplayPreset {
+        get {
+            access(keyPath: \.virtualDisplayPreset)
+            return UserDefaults.standard.string(forKey: Self.virtualDisplayPresetKey)
+                .flatMap(MacNativeVirtualDisplayPreset.init(rawValue:)) ?? .qhd
+        }
+        set {
+            withMutation(keyPath: \.virtualDisplayPreset) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: Self.virtualDisplayPresetKey)
+            }
+            restartCaptureIfRunning()
+        }
+    }
+
+    /// Disconnect the Mac's physical displays while the virtual one streams,
+    /// so the desktop exists only on the headset. They reconnect on their own
+    /// when the stream ends (or the companion dies).
+    var virtualDisplayExclusive: Bool {
+        get {
+            access(keyPath: \.virtualDisplayExclusive)
+            return UserDefaults.standard.bool(forKey: Self.virtualDisplayExclusiveKey)
+        }
+        set {
+            withMutation(keyPath: \.virtualDisplayExclusive) {
+                UserDefaults.standard.set(newValue, forKey: Self.virtualDisplayExclusiveKey)
+            }
+            restartCaptureIfRunning()
+        }
+    }
+
+    /// The live virtual display, if the running capture is streaming one.
+    private var virtualDisplay: MacNativeVirtualDisplay?
+    /// One line for the Native pane: what the virtual display came up as.
+    private(set) var virtualDisplaySummary: String?
+
+    private var virtualDisplayConfiguration: MacNativeVirtualDisplay.Configuration? {
+        guard virtualDisplayEnabled else { return nil }
+        return MacNativeVirtualDisplay.Configuration(
+            pointSize: virtualDisplayPreset.pointSize,
+            exclusive: virtualDisplayExclusive
+        )
+    }
+
+    /// A settings change while viewers are watching applies immediately,
+    /// at the cost of the same brief black frame a chroma change costs.
+    private func restartCaptureIfRunning() {
+        guard capture != nil else { return }
+        stopCapture()
+        startCapture()
+    }
+
     /// Every viewer currently connected, in join order. Several at once is
     /// normal now — one capture and one encode fan out to all of them.
     private(set) var connectedDeviceNames: [String] = []
@@ -433,7 +505,22 @@ final class MacNativeStreamingController {
         let generation = captureGeneration
         let chroma: MacHEVCEncoder.Chroma = viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
         captureChroma = chroma
-        let capture = MacNativeScreenCapture(chroma: chroma)
+
+        // The virtual display comes first: it has to exist (and be online)
+        // before ScreenCaptureKit can be pointed at it.
+        var virtualDisplay: MacNativeVirtualDisplay?
+        if let configuration = virtualDisplayConfiguration {
+            do {
+                virtualDisplay = try MacNativeVirtualDisplay(configuration: configuration)
+            } catch {
+                lastError = error.localizedDescription
+                server?.disconnectDesktopViewers(withError: error.localizedDescription)
+                return
+            }
+        }
+        self.virtualDisplay = virtualDisplay
+
+        let capture = MacNativeScreenCapture(chroma: chroma, displayID: virtualDisplay?.displayID)
         capture.onVideoSummary = { [weak self] summary in
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }
@@ -470,6 +557,13 @@ final class MacNativeStreamingController {
 
         Task {
             do {
+                if let virtualDisplay {
+                    try await virtualDisplay.waitUntilOnline()
+                    guard generation == captureGeneration else { return }
+                    let size = virtualDisplay.configuration.pointSize
+                    virtualDisplaySummary = "\(Int(size.width)) × \(Int(size.height)) HiDPI"
+                        + (virtualDisplay.configuration.exclusive ? ", Mac displays off" : "")
+                }
                 try await capture.start()
                 guard generation == captureGeneration else {
                     await capture.stop()
@@ -479,6 +573,9 @@ final class MacNativeStreamingController {
             } catch {
                 guard generation == captureGeneration else { return }
                 self.capture = nil
+                self.virtualDisplay?.invalidate()
+                self.virtualDisplay = nil
+                virtualDisplaySummary = nil
                 isCapturing = false
                 lastError = error.localizedDescription
                 server?.disconnectDesktopViewers(withError: error.localizedDescription)
@@ -492,8 +589,14 @@ final class MacNativeStreamingController {
         self.capture = nil
         isCapturing = false
         desktopVideoSummary = nil
+        // Released after the capture is torn down: pulling the display out
+        // from under a running SCStream is an error path, not a stop.
+        let virtualDisplay = self.virtualDisplay
+        self.virtualDisplay = nil
+        virtualDisplaySummary = nil
         Task {
             await capture?.stop()
+            virtualDisplay?.invalidate()
         }
     }
 }

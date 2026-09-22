@@ -69,12 +69,38 @@ struct NativePane: View {
             }
 
             if controller.macNativeStreaming.enabled {
+                Section {
+                    Toggle("Stream a virtual display", isOn: $controller.macNativeStreaming.virtualDisplayEnabled)
+                        .help("Renders a display just for the headset instead of streaming whatever monitor is main — any size, whether or not a monitor like it is attached.")
+
+                    if controller.macNativeStreaming.virtualDisplayEnabled {
+                        Picker("Size", selection: $controller.macNativeStreaming.virtualDisplayPreset) {
+                            ForEach(MacNativeVirtualDisplayPreset.allCases) { preset in
+                                Text(preset.title).tag(preset)
+                            }
+                        }
+                        .help("Desktop size in points. The display is HiDPI, so text is drawn at twice this and streamed as sharp as the link allows.")
+
+                        Toggle("Turn off the Mac's displays while streaming", isOn: $controller.macNativeStreaming.virtualDisplayExclusive)
+                            .help("Disconnects the built-in and external displays for as long as the stream runs, exactly as Mac Virtual Display does. They come back when the stream ends or the companion quits.")
+                    }
+                } header: {
+                    Text("Virtual Display")
+                } footer: {
+                    Text(controller.macNativeStreaming.virtualDisplayEnabled
+                         ? "Uses the same virtual-display mechanism as Mac Virtual Display. The Mac's own keyboard and trackpad keep working on it. Changing these while a viewer is connected restarts the stream."
+                         : "Off: the stream follows the Mac's main display at its own resolution.")
+                }
+
                 Section("Screen Status") {
                     LabeledContent("Stream", value: controller.macNativeStreaming.statusText)
                     LabeledContent("Port", value: String(controller.macNativeStreaming.port))
                     if controller.macNativeStreaming.isCapturing {
                         Label("Screen capture active", systemImage: "record.circle")
                             .foregroundStyle(.green)
+                    }
+                    if let virtualDisplay = controller.macNativeStreaming.virtualDisplaySummary {
+                        LabeledContent("Virtual display", value: virtualDisplay)
                     }
                     if let video = controller.macNativeStreaming.desktopVideoSummary {
                         LabeledContent("Desktop video", value: video)

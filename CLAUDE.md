@@ -196,6 +196,21 @@ the node and binds the INF (the Companion's PCVR tab and `provision-pc.ps1` both
 reports `microphone` on `/info`, and the PCVR tab relays it. V.A.C. or other virtual cables are not a
 substitute — nothing feeds them.
 
+**The Native stream's virtual display is Mac Virtual Display's own mechanism, unentitled.** Mac VD is
+not Universal Control.app (that process only does cross-device HID); the display belongs to
+`SidecarDisplayAgent`, which creates a `CGVirtualDisplay` and sets `DisplayExclusiveMode = 1` on the
+descriptor via `setDisplayInfoValue:forKey:`, whereupon WindowServer disconnects every physical display
+("Disconnecting display N due to exclusive display") and reconnects them when the display is released
+or its process dies. Verified 2026-09-22 on macOS 27 from an unentitled process, both plain and
+exclusive — `CompanionMac/MacNativeVirtualDisplay.swift` does exactly this. The classes are SPI with no
+headers, so it goes through the ObjC runtime: KVC for properties, IMP casts for `alloc`/`init…`/
+`applySettings:` (plain `perform` cannot express init ownership or a `BOOL` return). Two traps: the
+display must be online (`CGDisplayIsOnline`) *and* listed by `SCShareableContent` before capture, which
+lags by a few hundred ms — retry, never fall back to the main display; and **removals are deferred while
+any exclusive display is active**, so a release test run while Mac VD is connected looks like a leak.
+Hold `kIOPMAssertPreventUserIdleDisplaySleep` for the display's lifetime, as the agent does, or the
+Mac sleeps its only display and capture stops.
+
 **SwiftData migrations:** New non-optional properties need default values. Renamed columns need `@Attribute(originalName:)`. Missing either causes CoreData error 134110.
 
 See [[KNOWN_CONSTRAINTS.md]] for detailed version of all gotchas (broadcast, Moonlight HDR, Copilot OAuth, etc.).

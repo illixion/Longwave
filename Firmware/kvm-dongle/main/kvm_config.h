@@ -6,7 +6,7 @@
 /* Firmware version, reported by KVM_CMD_GET_STATUS. */
 #define KVM_FW_MAJOR 0
 #define KVM_FW_MINOR 1
-#define KVM_FW_PATCH 0
+#define KVM_FW_PATCH 1
 
 /* Version of the USB serial command protocol (see PROTOCOL.md). */
 #define KVM_PROTO_VERSION 1
@@ -25,6 +25,10 @@
 #define KVM_UART_BAUD      460800
 #define KVM_UART_RX_BUF    4096
 #define KVM_UART_TX_BUF    4096
+
+/* How often to check that an unconnected dongle is still advertising, and
+ * re-arm it if it is not. See adv_watchdog_cb() in ble_kvm.c. */
+#define KVM_ADV_WATCHDOG_US (5 * 1000 * 1000)
 
 /* Status LED. GPIO2 is the on-board LED on the ESP32 DevKitC / NodeMCU-32S
  * family. Set to -1 if the board has no usable LED. */

@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -113,6 +114,7 @@ static const uint8_t s_ref_mouse_in[2] = { KVM_RPT_ID_MOUSE, REPORT_TYPE_INPUT }
 static const uint8_t s_ref_cons_in[2]  = { KVM_RPT_ID_CONSUMER, REPORT_TYPE_INPUT };
 
 static void advertise_start(void);
+static esp_timer_handle_t s_adv_watchdog;
 
 static void emit(uint8_t ev, const uint8_t *data, uint8_t len)
 {
@@ -486,6 +488,46 @@ static void advertise_start(void)
     emit(KVM_EV_ADVERTISING, NULL, 0);
 }
 
+/* Advertising is the dongle's resting state: with no host connected it must be
+ * discoverable, or the headset can never come back and the only recovery is
+ * unplugging the board. Every path that ends a connection calls
+ * advertise_start() already, but a single failed ble_gap_adv_start() — a
+ * transient BLE_HS_E* on a disconnect, or a host reset whose sync callback
+ * never landed — leaves it idle for good. Seen in the field: state IDLE with a
+ * bond stored and nothing advertising, 17 minutes after the headset was taken
+ * off. So re-check periodically and re-arm, which costs one comparison a
+ * second and makes that state self-healing whatever caused it. */
+static void adv_watchdog_cb(void *arg)
+{
+    (void)arg;
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    if (ble_gap_adv_active()) {
+        s_advertising = true;
+        return;
+    }
+    ESP_LOGW(TAG, "not connected and not advertising, re-arming");
+    advertise_start();
+}
+
+static void adv_watchdog_start(void)
+{
+    if (s_adv_watchdog != NULL) {
+        return;
+    }
+    const esp_timer_create_args_t args = {
+        .callback = adv_watchdog_cb,
+        .name = "kvm_adv_wd",
+    };
+    if (esp_timer_create(&args, &s_adv_watchdog) != ESP_OK) {
+        ESP_LOGE(TAG, "advertising watchdog timer could not be created");
+        s_adv_watchdog = NULL;
+        return;
+    }
+    esp_timer_start_periodic(s_adv_watchdog, KVM_ADV_WATCHDOG_US);
+}
+
 /* ------------------------------------------------------------ GAP events */
 
 int kvm_ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -634,6 +676,7 @@ static void on_sync(void)
     ESP_LOGI(TAG, "BLE ready, address %02x:%02x:%02x:%02x:%02x:%02x",
              addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
     advertise_start();
+    adv_watchdog_start();
 }
 
 static void host_task(void *param)

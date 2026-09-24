@@ -38,8 +38,8 @@ final class SystemAudioTap: @unchecked Sendable {
         }
     }
 
-    /// Called with interleaved signed int24 PCM (the wire format), converted
-    /// from the tap's Float32 samples. Delivered in order on the frame ring's
+    /// Called with a `pcm` payload in the wire format — a `PCMStamp`, then
+    /// interleaved signed int24 PCM converted from the tap's Float32 samples. Delivered in order on the frame ring's
     /// consumer thread — *not* the Core Audio realtime thread, so the handler
     /// is free to allocate and to talk to the network stack.
     nonisolated(unsafe) var onAudio: (@Sendable (Data) -> Void)?
@@ -65,6 +65,14 @@ final class SystemAudioTap: @unchecked Sendable {
     private static let silenceHoldSeconds: Double = 10
     private nonisolated(unsafe) var silentFrames = 0
     private nonisolated(unsafe) var suppressingSilence = false
+    /// Set when suppression ends (and for the first buffer of the stream),
+    /// cleared once a buffer carrying `PCMStamp.Flags.resumed` is actually in
+    /// the ring — a flag lost to a ring drop would make the receiver book the
+    /// whole suppressed stretch as lost audio. IOProc thread only.
+    private nonisolated(unsafe) var resumePending = true
+    /// Stand-in sample clock for a callback whose input timestamp carries no
+    /// valid sample time. IOProc thread only.
+    private nonisolated(unsafe) var fallbackSampleIndex: UInt64 = 0
 
     /// Samples the int24 conversion had to hard-clamp, written by the IOProc
     /// and reported from the ring's consumer thread. See `PCM24.write`.
@@ -180,10 +188,11 @@ final class SystemAudioTap: @unchecked Sendable {
         self.ring = ring
 
         let sampleRate = asbd.mSampleRate
-        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, nil) { [weak self] _, inInputData, _, _, _ in
+        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, nil) { [weak self] _, inInputData, inInputTime, _, _ in
             guard let self, let ring = self.ring else { return }
             self.process(
                 inInputData,
+                inputTime: inInputTime,
                 isNonInterleaved: isNonInterleaved,
                 channelCount: channelCount,
                 sampleRate: sampleRate,
@@ -239,6 +248,7 @@ final class SystemAudioTap: @unchecked Sendable {
     /// touches the network — see `AudioFrameRing`.
     private nonisolated func process(
         _ bufferList: UnsafePointer<AudioBufferList>,
+        inputTime: UnsafePointer<AudioTimeStamp>,
         isNonInterleaved: Bool,
         channelCount: Int,
         sampleRate: Double,
@@ -247,6 +257,21 @@ final class SystemAudioTap: @unchecked Sendable {
         let (silent, frames) = Self.inspect(
             bufferList, isNonInterleaved: isNonInterleaved, channelCount: channelCount
         )
+
+        // Position of this buffer on the device's own sample clock. Taken
+        // before suppression, so the index keeps advancing through silence
+        // and through any buffer Core Audio or the ring fails to deliver —
+        // which is what makes a missing stretch visible on the receiver.
+        let time = inputTime.pointee
+        let sampleIndex: UInt64
+        if time.mFlags.contains(.sampleTimeValid), time.mSampleTime >= 0 {
+            sampleIndex = UInt64(time.mSampleTime)
+        } else {
+            sampleIndex = fallbackSampleIndex
+        }
+        fallbackSampleIndex = sampleIndex &+ UInt64(frames)
+
+        let wasSuppressing = suppressingSilence
         if silent {
             if !suppressingSilence {
                 silentFrames += frames
@@ -258,18 +283,25 @@ final class SystemAudioTap: @unchecked Sendable {
             silentFrames = 0
             suppressingSilence = false
         }
+        if wasSuppressing, !suppressingSilence { resumePending = true }
         guard !suppressingSilence else { return }
 
         var stats = PCM24.EncodeStats()
-        ring.write { destination in
-            Self.encodePCM(
+        let stamp = PCMStamp(sampleIndex: sampleIndex, flags: resumePending ? .resumed : [])
+        let published = ring.write { destination in
+            guard destination.count > PCMStamp.size else { return 0 }
+            let samples = Self.encodePCM(
                 from: bufferList,
                 isNonInterleaved: isNonInterleaved,
                 channelCount: channelCount,
-                into: destination,
+                into: UnsafeMutableRawBufferPointer(rebasing: destination[PCMStamp.size...]),
                 stats: &stats
             )
+            guard samples > 0 else { return 0 }
+            stamp.write(to: destination)
+            return PCMStamp.size + samples
         }
+        if published { resumePending = false }
         clippedSamples &+= stats.clipped
         if stats.peak > peakSample { peakSample = stats.peak }
     }

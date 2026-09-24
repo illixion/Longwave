@@ -30,7 +30,7 @@ import Security
 ///
 /// Header layout (16 bytes):
 ///   0-3   magic "VVAS"
-///   4     protocol version (7)
+///   4     protocol version (8)
 ///   5     channel count
 ///   6-7   reserved (0)
 ///   8-15  sample rate, Float64 bit pattern
@@ -43,7 +43,14 @@ import Security
 /// PCM payloads carry interleaved **signed 24-bit little-endian** samples
 /// (3 bytes each) as of v6 — a 25% bandwidth cut over the old Float32 wire
 /// format with no audible loss for the already-mixed [-1, 1] signal. Float ↔
-/// int24 conversion lives in `PCM24`. The receiver still feeds AVAudioEngine
+/// int24 conversion lives in `PCM24`.
+///
+/// As of v8 every PCM payload starts with a 9-byte `PCMStamp` — the capture
+/// sample index of its first frame plus a flags byte — ahead of the samples.
+/// UDP can drop and reorder datagrams, and without a position on each one a
+/// hole was silently spliced shut: a click, a permanently shallower cushion,
+/// and nothing in any metric. The index is also what lets the receiver
+/// measure jitter against the *media* clock rather than between arrivals. The receiver still feeds AVAudioEngine
 /// deinterleaved Float32 (its required graph format) — the conversion happens
 /// at the wire boundary on both ends.
 ///
@@ -51,7 +58,7 @@ import Security
 /// header parse (no older-version compatibility path).
 nonisolated enum AudioStreamProtocol {
     static let magic: [UInt8] = Array("VVAS".utf8)
-    static let version: UInt8 = 7
+    static let version: UInt8 = 8
     static let headerSize = 16
     static let frameLengthPrefixSize = 4
     static let defaultPort: UInt16 = 4855
@@ -89,8 +96,8 @@ nonisolated enum AudioStreamProtocol {
     }
 
     enum FrameType: UInt8, Sendable {
-        /// Interleaved signed 24-bit little-endian PCM samples (sender →
-        /// receiver). See `PCM24` for the packing.
+        /// A `PCMStamp` followed by interleaved signed 24-bit little-endian
+        /// PCM samples (sender → receiver). See `PCM24` for the packing.
         case pcm = 0x00
         /// NowPlayingInfo JSON (sender → receiver).
         case nowPlaying = 0x01
@@ -149,6 +156,66 @@ nonisolated enum AudioStreamProtocol {
             value |= UInt32(data[data.startIndex + i]) << (8 * i)
         }
         return value
+    }
+}
+
+// MARK: - PCM stamp
+
+/// Position header at the front of every `pcm` payload (v8): the capture
+/// sample index of the payload's first sample frame, then a flags byte.
+///
+/// The index comes from the Mac's IO device sample clock, so it keeps
+/// advancing through everything that removes audio from the stream — a
+/// datagram lost on Wi-Fi, a buffer the frame ring had to drop, a stretch of
+/// suppressed silence. The receiver tells those apart: a gap flagged
+/// `resumed` is the sender coming back from silence suppression and costs
+/// nothing; an unflagged gap is audio that should have arrived and didn't.
+nonisolated struct PCMStamp: Sendable, Equatable {
+    static let size = 9
+
+    struct Flags: OptionSet, Sendable, Equatable {
+        let rawValue: UInt8
+        /// First payload after the sender suppressed silence (or the first
+        /// of the stream). The index gap in front of it is intentional.
+        static let resumed = Flags(rawValue: 1 << 0)
+    }
+
+    var sampleIndex: UInt64
+    var flags: Flags = []
+
+    /// Writes the stamp into the first `size` bytes of `destination`, which
+    /// the caller guarantees exist. Allocation-free — the sender calls this
+    /// from the Core Audio realtime thread.
+    func write(to destination: UnsafeMutableRawBufferPointer) {
+        let index = sampleIndex
+        for i in 0..<8 {
+            destination[i] = UInt8(truncatingIfNeeded: index >> (8 * UInt64(i)))
+        }
+        destination[8] = flags.rawValue
+    }
+
+    func encoded() -> Data {
+        var data = Data(count: Self.size)
+        data.withUnsafeMutableBytes { write(to: $0) }
+        return data
+    }
+
+    /// Parses the stamp at the front of a `pcm` payload. Nil when the payload
+    /// is too short to hold one.
+    init?(parsing payload: Data) {
+        guard payload.count >= Self.size else { return nil }
+        let base = payload.startIndex
+        var index: UInt64 = 0
+        for i in 0..<8 {
+            index |= UInt64(payload[base + i]) << (8 * UInt64(i))
+        }
+        sampleIndex = index
+        flags = Flags(rawValue: payload[base + 8])
+    }
+
+    init(sampleIndex: UInt64, flags: Flags = []) {
+        self.sampleIndex = sampleIndex
+        self.flags = flags
     }
 }
 

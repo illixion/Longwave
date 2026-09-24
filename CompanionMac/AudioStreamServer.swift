@@ -275,23 +275,36 @@ final class AudioStreamServer: @unchecked Sendable {
 
     /// Conservative single-datagram PCM payload budget for the DTLS path:
     /// path MTU (~1500) minus IP/UDP and DTLS record overhead, with margin.
+    /// Includes the `PCMStamp`.
     private static let maxUDPPCMPayload = 1100
 
-    /// Splits an interleaved int24 PCM blob into `pcm` frames that each fit
-    /// one DTLS datagram. Chunks are aligned to a whole sample-frame boundary
-    /// (channelCount × 3 bytes) so each datagram is independently schedulable
-    /// PCM on the receiver — no reassembly required.
-    private nonisolated static func chunkPCMForDatagram(_ pcm: Data, channelCount: Int) -> [Data] {
+    /// Splits a stamped `pcm` payload into `pcm` frames that each fit one
+    /// DTLS datagram. Chunks are aligned to a whole sample-frame boundary
+    /// (channelCount × 3 bytes) and each gets its own `PCMStamp`, advanced by
+    /// the frames ahead of it, so every datagram is independently placeable
+    /// on the receiver — a lost one leaves a measurable hole rather than a
+    /// silent splice. Only the first chunk keeps the `resumed` flag: the gap
+    /// it excuses is in front of the whole buffer, not each piece.
+    nonisolated static func chunkPCMForDatagram(_ pcm: Data, channelCount: Int) -> [Data] {
+        guard let stamp = PCMStamp(parsing: pcm) else { return [] }
+        let samples = pcm.dropFirst(PCMStamp.size)
         let bytesPerSampleFrame = max(1, channelCount * AudioStreamProtocol.bytesPerSample)
-        let maxChunk = max(bytesPerSampleFrame, (maxUDPPCMPayload / bytesPerSampleFrame) * bytesPerSampleFrame)
-        if pcm.count <= maxChunk {
+        let budget = maxUDPPCMPayload - PCMStamp.size
+        let maxChunk = max(bytesPerSampleFrame, (budget / bytesPerSampleFrame) * bytesPerSampleFrame)
+        if samples.count <= maxChunk {
             return [AudioStreamProtocol.encodeFrame(pcm)]
         }
         var frames: [Data] = []
-        var offset = pcm.startIndex
-        while offset < pcm.endIndex {
-            let end = min(pcm.index(offset, offsetBy: maxChunk, limitedBy: pcm.endIndex) ?? pcm.endIndex, pcm.endIndex)
-            frames.append(AudioStreamProtocol.encodeFrame(pcm.subdata(in: offset..<end)))
+        var offset = samples.startIndex
+        while offset < samples.endIndex {
+            let end = min(samples.index(offset, offsetBy: maxChunk, limitedBy: samples.endIndex) ?? samples.endIndex, samples.endIndex)
+            let chunkStamp = PCMStamp(
+                sampleIndex: stamp.sampleIndex + UInt64((offset - samples.startIndex) / bytesPerSampleFrame),
+                flags: offset == samples.startIndex ? stamp.flags : []
+            )
+            var payload = chunkStamp.encoded()
+            payload.append(samples[offset..<end])
+            frames.append(AudioStreamProtocol.encodeFrame(payload))
             offset = end
         }
         return frames

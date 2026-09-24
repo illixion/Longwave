@@ -1081,6 +1081,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// int24); if the network stalled, the data trickles in at the usual
     /// frame size afterwards.
     private nonisolated(unsafe) var maxReceiveBytes = 0
+    /// Loss, reordering and media-clock jitter, from the `PCMStamp` on every
+    /// PCM payload. Created with the header (it needs the sample rate) and
+    /// kept across engine rebuilds — the network doesn't change with them.
+    private nonisolated(unsafe) var arrivalStats: AudioArrivalStats?
     /// Uptime (ns) of the last periodic buffer-health log and stats emit.
     private nonisolated(unsafe) var lastHealthLogNanos: UInt64 = 0
     private nonisolated(unsafe) var lastStatsNanos: UInt64 = 0
@@ -1428,6 +1432,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             }
             pendingOffset += AudioStreamProtocol.headerSize
             header = parsed
+            arrivalStats = AudioArrivalStats(sampleRate: parsed.sampleRate)
             guard setupAudio(header: parsed) else {
                 fail("Unsupported audio format (\(parsed.channelCount)ch @ \(parsed.sampleRate) Hz)")
                 return
@@ -1456,7 +1461,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
             switch AudioStreamProtocol.FrameType(rawValue: type) {
             case .pcm:
-                schedule(payload)
+                receivePCM(payload)
             case .nowPlaying:
                 // Malformed metadata is logged and skipped — never fail
                 // the audio stream over it.
@@ -1608,7 +1613,24 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
         guard type == AudioStreamProtocol.FrameType.pcm.rawValue else { return }
         let payload = data.subdata(in: data.startIndex.advanced(by: AudioStreamProtocol.frameLengthPrefixSize + 1)..<data.startIndex.advanced(by: frameEnd))
-        schedule(payload)
+        receivePCM(payload)
+    }
+
+    /// Entry point for a `pcm` payload from either transport: books its
+    /// stamp, then schedules the samples behind it. A payload arriving behind
+    /// audio that is already scheduled is dropped — playing it would put
+    /// samples out of order, which is worse than the hole it would fill.
+    private nonisolated func receivePCM(_ payload: Data) {
+        guard let stamp = PCMStamp(parsing: payload) else { return }
+        let samples = payload.dropFirst(PCMStamp.size)
+        let bytesPerWireFrame = max(1, (header?.channelCount ?? 2) * AudioStreamProtocol.bytesPerSample)
+        let disposition = arrivalStats?.record(
+            stamp: stamp,
+            frames: samples.count / bytesPerWireFrame,
+            arrivalNanos: DispatchTime.now().uptimeNanoseconds
+        )
+        guard disposition != .late else { return }
+        schedule(samples)
     }
 
     /// Sends a media transport command to the Mac sender.
@@ -1767,6 +1789,20 @@ final class AudioStreamReceiver: @unchecked Sendable {
         playerNode = player
         eqNode = eq
         audioFormat = format
+
+        // Every depth reading includes this: `.dataPlayedBack` fires only
+        // once a buffer has made it all the way out, so the true lead over the
+        // render thread is the reported depth minus the output latency. It is
+        // what the `floor` in the health line has to be read against.
+        let presentationMs = Int(engine.outputNode.presentationLatency * 1000)
+        #if canImport(UIKit)
+        AppLog.audioStream.line(
+            "Output latency \(Int(session.outputLatency * 1000)) ms, IO buffer "
+            + "\(Int(session.ioBufferDuration * 1000)) ms, output node \(presentationMs) ms"
+        )
+        #else
+        AppLog.audioStream.line("Output node latency \(presentationMs) ms")
+        #endif
         // Fresh node, fresh cushion. The target keeps any growth an earlier
         // underrun earned — a link that needed 140 ms before needs it now.
         playing = false
@@ -1941,6 +1977,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             lastHealthLogNanos = now
             framesSinceHealthLog = 0
             maxArrivalGapNanos = 0
+            _ = arrivalStats?.takeReport()
             return
         }
         let elapsed = Double(now &- lastHealthLogNanos) / 1_000_000_000
@@ -1976,6 +2013,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         let maxGapMs = maxArrivalGapNanos / 1_000_000
         let floor = minDepthFrames == Int.max ? 0 : minDepthFrames
         let biggestRead = maxReceiveBytes
+        let net = arrivalStats?.takeReport() ?? AudioArrivalStats.Report()
         framesSinceHealthLog = 0
         maxArrivalGapNanos = 0
         cushionableGapNanos = 0
@@ -1983,12 +2021,24 @@ final class AudioStreamReceiver: @unchecked Sendable {
         maxReceiveBytes = 0
 
         let ms = { (frames: Double) in Int(frames / self.wireSampleRate * 1000) }
+        // `late` is arrival delay above the window's best, against the media
+        // clock — the lead the cushion needed to cover each payload. `holes`
+        // are audio that never arrived; `ooo` payloads arrived behind their
+        // successors and were dropped. Largest TCP read only means something
+        // on TCP; a datagram is always one payload.
+        let delays = [net.delayP50Ms, net.delayP95Ms, net.delayP99Ms, net.delayMaxMs]
+            .map { String(Int($0.rounded())) }
+            .joined(separator: "/")
+        let transport = udpFramesReceived > 0 ? "" : "maxread \(biggestRead / 1024) KB · "
+        let restarts = net.discontinuities > 0 ? " restarts=\(net.discontinuities)" : ""
         AppLog.audioStream.line(
             "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
             + "target \(Int(targetBufferSeconds * 1000)) ms · "
             + "floor \(ms(Double(floor))) ms · "
-            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms "
-            + "maxread \(biggestRead / 1024) KB · "
+            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · "
+            + "late p50/95/99/max \(delays) ms · "
+            + "holes=\(net.holes) (\(ms(Double(net.holeFrames))) ms) ooo=\(net.late) resumes=\(net.resumes)\(restarts) · "
+            + transport
             + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
         )
     }

@@ -979,10 +979,6 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// tick: the target grows by half again (at least 40 ms) on the spot.
     private static let bufferGrowthFactor: Double = 1.5
     private static let bufferGrowthFloor: Double = 0.04
-    /// How fast the target walks back down once the link no longer demands
-    /// it. Slow, because being 50 ms over costs latency nobody notices and
-    /// being 5 ms under costs a dropout everybody does.
-    private static let bufferDecayStep: Double = 0.01
 
     /// The cushion has to cover the worst stall the link actually produces,
     /// and on this link that is a *measurement*, not a guess: the first run
@@ -993,13 +989,23 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// decay walked it back down to 100 after every underrun, which
     /// guaranteed the next one: four underruns in fifteen minutes, evenly
     /// spaced. So the target now tracks the observed stall instead.
+    ///
+    /// And it only ever rises within a session. The stalls are the
+    /// headset's own Wi-Fi (they show on a plain ping with no stream
+    /// running) and they come in stretches: 20-40 s clean, then back. A
+    /// target that decayed through the clean stretch had given the lead away
+    /// by the time they returned — both underruns in the first v8 log were
+    /// exactly that, and the pre-v7 receiver, which never shrank its queue
+    /// at all, rode the same link without them.
     private static let stallMargin: Double = 1.3
-    /// Per-interval decay of the remembered stall, so the cushion follows a
-    /// link that gets better as well as one that gets worse (~halves in a
-    /// minute of clean running).
-    private static let stallDecay: Double = 0.9
-    /// Decaying maximum of the observed inter-arrival gap, in seconds.
-    private nonisolated(unsafe) var observedStallSeconds: Double = 0
+    /// What this session's link has demanded — the stall-driven and
+    /// underrun-driven target, but *not* the lead primed from a previous
+    /// session — so the next session starts from what was measured here, and
+    /// a link that improves is remembered as having improved.
+    private nonisolated(unsafe) var sessionDemandSeconds: Double = 0
+    /// Sample frames played this session, to tell a representative session
+    /// from a brief one before remembering its demand.
+    private nonisolated(unsafe) var sessionFrames = 0
     /// Longest gap allowed to size the cushion. Beyond this it is an outage,
     /// not jitter, and no sane amount of buffering covers it — but letting
     /// one set the target pins the cushion at its ceiling for minutes
@@ -1118,12 +1124,20 @@ final class AudioStreamReceiver: @unchecked Sendable {
         self.token = token
         self.lowLatency = lowLatency
         self.mode = mode
-        self.baseTargetBufferSeconds = lowLatency ? 0.040 : 0.100
+        let baseSeconds = lowLatency ? 0.040 : 0.100
         // Headroom for the stall-driven target to actually reach what the
         // link demands. A capped cushion that still underruns is the worst
-        // of both: the latency without the robustness it was paid for.
-        self.maxTargetBufferSeconds = lowLatency ? 0.200 : 0.400
-        self.targetBufferSeconds = lowLatency ? 0.040 : 0.100
+        // of both: the latency without the robustness it was paid for. UDP
+        // needs 250: the headset's ~165-180 ms stalls with the 1.3 margin
+        // come to ~215, and a 200 cap left floors of 17-28 ms.
+        let maxSeconds = lowLatency ? 0.250 : 0.400
+        self.baseTargetBufferSeconds = baseSeconds
+        self.maxTargetBufferSeconds = maxSeconds
+        // Start from what this host's link demanded last time, so the first
+        // stall of a session isn't the one that teaches us — that was the
+        // run of pops at the start of every session.
+        let remembered = AudioLeadMemory.lead(host: hostname, port: port, lowLatency: lowLatency) ?? 0
+        self.targetBufferSeconds = min(maxSeconds, max(baseSeconds, remembered))
         self.volume = volume
         self.eqSettings = eq
         self.spatialAudioMode = spatialAudioMode
@@ -1433,6 +1447,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             pendingOffset += AudioStreamProtocol.headerSize
             header = parsed
             arrivalStats = AudioArrivalStats(sampleRate: parsed.sampleRate)
+            AppLog.audioStream.line("Cushion starts at \(Int(targetBufferSeconds * 1000)) ms")
             guard setupAudio(header: parsed) else {
                 fail("Unsupported audio format (\(parsed.channelCount)ch @ \(parsed.sampleRate) Hz)")
                 return
@@ -1884,6 +1899,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
     }
 
     private nonisolated func teardownAudio() {
+        rememberLead()
         if let engineObserver {
             NotificationCenter.default.removeObserver(engineObserver)
         }
@@ -1921,13 +1937,18 @@ final class AudioStreamReceiver: @unchecked Sendable {
         max(1, Int(targetBufferSeconds * wireSampleRate))
     }
 
-    /// Hard ceiling. Past this the stream is running long — a TCP stall that
-    /// cleared and dumped its backlog at once, or the sender's clock simply
-    /// outpacing ours — and whole buffers are dropped until it's back in
-    /// range. Single-sample drift correction sheds a half-second backlog far
-    /// too slowly to be the only mechanism.
+    /// Hard ceiling. Past this the stream is running genuinely long — a TCP
+    /// connection that recovered from an outage and dumped its backlog at
+    /// once — and whole buffers are dropped until it's back in range.
+    /// Single-sample drift correction sheds a half-second backlog far too
+    /// slowly to be the only mechanism.
+    ///
+    /// Deliberately far above any stall's burst. The old ceiling (3× target,
+    /// 190 ms at a 40 ms target) sat right where the burst after an ordinary
+    /// stall lands, so it threw away the very audio that refills the cushion
+    /// — 298 ms of it in one episode, followed by six underruns.
     private nonisolated var ceilingFrames: Int {
-        max(targetFrames * 3, targetFrames + Int(0.150 * wireSampleRate))
+        max(Int(0.500 * wireSampleRate), targetFrames + Int(0.250 * wireSampleRate))
     }
 
     /// Re-enters the prebuffer state after the node has run dry, *without*
@@ -1966,10 +1987,27 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
     }
 
+    /// Raises the target to what the link has just shown it needs, and
+    /// records it as this session's demand. Never lowers it.
+    private nonisolated func noteDemand(_ seconds: Double) {
+        sessionDemandSeconds = max(sessionDemandSeconds, seconds)
+        targetBufferSeconds = max(targetBufferSeconds, seconds)
+    }
+
+    /// Hands this session's demand to `AudioLeadMemory` for the next
+    /// connection to this host. Only a session that played for a while
+    /// counts — a brief one hasn't had the chance to meet a stall, and would
+    /// teach the next session a lead too small for the link.
+    private nonisolated func rememberLead() {
+        guard sessionFrames >= Int(AudioLeadMemory.minimumSessionSeconds * wireSampleRate) else { return }
+        let lead = max(baseTargetBufferSeconds, sessionDemandSeconds)
+        AudioLeadMemory.remember(lead, host: hostname, port: port, lowLatency: lowLatency)
+        AppLog.audioStream.line("Remembering a \(Int(lead * 1000)) ms lead for the next session")
+    }
+
     /// Periodic one-liner so a real-device session can be read back from the
     /// log: what the cushion is actually running at, and what it has cost.
-    /// Also relaxes the target again after a clean stretch, so one rough
-    /// patch early on doesn't cost latency for the rest of the session.
+    /// Also where the stall-driven target is raised.
     private nonisolated func logBufferHealth(depth: Int, now: UInt64) {
         // First buffer of the session: start the window, don't report a
         // rate measured against an uptime-length interval.
@@ -1986,22 +2024,15 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
         underrunsAtLastHealthLog = underrunCount
 
-        // Size the cushion from the stall the link actually produces. Rise
-        // at once — an under-sized cushion is a dropout on the next stall —
-        // and fall a step at a time, so one quiet interval can't undo what a
-        // recurring stall demonstrated.
+        // Size the cushion from the stall the link actually produces, and
+        // hold it: rise at once, never decay within the session (see
+        // `stallMargin` for why a clean stretch proves nothing).
         let windowGapSeconds = Double(cushionableGapNanos) / 1_000_000_000
-        observedStallSeconds = max(observedStallSeconds * Self.stallDecay, windowGapSeconds)
         let demanded = min(
             maxTargetBufferSeconds,
-            max(baseTargetBufferSeconds, observedStallSeconds * Self.stallMargin)
+            max(baseTargetBufferSeconds, windowGapSeconds * Self.stallMargin)
         )
-        // Converge on `demanded` proportionally rather than by a fixed step:
-        // a target driven to its ceiling by one bad patch took minutes to
-        // come back at 10 ms per interval, and that is all latency.
-        targetBufferSeconds = demanded > targetBufferSeconds
-            ? demanded
-            : max(demanded, targetBufferSeconds - max(Self.bufferDecayStep, (targetBufferSeconds - demanded) * 0.25))
+        noteDemand(demanded)
 
         // Effective input rate: wire frames delivered per second of *our*
         // wall clock. Against the nominal sample rate this is the one number
@@ -2064,6 +2095,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
         let nowNanos = DispatchTime.now().uptimeNanoseconds
         framesSinceHealthLog += wireFrames
+        sessionFrames += wireFrames
         let gapNanos = lastScheduleNanos == 0 ? 0 : nowNanos &- lastScheduleNanos
         if gapNanos > 0 {
             maxArrivalGapNanos = max(maxArrivalGapNanos, gapNanos)
@@ -2110,10 +2142,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
             if starvedSinceNanos == 0 {
                 starvedSinceNanos = nowNanos
                 underrunCount += 1
-                targetBufferSeconds = min(
+                noteDemand(min(
                     maxTargetBufferSeconds,
                     max(targetBufferSeconds + Self.bufferGrowthFloor, targetBufferSeconds * Self.bufferGrowthFactor)
-                )
+                ))
                 AppLog.audioStream.line(
                     "⚠️ Audio underrun #\(underrunCount) — riding out, target now \(Int(targetBufferSeconds * 1000)) ms"
                 )

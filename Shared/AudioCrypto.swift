@@ -85,6 +85,12 @@ nonisolated enum AudioCrypto {
     static func dtlsUDPParameters(token: String) -> NWParameters {
         let dtls = NWProtocolTLS.Options()
         configure(dtls.securityProtocolOptions, token: token, dtls: true)
-        return NWParameters(dtls: dtls, udp: NWProtocolUDP.Options())
+        let parameters = NWParameters(dtls: dtls, udp: NWProtocolUDP.Options())
+        // Voice access category (WMM AC_VO) rather than best effort: the
+        // flow is small, steady and latency-bound, which is exactly what the
+        // class is for, and on a contended Wi-Fi link it queues ahead of bulk
+        // traffic instead of behind it.
+        parameters.serviceClass = .interactiveVoice
+        return parameters
     }
 }

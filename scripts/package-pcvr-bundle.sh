@@ -244,6 +244,22 @@ if (\$machine -ne 0x14c) { throw (\"32-bit shim is not an I386 PE (machine 0x{0:
   # wrapper caps that whole line at 8191 chars -- the combined script tripped that
   # limit ("The command line is too long.", no other output at all, since the failure
   # is in launching the process, before a single line of the script runs).
+  #
+  # Native AOT publish needs the same VC linker as the CMake builds above (ILCompiler invokes
+  # link.exe directly), which is why this runs on the VM instead of as a cross-publish from
+  # the Mac: Native AOT has no cross-OS story, only a cross-*arch* one, and that cross-arch
+  # case is exactly what this VM's toolchain (Hostarm64\x64) already proves out for the C++
+  # side. Validated on this same toolchain in the installer plan's Phase 0 spike 3.
+  #
+  # The host's obj/ and bin/ survive the source sync (see 'unpack native source') so
+  # incremental builds stay fast, but they are not flavour-aware: right after a build of the
+  # other flavour, the AOT publish reused intermediates compiled with the other
+  # LongwaveInternal value and shipped them under this flavour's name. So the publish leaves a
+  # marker in obj/ naming the flavour it built, and a missing or different marker wipes obj/
+  # and bin/ first — the host's counterpart of the CMake-cache flavour check the native trees
+  # get (their build dirs are reconfigured from scratch every run, and --no-build-native
+  # checks the caches). Comments stay out here rather than inside the script: every byte in
+  # it counts against the 8191-character limit described above.
   echo "==> publishing LongwavePCVRHost (AOT) on $HOST"
   ps_exec 'publish host (AOT)' 300 "
 \$ErrorActionPreference = 'Stop'
@@ -254,27 +270,35 @@ if (\$machine -ne 0x14c) { throw (\"32-bit shim is not an I386 PE (machine 0x{0:
 \$env:INCLUDE = \"\$msvc\\include;\$sdk\\Include\\\$sdkver\\ucrt;\$sdk\\Include\\\$sdkver\\shared;\$sdk\\Include\\\$sdkver\\um;\$sdk\\Include\\\$sdkver\\winrt;\$sdk\\Include\\\$sdkver\\cppwinrt\"
 \$env:LIB = \"\$msvc\\lib\\x64;\$sdk\\Lib\\\$sdkver\\ucrt\\x64;\$sdk\\Lib\\\$sdkver\\um\\x64\"
 
-# Native AOT publish needs the same VC linker as the CMake builds above (ILCompiler
-# invokes link.exe directly), which is why this runs on the VM instead of as a
-# cross-publish from the Mac: Native AOT has no cross-OS story, only a cross-*arch*
-# one, and that cross-arch case is exactly what this VM's toolchain (Hostarm64\\x64)
-# already proves out for the C++ side. Validated on this same toolchain in the
-# installer plan's Phase 0 spike 3.
-\$hostProj = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\Host.csproj'
-\$hostPublish = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\publish'
+\$hostDir = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host'
+\$hostProj = Join-Path \$hostDir 'Host.csproj'
+\$hostPublish = Join-Path \$hostDir 'publish'
+\$hostObj = Join-Path \$hostDir 'obj'
+\$marker = Join-Path \$hostObj 'longwave-flavour.txt'
+\$flavour = 'LongwaveInternal=$DOTNET_INTERNAL'
+\$built = if (Test-Path \$marker) { (Get-Content \$marker -Raw).Trim() } else { '' }
+if (\$built -ne \$flavour) {
+  foreach (\$d in @('obj', 'bin')) {
+    \$p = Join-Path \$hostDir \$d
+    if (Test-Path \$p) { Remove-Item \$p -Recurse -Force }
+  }
+  \$was = if (\$built) { \$built } else { 'unknown' }
+  \"cleaned host obj/ and bin/ (last build: \$was)\"
+}
 if (Test-Path \$hostPublish) { Remove-Item \$hostPublish -Recurse -Force }
 dotnet publish \$hostProj -c Release -r win-x64 --nologo -o \$hostPublish -p:LongwaveInternal=$DOTNET_INTERNAL
 if (\$LASTEXITCODE -ne 0) { throw 'dotnet publish (PCVR host, AOT) failed' }
 if (-not (Test-Path (Join-Path \$hostPublish 'LongwavePCVRHost.exe'))) {
   throw 'expected AOT publish output missing: LongwavePCVRHost.exe'
 }
+Set-Content -Path \$marker -Value \$flavour -NoNewline
 'published'
 "
 else
   echo "==> --no-build-native: reusing whatever is already built on $HOST"
   # Reusing a build of the other flavour would ship the wrong thing under the right name.
-  # The CMake caches say which flavour each native tree was configured as; the host exe is
-  # left to the leak guard (public) — publish it again when switching flavours.
+  # The CMake caches say which flavour each native tree was configured as, and the marker the
+  # publish step leaves in the host's obj/ says the same for the host exe.
   ps_exec 'check native build flavour' 60 "
 \$ErrorActionPreference = 'Stop'
 foreach (\$b in @('SessionBroker\\build', 'SessionBroker\\build32', 'OpenXRLayer\\build')) {
@@ -282,6 +306,11 @@ foreach (\$b in @('SessionBroker\\build', 'SessionBroker\\build32', 'OpenXRLayer
   if (-not (Select-String -Path \$cache -Pattern '^LONGWAVE_INTERNAL:BOOL=$CMAKE_INTERNAL\$' -Quiet)) {
     throw \"\$b was not configured with LONGWAVE_INTERNAL=$CMAKE_INTERNAL; rebuild without --no-build-native\"
   }
+}
+\$marker = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\obj\\longwave-flavour.txt'
+\$built = if (Test-Path \$marker) { (Get-Content \$marker -Raw).Trim() } else { 'unknown' }
+if (\$built -ne 'LongwaveInternal=$DOTNET_INTERNAL') {
+  throw \"the host was last published as \$built, not LongwaveInternal=$DOTNET_INTERNAL; rebuild without --no-build-native\"
 }
 'flavour matches'
 "

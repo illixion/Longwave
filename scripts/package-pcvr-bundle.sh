@@ -23,6 +23,15 @@
 #   scripts/package-pcvr-bundle.sh --tag 0.1.0-abc12345  # target a specific release
 #   scripts/package-pcvr-bundle.sh --no-build-native     # reuse whatever's already built on the VM
 #   scripts/package-pcvr-bundle.sh --stage-only          # build + zip locally, skip gh release upload
+#   scripts/package-pcvr-bundle.sh --internal            # internal build (implies --stage-only)
+#
+# Public vs internal. The default is the public bundle. --internal turns on LONGWAVE_INTERNAL
+# in every half (CMake option in SessionBroker + OpenXRLayer, the MSBuild property in
+# Host.csproj, the esbuild define and HTML markers in the UI), adds the internal-only files and
+# service descriptors listed under Longwave-PCVR-Host/packaging/, and names the asset
+# *-internal.zip. An internal bundle is never uploaded: --internal forces --stage-only and the
+# upload step refuses one outright. A public bundle must pass the leak guard below the
+# copyleft guard, which fails it if any internal-only content made it into the stage.
 #
 # The bundle is not signed on its own. Once uploaded, this script calls
 # scripts/bless-release.sh, which re-signs the release's SHA256SUMS so that one signature covers
@@ -57,18 +66,31 @@ HOST_PROJ="$REPO_ROOT/Longwave-PCVR-Host/Host.csproj"
 TAG=""
 NO_BUILD_NATIVE=0
 STAGE_ONLY=0
+INTERNAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)              TAG="${2:?--tag needs a value}"; shift ;;
     --no-build-native)  NO_BUILD_NATIVE=1 ;;
     --stage-only)       STAGE_ONLY=1 ;;
+    --internal)         INTERNAL=1 ;;
     --host)             HOST="${2:?--host needs a value}"; shift ;;
-    -h|--help)          sed -n '3,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)          sed -n '3,34p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+PACKAGING_DIR="$REPO_ROOT/Longwave-PCVR-Host/packaging"
+if [[ "$INTERNAL" == 1 ]]; then
+  STAGE_ONLY=1
+  CMAKE_INTERNAL=ON
+  DOTNET_INTERNAL=true
+  echo "==> INTERNAL bundle: LONGWAVE_INTERNAL on everywhere; stage-only, never uploaded"
+else
+  CMAKE_INTERNAL=OFF
+  DOTNET_INTERNAL=false
+fi
 
 if [[ -z "$CLOUDXR_SDK_WIN" ]]; then
   if [[ "$HOST" == "winvm" ]]; then
@@ -85,8 +107,11 @@ ps_exec() {
 }
 
 [[ -f "$HOST_PROJ" ]] || { echo "error: $HOST_PROJ not found — is the Longwave-PCVR-Host submodule checked out?" >&2; exit 1; }
+[[ -f "$PACKAGING_DIR/leak_guard.py" ]] || { echo "error: $PACKAGING_DIR/leak_guard.py not found — the Longwave-PCVR-Host submodule is too old for this script" >&2; exit 1; }
 
-if [[ -z "$TAG" ]]; then
+if [[ -z "$TAG" && "$STAGE_ONLY" == 1 ]]; then
+  TAG="stage-only"
+elif [[ -z "$TAG" ]]; then
   echo "==> no --tag given, using the latest GitHub release"
   TAG="$(cd "$REPO_ROOT" && gh release list --limit 1 --json tagName -q '.[0].tagName')"
   [[ -n "$TAG" ]] || { echo "error: could not determine a release tag from gh release list" >&2; exit 1; }
@@ -157,7 +182,7 @@ foreach (\$dir in @('SessionBroker', 'OpenXRLayer', 'Longwave-PCVR-Host')) {
 if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
 New-Item -ItemType Directory -Force -Path \$build | Out-Null
 Push-Location \$build
-cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
+cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release -DLONGWAVE_INTERNAL=$CMAKE_INTERNAL \$src
 if (\$LASTEXITCODE -ne 0) { throw 'CMake configure failed for $dir' }
 # nmake/link.exe write benign warnings straight to stderr, and with
 # \$ErrorActionPreference = 'Stop' PowerShell raises a terminating NativeCommandError the
@@ -198,7 +223,7 @@ Pop-Location
 if (Test-Path (Join-Path \$build 'CMakeCache.txt')) { Remove-Item \$build -Recurse -Force }
 New-Item -ItemType Directory -Force -Path \$build | Out-Null
 Push-Location \$build
-cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release \$src
+cmake -G 'NMake Makefiles' -DCMAKE_BUILD_TYPE=Release -DLONGWAVE_INTERNAL=$CMAKE_INTERNAL \$src
 if (\$LASTEXITCODE -ne 0) { throw 'CMake configure (Win32) failed' }
 \$ErrorActionPreference = 'Continue'
 nmake LibOVRRT32_1
@@ -238,7 +263,7 @@ if (\$machine -ne 0x14c) { throw (\"32-bit shim is not an I386 PE (machine 0x{0:
 \$hostProj = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\Host.csproj'
 \$hostPublish = Join-Path '$BRIDGE_WIN' 'Longwave-PCVR-Host\\publish'
 if (Test-Path \$hostPublish) { Remove-Item \$hostPublish -Recurse -Force }
-dotnet publish \$hostProj -c Release -r win-x64 --nologo -o \$hostPublish
+dotnet publish \$hostProj -c Release -r win-x64 --nologo -o \$hostPublish -p:LongwaveInternal=$DOTNET_INTERNAL
 if (\$LASTEXITCODE -ne 0) { throw 'dotnet publish (PCVR host, AOT) failed' }
 if (-not (Test-Path (Join-Path \$hostPublish 'LongwavePCVRHost.exe'))) {
   throw 'expected AOT publish output missing: LongwavePCVRHost.exe'
@@ -247,6 +272,19 @@ if (-not (Test-Path (Join-Path \$hostPublish 'LongwavePCVRHost.exe'))) {
 "
 else
   echo "==> --no-build-native: reusing whatever is already built on $HOST"
+  # Reusing a build of the other flavour would ship the wrong thing under the right name.
+  # The CMake caches say which flavour each native tree was configured as; the host exe is
+  # left to the leak guard (public) — publish it again when switching flavours.
+  ps_exec 'check native build flavour' 60 "
+\$ErrorActionPreference = 'Stop'
+foreach (\$b in @('SessionBroker\\build', 'SessionBroker\\build32', 'OpenXRLayer\\build')) {
+  \$cache = Join-Path (Join-Path '$BRIDGE_WIN' \$b) 'CMakeCache.txt'
+  if (-not (Select-String -Path \$cache -Pattern '^LONGWAVE_INTERNAL:BOOL=$CMAKE_INTERNAL\$' -Quiet)) {
+    throw \"\$b was not configured with LONGWAVE_INTERNAL=$CMAKE_INTERNAL; rebuild without --no-build-native\"
+  }
+}
+'flavour matches'
+"
 fi
 
 # scp (unlike the PowerShell strings above) will not take a Windows backslash path — same
@@ -273,9 +311,20 @@ echo "    stripped $(find "$STAGE/host" -name '*.pdb' | wc -l | tr -d ' ') remai
 # NMake Makefiles is a single-config generator, so build outputs land straight in build/ —
 # no Release/ subfolder, unlike the multi-config VS generator this script used before.
 echo "==> collecting artifacts from $HOST"
-for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll sidecar.dll sidecar_inject.exe; do
+for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll; do
   scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/$f" "$STAGE/bridge/$f"
 done
+# Internal-only extras: the file list and the extra-service descriptor both live with the
+# private host source, so this public script names neither. The Companion's supervisor
+# picks bridge/services.json up if present and runs without it otherwise.
+if [[ "$INTERNAL" == 1 ]]; then
+  while IFS= read -r f; do
+    f="${f%%#*}"; f="${f//[[:space:]]/}"
+    [[ -n "$f" ]] || continue
+    scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/$f" "$STAGE/bridge/$f"
+  done < "$PACKAGING_DIR/internal-bridge-files.txt"
+  cp "$PACKAGING_DIR/services.internal.json" "$STAGE/bridge/services.json"
+fi
 # The 32-bit shim comes out of its own configure directory, and is the one file in the bundle
 # whose absence is silent until a 32-bit OpenVR title (HL2VR) is launched.
 scp -q "$HOST:$BRIDGE_FS/SessionBroker/build32/LibOVRRT32_1.dll" "$STAGE/bridge/LibOVRRT32_1.dll"
@@ -332,13 +381,27 @@ echo "==> minifying the PCVR/Games UI"
 UI_SRC="$REPO_ROOT/Longwave-PCVR-Host/ui"
 UI_OUT="$STAGE/host/ui"
 mkdir -p "$UI_OUT"
+# LONGWAVE_INTERNAL is a compile-time constant here, so --minify folds every internal-only
+# branch in a public build away together with its strings.
+if [[ "$INTERNAL" == 1 ]]; then UI_DEFINE=true; else UI_DEFINE=false; fi
 (cd "$REPO_ROOT/CompanionWindows/app" && npx --no-install esbuild \
   "$UI_SRC/pcvr.js" "$UI_SRC/games.js" "$UI_SRC/shared.js" \
-  --minify --outdir="$UI_OUT" --charset=utf8)
+  --minify --outdir="$UI_OUT" --charset=utf8 --define:LONGWAVE_INTERNAL=$UI_DEFINE)
 for f in pcvr.html games.html styles.css; do
   # esbuild's --loader=copy would also do this, but keeping HTML/CSS a plain cp is one fewer
   # thing that could silently transform markup a browser depends on rendering byte-for-byte.
-  cp "$UI_SRC/$f" "$UI_OUT/$f"
+  # The one transformation is the build flavour: markup between <!--#internal--> and
+  # <!--#/internal--> is removed from a public build; an internal build keeps it and drops
+  # only the markers.
+  if [[ "$INTERNAL" == 1 ]]; then
+    perl -0pe 's/<!--#\/?internal-->//g' "$UI_SRC/$f" > "$UI_OUT/$f"
+  else
+    perl -0pe 's/[ \t]*<!--#internal-->.*?<!--#\/internal-->[ \t]*\n?//gs' "$UI_SRC/$f" > "$UI_OUT/$f"
+  fi
+  if grep -q '<!--#/\{0,1\}internal-->' "$UI_OUT/$f"; then
+    echo "error: unbalanced <!--#internal--> markers in $f" >&2
+    exit 1
+  fi
 done
 echo "    $(find "$UI_OUT" -type f | wc -l | tr -d ' ') files, $(du -sh "$UI_OUT" | cut -f1)"
 
@@ -371,8 +434,26 @@ if [[ -n "$COPYLEFT_HITS" ]]; then
 fi
 echo "    clean"
 
+# ------------------------------------------------------------------ private-feature leak guard
+# A public bundle must carry none of the LONGWAVE_INTERNAL features. The guard runs strings
+# over everything we author in the stage (not the third-party CloudXR redistributable) and
+# fails on any hit. Its pattern list lives with the private host source
+# (Longwave-PCVR-Host/packaging/leak_guard.py, documented there), because spelling it out in
+# this public script would describe exactly what it keeps out. An internal bundle is
+# expected to contain all of it and is never uploaded, so it skips the check.
+if [[ "$INTERNAL" == 1 ]]; then
+  echo "==> leak guard skipped (internal bundle)"
+else
+  echo "==> checking the staged bundle for internal-only content"
+  python3 "$PACKAGING_DIR/leak_guard.py" "$STAGE"
+fi
+
 # ------------------------------------------------------------------ zip + checksum
-ASSET="Longwave-PCVR-Bundle-win-x64.zip"
+if [[ "$INTERNAL" == 1 ]]; then
+  ASSET="Longwave-PCVR-Bundle-win-x64-internal.zip"
+else
+  ASSET="Longwave-PCVR-Bundle-win-x64.zip"
+fi
 ZIP="$STAGE/$ASSET"
 echo "==> zipping bundle"
 (cd "$STAGE" && zip -qr "$ASSET" host bridge drivers licenses)
@@ -396,6 +477,12 @@ if [[ "$STAGE_ONLY" == 1 ]]; then
 fi
 
 # ------------------------------------------------------------------ attach to the release
+# Belt and braces: --internal already forced stage-only above, but nothing past this point may
+# ever publish an internal bundle, whatever changes upstream of it.
+if [[ "$INTERNAL" == 1 || "$ASSET" == *-internal* ]]; then
+  echo "error: refusing to upload an internal bundle" >&2
+  exit 1
+fi
 echo "==> uploading to release $TAG"
 (cd "$REPO_ROOT" && gh release upload "$TAG" "$ZIP" "$ZIP.sha256" --clobber)
 

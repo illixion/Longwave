@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld('hotspot', {
   // Returns a data: URL (the CSP permits data: but not file:), or null when there is no art.
   gameArt: (artPath) => ipcRenderer.invoke('game-art', artPath),
 
-  // PCVR services this app supervises itself (broker, sidecar) — no scheduled tasks and
+  // PCVR services this app supervises itself (the broker, plus any the bundle declares) — no scheduled tasks and
   // no console windows. startStack/stopStack also drive the backend's own RPCs, in the one
   // order that works.
   servicesStatus: () => ipcRenderer.invoke('services-status'),

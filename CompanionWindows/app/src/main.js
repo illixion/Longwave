@@ -132,8 +132,8 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 /**
- * Where the host-built PCVR binaries live: the broker, the sidecar injector, and the OpenXR
- * controller-bridge layer DLL. The on-demand download (pcvr-installer.js) is the path a real
+ * Where the host-built PCVR binaries live: the broker, the OpenXR controller-bridge layer DLL,
+ * and any optional services the bundle declares (supervisor.js, services.json). The on-demand download (pcvr-installer.js) is the path a real
  * user install takes; the dev-checkout path is only for building SessionBroker/OpenXRLayer by
  * hand with CMake. LONGWAVE_BRIDGE_ROOT overrides it for a non-standard checkout.
  */
@@ -703,7 +703,7 @@ ipcMain.handle('game-art', async (_e, artPath) => {
   }
 });
 
-// ---- PCVR service supervision (replaces the Longwave-Broker/Sidecar tasks) ----
+// ---- PCVR service supervision (replaces the old per-service scheduled tasks) ----
 ipcMain.handle('services-status', () => (supervisor ? supervisor.status() : {}));
 ipcMain.handle('services-start', (_e, name) =>
   runStackOperation(() => supervisor.startChecked(name)));

@@ -10,7 +10,7 @@ const buildInfo = require('./build-info');
  * App self-update: check, tell the user, and only act when they say so.
  *
  * Notify-only on purpose. This process supervises a live VR session — the broker, the CloudXR
- * service, the sidecar and whatever game is running are all its children — so an update that
+ * service, any bundled host services and whatever game is running are all its children — so an update that
  * downloads and swaps itself in on its own schedule is an update that can end a session
  * someone is wearing. Nothing here downloads a byte until the user clicks.
  *

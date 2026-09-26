@@ -2,8 +2,8 @@
 /**
  * Process supervision for the PCVR host, owned by this app rather than by Windows.
  *
- * It replaces the `Longwave-Broker` / `Longwave-Sidecar` scheduled tasks, each of which
- * ran a `.bat` that redirected to a log file. That arrangement had three faults that cost
+ * It replaces the per-service scheduled tasks, each of which ran a `.bat` that redirected
+ * to a log file. That arrangement had three faults that cost
  * a whole afternoon on 2026-07-28:
  *
  *   1. Every service appeared as a **console window on the desktop**, indistinguishable
@@ -13,7 +13,7 @@
  *      symptom was a black portal and a library that never answered. Nothing on screen
  *      connected the two.
  *   2. The **start order lived in a person's head**. Backend, then the foveated host, then
- *      the CloudXR runtime service, then the broker, then the sidecar. Out of order the broker
+ *      the CloudXR runtime service, then the broker, then anything else. Out of order the broker
  *      fails `xrCreateInstance` with -51 and blames a missing runtime.
  *   3. A scheduled task **outlives the app**, so a service could keep running against a
  *      closed UI, and `Stop-ScheduledTask` was the only way to reach it.
@@ -166,12 +166,91 @@ function firstExisting(candidates) {
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
 
+/**
+ * Optional extra services a PCVR bundle can ship, declared in `<bridgeRoot>\services.json`:
+ *
+ *   { "services": [ { "name": "extra", "title": "Extra", "image": "extra.exe",
+ *                     "args": [], "env": {}, "restart": true, "oneShot": false } ] }
+ *
+ * The file is optional and most bundles have none; absent, empty or malformed all mean "no
+ * extra services", never a failed start. Extras start after the broker, in file order, and
+ * their failure is not fatal to a session; they stop, in reverse, before it. Each entry is
+ * checked hard because this file decides what gets spawned: the image must be a bare .exe
+ * name resolved inside the bridge directory (no paths, so a descriptor cannot point
+ * anywhere else), and the name must not collide with a built-in service.
+ */
+const SERVICES_FILE = 'services.json';
+const BUILTIN_SERVICES = new Set(['broker']);
+
+function loadExtraServices(bridgeRoot, log = () => {}) {
+  if (!bridgeRoot) return [];
+  const file = path.join(bridgeRoot, SERVICES_FILE);
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return [];   // no descriptor file: the normal case
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    log(`${SERVICES_FILE}: not valid JSON (${e.message}); ignoring it`);
+    return [];
+  }
+  const list = parsed && Array.isArray(parsed.services) ? parsed.services : [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of list) {
+    const problem = validateExtraService(entry, seen);
+    if (problem) {
+      log(`${SERVICES_FILE}: skipping an entry (${problem})`);
+      continue;
+    }
+    seen.add(entry.name);
+    out.push({
+      name: entry.name,
+      title: typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim() : entry.name,
+      image: entry.image,
+      args: Array.isArray(entry.args) ? entry.args.slice() : [],
+      env: entry.env && typeof entry.env === 'object' ? { ...entry.env } : {},
+      restart: Boolean(entry.restart),
+      oneShot: Boolean(entry.oneShot),
+    });
+  }
+  return out;
+}
+
+function validateExtraService(entry, seen) {
+  if (!entry || typeof entry !== 'object') return 'not an object';
+  if (typeof entry.name !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(entry.name)) {
+    return 'name must be lower-case letters, digits, "-" or "_"';
+  }
+  if (BUILTIN_SERVICES.has(entry.name) || seen.has(entry.name)) {
+    return `duplicate service name "${entry.name}"`;
+  }
+  if (typeof entry.image !== 'string' || !/^[A-Za-z0-9_.-]+\.exe$/i.test(entry.image)
+      || entry.image.startsWith('.')) {
+    return `"${entry.name}": image must be a bare .exe file name`;
+  }
+  if (entry.args !== undefined
+      && (!Array.isArray(entry.args) || entry.args.some((a) => typeof a !== 'string'))) {
+    return `"${entry.name}": args must be an array of strings`;
+  }
+  if (entry.env !== undefined && (typeof entry.env !== 'object' || Array.isArray(entry.env)
+      || Object.values(entry.env).some((v) => typeof v !== 'string'))) {
+    return `"${entry.name}": env must map names to strings`;
+  }
+  return null;
+}
+
 class Supervisor extends EventEmitter {
   /**
    * @param {object} options
    * @param {string} options.appRoot         the app directory (…\app)
    * @param {string|null} options.backendExe resolved backend executable, for runtime paths
-   * @param {string|null} options.bridgeRoot directory holding the broker + sidecar binaries
+   * @param {string|null} options.bridgeRoot directory holding the broker binaries and any
+   *                                         optional services.json
    */
   constructor({ appRoot, backendExe, bridgeRoot }) {
     super();
@@ -199,7 +278,7 @@ class Supervisor extends EventEmitter {
   }
 
   /**
-   * Re-resolves the CloudXR runtime manifest and the broker/sidecar directory. Both are only
+   * Re-resolves the CloudXR runtime manifest and the bridge directory. Both are only
    * ever computed once at construction, which is exactly wrong for an on-demand PCVR install:
    * the Supervisor is built at app startup, before the user has downloaded anything, so a
    * successful download has to push the newly-discoverable paths in rather than wait for a
@@ -292,7 +371,7 @@ class Supervisor extends EventEmitter {
   #defineServices() {
     const bridge = this.bridgeRoot;
     const bin = (name) => (bridge ? [path.join(bridge, name)] : []);
-    return {
+    const services = {
       broker: {
         title: 'Session broker',
         image: 'LongwaveSessionBroker.exe',
@@ -332,28 +411,24 @@ class Supervisor extends EventEmitter {
         // portal, so bring it straight back.
         restart: true,
       },
-      sidecar: {
-        title: 'Sidecar',
-        image: 'sidecar_inject.exe',
-        exe: () => firstExisting(bin('sidecar_inject.exe')),
-        /* --watch, and this is the difference between working and appearing to.
-           `CloudXrService` is not our child: the backend starts NvStreamManager, which spawns
-           the service over RPC, and it is respawned per streaming session — more than once per
-           boot, without us being told. A single injection at stack start therefore patches the
-           service that happens to exist at that moment and nothing after it, so every session
-           past the first ran unpatched while the UI reported the sidecar healthy. Resident mode
-           polls once a second and injects into any CloudXrService lacking sidecar.dll;
-           InjectOnce is idempotent, so it needs no state of its own. */
-        args: ['--watch'],
-        env: () => ({}),
-        /* A watcher that dies takes the fix with it for every later session, and it is cheap to
-           restart (it injects into an already-running service, so nothing else has to bounce). */
-        restart: true,
-        /* No longer a one-shot: in --watch mode a clean exit is the failure — it means nothing
-           is left looking for the next service. Health is "the process is alive" again. */
-        oneShot: false,
-      },
     };
+    /* Whatever the installed bundle declares on top (see loadExtraServices). Kept in file
+       order, which is also their start order. */
+    this.extraServiceNames = [];
+    for (const extra of loadExtraServices(bridge, (m) => this.emit('log', m))) {
+      const { name, image, env } = extra;
+      services[name] = {
+        title: extra.title,
+        image,
+        exe: () => firstExisting(bin(image)),
+        args: extra.args,
+        env: () => ({ ...env }),
+        restart: extra.restart,
+        oneShot: extra.oneShot,
+      };
+      this.extraServiceNames.push(name);
+    }
+    return services;
   }
 
   /** Names of every service this supervisor knows about. */
@@ -364,7 +439,7 @@ class Supervisor extends EventEmitter {
   /**
    * Per-service state, including `healthy` — the single question the UI should ask.
    * For a long-running service that means the process is alive; for a one-shot it means
-   * it ran and exited zero, because that is what "the hook is installed" looks like.
+   * it ran and exited zero, because that is what a one-shot's success looks like.
    */
   status() {
     const out = {};
@@ -474,7 +549,7 @@ class Supervisor extends EventEmitter {
       this.running.delete(name);
       this.exits.set(name, { code, at: Date.now(), restarts: entry.restarts });
       this.emit('log', definition.oneShot && code === 0
-        ? `${definition.title} finished (hook installed)`
+        ? `${definition.title} finished`
         : `${definition.title} exited (code ${code})`);
       this.emit('changed', this.status());
 
@@ -607,10 +682,12 @@ class Supervisor extends EventEmitter {
     steps.push({ step: 'session broker', ok: broker.ok, detail: broker.detail });
     if (!broker.ok) return fail();
 
-    // The sidecar attaches to the running CloudXR service, so it goes last and its failure
-    // is not fatal to a session — you lose the sidecar, not the stream.
-    const gaze = await this.startChecked('sidecar');
-    steps.push({ step: 'sidecar', ok: gaze.ok, detail: gaze.detail });
+    // Bundle-declared extras go last and their failure is not fatal to a session — you lose
+    // that service, not the stream.
+    for (const name of this.extraServiceNames) {
+      const extra = await this.startChecked(name).catch((e) => ({ ok: false, detail: e.message }));
+      steps.push({ step: this.definitions[name].title, ok: extra.ok, detail: extra.detail });
+    }
     return { ok: true, steps };
   }
 
@@ -685,10 +762,10 @@ class Supervisor extends EventEmitter {
       this.emit('log', `Could not stop the launched PCVR game: ${e.message}`);
     }
 
-    await this.stopAndWait('sidecar');
+    for (const name of [...this.extraServiceNames].reverse()) await this.stopAndWait(name);
     await this.stopAndWait('broker');
     // A one-shot's recorded success must not outlive the stack it was part of, or the UI
-    // keeps reporting the hook as installed after CloudXR has gone away with it.
+    // keeps reporting it done after CloudXR has gone away.
     for (const [name, definition] of Object.entries(this.definitions)) {
       if (definition.oneShot) this.exits.delete(name);
     }
@@ -721,4 +798,4 @@ class Supervisor extends EventEmitter {
   }
 }
 
-module.exports = { Supervisor, resolveCloudXrRuntimeJson };
+module.exports = { Supervisor, resolveCloudXrRuntimeJson, loadExtraServices };

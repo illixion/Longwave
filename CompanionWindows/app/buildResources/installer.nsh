@@ -71,7 +71,7 @@ Function PcvrOptInPageCreate
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 34u "Longwave can stream PC VR to Apple Vision Pro with gaze-driven foveated rendering. That component is closed source and is not included here — the app downloads it separately, verifies its signature, and installs it for you."
+  ${NSD_CreateLabel} 0 0 100% 34u "Longwave can stream PC VR to Apple Vision Pro with foveated rendering. That component is closed source and is not included here — the app downloads it separately, verifies its signature, and installs it for you."
   Pop $0
 
   ${NSD_CreateCheckbox} 0 40u 100% 12u "Set up PCVR support on first launch (about 300 MB)"

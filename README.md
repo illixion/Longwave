@@ -2,7 +2,7 @@
 
 A native remote desktop and PC VR app for Apple Vision Pro, built in Swift with SwiftUI. — [longwave.pro](https://longwave.pro)
 
-Longwave puts your Mac and your PC in the headset: **native Mac streaming**, a full **VNC viewer**, uncompressed **system audio**, an **SSH terminal** with Claude Code and Copilot agents, **RTSP broadcast**, **Moonlight** game streaming, and **PCVR** — SteamVR and OpenXR titles streamed from a Windows PC over NVIDIA CloudXR, rendered foveated on the host by your real gaze.
+Longwave puts your Mac and your PC in the headset: **native Mac streaming**, a full **VNC viewer**, uncompressed **system audio**, an **SSH terminal** with Claude Code and Copilot agents, **RTSP broadcast**, **Moonlight** game streaming, and **PCVR** — SteamVR and OpenXR titles streamed from a Windows PC over NVIDIA CloudXR, rendered foveated on the host.
 
 ## Editions
 
@@ -59,13 +59,12 @@ Everything in Longwave is free except one thing. PCVR is free to try with **unli
 ### PCVR — Foveated Streaming (CloudXR)
 
 - Play SteamVR and OpenXR titles from a Windows PC with an NVIDIA RTX card, in a fully immersive space on the Vision Pro
-- **Foveated on the host, by your real gaze.** Your eye tracking is carried to the PC and the *game* renders foveated — full detail where you look, less work in the periphery. Stock CloudXR hands games no eye tracking at all, so they render uniformly and the GPU pays for pixels you cannot resolve; supplying it is why a given card holds a higher frame rate here
+- **Foveated on the host.** The *game* can render foveated — full detail at the centre of each eye's view, less work in the periphery, where the stream carries the least detail anyway — instead of paying for every pixel uniformly. Foveation that follows your eyes on the PC is planned, through Apple's foveated streaming support
 - **No IP to type** — the PC advertises itself over Bonjour and the headset finds it. Entering an address by hand is there as a fallback for networks that block discovery
 - **Hands are the controller.** Hand tracking and pinch gestures reach the PC as a pair of Valve Index controllers; a paired Switch Pro or Quest controller is optional, and its motion is attributed to whichever hand is actually holding it
 - **Your desktop, in VR** — put the PC's screen on a panel you can point at, click, and move like any other window, without leaving the game
 - **Your voice, too.** The headset microphone shows up on the PC as an ordinary recording device named "NVIDIA CloudXR", so voice chat and any game that wants a real microphone just pick it from the list. Needs NVIDIA's CloudXR audio driver, installed with one click from the Companion's PCVR tab
 - Wrist HUD on a raised palm: quit the running title, show the desktop, or switch between emulated controllers and bare hands
-- **VRChat eye tracking** — opt in on the PC and the same gaze that foveates the render also drives your avatar's eyes, over VRChat's OSC eye-look override. Off by default, because it takes over the eye channel from any other OSC eye-tracking app
 - **Stream quality lever** — Performance / Balanced / Quality on the PC. Each step asks for more pixels to render and encode, so stepping down is the first thing to try when a heavy title stutters
 - **Remote play over Tailscale** — the companion can advertise its tailnet address instead of a LAN one, for a PC at home or a cloud GPU host; the headset connects by IP over Tailscale. Needs a direct WireGuard path (the companion warns when the connection is being relayed, which can't carry this much video)
 - Game library browsed and launched from the headset
@@ -271,7 +270,7 @@ On the headset, the Broadcast tab starts the camera stream; the **Mirror My View
 `CompanionWindows/` is a general-purpose Windows companion app with one Electron UI and elevated .NET backend. It currently provides two features:
 
 - **Wi-Fi Hotspot** for **using a Vision Pro with a Windows machine in public** — cafés, hotels, conference Wi-Fi, anywhere the two devices can't reach each other on the shared network.
-- **Foveated Streaming (CloudXR) host** that advertises this PC to Vision Pro, manages the foveated-streaming session, and drives the NVIDIA CloudXR runtime for desktop OpenXR content — including carrying the headset's real gaze through to the game, so rendering is foveated on the PC rather than uniform.
+- **Foveated Streaming (CloudXR) host** that advertises this PC to Vision Pro, manages the foveated-streaming session, and drives the NVIDIA CloudXR runtime for desktop OpenXR content, with the game's rendering foveated on the PC rather than uniform.
 
 For Hotspot, normally VNC and Moonlight need both devices on the same LAN, and most public Wi-Fi blocks client-to-client traffic (AP isolation) — so streaming simply doesn't work. The companion turns the **Windows host into its own NAT'd Wi-Fi access point** that the Vision Pro joins directly. From the venue's perspective there's a single client (the Windows PC); the headset rides *behind the PC's NAT*, so it keeps internet **and** gets a direct, low-latency path to the local Sunshine/VNC server at the gateway (`192.168.137.1`). The visionOS app auto-fills that gateway as the host when it detects it's on such a network.
 

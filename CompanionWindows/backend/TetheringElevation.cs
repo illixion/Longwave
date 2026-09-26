@@ -16,7 +16,7 @@ namespace Longwave.WindowsCompanion.Backend;
 // actively harmful — the OpenXR loader ignores XR_RUNTIME_JSON in an elevated process, so the
 // machine registry default had to be CloudXR purely to steer the broker, which is the default
 // games want for themselves. Elevation also forced games to be launched de-elevated by hand and
-// forced an explicit DACL on the gaze-pivot shared section.
+// forced an explicit DACL on a shared section games read.
 //
 // So the backend now runs asInvoker and the hotspot elevates on demand: the first mutating
 // tethering call spawns this same executable with `--tether-host` through ShellExecute "runas",

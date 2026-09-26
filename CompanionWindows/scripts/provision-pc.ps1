@@ -454,12 +454,12 @@ if ($pcvrHostHasSource) {
   }
 }
 
-# The broker and the sidecar are the companion app's own children now (app/src/supervisor.js),
-# so their tasks are removed rather than left as a second way to start the same thing. Two
+# The broker (and any service the PCVR bundle declares) is the companion app's own child now
+# (app/src/supervisor.js), so its task is removed rather than left as a second way to start it. Two
 # mechanisms is not a fallback, it is a trap: a task-started broker holds logs\broker.log open,
 # so the app's attempt to start its own fails on the log, exits, gets restarted, and the restart
 # counter climbs while a perfectly good session carries on running behind it. Observed 2026-07-28.
-foreach ($obsolete in @('Longwave-Broker', 'Longwave-Sidecar')) {
+foreach ($obsolete in @('Longwave-Broker')) {
   if (Get-ScheduledTask -TaskName $obsolete -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $obsolete -Confirm:$false -ErrorAction SilentlyContinue
     Say ("removed obsolete task " + $obsolete + " (the companion app supervises this now)")
@@ -514,8 +514,7 @@ foreach ($rule in @(
 # -------------------------------------------------- diagnostic env vars OFF
 # NV_CXR_ENABLE_FOVEATION_VISUALIZATION draws CloudXR's foveal inset as a yellow
 # rectangle over everything, which makes judging image quality by eye impossible. It
-# was useful once for proving the fovea tracks gaze; the broker now logs the pivot
-# numerically, so it is pure noise. Asserted off rather than merely "not set": it was
+# was useful once during bring-up and is pure noise now. Asserted off rather than merely "not set": it was
 # turned on by hand during bring-up and left on for days, and nothing about the
 # symptom (a box on screen) points at an environment variable. Read at process start,
 # so clearing it takes effect on the next broker start.

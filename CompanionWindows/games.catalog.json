@@ -22,7 +22,7 @@
     "",
     "CONSEQUENCE TO BE AWARE OF. Launching through Steam means we cannot inject per-game environment",
     "variables, so LONGWAVE_CB_LAYER_DISABLE can no longer be set per title and our API layer is",
-    "always active. That is what gaze-driven foveation needs, but the ovrshim titles previously used",
+    "always active. That is what the layer's foveation needs, but the ovrshim titles previously used",
     "that flag to avoid controller double-injection. The replacement must be a registry setting",
     "(HKCU\\Software\\Longwave\\ControllerBridge already exists for calibration), not an env var."
   ],
@@ -81,7 +81,7 @@
         "VDXR like any game and renders through the broker — no environment, nothing special. As a",
         "SUBSTITUTE for the broker as the CloudXR application it needs XR_RUNTIME_JSON pointed at",
         "CloudXR explicitly and must not run alongside a live broker; that is the Longwave-HelloXR",
-        "scheduled task, and it is the control that exonerated the broker during the pivot-dropout",
+        "scheduled task, and it is the control that exonerated the broker during an earlier streaming",
         "investigation."
       ]
     }

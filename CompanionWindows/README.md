@@ -6,10 +6,10 @@ only when you turn it on (see [Elevation](#elevation)):
 
 1. **Foveated Streaming (CloudXR) host** — advertises the PC over Bonjour as an Apple
    Foveated-Streaming host, runs the session-management TCP protocol, and drives the NVIDIA
-   CloudXR runtime so the Vision Pro can stream desktop OpenXR content. Foveation happens
-   **here, on the PC, from the headset's real gaze** — the game renders foveated rather than
-   uniformly, which stock CloudXR cannot do because it exposes no eye tracking to games. The
-   same gaze can optionally drive VRChat's avatar eyes over OSC. Needs an NVIDIA RTX GPU —
+   CloudXR runtime so the Vision Pro can stream desktop OpenXR content. The game's own
+   rendering can be foveated **here, on the PC** — full detail at the centre of the view, less
+   in the periphery — rather than uniform; foveation that follows the eyes is planned, through
+   Apple's foveated streaming support. Needs an NVIDIA RTX GPU —
    CloudXR supports 40-series and newer, and reports anything older as unsupported, but a
    30-series card does work with less headroom (developed against a 3080). See
    [Foveated Streaming (CloudXR) host](#foveated-streaming-cloudxr-host).

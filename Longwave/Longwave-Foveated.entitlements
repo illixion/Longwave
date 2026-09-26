@@ -1,19 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  TEMPLATE — not used by any build target.
+  App Store edition only. scripts/edition-settings.sh appstore points the app
+  target at this file through LONGWAVE_APP_ENTITLEMENTS; every other edition
+  signs with Longwave.entitlements, so a team whose App ID lacks the
+  foveated-streaming capability can still build the open-source app.
 
-  Enabling FOVEATED_ENABLED requires the foveated-streaming entitlement at run
-  time. It is intentionally kept OUT of the shared Longwave.entitlements so that
-  ordinary (VNC-only) device builds keep working for a team without the
-  capability. To turn the feature on, either:
-    • Xcode → Signing & Capabilities → add the capability (edits the real
-      .entitlements), or
-    • merge the key below into the entitlements used for signing / the
-      provisioning profile (build-and-sign.sh takes entitlements from the
-      profile, so a profile that includes this capability needs no file edit).
-
-  Also keep the app-group entitlement already present in Longwave.entitlements.
+  Keep the app group in step with Longwave.entitlements.
 -->
 <plist version="1.0">
 <dict>

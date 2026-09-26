@@ -72,6 +72,11 @@ case "$edition" in
         # FoveatedStreaming is 26.4+. Raising the floor for every edition would
         # cost the OSS build two OS versions of reach for a feature it lacks.
         echo 'XROS_DEPLOYMENT_TARGET=26.4'
+        # The app target alone signs with the foveated-streaming-session
+        # capability. A variable rather than CODE_SIGN_ENTITLEMENTS itself: a
+        # command-line CODE_SIGN_ENTITLEMENTS would also land on the embedded
+        # broadcast extension, whose App ID does not carry the capability.
+        echo 'LONGWAVE_APP_ENTITLEMENTS=Longwave/Longwave-Foveated.entitlements'
         ;;
     *)
         echo "usage: $(basename "$0") {oss|oss-moonlight|appstore}" >&2

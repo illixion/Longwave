@@ -95,6 +95,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		CCBB00000000000000000041 /* Exceptions for "BroadcastExtension" folder in "LongwaveBroadcast" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
+		};
 		1DC83C352F74524300BF0482 /* Exceptions for "Longwave" folder in "Longwave" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -221,6 +228,9 @@
 		};
 		CCBB00000000000000000003 /* BroadcastExtension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				CCBB00000000000000000041 /* Exceptions for "BroadcastExtension" folder in "LongwaveBroadcast" target */,
+			);
 			path = BroadcastExtension;
 			sourceTree = "<group>";
 		};
@@ -516,6 +526,7 @@
 			buildPhases = (
 				CCBB00000000000000000006 /* Sources */,
 				CCBB00000000000000000007 /* Frameworks */,
+				CCBB00000000000000000040 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -659,6 +670,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		DD1010000000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CCBB00000000000000000040 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (

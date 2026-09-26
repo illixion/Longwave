@@ -20,6 +20,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>GCSupportedGameControllers</key>
 	<array>
 		<dict>
@@ -42,7 +44,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Longwave broadcasts your selected camera (such as Persona or Mirror My View) to your streaming server.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Longwave uses your microphone to dictate messages into terminal sessions, to include it in the broadcast stream, and to send your voice to the PC during a PCVR session.</string>
+	<string>Longwave uses your microphone to dictate into terminal sessions, to include your voice in broadcasts you start, and to pass your voice to games on your PC during PCVR sessions.</string>
 	<!-- Dictation transcribes on device via SpeechAnalyzer, which documents no
 	     authorization step of its own. The key is declared anyway: it is the same
 	     framework SFSpeechRecognizer gates on, and an API that asks for consent
@@ -65,10 +67,12 @@
 		<string>_longwave-native._tcp</string>
 		<string>_apple-foveated-streaming._tcp</string>
 	</array>
+	<!-- Internet traffic (Claude and GitHub sign-in) is HTTPS. The one plain-HTTP
+	     request is the PCVR host's status endpoint on the user's own PC, addressed
+	     by IP or .local name, which local networking covers. VNC, SSH, the
+	     Companion links and RTSP are raw sockets, outside ATS. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>

@@ -169,6 +169,9 @@ struct ControllerBridgeRendezvous: Equatable {
     /// at all (sealing into a process without the key would drop every packet
     /// silently, and plaintext input is not something to put on a LAN).
     var sealsInput: Bool
+    /// The host ingests 0x10 tracked controllers (`CB_RDV_FLAG_TRACKED_CONTROLLERS`).
+    /// Without it the headset never sends one — an older host would drop the packet.
+    var acceptsTrackedControllers: Bool
     /// Every local IPv4 the host has, LAN first then tailnet. The host cannot know
     /// which one this headset can reach, so the client probes them in order.
     var endpoints: [String]
@@ -177,6 +180,7 @@ struct ControllerBridgeRendezvous: Equatable {
     static let size = 224           // minimum (pre-control_port hosts)
     static let sizeWithControlPort = 226
     private static let flagSealedInput: UInt8 = 1 << 1
+    private static let flagTrackedControllers: UInt8 = 1 << 2
     private static let maxEndpoints = 4
     private static let addrLen = 46
 
@@ -187,6 +191,7 @@ struct ControllerBridgeRendezvous: Equatable {
 
         let count = min(Int(b[2]), Self.maxEndpoints)
         sealsInput = (b[3] & Self.flagSealedInput) != 0
+        acceptsTrackedControllers = (b[3] & Self.flagTrackedControllers) != 0
         inputPort = UInt16(b[4]) | (UInt16(b[5]) << 8)
         libraryPort = UInt16(b[6]) | (UInt16(b[7]) << 8)
         controlPort = data.count >= Self.sizeWithControlPort

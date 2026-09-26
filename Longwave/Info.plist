@@ -36,7 +36,7 @@
 		</dict>
 	</array>
 	<!-- Same failure mode as NSHandsTrackingUsageDescription below: the bridge's
-	     SpatialAccessoryTracker requests .accessoryTracking authorization when a
+	     RAVESpatialAccessorySource requests .accessoryTracking authorization when a
 	     spatial controller connects, and ARKit SIGABRTs on a request whose usage
 	     string is missing rather than denying it. -->
 	<key>NSAccessoryTrackingUsageDescription</key>
@@ -52,8 +52,12 @@
 	     denied. -->
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Longwave transcribes your speech on this device to type messages into terminal sessions.</string>
+	<!-- Also covers the PCVR controller bridge's Quest listener: RAVEQuestBridgeSource
+	     receives a Quest's controllers on UDP 9520 and advertises
+	     _controllerbridge._udp (see NSBonjourServices), and without this key the
+	     listener silently hears nothing. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Longwave connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network.</string>
+	<string>Longwave connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network, and receives controllers from a Meta Quest running Controller Bridge.</string>
 	<!-- Required by the controller bridge: ControllerBridgeSender calls
 	     ARKitSession.requestAuthorization(for: [.handTracking]) to drive emulated VR
 	     controllers from hand tracking. Without this key ARKit does not merely deny the
@@ -66,6 +70,9 @@
 	<array>
 		<string>_longwave-native._tcp</string>
 		<string>_apple-foveated-streaming._tcp</string>
+		<!-- Advertised while "Quest controllers" is on, so the Quest's Controller
+		     Bridge app finds this headset by name with nothing typed. -->
+		<string>_controllerbridge._udp</string>
 	</array>
 	<!-- Internet traffic (Claude and GitHub sign-in) is HTTPS. The one plain-HTTP
 	     request is the PCVR host's status endpoint on the user's own PC, addressed

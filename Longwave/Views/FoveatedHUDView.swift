@@ -17,6 +17,7 @@
 
 #if FOVEATED_ENABLED
 import RAVEDiagnostics
+import RAVEInput
 import SwiftUI
 import QuartzCore
 
@@ -130,7 +131,7 @@ struct FoveatedHUDView: View {
     // MARK: Bandwidth
 
     /// Fresh 0x0E or nothing, same "a dead feed reads as absent, not as stale good
-    /// news" rule as `quest` above — and absent entirely when the host reports
+    /// news" rule as `perf` — and absent entirely when the host reports
     /// monitoring off, which is the expected state on an unmetered LAN PC.
     private var bandwidth: ControllerBridgeBandwidth? {
         guard let bridge, let bw = bridge.bandwidth,
@@ -487,9 +488,9 @@ struct FoveatedHUDView: View {
         }
     }
 
-    /// One chip per battery anyone can see: the locally paired pads (a fraction and
-    /// a charging state, from GameController) and the desk-Quest's controllers (a
-    /// whole percent off the 0x0D status, no charging state — the Quest cannot tell).
+    /// One chip per battery anyone can see: the locally paired pad (a fraction and a
+    /// charging state, from GameController) and any forwarded Sense or Quest Touch
+    /// controllers (a whole percent, no charging state — a Quest cannot tell).
     private struct BatteryChip: Identifiable {
         let id: String
         let label: String
@@ -498,99 +499,65 @@ struct FoveatedHUDView: View {
     }
 
     private var batteryChips: [BatteryChip] {
-        var chips = (bridge?.batteryReadouts ?? []).map {
+        (bridge?.batteryReadouts ?? []).map {
             BatteryChip(id: $0.id,
                         label: $0.label,
                         percent: Int(($0.level * 100).rounded()),
                         charging: $0.charging)
         }
-        /// nil is the norm rather than an error here: a controller that is off, or a
-        /// Quest app that was never granted the permission it needs to read the
-        /// levels, both simply contribute no chip.
-        if let quest {
-            if let left = quest.batteryLeft {
-                chips.append(BatteryChip(id: "quest-left", label: "quest L",
-                                         percent: left, charging: false))
-            }
-            if let right = quest.batteryRight {
-                chips.append(BatteryChip(id: "quest-right", label: "quest R",
-                                         percent: right, charging: false))
-            }
-        }
-        return chips
     }
 
-    // MARK: Desk-Quest controllers
+    // MARK: Quest controllers
 
-    /// Fresh 0x0D or nothing: like `perf`, a dead feed must read as absent — "aligned"
-    /// from a broker that has since restarted is exactly the confident-stale-number
-    /// failure this panel exists to avoid.
-    private var quest: ControllerBridgeQuestStatus? {
-        guard let bridge, let status = bridge.questStatus,
-              CACurrentMediaTime() - bridge.questStatusReceivedAt < 3
-        else { return nil }
-        return status
+    /// The headset's own Quest source, read directly — the PC no longer knows Quests
+    /// exist. Polled at the HUD's redraw rate; `status` is a cheap locked snapshot.
+    private var questLine: (text: String, tone: QuestControllerStatusText.Tone) {
+        QuestControllerStatusText.detail(enabled: bridge?.questControllersEnabled == true,
+                                         status: bridge?.questSource?.status,
+                                         startError: bridge?.questStartError)
     }
 
-    /// Appears only when a QuestControllerBridge headset is actually on the network —
-    /// the host starts the feed on its first 0x01 packet. This is the assisted
-    /// calibration the desk-Quest never had: live progress while waving, a residual
-    /// once solved, and the enable/disable consent in the same place.
+    /// Always offered while a session runs: turning it on is what makes this headset
+    /// listen for a Quest at all, so the switch cannot wait for one to appear. Live
+    /// progress while waving, a residual once solved, and recalibrate in the same place.
     @ViewBuilder
     private var questSection: some View {
-        if let quest {
+        if let bridge {
+            let line = questLine
             Divider()
             HStack(spacing: 10) {
                 Image(systemName: "gamecontroller")
-                    .foregroundStyle(quest.state == .calibrated ? .green : .secondary)
+                    .foregroundStyle(line.tone == .good ? .green : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Quest controllers")
                         .font(.subheadline.weight(.semibold))
-                    Text(questDetailText(quest))
+                    Text(line.text)
                         .font(.caption)
-                        .foregroundStyle(quest.state == .lost ? .orange : .secondary)
+                        .foregroundStyle(line.tone == .warning ? .orange : .secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                if bridge.questControllersEnabled, line.tone == .good {
+                    Button {
+                        bridge.recalibrateQuestControllers()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel("Recalibrate")
+                }
                 Button {
-                    guard let bridge else { return }
                     bridge.setQuestControllers(!bridge.questControllersEnabled)
                 } label: {
-                    Text(bridge?.questControllersEnabled == true ? "off" : "use")
+                    Text(bridge.questControllersEnabled ? "off" : "use")
                         .font(.caption2)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .tint(bridge?.questControllersEnabled == true ? .accentColor : nil)
-                .disabled(bridge == nil)
+                .tint(bridge.questControllersEnabled ? .accentColor : nil)
             }
-        }
-    }
-
-    private func questDetailText(_ quest: ControllerBridgeQuestStatus) -> String {
-        switch quest.state {
-        case .seen:
-            return "Detected on the network — tap \u{201C}use\u{201D} to calibrate."
-        case .collecting:
-            // Spread is the number that actually blocks the solve, so the nag is
-            // keyed to it: pair count alone rises fine with a resting hand.
-            if quest.spreadMeters < quest.spreadTargetMeters {
-                return String(format: "Hold the controllers and wave your arms — spread %.0f of %.0f cm.",
-                              quest.spreadMeters * 100, quest.spreadTargetMeters * 100)
-            }
-            return "Calibrating: \(quest.sampleCount) of \(quest.sampleTarget) pairs…"
-        case .calibrated:
-            var text = String(format: "Aligned, ±%.0f mm.", quest.residualMm)
-            if quest.flags.contains(.warmStart) {
-                text += " Restored from last session — confirming."
-            }
-            if !quest.flags.contains(.leftTracked) || !quest.flags.contains(.rightTracked) {
-                let missing = quest.flags.contains(.leftTracked) ? "right" : "left"
-                text += " The \(missing) controller is not tracked."
-            }
-            return text
-        case .lost:
-            return "Signal lost — is the Quest awake with its cameras facing you?"
         }
     }
 

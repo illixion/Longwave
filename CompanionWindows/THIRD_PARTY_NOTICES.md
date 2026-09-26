@@ -120,11 +120,11 @@ under the Oculus runtime's own filename because that filename is what the loader
 for. No Oculus/Meta binary is redistributed — only headers are consumed, at build time.
 
 Why this project touches the Oculus SDK at all, since it is not obvious from the visionOS
-side: **the same controller-bridge protocol serves a Meta Quest**. `QuestControllerBridge`
-is a real, shipped Quest application — the Quest's own controllers are tracked by the Quest
-and handed to the host as emulated controllers, which is the origin of the whole bridge
-design and remains a supported configuration, including its cleartext path for a Quest 2 on
-a local network. Development for Meta hardware is exactly the use the Oculus PC SDK license
+side: the PC-side runtime games use here (VDXR) reaches its headset through the LibOVR C API,
+so the shim presents the Vision Pro's hands and controllers — Meta Quest Touch controllers
+among them, streamed from a Quest by the Controller Bridge app to the headset and forwarded
+from there — through that interface. The controller bridge itself began as a Quest
+application, and development for Meta hardware is exactly the use the Oculus PC SDK license
 contemplates.
 
 `OVR_CAPI.h` is a stable, published C interface. Nothing here is derived from Oculus

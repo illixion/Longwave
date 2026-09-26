@@ -1,11 +1,13 @@
 //  ControllerBridgeProtocol.swift
 //
 //  Swift mirror of `OpenXRLayer/protocol/controller_bridge_protocol.h`
-//  (the v2, 0x03 packet). The C header is the authoritative contract shared
-//  with the host — the OpenXR API layer and the session broker; this file
-//  reproduces the layout for the visionOS
-//  sender. The fixed sizes here (120-byte input packet, 14-byte haptic packet)
-//  MUST match the C `static_assert`s — if you change one, change both.
+//  (the v2 packets and the v3 0x10 tracked controllers). The C header is the
+//  authoritative contract shared with the host — the OpenXR API layer and the
+//  session broker; this file reproduces the layout for the visionOS sender. The
+//  fixed sizes here (120-byte input packet, 144-byte tracked controllers, 14-byte
+//  haptic packet) MUST match the C `static_assert`s — if you change one, change
+//  both. LongwaveTests pins the 0x10 bytes against the same golden vector the
+//  host's bridge_tests decodes.
 //
 //  Gated behind FOVEATED_ENABLED (the controller bridge accompanies a PCVR
 //  foveated session).
@@ -16,7 +18,13 @@ import RAVEInput
 import simd
 
 enum ControllerBridgeProtocol {
+    /// The version byte every v2-era packet carries. It cannot move: the sealed
+    /// envelope, the library header and the rendezvous compare it for equality on
+    /// both ends. Version bytes are per packet type — see `version3`.
     static let version: UInt8 = 2
+    /// The first packet stamped v3 is 0x10 (`ControllerBridgeTrackedControllers`),
+    /// sent only to a host whose rendezvous announces it.
+    static let version3: UInt8 = 3
     static let portInput: UInt16 = 9520    // sender → driver
     static let portHaptic: UInt16 = 9521   // driver → sender (legacy UDP return path)
     /// TCP. Everything that is not hand tracking: the game library, the perf feed,
@@ -31,9 +39,12 @@ enum ControllerBridgeProtocol {
     static let packetTelemetry: UInt8 = 0x07    // host → headset, alignment readout
     static let packetDebugTune: UInt8 = 0x08    // headset → host, alignment nudges
     static let packetPerf: UInt8 = 0x0C         // host → headset, frame pacing + residual
-    static let packetQuestStatus: UInt8 = 0x0D  // host → headset, desk-Quest calibration
+    /// Reserved: the retired host-side desk-Quest status. Nothing sends it; the HUD
+    /// reads the headset's own `RAVEQuestBridgeSource` instead.
+    static let packetQuestStatusReserved: UInt8 = 0x0D
     static let packetBandwidth: UInt8 = 0x0E        // host → headset, monthly usage + thresholds
     static let packetBandwidthControl: UInt8 = 0x0F // headset → host, threshold edits + reset
+    static let packetTrackedControllers: UInt8 = 0x10 // headset → host, v3, Sense / Quest Touch
     static let perfFrameSlots = 32   // cb_perf_t.frame_us capacity
     static let handJointCount = 26   // XR_EXT_hand_tracking joint order
 
@@ -238,10 +249,11 @@ struct ControllerBridgeDebugTune: Equatable {
         /// One-shot: close whatever is submitting frames. Never stored, only inserted for
         /// a single packet (see `ControllerBridgeSender.requestStopActiveClient`).
         static let stopClient = Flags(rawValue: 1 << 5)
-        /// Consume the desk-Quest's cleartext controllers during this sealed session.
-        /// The 0x01 path is unauthenticated by design, so the host holds those packets
-        /// until WE — the authenticated peer — say they are ours. Latched.
-        static let questControllers = Flags(rawValue: 1 << 6)
+        /// Reserved, never set: the retired consent bit for the host consuming a
+        /// desk-Quest's cleartext controllers. Consent is now simply whether this app
+        /// listens for a Quest at all, and its controllers go out as 0x10. The bit
+        /// stays wire layout — `desktopQuad` sits above it.
+        static let retiredQuestControllers = Flags(rawValue: 1 << 6)
         /// Show the desktop panel in the home view. Latched, but the host acts on a
         /// *change* rather than on the value: the desktop companion holds the same
         /// setting, and this packet is resent a few times a second, so a latched value
@@ -426,72 +438,78 @@ struct ControllerBridgePerf {
     }
 }
 
-/// The 0x0D desk-Quest status (`cb_quest_status_t`, 28 bytes) the host ships at 10 Hz
-/// while a QuestControllerBridge headset has been heard from. This is the feedback
-/// side of broker-assisted calibration: the HUD renders these fields directly, from
-/// "detected" through "collecting — keep moving" to "aligned ±N mm".
-struct ControllerBridgeQuestStatus {
-    enum State: UInt8 {
-        case seen = 1          // packets arriving, not enabled by the user
-        case collecting = 2    // enabled, gathering calibration pairs
-        case calibrated = 3    // solved; poses are reaching the game
-        case lost = 4          // enabled but the Quest's packets went stale
-    }
-    struct Flags: OptionSet {
+/// One side of the 0x10 packet (`cb_tracked_controller_t`, 64 bytes): a real controller
+/// the headset already knows the pose of, registered in the same ARKit world as the 0x03
+/// wrists and shaped as an OpenXR grip pose, plus the headset's verdict on whether it is
+/// in the user's hand. See `TrackedControllerForwarding` for how one is filled.
+struct ControllerBridgeTrackedController: Equatable {
+    struct Flags: OptionSet, Equatable {
         let rawValue: UInt8
-        static let leftTracked = Flags(rawValue: 1 << 0)
-        static let rightTracked = Flags(rawValue: 1 << 1)
-        /// The transform was restored from a previous run and fresh pairs have not
-        /// confirmed it yet.
-        static let warmStart = Flags(rawValue: 1 << 2)
-        /// The Quest is able to read its controller batteries — see `batteryLeft`.
-        static let battery = Flags(rawValue: 1 << 3)
+        static let present    = Flags(rawValue: 1 << 0)
+        static let tracked    = Flags(rawValue: 1 << 1)
+        static let inHand     = Flags(rawValue: 1 << 2)
+        static let touchValid = Flags(rawValue: 1 << 3)
+        static let angularVelocity = Flags(rawValue: 1 << 4)
+    }
+    enum Source: UInt8 {
+        case unknown = 0
+        case quest = 1
+        case sense = 2
+    }
+    static let batteryUnknown: UInt8 = 0xFF
+
+    var position: SIMD3<Float> = .zero
+    var orientation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    var angularVelocity: SIMD3<Float> = .zero
+    var trigger: Float = 0
+    var grip: Float = 0
+    var stick: SIMD2<Float> = .zero
+    /// `RAVEControllerButtons` raw value, bit for bit (`CB_TC_BTN_*`).
+    var buttons: UInt32 = 0
+    var flags: Flags = []
+    var source: Source = .unknown
+    var battery: UInt8 = ControllerBridgeTrackedController.batteryUnknown
+
+    /// No controller on this side: every field zero except the identity rotation and
+    /// the unknown battery, which is what the host reads as "leave this side alone".
+    static let absent = ControllerBridgeTrackedController()
+
+    /// Held and ready to override this side's controls.
+    var isHeld: Bool { flags.isSuperset(of: [.present, .inHand]) }
+    /// Held and tracked: overrides this side's pose too.
+    var ownsPose: Bool { isHeld && flags.contains(.tracked) }
+}
+
+/// The 0x10 tracked-controllers packet (`cb_tracked_controllers_t`, 144 bytes, sealed,
+/// latest-wins, v3). Sent beside 0x03 only to a host that announces
+/// `ControllerBridgeRendezvous.acceptsTrackedControllers`.
+struct ControllerBridgeTrackedControllers: Equatable {
+    var sequence: UInt8 = 0
+    /// Headset monotonic clock (mach-derived), nanoseconds.
+    var timestampNs: UInt64 = 0
+    var left: ControllerBridgeTrackedController = .absent
+    var right: ControllerBridgeTrackedController = .absent
+
+    subscript(hand: BridgeHand) -> ControllerBridgeTrackedController {
+        get { hand == .left ? left : right }
+        set { if hand == .left { left = newValue } else { right = newValue } }
     }
 
-    var state: State
-    var flags: Flags
-    var sampleCount: Int
-    var sampleTarget: Int
-    /// Floor-plane extent of the collected samples vs what the solve needs — spread,
-    /// not count, is what conditions the yaw, so "keep moving" is keyed to this.
-    var spreadMeters: Float
-    var spreadTargetMeters: Float
-    /// RMS pair error after the solve; 0 until solved.
-    var residualMm: Float
-    var inputAgeMs: Float
-    /// Controller battery percentage, or nil when that side's level is unknown —
-    /// the controller is off, or the Quest app was never granted the permission it
-    /// needs to look (there is no OpenXR API for this; it scrapes `dumpsys`). Both
-    /// nil is therefore normal and means "show nothing", not "empty". Minutes stale
-    /// by design: the Quest polls every 30 s.
-    var batteryLeft: Int?
-    var batteryRight: Int?
+    static let size = 144
 
-    init?(_ data: Data) {
-        guard data.count >= 28,
-              data[data.startIndex] == ControllerBridgeProtocol.packetQuestStatus
-        else { return nil }
-        let b = [UInt8](data)
-        guard let parsed = State(rawValue: b[3]) else { return nil }
-        func u32(_ o: Int) -> UInt32 {
-            UInt32(b[o]) | (UInt32(b[o + 1]) << 8) |
-            (UInt32(b[o + 2]) << 16) | (UInt32(b[o + 3]) << 24)
-        }
-        func f(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
-        state = parsed
-        flags = Flags(rawValue: b[4])
-        sampleCount = Int(UInt16(b[8]) | (UInt16(b[9]) << 8))
-        sampleTarget = Int(UInt16(b[10]) | (UInt16(b[11]) << 8))
-        spreadMeters = f(12)
-        spreadTargetMeters = f(16)
-        residualMm = f(20)
-        inputAgeMs = f(24)
-        func battery(_ o: Int) -> Int? {
-            guard flags.contains(.battery), b[o] <= 100 else { return nil }
-            return Int(b[o])
-        }
-        batteryLeft = battery(5)
-        batteryRight = battery(6)
+    func encoded() -> Data {
+        var d = Data(capacity: Self.size)
+        d.cb_appendUInt8(ControllerBridgeProtocol.packetTrackedControllers)  // off 0
+        d.cb_appendUInt8(ControllerBridgeProtocol.version3)                  // off 1
+        d.cb_appendUInt8(sequence)                                           // off 2
+        d.cb_appendUInt8(0)                                                  // off 3 reserved0
+        d.cb_appendUInt32(0)                                                 // off 4 reserved1
+        d.cb_appendUInt64(timestampNs)                                       // off 8
+        d.cb_appendTrackedController(left)                                   // off 16 (64 B)
+        d.cb_appendTrackedController(right)                                  // off 80 (64 B)
+        assert(d.count == Self.size,
+               "cb_tracked_controllers_t must serialize to 144 bytes, got \(d.count)")
+        return d
     }
 }
 
@@ -606,6 +624,28 @@ private extension Data {
     }
 
     mutating func cb_appendFloat(_ v: Float) { cb_appendUInt32(v.bitPattern) }
+
+    mutating func cb_appendUInt64(_ v: UInt64) {
+        var le = v.littleEndian
+        Swift.withUnsafeBytes(of: &le) { append(contentsOf: $0) }
+    }
+
+    /// Matches `cb_tracked_controller_t` (64 bytes).
+    mutating func cb_appendTrackedController(_ c: ControllerBridgeTrackedController) {
+        cb_appendFloat(c.position.x); cb_appendFloat(c.position.y); cb_appendFloat(c.position.z)  // 0
+        cb_appendFloat(c.orientation.imag.x); cb_appendFloat(c.orientation.imag.y)                // 12
+        cb_appendFloat(c.orientation.imag.z); cb_appendFloat(c.orientation.real)
+        cb_appendFloat(c.angularVelocity.x); cb_appendFloat(c.angularVelocity.y)                  // 28
+        cb_appendFloat(c.angularVelocity.z)
+        cb_appendFloat(c.trigger)                                                                 // 40
+        cb_appendFloat(c.grip)                                                                    // 44
+        cb_appendFloat(c.stick.x); cb_appendFloat(c.stick.y)                                      // 48
+        cb_appendUInt32(c.buttons)                                                                // 56
+        cb_appendUInt8(c.flags.rawValue)                                                          // 60
+        cb_appendUInt8(c.source.rawValue)                                                         // 61
+        cb_appendUInt8(c.battery)                                                                 // 62
+        cb_appendUInt8(0)                                                                         // 63
+    }
 
     /// pos[3], rot[4] (x,y,z,w), gyro[3] — matches `cb_hand_pose_t` (40 bytes).
     mutating func cb_appendHand(_ h: ControllerBridgeHandPose) {

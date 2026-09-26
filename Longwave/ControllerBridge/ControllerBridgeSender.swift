@@ -21,10 +21,20 @@
 //  a session token on it (`cb_rendezvous_t`) every two seconds, and everything real
 //  runs on the direct link rather than depending on the channel surviving.
 //
-//  Three input sources fill the button/stick fields, and they coexist:
-//    - Spatial controllers (PSVR2 Sense etc., `SpatialAccessoryTracker`): real
-//      per-hand 6DoF poses + gyros + buttons; a tracked one replaces the
-//      wrist-derived pose for its hand. Best-effort — dormant without hardware.
+//  Real controllers ride their own packet (0x10, `ControllerBridgeTrackedControllers`),
+//  sent beside 0x03 to a host that announces it. Two RAVEInput sources feed it:
+//    - PSVR2 Sense (`RAVESpatialAccessorySource`): tracked by the headset itself.
+//      Best-effort — dormant without hardware.
+//    - Quest Touch (`RAVEQuestBridgeSource`): a Quest on the desk running Controller
+//      Bridge streams its controllers to THIS headset (UDP :9520 here, found by Bonjour
+//      under the device's name), and the source aligns them against the ARKit hands this
+//      class feeds it. Only while the user has turned "Quest controllers" on.
+//  The headset decides which hand each controller holds (`TrackedControllerForwarding`);
+//  the host replaces that side's controls — and, when tracked, its pose — and otherwise
+//  knows nothing about either device. Game haptics for such a side come back here like
+//  any other pulse and are played on the device holding it.
+//
+//  Two input sources fill 0x03's button/stick fields, and they coexist:
 //    - A physical Switch Pro controller (`GameController`), when connected.
 //    - Per-finger thumb pinches (RAVEInput's `RAVEARKitHandSensor` +
 //      `GestureControllerMapping`), which make the physical controller OPTIONAL:
@@ -138,7 +148,23 @@ final class ControllerBridgeSender {
 
     /// Spatial controllers (PSVR2 Sense etc.) — their own discovery, their own
     /// ARKit provider, per-hand rather than adopted-singular. See the class doc.
-    let spatialTracker = SpatialAccessoryTracker()
+    let spatialSource = RAVESpatialAccessorySource(log: { message in
+        Logger(subsystem: "pro.longwave", category: "SpatialAccessory")
+            .notice("\(message, privacy: .public)")
+    })
+
+    /// Quest Touch controllers from a Quest on the desk, while the user has them on.
+    /// Nil otherwise: nothing listens on the headset's :9520 without that consent.
+    private(set) var questSource: RAVEQuestBridgeSource?
+    /// Why the Quest listener could not start (port taken, no network), for the HUD.
+    private(set) var questStartError: String?
+
+    /// The 0x10 last built, whether or not it was sent: the haptic router and the HUD
+    /// read which device holds each side from it.
+    private(set) var lastTrackedControllers: ControllerBridgeTrackedControllers?
+    private var trackedSequence: UInt8 = 0
+    /// The host announced 0x10 support in its rendezvous.
+    private(set) var hostAcceptsTrackedControllers = false
 
     /// Nil when no controller is attached or the attached one reports no rotation rate.
     /// A Switch Pro does report one; not every extended gamepad does, and reading
@@ -188,11 +214,16 @@ final class ControllerBridgeSender {
                                            charging: battery.batteryState == .charging))
         }
         if let controller { append(controller, id: "pad", label: "pad") }
-        if let left = spatialTracker.controllers[.left] {
-            append(left, id: "spatial-left", label: "left pad")
-        }
-        if let right = spatialTracker.controllers[.right] {
-            append(right, id: "spatial-right", label: "right pad")
+        /* Forwarded controllers report whole percents and no charging state (a Quest
+           cannot tell; a Sense's level comes through RAVEInput the same way). Unknown —
+           off, or a Quest app never granted the permission it needs — shows nothing. */
+        for hand in [BridgeHand.left, .right] {
+            guard let side = lastTrackedControllers?[hand], side.flags.contains(.present),
+                  side.battery <= 100 else { continue }
+            let device = side.source == .quest ? "quest" : "sense"
+            readouts.append(BatteryReadout(id: "\(device)-\(hand.rawValue)",
+                                           label: device + (hand == .left ? " L" : " R"),
+                                           level: Float(side.battery) / 100, charging: false))
         }
         return readouts
     }
@@ -277,6 +308,11 @@ final class ControllerBridgeSender {
     func adopt(rendezvous: ControllerBridgeRendezvous) {
         control.adopt(rendezvous)
         announcedInputPort = rendezvous.inputPort
+        if rendezvous.acceptsTrackedControllers != hostAcceptsTrackedControllers {
+            hostAcceptsTrackedControllers = rendezvous.acceptsTrackedControllers
+            let verb = rendezvous.acceptsTrackedControllers ? "accepts" : "does not accept"
+            log.notice("Rendezvous: host \(verb, privacy: .public) tracked controllers (0x10).")
+        }
         // Input is sealed or it does not flow: a host whose key-holding process does
         // not own the input port cannot open what we seal, and plaintext input on a
         // LAN is not an acceptable fallback (the dev opt-in lives in the datagram
@@ -560,15 +596,10 @@ final class ControllerBridgeSender {
         if !host.isEmpty {
             datagram.setEndpoint(host: host, port: ControllerBridgeProtocol.portInput)
         }
-        // Re-adopt the persisted desk-Quest choice: the tune packet is latched and
-        // resent, so a host restart mid-session picks it back up too.
-        if UserDefaults.standard.bool(forKey: Self.questControllersDefaultsKey) {
-            var tune = debugTune
-            tune.flags.insert(.questControllers)
-            debugTune = tune
-        }
         startControllerWatch()
-        spatialTracker.start()
+        spatialSource.start()
+        // The persisted Quest choice: the desk setup is physical and deliberate.
+        if questControllersEnabled { startQuestSource() }
         startHandTracking()
         startSendLoop()
         log.notice("ControllerBridge sender started → \(self.host, privacy: .public)")
@@ -667,7 +698,10 @@ final class ControllerBridgeSender {
         hapticEngineOwners.removeAll()
         controllerObservers.forEach { NotificationCenter.default.removeObserver($0) }
         controllerObservers.removeAll()
-        spatialTracker.stop()
+        spatialSource.stop()
+        stopQuestSource()
+        lastTrackedControllers = nil
+        hostAcceptsTrackedControllers = false
         // Leave the IMU powered down: a sender that has stopped has no use for it, and the
         // sensor costs the controller battery for as long as it is active.
         motion?.sensorsActive = false
@@ -741,9 +775,6 @@ final class ControllerBridgeSender {
             ingest(telemetry)
         } else if let perf = ControllerBridgePerf(payload) {
             ingest(perf)
-        } else if let quest = ControllerBridgeQuestStatus(payload) {
-            questStatus = quest
-            questStatusReceivedAt = CACurrentMediaTime()
         } else if let bw = ControllerBridgeBandwidth(payload) {
             bandwidth = bw
             bandwidthReceivedAt = CACurrentMediaTime()
@@ -761,27 +792,78 @@ final class ControllerBridgeSender {
         }
     }
 
-    /// The host's desk-Quest feed (0x0D): present once a QuestControllerBridge headset
-    /// has been heard from on the host's network, whatever the enable state. The HUD
-    /// gates on `questStatusReceivedAt` so a dead feed reads as absent, not as stale
-    /// good news.
-    private(set) var questStatus: ControllerBridgeQuestStatus?
-    private(set) var questStatusReceivedAt: CFTimeInterval = 0
+    // MARK: Quest controllers
 
-    /// Whether we have told the host to consume the desk-Quest's controllers.
-    var questControllersEnabled: Bool { debugTune.flags.contains(.questControllers) }
+    /// Whether the user wants a desk Quest's controllers. Persisted: the desk setup is
+    /// physical and deliberate, so the choice survives sessions. This is the whole of the
+    /// consent — nothing listens for a Quest on this headset until it is on.
+    private(set) var questControllersEnabled: Bool = UserDefaults.standard.bool(
+        forKey: ControllerBridgeSender.questControllersDefaultsKey)
 
-    /// Flip desk-Quest consumption. Persisted: the desk setup is physical and
-    /// deliberate, so the choice survives sessions — but the flag itself still rides
-    /// the sealed tune packet every time, which is what keeps consent with us.
     func setQuestControllers(_ on: Bool) {
-        var tune = debugTune
-        if on { tune.flags.insert(.questControllers) } else { tune.flags.remove(.questControllers) }
-        debugTune = tune
+        guard on != questControllersEnabled else { return }
+        questControllersEnabled = on
         UserDefaults.standard.set(on, forKey: Self.questControllersDefaultsKey)
+        guard isRunning else { return }
+        if on { startQuestSource() } else { stopQuestSource() }
+    }
+
+    /// The HUD's recalibrate: drop the transform and collect again.
+    func recalibrateQuestControllers() {
+        questSource?.resetCalibration()
     }
 
     static let questControllersDefaultsKey = "foveatedQuestControllers"
+
+    private func startQuestSource() {
+        guard questSource == nil else { return }
+        let logger = Logger(subsystem: "pro.longwave", category: "QuestBridge")
+        let source = RAVEQuestBridgeSource(log: { message in
+            logger.notice("\(message, privacy: .public)")
+        })
+        do {
+            try source.start()
+            questSource = source
+            questStartError = nil
+        } catch {
+            questStartError = error.localizedDescription
+            log.error("Quest controllers: could not listen — \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func stopQuestSource() {
+        questSource?.stop()
+        questSource = nil
+        questStartError = nil
+    }
+
+    /// Hand this tick's ARKit hands to the Quest source — its calibration pairs them with
+    /// the Quest's controller poses — weighted by how much of each hand ARKit actually saw.
+    private func feedQuestSource(now: TimeInterval) {
+        guard let questSource else { return }
+        let anchor = questSource.configuration.calibrationAnchor
+        func weight(_ hand: BridgeHand) -> Float {
+            guard let confidence = gripConfidence[hand] else { return 0.5 }
+            return max(Float(confidence) / 255, 0.05)
+        }
+        questSource.observeReferences(
+            left: gestureEngine.sample(for: .left).map(anchor.point(in:)),
+            right: gestureEngine.sample(for: .right).map(anchor.point(in:)),
+            leftWeight: weight(.left), rightWeight: weight(.right), now: now)
+    }
+
+    /// This tick's 0x10, from whichever sources are running. Built every tick (the
+    /// haptic router and the HUD read it), sent only to a host that accepts it.
+    private func buildTrackedControllers(now: TimeInterval) -> ControllerBridgeTrackedControllers {
+        trackedSequence &+= 1
+        let packet = TrackedControllerForwarding.packet(
+            quest: questSource?.poll(now: now) ?? RAVETrackedControllerFrame(),
+            sense: spatialSource.poll(now: now),
+            questAligned: TrackedControllerForwarding.questAligned(questSource?.status),
+            sequence: trackedSequence, now: now)
+        lastTrackedControllers = packet
+        return packet
+    }
 
     // MARK: The desktop panel
 
@@ -859,6 +941,20 @@ final class ControllerBridgeSender {
 
     private func playHaptic(_ haptic: ControllerBridgeHaptic) {
         let amplitude = min(max(haptic.amplitude, 0), 1)
+        let pulsedSide: BridgeHand = haptic.controller == 0 ? .left : .right
+        if amplitude == 0,
+           TrackedControllerForwarding.hapticTarget(
+               for: pulsedSide, lastSent: lastTrackedControllers,
+               questAvailable: questSource != nil, senseAvailable: true) != .pad {
+            // A stop for a forwarded controller goes to that device (RAVE treats 0 as stop).
+            let stop = TrackedControllerForwarding.haptic(haptic, hand: pulsedSide)
+            if lastTrackedControllers?[pulsedSide].source == .quest {
+                questSource?.sendHaptic(stop)
+            } else {
+                spatialSource.sendHaptic(stop)
+            }
+            return
+        }
         if amplitude == 0 {
             if let player = hapticPlayers.removeValue(forKey: haptic.controller) {
                 try? player.stop(atTime: CHHapticTimeImmediate)
@@ -866,13 +962,24 @@ final class ControllerBridgeSender {
             return
         }
 
-        // The device actually occupying the pulsed hand: a spatial controller of that
-        // chirality if one is connected, else the adopted gamepad — not whatever the
-        // framework lists first; rumbling a different device than the one in the
-        // user's hands was the same bug the input path had.
+        // The device actually occupying the pulsed hand: whatever the host was told holds
+        // that side (a Sense, or a Quest Touch relayed to the Quest), else the adopted
+        // gamepad — not whatever the framework lists first; rumbling a different device
+        // than the one in the user's hands was the same bug the input path had.
         let side: BridgeHand = haptic.controller == 0 ? .left : .right
-        guard let target = spatialTracker.controllers[side] ?? controller,
-              let deviceHaptics = target.haptics else { return }
+        switch TrackedControllerForwarding.hapticTarget(
+            for: side, lastSent: lastTrackedControllers,
+            questAvailable: questSource != nil, senseAvailable: true) {
+        case .quest:
+            questSource?.sendHaptic(TrackedControllerForwarding.haptic(haptic, hand: side))
+            return
+        case .sense:
+            spatialSource.sendHaptic(TrackedControllerForwarding.haptic(haptic, hand: side))
+            return
+        case .pad:
+            break
+        }
+        guard let target = controller, let deviceHaptics = target.haptics else { return }
 
         // Games spam short pulses at frame rate; per-side coalescing keeps us from
         // stacking a CoreHaptics player per packet.
@@ -1242,8 +1349,20 @@ final class ControllerBridgeSender {
             let period = Duration.milliseconds(12)   // ~83 Hz
             var deadline = clock.now
             while !Task.isCancelled && isRunning {
+                let tickNow = CACurrentMediaTime()
+                // Calibration pairs for the desk Quest, whether or not this title emulates
+                // controllers: the alignment should be ready the moment one does.
+                feedQuestSource(now: tickNow)
+                let tracked = buildTrackedControllers(now: tickNow)
                 if emulatesControllers {
-                    send(buildPacket().encoded())
+                    send(buildPacket(tracked: tracked).encoded())
+                    // Real controllers, beside the hands — only to a host that said it
+                    // takes them. Sent every tick even with nothing held: an all-absent
+                    // packet is what hands every side back to 0x03 at once, rather than
+                    // after the host's staleness bound.
+                    if hostAcceptsTrackedControllers {
+                        send(tracked.encoded())
+                    }
                 } else {
                     // Hands-only: no 0x03 at all — absence is the off switch, so an
                     // old host needs no new flag to get it right. Skeletons and the
@@ -1338,7 +1457,7 @@ final class ControllerBridgeSender {
         lastBandwidthControlSend = now
     }
 
-    private func buildPacket() -> ControllerBridgeInputState {
+    private func buildPacket(tracked: ControllerBridgeTrackedControllers) -> ControllerBridgeInputState {
         var state = ControllerBridgeInputState()
         sequence &+= 1
         state.sequence = sequence
@@ -1355,31 +1474,14 @@ final class ControllerBridgeSender {
             state.rightConfidence = gripConfidence[.right] ?? 128
         }
 
-        /* Spatial controllers: a tracked accessory pose replaces the wrist-derived
-           pose for its hand. It is rigid to the physical controller (no finger-motion
-           coupling, no grip-offset estimation) and carries its own gyro, so both the
-           pose and the per-hand gyro attribution are simply *known* for that side —
-           the Switch Pro IMU dance below skips any hand claimed here. An untracked or
-           stale accessory ages out in trackedPose() and the wrist pose (already set
-           above) carries the hand through the dropout. */
-        let spatialNow = CACurrentMediaTime()
-        var spatialClaims: (left: Bool, right: Bool) = (false, false)
-        if let pose = spatialTracker.trackedPose(for: .left, now: spatialNow) {
-            state.left = pose
-            state.leftConfidence = 255
-            flags.insert(.leftHandTracked)
-            flags.insert(.leftGyroValid)
-            flags.insert(.gyroValid)
-            spatialClaims.left = true
-        }
-        if let pose = spatialTracker.trackedPose(for: .right, now: spatialNow) {
-            state.right = pose
-            state.rightConfidence = 255
-            flags.insert(.rightHandTracked)
-            flags.insert(.rightGyroValid)
-            flags.insert(.gyroValid)
-            spatialClaims.right = true
-        }
+        /* A hand holding a forwarded controller (0x10) is that controller's: the host
+           replaces the side's controls, and its pose when tracked, gyro included. The
+           Switch Pro IMU dance below therefore skips it — the pad's motion can only be
+           describing some *other* hand (or a desk). 0x03 still carries the wrist itself,
+           which is what the host aligns ARKit to the runtime with. Only claimed when the
+           host will actually receive the 0x10; an older host keeps the pad's gyro. */
+        let claims = (left: hostAcceptsTrackedControllers && tracked.left.isHeld,
+                      right: hostAcceptsTrackedControllers && tracked.right.isHeld)
 
         // Hand-gesture controller emulation. Held pinches → buttons/triggers, left
         // thumb+index → the locomotion stick (or arm swing), the turn clutch → the right
@@ -1391,12 +1493,6 @@ final class ControllerBridgeSender {
             flags.insert(.controllerPresent)
             applyGamepad(pad, to: &state)
         }
-        for hand in [BridgeHand.left, .right] {
-            if let spatial = spatialTracker.controllers[hand] {
-                flags.insert(.controllerPresent)
-                applySpatialController(spatial, hand: hand, to: &state)
-            }
-        }
         if let motion {
             let rr = motion.rotationRate
             let gyro = SIMD3<Float>(Float(rr.x), Float(rr.y), Float(rr.z))
@@ -1406,18 +1502,18 @@ final class ControllerBridgeSender {
             let holder = resolveHolder(controllerSpeed: simd_length(gyro))
             // A hand a spatial controller claimed keeps that controller's own gyro —
             // the gamepad IMU can only be describing some *other* hand (or a desk).
-            if holder.claimsLeft && !spatialClaims.left {
+            if holder.claimsLeft && !claims.left {
                 state.left.gyro = gyro
                 flags.insert(.leftGyroValid)
             }
-            if holder.claimsRight && !spatialClaims.right {
+            if holder.claimsRight && !claims.right {
                 state.right.gyro = gyro
                 flags.insert(.rightGyroValid)
             }
             // The summary bit is the union, never set alone — a host testing only it and
             // then reading both hands would get a zero gyro on the unclaimed one, which is
             // exactly what the per-hand bits exist to prevent.
-            if holder != .unknown { flags.insert(.gyroValid) }
+            if !flags.isDisjoint(with: [.leftGyroValid, .rightGyroValid]) { flags.insert(.gyroValid) }
         }
         state.flags = flags
         return state
@@ -1558,49 +1654,6 @@ final class ControllerBridgeSender {
         if simd_length(padRight) > 0.15 || state.rightStick == .zero { state.rightStick = padRight }
         state.leftTrigger = max(state.leftTrigger, pad.leftTrigger.value)
         state.rightTrigger = max(state.rightTrigger, pad.rightTrigger.value)
-    }
-
-    /// Map one spatial controller (a single-hand device, read through the live-input
-    /// element API — these are not extended gamepads) onto its side of the protocol's
-    /// Switch-Pro-shaped button set, mirroring the split controller_synth.h applies:
-    /// right = A/B + ZR/R + right stick + PLUS, left = X/Y + ZL/L + left stick + MINUS.
-    /// Merges like the gamepad path: union with gestures, max on triggers, deflection
-    /// wins on sticks.
-    private func applySpatialController(_ controller: GCController, hand: BridgeHand,
-                                        to state: inout ControllerBridgeInputState) {
-        let input = controller.input
-        func pressed(_ name: GCButtonElementName) -> Bool {
-            input.buttons[name]?.pressedInput.isPressed == true
-        }
-        var buttons: ControllerBridgeProtocol.Buttons = []
-        let trigger = input.buttons[.trigger]?.pressedInput.value ?? 0
-        let stick: SIMD2<Float> = input.dpads[.thumbstick].map {
-            SIMD2($0.xyAxes.value.x, $0.xyAxes.value.y)
-        } ?? .zero
-        if hand == .right {
-            // On the right Sense, `.a`/`.b` are Cross/Circle — the positions Touch
-            // bindings expect as a/b.
-            if pressed(.a) { buttons.insert(.a) }
-            if pressed(.b) { buttons.insert(.b) }
-            if pressed(.grip) { buttons.insert(.r) }
-            if pressed(.thumbstickButton) { buttons.insert(.rstick) }
-            if pressed(.menu) { buttons.insert(.plus) }
-            if trigger > 0.75 { buttons.insert(.zr) }
-            state.rightTrigger = max(state.rightTrigger, trigger)
-            if simd_length(stick) > 0.15 { state.rightStick = stick }
-        } else {
-            // On the left Sense the same element names are Square/Triangle — the
-            // left-hand x/y positions.
-            if pressed(.a) { buttons.insert(.x) }
-            if pressed(.b) { buttons.insert(.y) }
-            if pressed(.grip) { buttons.insert(.l) }
-            if pressed(.thumbstickButton) { buttons.insert(.lstick) }
-            if pressed(.menu) { buttons.insert(.minus) }
-            if trigger > 0.75 { buttons.insert(.zl) }
-            state.leftTrigger = max(state.leftTrigger, trigger)
-            if simd_length(stick) > 0.15 { state.leftStick = stick }
-        }
-        state.buttons.formUnion(buttons)
     }
 
     /// How long menu / system must be held before they are sent. See `GestureCharge`.

@@ -31,9 +31,13 @@ nonisolated final class BridgeDatagramChannel: @unchecked Sendable {
     private var droppedUnsealable: UInt64 = 0
 
     /// Dev opt-in for plaintext v2 packets, matching the host's own gate. Set it
-    /// in the Xcode scheme; a user install never has it.
+    /// in the Xcode scheme of a DEBUG build; release builds always seal.
+    #if DEBUG
     private let plaintextAllowed =
         ProcessInfo.processInfo.environment["LONGWAVE_CB_ALLOW_PLAINTEXT"] == "1"
+    #else
+    private let plaintextAllowed = false
+    #endif
 
     /// Called (on an arbitrary queue) when a send fails at the socket.
     var onSendError: (@Sendable (String) -> Void)? {

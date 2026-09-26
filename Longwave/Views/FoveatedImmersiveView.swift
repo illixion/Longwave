@@ -26,7 +26,14 @@ struct FoveatedImmersiveView: View {
     @Environment(FoveatedConnectionManager.self) private var manager
     @Environment(PCVRSessionLimiter.self) private var limiter
     @Environment(PCVRBandwidthMonitor.self) private var bandwidthMonitor
-    @AppStorage("foveatedShowSentSkeleton") private var showSentSkeleton = false
+    @AppStorage("foveatedShowSentSkeleton") private var sentSkeletonPreference = false
+    /// The markers are a debugging aid whose toggles exist only in DEBUG builds, so
+    /// a release build ignores a value a development install left behind.
+    #if DEBUG
+    private var showSentSkeleton: Bool { sentSkeletonPreference }
+    #else
+    private var showSentSkeleton: Bool { false }
+    #endif
     @AppStorage("foveatedWristHUD") private var wristHUDEnabled = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
 

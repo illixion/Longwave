@@ -610,6 +610,8 @@ struct FoveatedHUDView: View {
             } label: {
                 Label("Controls", systemImage: "slider.horizontal.3")
             }
+            // Overlays the hand poses sent to the host: a debugging aid.
+            #if DEBUG
             Button {
                 showSentSkeleton.toggle()
             } label: {
@@ -617,6 +619,7 @@ struct FoveatedHUDView: View {
                       ? "hand.raised.fill" : "hand.raised")
             }
             .tint(showSentSkeleton ? .accentColor : nil)
+            #endif
             FoveatedQuitTitleButton(bridge: bridge, iconOnly: true)
             // Your PC's screen, on a panel in the home view. Here because the palm HUD is
             // the one control surface you can reach without looking away from what you are

@@ -200,6 +200,7 @@ private struct PCVRSessionForm: View {
             GameInputSettingsView()
                 .frame(minWidth: 560, minHeight: 560)
         }
+        #if DEBUG
         .sheet(isPresented: $showAlignmentDebug) {
             NavigationStack {
                 FoveatedAlignmentDebugView()
@@ -211,6 +212,7 @@ private struct PCVRSessionForm: View {
             }
             .frame(minWidth: 560, minHeight: 620)
         }
+        #endif
         .task {
             // The immersive space (the streamed video) opens and closes with the
             // session. Must be set before connecting — and the main window outlives
@@ -579,7 +581,9 @@ private struct PCVRSessionForm: View {
                 }
 
                 // Alignment is diagnosed against a live stream — offering it while
-                // disconnected would only show an empty graph.
+                // disconnected would only show an empty graph. A developer tool
+                // (raw solver switches, host tuning packets), so DEBUG builds only.
+                #if DEBUG
                 if !manager.isDisconnected {
                     Button {
                         showAlignmentDebug = true
@@ -590,6 +594,7 @@ private struct PCVRSessionForm: View {
                     }
                     .buttonStyle(.bordered)
                 }
+                #endif
             }
         }
     }

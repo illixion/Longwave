@@ -31,9 +31,11 @@ struct FoveatedControlWindowView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.spring, value: manager.isDisconnected)
             .navigationTitle("PCVR")
+            #if DEBUG
             .toolbar {
                 // Alignment is diagnosed in-session, so the HUD lives one tap away
-                // from the live controls rather than in the tab's settings.
+                // from the live controls rather than in the tab's settings. A
+                // developer tool, so DEBUG builds only.
                 if !manager.isDisconnected {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -55,6 +57,7 @@ struct FoveatedControlWindowView: View {
                 }
                 .frame(minWidth: 560, minHeight: 620)
             }
+            #endif
         }
         .homeOrnament()
         .trackWindowSession(id: "foveated-controls")

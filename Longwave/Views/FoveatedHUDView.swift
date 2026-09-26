@@ -87,6 +87,7 @@ struct FoveatedHUDView: View {
             pacingRow
             Divider()
             trackingSection
+            inputRow
             switchProSection
             batteryRow
             questSection
@@ -325,6 +326,61 @@ struct FoveatedHUDView: View {
         if perf.bridgeGripFrames == 0 { return "runtime" }
         if perf.runtimeGripFrames == 0 { return "ours (fallback)" }
         return "\(perf.runtimeGripFrames) runtime / \(perf.bridgeGripFrames) ours"
+    }
+
+    // MARK: Gesture input
+
+    /// The two per-title input modes, flippable mid-game — walking in a game is where you
+    /// find out whether it wants a pinch joystick or arm swinging, and whether it needs
+    /// gesture turning at all. Two cycling buttons rather than pickers for the same
+    /// reason as the controller-hand button below: a popover on a wrist panel is a
+    /// second errand. The finer settings live in Game Input under Controls. Absent in
+    /// hands-only mode, where no stick is emulated for either to drive.
+    @ViewBuilder
+    private var inputRow: some View {
+        if let bridge, !handsOnly {
+            let input = bridge.gameProfile.input
+            HStack(spacing: 8) {
+                Image(systemName: "figure.walk")
+                    .foregroundStyle(.secondary)
+                Text("Move")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    let next = Self.next(after: input.resolvedLocomotion)
+                    bridge.updateGameInput { $0.locomotion = next }
+                } label: {
+                    Text("walk: " + Self.shortName(input.resolvedLocomotion))
+                        .font(.caption2)
+                }
+                .tint(input.resolvedLocomotion == .default ? nil : .accentColor)
+                Button {
+                    let next = Self.next(after: input.resolvedTurn)
+                    bridge.updateGameInput { $0.turn = next }
+                } label: {
+                    Text("turn: " + input.resolvedTurn.displayName.lowercased())
+                        .font(.caption2)
+                }
+                .tint(input.resolvedTurn == .default ? nil : .accentColor)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(bridge.activeGame == nil)
+        }
+    }
+
+    private static func next<T: CaseIterable & Equatable>(after current: T) -> T {
+        let all = Array(T.allCases)
+        guard let index = all.firstIndex(of: current) else { return current }
+        return all[(index + 1) % all.count]
+    }
+
+    private static func shortName(_ mode: GameLocomotionMode) -> String {
+        switch mode {
+        case .pinchJoystick: "pinch"
+        case .armSwing:      "swing"
+        case .off:           "off"
+        }
     }
 
     // MARK: Physical controller (Switch Pro)

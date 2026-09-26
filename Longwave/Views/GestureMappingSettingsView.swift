@@ -13,6 +13,15 @@
 //  joystick and shows as a locked row in its natural position, rather than as a
 //  lone exception in a section of its own.
 //
+//  Which map is being edited is explicit. A title can carry its own map in its
+//  `GameProfile`, and that map wins over the global one — which used to mean that
+//  with such a title running, every edit here saved to the global map and silently
+//  changed nothing in the game. Now, with a title running, a scope switch picks
+//  "All games" or that title; the sheet opens on whichever the game is actually
+//  using, and says so when the global map is not the one in force. A title's map
+//  that ends up identical to the global one is stored as no override at all, so it
+//  goes back to following global edits.
+//
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
@@ -23,8 +32,33 @@ struct GestureMappingSettingsView: View {
     @Environment(FoveatedConnectionManager.self) private var manager
     @Environment(\.dismiss) private var dismiss
 
-    @State private var mapping = GestureControllerMappingStore.load()
+    @State private var globalMapping = GestureControllerMappingStore.load()
     @State private var hand: BridgeHand = .right
+    @State private var scope: Scope = .allGames
+
+    enum Scope: Hashable { case allGames, title }
+
+    private var bridge: ControllerBridgeSender? { manager.controllerBridge }
+    /// The running title, when there is one to scope to.
+    private var game: String? { bridge?.activeGame }
+    private var titleMapping: GestureControllerMapping? { bridge?.titleGestureMapping }
+    private var editingTitle: Bool { scope == .title && game != nil }
+
+    /// The map on screen: the title's own (or the global one it currently follows), or
+    /// the global one.
+    private var mapping: GestureControllerMapping {
+        editingTitle ? (titleMapping ?? globalMapping) : globalMapping
+    }
+
+    private func setMapping(_ newValue: GestureControllerMapping) {
+        if editingTitle {
+            bridge?.setTitleGestureMapping(newValue)
+        } else {
+            globalMapping = newValue
+            GestureControllerMappingStore.save(newValue)
+            bridge?.updateGestureMapping(newValue)
+        }
+    }
 
     private static let fingers: [BridgeFinger] = [.index, .middle, .ring, .little]
 
@@ -32,6 +66,7 @@ struct GestureMappingSettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
+                    scopeSection
                     handPicker
                     rows
                     resetRow
@@ -46,10 +81,44 @@ struct GestureMappingSettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .onChange(of: mapping) { _, newValue in
-                GestureControllerMappingStore.save(newValue)
-                manager.controllerBridge?.updateGestureMapping(newValue)
+            .onAppear {
+                // Open on the map the running game actually uses.
+                scope = titleMapping != nil ? .title : .allGames
             }
+        }
+    }
+
+    // MARK: Scope
+
+    @ViewBuilder
+    private var scopeSection: some View {
+        if let game {
+            VStack(spacing: 10) {
+                Picker("Editing", selection: $scope) {
+                    Text("All games").tag(Scope.allGames)
+                    Text(game).tag(Scope.title)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
+                Text(scopeCaption(game: game))
+                    .font(.caption)
+                    .foregroundStyle(titleMapping != nil && !editingTitle ? .orange : .secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func scopeCaption(game: String) -> String {
+        switch (editingTitle, titleMapping != nil) {
+        case (false, true):
+            "\(game) has its own mapping, so changes here do not reach it. Switch to \(game) to edit that one, or reset it there to follow this one."
+        case (false, false):
+            "Changes apply to every game without its own mapping, \(game) included."
+        case (true, true):
+            "\(game) uses its own mapping. Other games are unaffected."
+        case (true, false):
+            "\(game) follows the all-games mapping. A change here gives it its own."
         }
     }
 
@@ -146,11 +215,19 @@ struct GestureMappingSettingsView: View {
         .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
+    @ViewBuilder
     private var resetRow: some View {
-        Button("Reset to Defaults", role: .destructive) {
-            mapping = .defaults
+        if editingTitle {
+            Button("Use All-Games Mapping", role: .destructive) {
+                bridge?.setTitleGestureMapping(nil)
+            }
+            .disabled(titleMapping == nil)
+        } else {
+            Button("Reset to Defaults", role: .destructive) {
+                setMapping(.defaults)
+            }
+            .disabled(globalMapping == .defaults)
         }
-        .disabled(mapping == .defaults)
     }
 
     // MARK: Plumbing
@@ -158,7 +235,11 @@ struct GestureMappingSettingsView: View {
     private func binding(finger: BridgeFinger) -> Binding<BridgeGestureTarget> {
         Binding(
             get: { mapping.target(for: hand, finger: finger) },
-            set: { mapping.set($0, for: hand, finger: finger) }
+            set: {
+                var edited = mapping
+                edited.set($0, for: hand, finger: finger)
+                setMapping(edited)
+            }
         )
     }
 

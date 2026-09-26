@@ -74,6 +74,16 @@ enum BridgeGestureTarget: String, Codable, Sendable, CaseIterable, RAVEBindableA
 typealias GestureControllerMapping = RAVEFingerBindingTable<BridgeGestureTarget>
 
 extension RAVEFingerBindingTable where Action == BridgeGestureTarget {
+    /// Right little = menu stays the default, deliberately. On the wire menu is PLUS, and
+    /// the host fans PLUS out widely — right `system` and right `menu`, plus left `menu`
+    /// so the Touch profile (menu on the left) gets it too — so this one finger reaches
+    /// every system-class input a game has, on the finger that curls by itself as a hand
+    /// relaxes. It is safe only because menu and system never fire on contact: the sender
+    /// holds them behind a 1.5 s `RAVEGestureGate` with a visible charge ring, and letting
+    /// go cancels. Unbinding it by default would leave most games with no way to reach
+    /// their pause menu without a controller; if a title misbehaves, give it its own
+    /// mapping. Separately, while gesture turning is on for a title, the turn hand's
+    /// thumb + middle is its clutch and presses nothing (right middle = A by default).
     static let defaults = GestureControllerMapping(
         rightIndex:  .trigger,   // right-hand tap = the primary trigger
         rightMiddle: .aButton,

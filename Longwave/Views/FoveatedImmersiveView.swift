@@ -146,9 +146,10 @@ struct FoveatedImmersiveView: View {
 
     // MARK: Locomotion joystick visualization
 
-    /// The wrist-delta locomotion joystick (`gestureEngine.poll(...).joystick` in
-    /// `ControllerBridgeSender`) has no on-screen presence today: the player has to
-    /// learn the deadzone and full-scale radius by feel. `RAVEJoystickVisualization`
+    /// The wrist-delta locomotion joystick (`ControllerBridgeSender.applyGestures`)
+    /// would otherwise have no on-screen presence: the player would have to learn the
+    /// deadzone and full-scale radius by feel — and both now move with the per-title
+    /// sensitivity. `RAVEJoystickVisualization`
     /// (see RAVEEngine's `RAVEHandJoystick.swift`) exists so every consumer can draw
     /// the same stick from renderer-neutral geometry — this is Longwave's.
     ///
@@ -321,16 +322,17 @@ struct FoveatedImmersiveView: View {
 /// smoothed pose, and the enclosing view is a struct rebuilt on every state change.
 @MainActor
 private final class WristHUDDriver {
-    /// The palm must face you *squarely* — within about 18°. A wider cone triggered on
-    /// ordinary hand movement.
-    private static let engageFacing: Float = 0.95
-    /// Held until well past the engage angle. This is a deadband, not a delay: without it
-    /// the panel flickers while the hand sits near the threshold.
-    private static let releaseFacing: Float = 0.70
-    /// The only timing left. Both the engage dwell and the hold-open linger are gone — they
-    /// made the panel feel like it was deciding whether to obey. The fade now begins on the
-    /// frame the palm crosses the threshold, in either direction, so the response is
-    /// immediate and only the animation takes time.
+    /// Show/hide is RAVEInput's `RAVEPalmFacingGate.panel`, which is this panel's own
+    /// rule lifted into the shared package: plain palm facing (not the pitch-invariant
+    /// metric, which widened the cone until almost any sideways hand summoned it), show
+    /// at 0.95 — squarely, within about 18° — and hide only below 0.70, a deadband so the
+    /// panel does not flicker at the threshold. No linger: a long hold-open made the
+    /// panel feel like it was deciding whether to obey. What the preset adds is a 0.12 s
+    /// dwell, because a hand swinging past the face on its way to something else crossed
+    /// 0.95 for a frame or two and flashed the panel — and, worse, suppressed that hand's
+    /// gestures in-game for as long as it was up.
+    private var gate = RAVEPalmFacingGate.panel
+    /// Fade time once the gate has decided, in either direction.
     private static let fade: TimeInterval = 0.22
     /// How far off the palm the panel floats, along the palm normal.
     private static let lift: Float = 0.18
@@ -350,17 +352,12 @@ private final class WristHUDDriver {
             return
         }
 
-        // Threshold with hysteresis, evaluated fresh each frame: cross the engage angle and
-        // it is coming in from this frame; drop below the release angle and it is going out
-        // from this frame. Nothing waits.
-        if let facing = bridge.palmFacing(hand) {
-            if facing >= Self.engageFacing { visible = true }
-            else if facing < Self.releaseFacing { visible = false }
-        } else {
-            // Hand lost. The fade covers a brief dropout on its own, so this needs no
-            // grace period of its own.
-            visible = false
-        }
+        // A lost hand reads as nil, which the gate treats as a lapse; the fade covers a
+        // brief dropout on its own. A hand that is busy walking, turning or steering may
+        // not summon the panel: a palm that faces you mid-jog is not a request for it.
+        visible = gate.update(facing: bridge.palmFacing(hand),
+                              now: CACurrentMediaTime(),
+                              showAllowed: !bridge.isHandBusy(hand)).engaged
 
         // The pinch that presses a HUD button is also mapped to a controller button, so
         // the holding hand stops feeding the game while its panel is up.
@@ -418,6 +415,7 @@ private final class WristHUDDriver {
     func hide(bridge: ControllerBridgeSender?) {
         visible = false
         opacity = 0
+        gate.reset()
         if let suppressedHand { bridge?.setGestureSuppressed(false, for: suppressedHand) }
         suppressedHand = nil
     }

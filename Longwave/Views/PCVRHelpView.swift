@@ -32,6 +32,8 @@ struct PCVRHelpView: View {
                         "Your left hand casts a visible beam. Put it on a panel's grab bar — or simply look at the bar — then pinch and move your hand, as you would move a window here. ✕ puts the panel away."),
                     Row("hand.raised", "Raise a palm for the wrist HUD",
                         "Turn a palm toward your face and look at it. Quit the running title, put your PC's desktop on a panel, or switch between emulated controllers and bare hands."),
+                    Row("figure.walk", "Walk and turn without a stick",
+                        "Pinch left thumb and index, hold a moment, then move your hand to walk — or pick arm swinging per game and jog your fists. Turning is off until you turn it on for a game: then hold right thumb and middle and move that hand sideways. Both live under Game input, and on the wrist HUD."),
                     Row("gamecontroller", "A controller is optional",
                         "Pair a Switch Pro or a Quest controller, then choose OpenXR, Xbox 360, or both in the Windows Companion. Without one, pinch gestures stand in for the buttons."),
                 ])

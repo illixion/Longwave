@@ -19,6 +19,7 @@ struct FoveatedControlsView: View {
 
     @Environment(FoveatedConnectionManager.self) private var manager
     @State private var showGameLibrary = false
+    @State private var showGameInput = false
 
     private var isPaused: Bool {
         if case .paused = manager.status { return true }
@@ -79,7 +80,19 @@ struct FoveatedControlsView: View {
                 // Above Games/Quit, not below: those two are a pair about the running
                 // title, and burying the desktop under them read as a footnote to a
                 // question nobody asked. It belongs with "what am I looking at".
-                desktopPanelButton
+                // Game input sits with the desktop: both are about the session you are in,
+                // and input is per title, so it is reached from the title's controls.
+                HStack(spacing: 28) {
+                    desktopPanelButton
+                    Button {
+                        showGameInput = true
+                    } label: {
+                        Label("Game input", systemImage: "figure.walk")
+                            .frame(minWidth: 120)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 HStack(spacing: 28) {
                     Button {
@@ -129,6 +142,10 @@ struct FoveatedControlsView: View {
         }
         .padding(embedded ? 0 : 28)
         .frame(maxWidth: embedded ? .infinity : 460)
+        .sheet(isPresented: $showGameInput) {
+            GameInputSettingsView()
+                .frame(minWidth: 560, minHeight: 560)
+        }
         .sheet(isPresented: $showGameLibrary) {
             NavigationStack {
                 FoveatedGameLibraryView()

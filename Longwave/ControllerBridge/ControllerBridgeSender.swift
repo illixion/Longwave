@@ -26,12 +26,15 @@
 //      per-hand 6DoF poses + gyros + buttons; a tracked one replaces the
 //      wrist-derived pose for its hand. Best-effort — dormant without hardware.
 //    - A physical Switch Pro controller (`GameController`), when connected.
-//    - Per-finger thumb pinches (`HandGestureEngine` + `GestureControllerMapping`),
-//      which make the physical controller OPTIONAL: right index tap = trigger,
-//      right middle/ring/little = A/B/menu, left middle/ring/little = X/Y/L-trigger,
-//      and left thumb+index = a wrist-delta locomotion joystick (left = movement,
-//      mirroring a real controller). Fully remappable; covers the minimal
-//      ABXY + triggers + menu set most games want.
+//    - Per-finger thumb pinches (RAVEInput's `RAVEARKitHandSensor` +
+//      `GestureControllerMapping`), which make the physical controller OPTIONAL:
+//      right index tap = trigger, right middle/ring/little = A/B/menu, left
+//      middle/ring/little = X/Y/L-trigger, and left thumb+index = a wrist-delta
+//      locomotion joystick (left = movement, mirroring a real controller). Fully
+//      remappable; covers the minimal ABXY + triggers + menu set most games want.
+//      Per title (`GameInput`): arm-swing walking instead of or alongside the
+//      joystick, and an opt-in clutch-gated gesture turn on the right stick — see
+//      PCVRGestureInput.swift for the rules that keep all of it deliberate.
 //
 //  Gated behind FOVEATED_ENABLED. Hand tracking requires the app to be in an
 //  immersive space and the user to grant hand-tracking authorization; the gyro
@@ -90,8 +93,33 @@ final class ControllerBridgeSender {
     /// Fed rather than self-starting: this class already runs a `HandTrackingProvider`
     /// for pose streaming and joint forwarding, so anchors are pushed in through
     /// `ingest(_:)` and a second ARKit session is never opened.
-    private let gestureEngine = RAVEARKitHandSensor()
+    ///
+    /// Button pinches use `.standard` (selection margin, finger-switch hysteresis,
+    /// tracking-loss grace). The joystick gets its own `.joystick` detector — index only,
+    /// a heavier hold — because a joystick that engaged on a brushed thumb was the first
+    /// thing wrong with walking in Alyx. The per-title sensitivity rescales that hold in
+    /// `configureGestureInput()`.
+    private let gestureEngine = RAVEARKitHandSensor(
+        pinchTuning: .standard,
+        joystickEnabled: true,
+        joystickPinchTuning: PCVRJoystickSettings(sensitivity: 1).pinchTuning)
     private var gestureMapping = GestureControllerMappingStore.load()
+
+    /// The stick itself. The sensor decides *whether* the joystick is engaged (its
+    /// dedicated detector, and it keeps the slot out of the bindable events), but its own
+    /// stick is advanced without a frame time, and smoothing needs one — so the vector
+    /// and visualization come from this copy, driven by the sensor's engaged state.
+    private var joystick = RAVEHandJoystick(
+        axialDeadzone: PCVRJoystickSettings.axialDeadzone,
+        smoothingTime: PCVRJoystickSettings.smoothingTime)
+    private var armSwinger = RAVEArmSwinger()
+    private var gestureTurn = GestureTurn()
+    private var arbiter = PCVRGestureArbiter()
+    /// Menu / system hold gates, per hand. See `apply(_:hand:…)`.
+    private var menuGates: [BridgeHand: RAVEGestureGate] = [
+        .left: RAVEGestureGate(tuning: .hold(ControllerBridgeSender.chargeDuration)),
+        .right: RAVEGestureGate(tuning: .hold(ControllerBridgeSender.chargeDuration)),
+    ]
 
     // MARK: Physical controller (Switch Pro)
     //
@@ -394,14 +422,71 @@ final class ControllerBridgeSender {
 
     /// The gesture map in force: this title's override if it has one, else the global.
     var activeGestureMapping: GestureControllerMapping {
-        gameProfile.input.gestureMapping ?? gestureMapping
+        gameProfile.input.effectiveMapping(global: gestureMapping)
     }
+
+    /// The all-games mapping, whatever the active title uses.
+    var globalGestureMapping: GestureControllerMapping { gestureMapping }
+
+    /// The active title's own mapping, nil when it follows the global one.
+    var titleGestureMapping: GestureControllerMapping? { gameProfile.input.gestureMapping }
 
     /// Adopt a title's profile (on a game change, or when the settings UI edits one).
     func applyGameProfile(for game: String?) {
         let resolved = GameProfiles.resolve(for: game)
         gameProfile = resolved.profile
         gameProfileSource = resolved.source
+        configureGestureInput()
+    }
+
+    /// Edit the active title's input settings, persisted in its saved profile (only what
+    /// differs from the defaults is stored) and applied from the next frame.
+    func updateGameInput(_ edit: (inout GameInput) -> Void) {
+        GameProfiles.updateSavedInput(for: activeGame, edit)
+        applyGameProfile(for: activeGame)
+    }
+
+    /// Give the active title its own gesture map, or pass nil (or a copy of the global
+    /// map) to have it follow the global one again.
+    func setTitleGestureMapping(_ mapping: GestureControllerMapping?) {
+        let global = gestureMapping
+        updateGameInput { $0.setMappingOverride(mapping, global: global) }
+    }
+
+    /// Push the active title's input settings into the sensing layer.
+    private func configureGestureInput() {
+        let input = gameProfile.input
+        let settings = PCVRJoystickSettings(sensitivity: input.resolvedJoystickSensitivity)
+        let locomotion = input.resolvedLocomotion
+        gestureEngine.pinchTuning = .standard
+        // Off reserves nothing; arm swing keeps the joystick as a precision override.
+        gestureEngine.joystickEnabled = locomotion != .off
+        // Re-assigning rebuilds the detector (dropping a held stick), so only on change.
+        if gestureEngine.joystickPinchTuning != settings.pinchTuning {
+            gestureEngine.joystickPinchTuning = settings.pinchTuning
+        }
+        settings.configure(&gestureEngine.joystick)
+        settings.configure(&joystick)
+        if locomotion != .armSwing { armSwinger.reset() }
+        if input.resolvedTurn == .off { gestureTurn.reset() }
+    }
+
+    /// Drop every in-progress gesture: a hold, a clutch, a swing. Used when input stops
+    /// being sampled, so nothing resumes half-way through when it starts again.
+    private func resetGestureState() {
+        joystick.release()
+        armSwinger.reset()
+        gestureTurn.reset()
+        arbiter.reset()
+        for hand in [BridgeHand.left, .right] { menuGates[hand]?.reset() }
+        gestureCharge = nil
+        joystickVisualization = nil
+    }
+
+    /// Whether a hand is busy walking, turning or steering — the wrist HUD must not
+    /// open on it (a palm that faces you mid-jog is not a request for the panel).
+    func isHandBusy(_ hand: BridgeHand) -> Bool {
+        arbiter.isBusy(hand)
     }
 
     /// Whether this title gets emulated controllers at all. Off means the 0x03 input
@@ -420,10 +505,7 @@ final class ControllerBridgeSender {
     /// layer should only record what differs from the default, and `setSaved` removes
     /// an emptied profile outright.
     func setEmulateControllers(_ on: Bool) {
-        var profile = gameProfile
-        profile.input.emulateControllers = on ? nil : false
-        GameProfiles.setSaved(profile, for: activeGame)
-        applyGameProfile(for: activeGame)
+        updateGameInput { $0.emulateControllers = on ? nil : false }
     }
     private var tuneDirty = true
     private var tuneSequence: UInt8 = 0
@@ -599,8 +681,7 @@ final class ControllerBridgeSender {
         anchorFromGrip.removeAll()
         gripConfidence.removeAll()
         // Nothing will sample the hand again, so no press is in progress.
-        gestureCharge = nil
-        joystickVisualization = nil
+        resetGestureState()
         log.notice("ControllerBridge sender stopped")
     }
 
@@ -1062,7 +1143,7 @@ final class ControllerBridgeSender {
             let m = originFromAnchor * skeleton.joint(joint).anchorFromJointTransform
             return SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
         }
-        // Comfortably past HandGestureEngine's 4.5 cm release distance, so the offset is
+        // Comfortably past the pinch detector's 4.5 cm release distance, so the offset is
         // never re-measured on a hand that is on its way into or out of a pinch.
         let clearance: Float = 0.07
         let thumbTip = jointWorld(.thumbTip)
@@ -1169,8 +1250,10 @@ final class ControllerBridgeSender {
                     // head keep flowing below; they are what native hand tracking
                     // runs on. No packet means no pinch can be mid-press either.
                     sequence &+= 1
-                    gestureCharge = nil
-                    joystickVisualization = nil
+                    if !gesturesIdle {
+                        resetGestureState()
+                        gesturesIdle = true
+                    }
                 }
                 // Our ARKit head pose rides along at input rate: the host aligns the
                 // hand packets' ARKit world origin to the streaming runtime's tracking
@@ -1299,25 +1382,10 @@ final class ControllerBridgeSender {
         }
 
         // Hand-gesture controller emulation. Held pinches → buttons/triggers, left
-        // thumb+index → the locomotion stick. Applied first so a physical controller
-        // (below) augments rather than is masked by it.
-        let (forward, right) = headBasis()
-        let gestures = gestureEngine.poll(worldForward: forward, worldRight: right)
-        let mapping = activeGestureMapping
-        var charge: GestureCharge?
-        if let finger = gestures.left.held {
-            flags.insert(.leftPinch)
-            apply(mapping.target(for: .left, finger: finger), hand: .left,
-                  heldFor: gestures.left.heldDuration, charge: &charge, to: &state)
-        }
-        if let finger = gestures.right.held {
-            flags.insert(.rightPinch)
-            apply(mapping.target(for: .right, finger: finger), hand: .right,
-                  heldFor: gestures.right.heldDuration, charge: &charge, to: &state)
-        }
-        gestureCharge = charge
-        state.leftStick = gestures.joystick.vector
-        joystickVisualization = gestures.joystick.visualization
+        // thumb+index → the locomotion stick (or arm swing), the turn clutch → the right
+        // stick. Applied first so a physical controller (below) augments rather than is
+        // masked by it.
+        applyGestures(to: &state, flags: &flags)
 
         if let pad = controller?.extendedGamepad {
             flags.insert(.controllerPresent)
@@ -1353,6 +1421,95 @@ final class ControllerBridgeSender {
         }
         state.flags = flags
         return state
+    }
+
+    /// One frame of hand gestures into the packet. The order matters: the sensor first
+    /// (pinches, and whether the joystick is engaged), then arm swing and the turn clutch,
+    /// then the arbiter decides which hand belongs to what — and only then are button
+    /// pinches allowed to press anything.
+    private func applyGestures(to state: inout ControllerBridgeInputState,
+                               flags: inout ControllerBridgeProtocol.Flags) {
+        gesturesIdle = false
+        let now = CACurrentMediaTime()
+        let head = headPose()
+        let basis = RAVEPlanarBasis(forward: head.forward, right: head.right)
+        let gestures = gestureEngine.poll(now: now, trackingBasis: basis)
+        let input = gameProfile.input
+        let locomotion = input.resolvedLocomotion
+        let turnMode = input.resolvedTurn
+        let turnHand = input.resolvedTurnHand
+        let mapping = activeGestureMapping
+
+        // Joystick: engaged per the sensor's dedicated `.joystick` detector, advanced here
+        // with the frame time so its smoothing applies.
+        let stick = joystick.update(
+            controlPoint: gestureEngine.sample(for: .left)?.wrist,
+            engaged: gestures.joystick.isEngaged,
+            basis: basis, now: now)
+
+        // Arm swing, only when the title asks for it. A held joystick resets it (the
+        // next swing has to engage from scratch rather than resume at speed).
+        var swing = RAVEArmSwingOutput()
+        if locomotion == .armSwing, let position = head.position, !stick.isEngaged {
+            swing = armSwinger.update(left: gestureEngine.sample(for: .left),
+                                      right: gestureEngine.sample(for: .right),
+                                      headPosition: position, basis: basis, now: now)
+        } else if armSwinger.isEngaged {
+            armSwinger.reset()
+        }
+
+        // Turn clutch. The clutch finger on the turn hand is reserved while turning is on,
+        // so its mapped button never fires during the hold that engages it.
+        let turnSuppressed = gestureEngine.suppressedHands.contains(turnHand)
+        let turn = gestureTurn.update(
+            mode: turnMode,
+            clutchHeld: gestures[turnHand].held == GestureTurn.clutchFinger,
+            allowed: arbiter.allowsTurn(on: turnHand) && !turnSuppressed,
+            wrist: gestureEngine.sample(for: turnHand)?.wrist,
+            right: basis.right, now: now)
+
+        func target(_ hand: BridgeHand) -> BridgeGestureTarget {
+            guard let finger = gestures[hand].held else { return .none }
+            if turnMode != .off, hand == turnHand, finger == GestureTurn.clutchFinger {
+                return .none
+            }
+            return mapping.target(for: hand, finger: finger)
+        }
+        let leftTarget = target(.left)
+        let rightTarget = target(.right)
+
+        let owners = arbiter.resolve(PCVRGestureArbiter.Input(
+            joystickEngaged: stick.isEngaged,
+            turnEngaged: turn.engaged,
+            turnHand: turnHand,
+            swingingLeft: swing.engaged && swing.leftSwinging,
+            swingingRight: swing.engaged && swing.rightSwinging,
+            leftButtonHeld: leftTarget != .none,
+            rightButtonHeld: rightTarget != .none), now: now)
+        if owners.swingBlocked { armSwinger.reset() }
+
+        var charge: GestureCharge?
+        for (hand, mapped) in [(BridgeHand.left, leftTarget), (.right, rightTarget)] {
+            let allowed = owners.buttonsAllowed(hand)
+            // The pinch flags keep their old meaning for the joystick and clutch (a held
+            // pinch the host may pose the hand from); a refused button pinch is dropped
+            // outright, flag included, since it is not something the player meant.
+            if gestures[hand].held != nil, allowed || mapped == .none {
+                flags.insert(hand == .left ? .leftPinch : .rightPinch)
+            }
+            apply(allowed ? mapped : .none, hand: hand, now: now, charge: &charge, to: &state)
+        }
+        gestureCharge = charge
+
+        switch locomotion {
+        case .pinchJoystick, .off:
+            state.leftStick = stick.vector
+        case .armSwing:
+            state.leftStick = stick.isEngaged ? stick.vector
+                : owners.swingBlocked ? .zero : swing.vector
+        }
+        joystickVisualization = stick.visualization
+        state.rightStick = SIMD2(turn.stickX, 0)
     }
 
     /// The holder for this tick: the user's override, or the detector fed with this tick's
@@ -1394,7 +1551,11 @@ final class ControllerBridgeSender {
         // otherwise the gesture joystick (set earlier) stands.
         let padLeft = SIMD2<Float>(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value)
         if simd_length(padLeft) > 0.15 { state.leftStick = padLeft }
-        state.rightStick = SIMD2<Float>(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
+        // Same rule on the right, so a connected pad resting at centre does not erase a
+        // gesture turn — and the pad's stick is only ever the pad's: nothing here can
+        // start a turn, it can only overwrite one when actually deflected.
+        let padRight = SIMD2<Float>(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
+        if simd_length(padRight) > 0.15 || state.rightStick == .zero { state.rightStick = padRight }
         state.leftTrigger = max(state.leftTrigger, pad.leftTrigger.value)
         state.rightTrigger = max(state.rightTrigger, pad.rightTrigger.value)
     }
@@ -1493,9 +1654,19 @@ final class ControllerBridgeSender {
     /// the little finger by default, the one that curls on its own as a hand relaxes. So
     /// they alone need a deliberate hold, reported through `charge` so the user can watch
     /// it fill and let go if they did not mean it.
+    ///
+    /// The hold is a `RAVEGestureGate` per hand (`.hold(chargeDuration)`), fed every frame
+    /// — `.none` included, which is what lets go of it. Menu and system matter more than
+    /// usual on the default map: the right little finger's menu is PLUS on the wire, and
+    /// the host fans PLUS out to the right controller's `system` *and* `menu` and to the
+    /// left controller's `menu` (so Touch, whose only menu button is on the left, gets it
+    /// too). One little-finger curl therefore reaches every system-class input the game
+    /// has, and this hold is the only thing between a relaxing hand and all of them.
     private func apply(_ target: BridgeGestureTarget, hand: BridgeHand,
-                       heldFor: TimeInterval, charge: inout GestureCharge?,
+                       now: TimeInterval, charge: inout GestureCharge?,
                        to state: inout ControllerBridgeInputState) {
+        let menuClass = target == .menu || target == .system
+        let gate = menuGates[hand]?.update(active: menuClass, now: now) ?? RAVEGestureGateOutput()
         switch target {
         case .none: break
         case .trigger:
@@ -1508,20 +1679,16 @@ final class ControllerBridgeSender {
         case .xButton:    state.buttons.insert(.x)
         case .yButton:    state.buttons.insert(.y)
         case .menu, .system:
-            let full = Self.chargeDuration
-            if heldFor >= full {
+            if gate.engaged {
                 state.buttons.insert(target == .menu ? .plus : .home)
             } else {
-                let fraction = Float(max(0, heldFor) / full)
                 charge = GestureCharge(
                     hand: hand, target: target,
-                    progress: (fraction * Self.chargeSteps).rounded(.down) / Self.chargeSteps)
+                    progress: (gate.progress * Self.chargeSteps).rounded(.down) / Self.chargeSteps)
             }
         }
     }
 
-    /// Head-relative XZ basis (forward, right) for the locomotion joystick, from the
-    /// world-tracking device anchor. Falls back to world axes if unavailable.
     // MARK: Wrist HUD support
     //
     // The HUD is drawn by FoveatedImmersiveView but posed from here, because the hand
@@ -1582,9 +1749,13 @@ final class ControllerBridgeSender {
         else { gestureEngine.suppressedHands.remove(hand) }
     }
 
-    private func headBasis() -> (forward: SIMD3<Float>, right: SIMD3<Float>) {
+    /// Head-relative XZ basis (forward, right) for the joystick, arm swing and turn, plus
+    /// the head position arm swing subtracts, from one device-anchor query. Falls back to
+    /// world axes (and no position) while world tracking isn't running.
+    private func headPose() -> (position: SIMD3<Float>?, forward: SIMD3<Float>, right: SIMD3<Float>) {
         var forward = SIMD3<Float>(0, 0, -1)
         var right = SIMD3<Float>(1, 0, 0)
+        var position: SIMD3<Float>?
         if worldProvider.state == .running,
            let device = worldProvider.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) {
             let m = device.originFromAnchorTransform
@@ -1592,9 +1763,14 @@ final class ControllerBridgeSender {
             let r = SIMD3<Float>(m.columns.0.x, 0, m.columns.0.z)
             if simd_length(f) > 1e-4 { forward = simd_normalize(f) }
             if simd_length(r) > 1e-4 { right = simd_normalize(r) }
+            position = SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
         }
-        return (forward, right)
+        return (position, forward, right)
     }
+
+    /// True once input has stopped being sampled (hands-only) and the gesture state has
+    /// been dropped, so it is dropped once rather than every tick.
+    private var gesturesIdle = true
 
     /// Swap in a new gesture→input map (e.g. from the settings UI). Takes effect next frame.
     func updateGestureMapping(_ mapping: GestureControllerMapping) {

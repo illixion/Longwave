@@ -27,17 +27,141 @@
 
 #if FOVEATED_ENABLED
 import Foundation
+import RAVEInput
+
+/// How a title's player walks without a thumbstick.
+enum GameLocomotionMode: String, Codable, CaseIterable, Sendable {
+    /// Left thumb + index held, then move the hand: a wrist-delta joystick.
+    case pinchJoystick
+    /// Pump both fists like jogging (`RAVEArmSwinger`). The pinch joystick stays
+    /// available as a precision override and wins while it is held.
+    case armSwing
+    /// No gesture locomotion at all; left thumb + index is free and presses nothing.
+    case off
+
+    static let `default`: GameLocomotionMode = .pinchJoystick
+
+    var displayName: String {
+        switch self {
+        case .pinchJoystick: "Pinch joystick"
+        case .armSwing:      "Arm swing"
+        case .off:           "Off"
+        }
+    }
+}
+
+/// Whether, and how, hand gestures turn the player (the emulated right stick's X axis).
+enum GameTurnMode: String, Codable, CaseIterable, Sendable {
+    case off
+    /// A short full-deflection pulse per flick: the game's own snap turn decides the angle.
+    case snap
+    /// Deflection proportional to how far the clutched hand has moved sideways.
+    case smooth
+
+    static let `default`: GameTurnMode = .off
+
+    var displayName: String {
+        switch self {
+        case .off:    "Off"
+        case .snap:   "Snap"
+        case .smooth: "Smooth"
+        }
+    }
+}
 
 /// Per-title input handling. `nil` fields mean "inherit the global setting", so a profile
 /// only has to state what makes this title different.
+///
+/// Decoding is hand-written so a saved profile always loads: every key is optional, and
+/// the newer ones are read with `try?` as well, because `GameProfiles.saved()` decodes the
+/// whole dictionary at once — a single unreadable value (an enum case from a newer build,
+/// say) would otherwise throw away every title's settings, not just the one field.
 struct GameInput: Equatable, Codable {
     /// Overrides the global gesture→button map for this title.
     var gestureMapping: GestureControllerMapping?
     /// Whether to present emulated controllers at all. A title that tracks hands natively
     /// through the runtime can be better off without them.
     var emulateControllers: Bool?
+    /// Gesture locomotion. nil = `GameLocomotionMode.default`.
+    var locomotion: GameLocomotionMode?
+    /// Pinch-joystick sensitivity, `joystickSensitivityRange`. Higher engages sooner,
+    /// with a smaller deadzone and less travel to full deflection. nil = 1.
+    var joystickSensitivity: Float?
+    /// Gesture turning. nil = `GameTurnMode.default` (off).
+    var turn: GameTurnMode?
+    /// The hand whose thumb + middle clutch turns. nil = right, the stick a real
+    /// controller turns with.
+    var turnHand: BridgeHand?
 
-    var isEmpty: Bool { gestureMapping == nil && emulateControllers == nil }
+    init(gestureMapping: GestureControllerMapping? = nil,
+         emulateControllers: Bool? = nil,
+         locomotion: GameLocomotionMode? = nil,
+         joystickSensitivity: Float? = nil,
+         turn: GameTurnMode? = nil,
+         turnHand: BridgeHand? = nil) {
+        self.gestureMapping = gestureMapping
+        self.emulateControllers = emulateControllers
+        self.locomotion = locomotion
+        self.joystickSensitivity = joystickSensitivity
+        self.turn = turn
+        self.turnHand = turnHand
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case gestureMapping, emulateControllers, locomotion, joystickSensitivity, turn, turnHand
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        gestureMapping = (try? c.decodeIfPresent(GestureControllerMapping.self, forKey: .gestureMapping)) ?? nil
+        emulateControllers = (try? c.decodeIfPresent(Bool.self, forKey: .emulateControllers)) ?? nil
+        locomotion = (try? c.decodeIfPresent(GameLocomotionMode.self, forKey: .locomotion)) ?? nil
+        joystickSensitivity = (try? c.decodeIfPresent(Float.self, forKey: .joystickSensitivity)) ?? nil
+        turn = (try? c.decodeIfPresent(GameTurnMode.self, forKey: .turn)) ?? nil
+        turnHand = (try? c.decodeIfPresent(BridgeHand.self, forKey: .turnHand)) ?? nil
+    }
+
+    var isEmpty: Bool {
+        gestureMapping == nil && emulateControllers == nil && locomotion == nil
+            && joystickSensitivity == nil && turn == nil && turnHand == nil
+    }
+
+    // MARK: Resolved values
+
+    static let joystickSensitivityRange: ClosedRange<Float> = 0.5...1.5
+
+    var resolvedLocomotion: GameLocomotionMode { locomotion ?? .default }
+    var resolvedTurn: GameTurnMode { turn ?? .default }
+    var resolvedTurnHand: BridgeHand { turnHand ?? .right }
+    var resolvedJoystickSensitivity: Float {
+        let value = joystickSensitivity ?? 1
+        guard value.isFinite else { return 1 }
+        return min(max(value, Self.joystickSensitivityRange.lowerBound),
+                   Self.joystickSensitivityRange.upperBound)
+    }
+
+    /// The mapping in force for this title: its own if it has one, else the global one.
+    func effectiveMapping(global: GestureControllerMapping) -> GestureControllerMapping {
+        gestureMapping ?? global
+    }
+
+    /// Store `mapping` as this title's own. A mapping identical to the global one is
+    /// stored as no override at all, so the title keeps following later global edits
+    /// instead of freezing a copy of today's.
+    mutating func setMappingOverride(_ mapping: GestureControllerMapping?,
+                                     global: GestureControllerMapping) {
+        gestureMapping = (mapping == nil || mapping == global) ? nil : mapping
+    }
+
+    /// Normalise to the "only what differs" form the saved layer keeps: explicit
+    /// defaults become nil, so they read as inherited and `isEmpty` can remove them.
+    mutating func dropDefaults() {
+        if emulateControllers == true { emulateControllers = nil }
+        if locomotion == .default { locomotion = nil }
+        if turn == .default { turn = nil }
+        if turnHand == .right { turnHand = nil }
+        if let s = joystickSensitivity, abs(s - 1) < 0.001 { joystickSensitivity = nil }
+    }
 }
 
 /// Per-title graphics preferences.
@@ -102,7 +226,17 @@ enum GameProfiles {
     /// The mapping this title should use: its override if it has one, else the global.
     static func gestureMapping(for game: String?, global: GestureControllerMapping)
         -> GestureControllerMapping {
-        resolve(for: game).profile.input.gestureMapping ?? global
+        resolve(for: game).profile.input.effectiveMapping(global: global)
+    }
+
+    /// Edit a title's input settings in the saved layer, starting from whatever currently
+    /// resolves for it (so a shipped profile is carried over rather than dropped), and
+    /// storing only what differs from the defaults.
+    static func updateSavedInput(for game: String?, _ edit: (inout GameInput) -> Void) {
+        var profile = resolve(for: game).profile
+        edit(&profile.input)
+        profile.input.dropDefaults()
+        setSaved(profile, for: game)
     }
 
     // MARK: Saved layer

@@ -89,6 +89,7 @@ private struct PCVRSessionForm: View {
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
 
     @State private var showGestureSettings = false
+    @State private var showGameInput = false
     @State private var showAlignmentDebug = false
     @State private var showHelp = false
     @State private var showPaywall = false
@@ -194,6 +195,10 @@ private struct PCVRSessionForm: View {
         }
         .sheet(isPresented: $showGestureSettings) {
             GestureMappingSettingsView()
+        }
+        .sheet(isPresented: $showGameInput) {
+            GameInputSettingsView()
+                .frame(minWidth: 560, minHeight: 560)
         }
         .sheet(isPresented: $showAlignmentDebug) {
             NavigationStack {
@@ -559,6 +564,19 @@ private struct PCVRSessionForm: View {
                         .padding(.vertical, 4)
                 }
                 .buttonStyle(.bordered)
+
+                // Per-title walking and turning. Only meaningful with a title running,
+                // which the sheet explains itself, so it is offered whenever connected.
+                if !manager.isDisconnected {
+                    Button {
+                        showGameInput = true
+                    } label: {
+                        Label("Game input", systemImage: "figure.walk")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
                 // Alignment is diagnosed against a live stream — offering it while
                 // disconnected would only show an empty graph.

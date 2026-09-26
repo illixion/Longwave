@@ -43,6 +43,7 @@ struct PCVRPaywallView: View {
                 }
                 soloDeveloper
                 finePrint
+                legalLinks
             }
             .padding(32)
             .frame(maxWidth: 640, alignment: .leading)
@@ -147,6 +148,12 @@ struct PCVRPaywallView: View {
                         .background(.tint.opacity(0.35), in: Capsule())
                 }
             }
+
+            // The product's App Store name: 3.1.2 wants the subscription's title
+            // on the screen that sells it, next to its price and period.
+            Text(product.displayName)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
             Text(priceLabel(product))
                 .font(.system(size: 30, weight: .semibold))
@@ -258,6 +265,16 @@ struct PCVRPaywallView: View {
             .foregroundStyle(.tertiary)
     }
 
+    /// Guideline 3.1.2: a screen selling an auto-renewing subscription links to
+    /// the terms of use and the privacy policy.
+    private var legalLinks: some View {
+        HStack(spacing: 20) {
+            Link("Terms of Use", destination: PCVRLegal.termsOfUse)
+            Link("Privacy Policy", destination: PCVRLegal.privacyPolicy)
+        }
+        .font(.caption)
+    }
+
     // MARK: Actions
 
     private func buy(_ product: Product) async {
@@ -272,6 +289,15 @@ struct PCVRPaywallView: View {
             message = reason
         }
     }
+}
+
+/// Where the paywall's legal links point. The terms are Apple's standard
+/// licensed-application EULA, which applies when an app supplies none of its own.
+enum PCVRLegal {
+    static let termsOfUse = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
+    // TODO: move to a page on longwave.pro once the site hosts one, and keep the
+    // Privacy Policy URL in App Store Connect identical to this.
+    static let privacyPolicy = URL(string: "https://github.com/illixion/Longwave/blob/main/docs/PRIVACY.md")!
 }
 
 /// Two button styles in one expression need a common type; `AnyButtonStyle`

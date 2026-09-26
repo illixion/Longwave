@@ -1,0 +1,66 @@
+{
+  "identifier" : "2A1E035E-11D8-44FE-B0F9-B6EF6560C4D3",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "24.99",
+      "familyShareable" : false,
+      "internalID" : "9754C0A2-6F42-49BE-BDD3-C85F6938CDB6",
+      "localizations" : [
+        {
+          "description" : "Removes the 20-minute PCVR session limit, permanently.",
+          "displayName" : "PCVR Unlock",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "pro.longwave.pcvr.lifetime",
+      "referenceName" : "PCVR Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_disableDialogs" : false,
+    "_editorMode" : true,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "62E81B21-3C86-4A65-95D9-9A62A8C2A053",
+      "localizations" : [],
+      "name" : "PCVR",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "1.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "1085386D-EFCD-43B1-9910-644C8640ED9E",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Removes the 20-minute PCVR session limit while subscribed.",
+              "displayName" : "PCVR Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "pro.longwave.pcvr.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "PCVR Monthly",
+          "subscriptionGroupID" : "62E81B21-3C86-4A65-95D9-9A62A8C2A053",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

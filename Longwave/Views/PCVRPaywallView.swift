@@ -82,8 +82,8 @@ struct PCVRPaywallView: View {
         VStack(alignment: .leading, spacing: 14) {
             benefit("infinity", "Sessions of any length",
                     "No clock, no warning banners, no title closing under you mid-raid.")
-            benefit("eye", "Gaze-driven foveation, kept",
-                    "The same host-side foveated rendering the trial runs — full detail where you look, on every session.")
+            benefit("eye", "Foveated rendering, kept",
+                    "The same host-side foveated rendering the trial runs, on every session.")
             benefit("person.2", "Everywhere you sign in",
                     "One purchase covers every Vision Pro on your Apple Account.")
         }

@@ -299,7 +299,7 @@ private struct PCVRSessionForm: View {
                 .foregroundStyle(.tint)
             Text("PC VR, streamed")
                 .font(.title2).fontWeight(.semibold)
-            Text("Play SteamVR and OpenXR titles from a Windows PC with an NVIDIA RTX card. Your eye tracking reaches the PC, so the game renders in full detail where you are looking and spends less everywhere else.")
+            Text("Play SteamVR and OpenXR titles from a Windows PC with an NVIDIA RTX card, streamed foveated: full detail at the centre of your view, less spent on the periphery.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

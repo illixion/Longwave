@@ -84,6 +84,16 @@ echo "==> checking asset hashes"
 # signature covers and the release no longer has is a discrepancy, not a pass.
 ( cd "$STAGE" && shasum -a 256 -c "$MANIFEST" ) | sed 's/^/    /'
 
+# A signed release can still be the wrong build. Any visionOS app on it must be free of
+# dev-only and internal-only strings (see check-app-strings.sh).
+shopt -s nullglob
+IPAS=("$STAGE"/*.ipa)
+shopt -u nullglob
+if [[ ${#IPAS[@]} -gt 0 ]]; then
+  echo "==> checking app strings"
+  "$REPO_ROOT/scripts/check-app-strings.sh" "${IPAS[@]}"
+fi
+
 echo
 echo "==> $TAG verifies: every asset matches a manifest signed by a pinned release key."
 [[ "$KEEP" == 1 ]] && echo "    downloads kept in $STAGE"

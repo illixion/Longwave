@@ -147,6 +147,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             "${EDITION[@]}"
+
+      # The App Store build must never carry dev-only or internal-only code:
+      # PCVR_UNLOCKED (a free lifetime unlock) or LONGWAVE_INTERNAL. Neither is
+      # emitted by edition-settings.sh; this proves it from the binary itself.
+      - name: String guard on the App Store edition
+        run: |
+          APP="$(find $RUNNER_TEMP/appstore-dd/Build/Products -maxdepth 2 -name 'Longwave.app' -type d | head -1)"
+          [[ -n "$APP" ]] || { echo "::error::appstore Longwave.app not found"; exit 1; }
+          ./scripts/check-app-strings.sh "$APP"
           rm -rf $RUNNER_TEMP/appstore-dd
 
       # LongwaveCompanion's ARCHS build setting is "arm64 x86_64" (project.pbxproj),

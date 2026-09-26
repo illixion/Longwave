@@ -93,6 +93,10 @@ final class PCVRStore {
         // A sideloaded build has no App Store receipt, so StoreKit answers
         // "nothing owned" forever and the build lives in trial. Dev builds
         // pass PCVR_UNLOCKED to skip the store and own the lifetime unlock.
+        // The log line doubles as a marker: CI's string guard fails any appstore
+        // build whose binary contains "PCVR_UNLOCKED", which is how a flag that
+        // otherwise leaves no trace in the binary is kept out of a release.
+        log.notice("PCVR_UNLOCKED dev build: lifetime unlock granted without StoreKit")
         unlock = .some(.lifetime)
 #else
         var found: Unlock?

@@ -36,6 +36,17 @@
 #
 # Command-line settings beat both the target and the xcconfig, so anything
 # printed here wins over the project defaults (which are the `oss` values).
+#
+# Two conditions are deliberately never printed by any edition here:
+#
+#   PCVR_UNLOCKED      Dev-only: makes PCVRStore report the lifetime unlock so a
+#                      receipt-less sideload is not stuck in trial. Set only in the
+#                      local, gitignored build-signing.conf.
+#   LONGWAVE_INTERNAL  Internal-only features for private test builds.
+#
+# CI builds the appstore edition from this file and fails if the binary carries
+# either (see the string guard in .github/workflows/build.yml), so adding one of
+# them to an edition below breaks the build on purpose.
 
 set -euo pipefail
 

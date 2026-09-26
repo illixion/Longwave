@@ -75,9 +75,10 @@ typealias GestureControllerMapping = RAVEFingerBindingTable<BridgeGestureTarget>
 
 extension RAVEFingerBindingTable where Action == BridgeGestureTarget {
     /// Right little = menu stays the default, deliberately. On the wire menu is PLUS, and
-    /// the host fans PLUS out widely — right `system` and right `menu`, plus left `menu`
-    /// so the Touch profile (menu on the left) gets it too — so this one finger reaches
-    /// every system-class input a game has, on the finger that curls by itself as a hand
+    /// the host presents PLUS as a menu button on both controllers — right `menu`, plus
+    /// left `menu` so the Touch profile (menu on the left) gets it too — but never as
+    /// `system`, which only HOME (the `.system` target) presses. So this one finger reaches
+    /// a game's menu whichever side it binds, on the finger that curls by itself as a hand
     /// relaxes. It is safe only because menu and system never fire on contact: the sender
     /// holds them behind a 1.5 s `RAVEGestureGate` with a visible charge ring, and letting
     /// go cancels. Unbinding it by default would leave most games with no way to reach

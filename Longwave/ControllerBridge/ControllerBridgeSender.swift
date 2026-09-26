@@ -1656,12 +1656,13 @@ final class ControllerBridgeSender {
     /// it fill and let go if they did not mean it.
     ///
     /// The hold is a `RAVEGestureGate` per hand (`.hold(chargeDuration)`), fed every frame
-    /// — `.none` included, which is what lets go of it. Menu and system matter more than
-    /// usual on the default map: the right little finger's menu is PLUS on the wire, and
-    /// the host fans PLUS out to the right controller's `system` *and* `menu` and to the
-    /// left controller's `menu` (so Touch, whose only menu button is on the left, gets it
-    /// too). One little-finger curl therefore reaches every system-class input the game
-    /// has, and this hold is the only thing between a relaxing hand and all of them.
+    /// — `.none` included, which is what lets go of it. Menu matters more than usual on
+    /// the default map: the right little finger's menu is PLUS on the wire, and the host
+    /// presents PLUS as a menu button on both emulated controllers (MINUS on the left),
+    /// so Touch, whose only menu button is on the left, gets it too. It never presses `system` —
+    /// HOME, the `.system` target, is the only thing that does. One little-finger curl
+    /// therefore reaches the game's menu from either side, and this hold is the only thing
+    /// between a relaxing hand and it.
     private func apply(_ target: BridgeGestureTarget, hand: BridgeHand,
                        now: TimeInterval, charge: inout GestureCharge?,
                        to state: inout ControllerBridgeInputState) {

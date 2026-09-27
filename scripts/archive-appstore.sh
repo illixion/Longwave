@@ -23,10 +23,20 @@
 #                      export. For checking the pipeline on a machine with no
 #                      signing identity; the result cannot be uploaded.
 #   --allow-dirty      Archive a working tree with uncommitted changes.
+#   --api-key PATH     App Store Connect API key (.p8). Signing and upload then
+#                      authenticate with the key instead of an account signed
+#                      in to Xcode, so the script runs headless (over SSH, on a
+#                      Mac nobody is logged in to Xcode on). Also ASC_KEY_PATH in
+#                      build-signing.conf or $LONGWAVE_ASC_KEY_PATH.
+#   --api-key-id ID    The key's ID. Default: ASC_KEY_ID / $LONGWAVE_ASC_KEY_ID,
+#                      else parsed from an AuthKey_<ID>.p8 file name.
+#   --api-issuer ID    The team's issuer ID. Also ASC_ISSUER_ID /
+#                      $LONGWAVE_ASC_ISSUER_ID.
 #
-# Signing is automatic (-allowProvisioningUpdates): Xcode must be signed in to
-# an account on the team, with the App ID pro.longwave.app carrying the App
-# Group and Foveated Streaming capabilities.
+# Signing is automatic (-allowProvisioningUpdates), with the App ID
+# pro.longwave.app carrying the App Group and Foveated Streaming capabilities.
+# Without an API key, Xcode must be signed in to an account on the team. With
+# one, the key needs the App Manager role or higher.
 #
 # Independent of any dev-deploy configuration on purpose: the edition comes
 # from scripts/edition-settings.sh alone, build-signing.conf contributes only
@@ -55,6 +65,9 @@ upload=0
 dry_run=0
 unsigned=0
 allow_dirty=0
+api_key="${LONGWAVE_ASC_KEY_PATH:-}"
+api_key_id="${LONGWAVE_ASC_KEY_ID:-}"
+api_issuer="${LONGWAVE_ASC_ISSUER_ID:-}"
 
 die() { echo "error: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
@@ -69,7 +82,10 @@ while [[ $# -gt 0 ]]; do
         --dry-run) dry_run=1; shift ;;
         --unsigned) unsigned=1; shift ;;
         --allow-dirty) allow_dirty=1; shift ;;
-        -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --api-key) api_key="${2:-}"; shift 2 ;;
+        --api-key-id) api_key_id="${2:-}"; shift 2 ;;
+        --api-issuer) api_issuer="${2:-}"; shift 2 ;;
+        -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
@@ -106,6 +122,30 @@ if [[ -z "$team" && -f "$SCRIPT_DIR/build-signing.conf" ]]; then
 fi
 if [[ -z "$team" && $unsigned == 0 && $dry_run == 0 ]]; then
     die "no team ID (pass --team, set LONGWAVE_TEAM_ID, or set TEAM_ID in scripts/build-signing.conf)"
+fi
+
+# --- App Store Connect API key ---------------------------------------------------
+# Same rule as TEAM_ID: read single assignments, never source the file.
+conf_value() {
+    [[ -f "$SCRIPT_DIR/build-signing.conf" ]] || return 0
+    sed -n "s/^[[:space:]]*$1=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1/p" \
+        "$SCRIPT_DIR/build-signing.conf" | head -1
+}
+[[ -z "$api_key" ]] && api_key="$(conf_value ASC_KEY_PATH)"
+[[ -z "$api_key_id" ]] && api_key_id="$(conf_value ASC_KEY_ID)"
+[[ -z "$api_issuer" ]] && api_issuer="$(conf_value ASC_ISSUER_ID)"
+AUTH_ARGS=()
+if [[ -n "$api_key" ]]; then
+    api_key="${api_key/#\~/$HOME}"
+    [[ -f "$api_key" ]] || die "API key not found: $api_key"
+    if [[ -z "$api_key_id" && "$(basename "$api_key")" =~ AuthKey_([A-Z0-9]{10})\.p8$ ]]; then
+        api_key_id="${BASH_REMATCH[1]}"
+    fi
+    [[ -n "$api_key_id" ]] || die "no API key ID (pass --api-key-id)"
+    [[ -n "$api_issuer" ]] || die "no API issuer ID (pass --api-issuer)"
+    AUTH_ARGS=(-authenticationKeyPath "$api_key"
+               -authenticationKeyID "$api_key_id"
+               -authenticationKeyIssuerID "$api_issuer")
 fi
 
 # --- Edition --------------------------------------------------------------------
@@ -171,6 +211,7 @@ cat <<EOF
     entitlements $entitlements
     team         ${team:-(none)}
     signing      $([[ $unsigned == 1 ]] && echo "disabled (--unsigned)" || echo automatic)
+    auth         $([[ ${#AUTH_ARGS[@]} -gt 0 ]] && echo "API key $api_key_id" || echo "Xcode account")
     export       $([[ $unsigned == 1 ]] && echo skipped || { [[ $upload == 1 ]] && echo "upload to App Store Connect" || echo "$export_dir"; })
     archive      $archive
 EOF
@@ -194,7 +235,7 @@ step "Archiving"
 ARCHIVE_ARGS=(archive
     -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIGURATION"
     -destination "$DESTINATION" -archivePath "$archive")
-[[ $unsigned == 0 ]] && ARCHIVE_ARGS+=(-allowProvisioningUpdates)
+[[ $unsigned == 0 ]] && ARCHIVE_ARGS+=(-allowProvisioningUpdates ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"})
 xcodebuild "${ARCHIVE_ARGS[@]}" "${SETTINGS[@]}"
 
 app="$archive/Products/Applications/Longwave.app"
@@ -243,7 +284,7 @@ xcodebuild -exportArchive \
     -archivePath "$archive" \
     -exportPath "$export_dir" \
     -exportOptionsPlist "$options" \
-    -allowProvisioningUpdates
+    -allowProvisioningUpdates ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}
 
 if [[ $upload == 1 ]]; then
     step "Uploaded $version ($build). It appears in App Store Connect → TestFlight once processed."

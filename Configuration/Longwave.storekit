@@ -45,7 +45,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Removes the 20-minute PCVR session limit while subscribed.",
+              "description" : "Removes the 20-minute PCVR limit while subscribed.",
               "displayName" : "PCVR Monthly",
               "locale" : "en_US"
             }

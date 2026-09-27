@@ -40,7 +40,7 @@ exactly:
 | Reference name | Product ID | Type | Price | Details |
 |---|---|---|---|---|
 | PCVR Lifetime | `pro.longwave.pcvr.lifetime` | Non-Consumable | $24.99 (US base) | Display name "PCVR Unlock". Description "Removes the 20-minute PCVR session limit, permanently." |
-| PCVR Monthly | `pro.longwave.pcvr.monthly` | Auto-Renewable Subscription | $1.99 / 1 month (US base) | Subscription group **PCVR**, level 1. Display name "PCVR Monthly". Description "Removes the 20-minute PCVR session limit while subscribed." |
+| PCVR Monthly | `pro.longwave.pcvr.monthly` | Auto-Renewable Subscription | $1.99 / 1 month (US base) | Subscription group **PCVR**, level 1. Display name "PCVR Monthly". Description "Removes the 20-minute PCVR limit while subscribed." |
 
 - [ ] Create the subscription group **PCVR** and give it a localized display name
       (for example "Longwave PCVR").
@@ -103,8 +103,19 @@ encryption declaration if the app is offered in France.
 
 ## 6. Build and upload
 
-- [ ] Sign in to Xcode (Settings → Accounts) with an account on the team, and make sure
-      `TEAM_ID` in `scripts/build-signing.conf` is that team (or pass `--team`).
+- [ ] Make sure `TEAM_ID` in `scripts/build-signing.conf` is the team (or pass `--team`),
+      then either sign in to Xcode (Settings → Accounts) with an account on the team, or
+      give the script an App Store Connect API key (App Manager role or higher) so it
+      runs headless, over SSH included:
+
+  ```sh
+  # scripts/build-signing.conf (gitignored)
+  ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8
+  ASC_KEY_ID=XXXXXXXXXX
+  ASC_ISSUER_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  ```
+
+  `--api-key`, `--api-key-id` and `--api-issuer` override those per run.
 - [ ] Commit everything, then from the repository root:
 
   ```sh

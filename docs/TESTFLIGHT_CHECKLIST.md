@@ -45,8 +45,9 @@ exactly:
 - [ ] Create the subscription group **PCVR** and give it a localized display name
       (for example "Longwave PCVR").
 - [ ] Each product needs a **review screenshot**: the paywall showing both products.
-      Take it from a TestFlight or StoreKit-configuration run. The visionOS window
-      screenshot size is accepted.
+      `scripts/capture-screenshots.sh` (UI test `ScreenshotTests`) takes it in the
+      simulator at 3840×2160, along with the App Store screenshots; its header explains
+      why the paywall shot needs the test run from Xcode.
 - [ ] Each product needs **review notes**. One line is enough, for example "Removes the
       20-minute limit on PCVR sessions. See the app review notes for the hardware
       needed."

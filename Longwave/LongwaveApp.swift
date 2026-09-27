@@ -51,6 +51,7 @@ struct LongwaveApp: App {
                 .trackMainWindow()
                 #if DEBUG
                 .unityControlsLayoutDemo(macNativeSessions, audioManager)
+                .screenshotDemo()
                 #endif
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)

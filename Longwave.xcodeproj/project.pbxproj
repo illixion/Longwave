@@ -67,6 +67,13 @@
 			remoteGlobalIDString = CCBB00000000000000000005;
 			remoteInfo = LongwaveBroadcast;
 		};
+		1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1DC83C1F2F74524200BF0482 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1DC83C262F74524200BF0482;
+			remoteInfo = Longwave;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -84,6 +91,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		1DA30DF53068EFCD00952C39 /* LongwaveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LongwaveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1DC83C272F74524200BF0482 /* Longwave.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Longwave.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5B135754F5FB6AA031143FD /* LongwaveMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A9B918A25E70DE211DA3B92A /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
@@ -95,13 +103,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		CCBB00000000000000000041 /* Exceptions for "BroadcastExtension" folder in "LongwaveBroadcast" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
-		};
 		1DC83C352F74524300BF0482 /* Exceptions for "Longwave" folder in "Longwave" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -123,6 +124,13 @@
 				Info.plist,
 			);
 			target = AA10AD100000000000000005 /* LongwaveCompanion */;
+		};
+		CCBB00000000000000000041 /* Exceptions for "BroadcastExtension" folder in "LongwaveBroadcast" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
 		};
 		DD1010000000000000000003 /* Exceptions for "LongwaveiOS" folder in "LongwaveiOS" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -187,6 +195,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		1DA30DF63068EFCD00952C39 /* LongwaveUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LongwaveUITests;
+			sourceTree = "<group>";
+		};
 		1DC83C292F74524200BF0482 /* Longwave */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -245,6 +258,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		1DA30DF23068EFCD00952C39 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1DC83C242F74524200BF0482 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -350,6 +370,7 @@
 				CCBB00000000000000000003 /* BroadcastExtension */,
 				BBAA00000000000000000002 /* LongwaveTests */,
 				1DC83C2A2F74524200BF0482 /* Packages */,
+				1DA30DF63068EFCD00952C39 /* LongwaveUITests */,
 				1DC83C282F74524200BF0482 /* Products */,
 				1D1D4D672FD30B7000952C39 /* Recovered References */,
 				998E98D0771424FCCB2F2C1A /* Frameworks */,
@@ -367,6 +388,7 @@
 				CCBB00000000000000000001 /* LongwaveBroadcast.appex */,
 				A5B135754F5FB6AA031143FD /* LongwaveMac.app */,
 				DD1010000000000000000001 /* LongwaveiOS.app */,
+				1DA30DF53068EFCD00952C39 /* LongwaveUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -397,6 +419,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		1DA30DF43068EFCD00952C39 /* LongwaveUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1DA30DFB3068EFCD00952C39 /* Build configuration list for PBXNativeTarget "LongwaveUITests" */;
+			buildPhases = (
+				1DA30DF13068EFCD00952C39 /* Sources */,
+				1DA30DF23068EFCD00952C39 /* Frameworks */,
+				1DA30DF33068EFCD00952C39 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1DA30DFD3068EFCD00952C39 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1DA30DF63068EFCD00952C39 /* LongwaveUITests */,
+			);
+			name = LongwaveUITests;
+			packageProductDependencies = (
+			);
+			productName = LongwaveUITests;
+			productReference = 1DA30DF53068EFCD00952C39 /* LongwaveUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		1DC83C262F74524200BF0482 /* Longwave */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1DC83C362F74524300BF0482 /* Build configuration list for PBXNativeTarget "Longwave" */;
@@ -589,9 +634,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2630;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
+					1DA30DF43068EFCD00952C39 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					1DC83C262F74524200BF0482 = {
 						CreatedOnToolsVersion = 26.3;
 					};
@@ -636,11 +684,19 @@
 				CCBB00000000000000000005 /* LongwaveBroadcast */,
 				228F25EB1D6A2BB4D767CB5C /* LongwaveMac */,
 				DD1010000000000000000005 /* LongwaveiOS */,
+				1DA30DF43068EFCD00952C39 /* LongwaveUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		1DA30DF33068EFCD00952C39 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1DC83C252F74524200BF0482 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -669,14 +725,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DD1010000000000000000008 /* Resources */ = {
+		CCBB00000000000000000040 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		CCBB00000000000000000040 /* Resources */ = {
+		DD1010000000000000000008 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -751,6 +807,13 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		1DA30DF13068EFCD00952C39 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		1DC83C232F74524200BF0482 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -810,9 +873,58 @@
 			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
 			targetProxy = CCBB0000000000000000000B /* PBXContainerItemProxy */;
 		};
+		1DA30DFD3068EFCD00952C39 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1DC83C262F74524200BF0482 /* Longwave */;
+			targetProxy = 1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		1DA30DF93068EFCD00952C39 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.LongwaveUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_TARGET_NAME = Longwave;
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Debug;
+		};
+		1DA30DFA3068EFCD00952C39 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.LongwaveUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 7;
+				TEST_TARGET_NAME = Longwave;
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Release;
+		};
 		1DC83C372F74524300BF0482 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA10AD10000000000000000C /* Longwave.xcconfig */;
@@ -1318,6 +1430,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1DA30DFB3068EFCD00952C39 /* Build configuration list for PBXNativeTarget "LongwaveUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DA30DF93068EFCD00952C39 /* Debug */,
+				1DA30DFA3068EFCD00952C39 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		1DC83C222F74524200BF0482 /* Build configuration list for PBXProject "Longwave" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -36,7 +36,11 @@
 # Signing is automatic (-allowProvisioningUpdates), with the App ID
 # pro.longwave.app carrying the App Group and Foveated Streaming capabilities.
 # Without an API key, Xcode must be signed in to an account on the team. With
-# one, the key needs the App Manager role or higher.
+# one, the key needs the App Manager role or higher, and the export signs
+# manually: an App Manager key may not use Apple's cloud-managed distribution
+# certificate ("Cloud signing permission error"), so it needs an Apple
+# Distribution certificate in this Mac's keychain and the two App Store
+# profiles named below. Both were created through the API on 2026-09-27.
 #
 # Independent of any dev-deploy configuration on purpose: the edition comes
 # from scripts/edition-settings.sh alone, build-signing.conf contributes only
@@ -56,6 +60,8 @@ CONFIGURATION="Release"
 DESTINATION="generic/platform=visionOS"
 EXPECTED_BUNDLE_ID="pro.longwave.app"
 EXPORT_TEMPLATE="$SCRIPT_DIR/ExportOptions-appstore.plist"
+APP_PROFILE="Longwave App Store"
+BROADCAST_PROFILE="Longwave Broadcast App Store"
 
 version=""
 build=""
@@ -277,10 +283,20 @@ options="$options_dir/ExportOptions.plist"
 cp "$EXPORT_TEMPLATE" "$options"
 plutil -replace teamID -string "$team" "$options"
 [[ $upload == 1 ]] && plutil -replace destination -string upload "$options"
+if [[ ${#AUTH_ARGS[@]} -gt 0 ]]; then
+    plutil -replace signingStyle -string manual "$options"
+    plutil -replace signingCertificate -string "Apple Distribution" "$options"
+    plutil -replace provisioningProfiles -json \
+        "{\"$EXPECTED_BUNDLE_ID\":\"$APP_PROFILE\",\"$EXPECTED_BUNDLE_ID.broadcast\":\"$BROADCAST_PROFILE\"}" \
+        "$options"
+fi
 
 rm -rf "$export_dir"
 step "Exporting ($([[ $upload == 1 ]] && echo "upload" || echo "export"))"
-xcodebuild -exportArchive \
+# System tools first: the export runs /usr/bin/rsync, which starts its remote
+# end as whatever `rsync` PATH finds, and Homebrew's rejects Apple's
+# --extended-attributes ("Copy failed").
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" xcodebuild -exportArchive \
     -archivePath "$archive" \
     -exportPath "$export_dir" \
     -exportOptionsPlist "$options" \

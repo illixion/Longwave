@@ -45,6 +45,7 @@ struct FoveatedImmersiveView: View {
     private let wristDriver = WristHUDDriver()
     private let chargeEntity = Entity()
     private let bannerDriver = ImmersiveBannerDriver()
+    private let webPanels = PCVRWebPanelsDriver()
     private let joystickEntity = Entity()
 
     var body: some View {
@@ -56,6 +57,7 @@ struct FoveatedImmersiveView: View {
             buildWristHUD(content: content)
             buildGestureCharge(content: content)
             buildBanner(content: content)
+            buildWebPanels(content: content)
             buildJoystickVisualization(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
@@ -69,8 +71,17 @@ struct FoveatedImmersiveView: View {
         .onChange(of: wristHUDOnRight) { _, _ in
             wristDriver.hide(bridge: manager.controllerBridge)
         }
+        // Move mode's grab bar and resize corner on the pinned web panels.
+        .gesture(DragGesture().targetedToAnyEntity()
+            .onChanged { value in
+                webPanels.drag(value.entity,
+                               translation: value.convert(value.translation3D, from: .local, to: .scene),
+                               bridge: manager.controllerBridge)
+            }
+            .onEnded { _ in webPanels.endDrag(bridge: manager.controllerBridge) })
         .onDisappear {
             wristDriver.hide(bridge: manager.controllerBridge)
+            webPanels.tearDown(bridge: manager.controllerBridge)
             Task { await manager.pauseForImmersiveExit() }
         }
         .task(id: showSentSkeleton) {
@@ -107,6 +118,17 @@ struct FoveatedImmersiveView: View {
         })
         wristDriver.panel = panel
         content.add(panel.root)
+    }
+
+    // MARK: Pinned web panels
+
+    /// Pages pinned to a wrist or the view (PCVRWebPanels.swift). One entity holds
+    /// them all; the driver makes and drops panels under it as Settings changes.
+    private func buildWebPanels(content: RealityViewContent) {
+        webPanels.root.components.set(ClosureComponent { deltaTime in
+            webPanels.update(deltaTime: deltaTime, bridge: manager.controllerBridge)
+        })
+        content.add(webPanels.root)
     }
 
     // MARK: Menu-gesture charge ring

@@ -95,6 +95,7 @@ struct FoveatedHUDView: View {
             Divider()
             trialRow
             bandwidthRow
+            webPanelRow
             actionRow
         }
         .padding(18)
@@ -559,6 +560,39 @@ struct FoveatedHUDView: View {
                 .tint(bridge.questControllersEnabled ? .accentColor : nil)
             }
         }
+    }
+
+    // MARK: Pinned web panels
+
+    /// Switches every pinned web panel into touch or move mode. Here rather than on
+    /// the panels because this HUD already keeps its hand's pinches from the game, so
+    /// pressing it cannot leak one; a panel in view mode takes no input at all. Done on
+    /// the panel switches back.
+    private var webPanels: PCVRWebPanelStore { .shared }
+
+    @ViewBuilder
+    private var webPanelRow: some View {
+        if webPanels.hasEnabledPanels {
+            HStack(spacing: 10) {
+                Image(systemName: "rectangle.on.rectangle")
+                Text("Web panels")
+                Spacer()
+                modeButton(.touch, label: "Touch", systemImage: "hand.tap")
+                modeButton(.move, label: "Move", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    private func modeButton(_ mode: PCVRWebPanelMode, label: String, systemImage: String) -> some View {
+        Button {
+            webPanels.mode = webPanels.mode == mode ? .view : mode
+        } label: {
+            Label(label, systemImage: systemImage)
+        }
+        .tint(webPanels.mode == mode ? .accentColor : nil)
     }
 
     // MARK: Actions

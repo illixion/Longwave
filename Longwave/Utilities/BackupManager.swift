@@ -60,6 +60,7 @@ enum BackupManager {
         prefs.foveatedWristHUD = d.object(forKey: "foveatedWristHUD") as? Bool
         prefs.foveatedWristHUDOnRight = d.object(forKey: "foveatedWristHUDOnRight") as? Bool
         prefs.foveatedGameProfilesData = d.data(forKey: "foveatedGameProfiles.v1")
+        prefs.foveatedWebPanelsData = d.data(forKey: "foveatedWebPanels")
 
         #if os(visionOS)
         let broadcast = BroadcastShared.defaults
@@ -148,6 +149,7 @@ enum BackupManager {
         if let v = prefs.foveatedWristHUD { d.set(v, forKey: "foveatedWristHUD") }
         if let v = prefs.foveatedWristHUDOnRight { d.set(v, forKey: "foveatedWristHUDOnRight") }
         if let v = prefs.foveatedGameProfilesData { d.set(v, forKey: "foveatedGameProfiles.v1") }
+        if let v = prefs.foveatedWebPanelsData { d.set(v, forKey: "foveatedWebPanels") }
 
         #if os(visionOS)
         let broadcast = BroadcastShared.defaults

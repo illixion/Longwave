@@ -235,6 +235,8 @@ struct PreferencesBackup: Codable {
     /// as an opaque blob so this struct doesn't need `GameProfile`, which is
     /// declared inside `#if FOVEATED_ENABLED`.
     var foveatedGameProfilesData: Data?
+    /// The pinned web panels (`PCVRWebPanelStore`), opaque for the same reason.
+    var foveatedWebPanelsData: Data?
 
     // Broadcast (non-secret half — the publish password stays in Keychain)
     var broadcastCameraID: String?

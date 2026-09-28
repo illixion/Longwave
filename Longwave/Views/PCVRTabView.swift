@@ -118,6 +118,11 @@ private struct PCVRSessionForm: View {
                 connectionPanel
                 immersionPanel
                 controlsPanel
+                PCVRPanel(title: "Web panels",
+                          systemImage: "rectangle.on.rectangle",
+                          subtitle: "Chat and pages pinned to your wrist or view") {
+                    PCVRWebPanelsSettings()
+                }
                 bandwidthPanel
             }
             .padding(28)

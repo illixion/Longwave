@@ -27,10 +27,10 @@
 		5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9B918A25E70DE211DA3B92A /* Cocoa.framework */; };
 		A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */; };
 		AA03000000000000000000A3 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A2 /* RAVEInput */; };
-		AA03000000000000000000E3 /* RAVEPanel in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000E2 /* RAVEPanel */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B2 /* RAVEDiagnostics */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
+		AA03000000000000000000E3 /* RAVEPanel in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000E2 /* RAVEPanel */; };
 		AA07000000000000000000D3 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D2 /* RAVEUI */; };
 		AA07000000000000000000D5 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D4 /* RAVEConsole */; };
 		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
@@ -38,6 +38,7 @@
 		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
 		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
 		AA07000000000000000000DF /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DE /* RAVECamera */; };
+		AA07000000000000000000E9 /* RAVEBrowser in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000E8 /* RAVEBrowser */; };
 		CCBB0000000000000000000E /* LongwaveBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* LongwaveBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CCBB00000000000000000031 /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = CCBB00000000000000000030 /* RAVECamera */; };
 		DD1010000000000000000021 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000011 /* RoyalVNCKit */; };
@@ -54,6 +55,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1DC83C1F2F74524200BF0482 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1DC83C262F74524200BF0482;
+			remoteInfo = Longwave;
+		};
 		BBAA0000000000000000000D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 1DC83C1F2F74524200BF0482 /* Project object */;
@@ -67,13 +75,6 @@
 			proxyType = 1;
 			remoteGlobalIDString = CCBB00000000000000000005;
 			remoteInfo = LongwaveBroadcast;
-		};
-		1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 1DC83C1F2F74524200BF0482 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 1DC83C262F74524200BF0482;
-			remoteInfo = Longwave;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -282,6 +283,7 @@
 				5511C0DE0000000000000025 /* Crypto in Frameworks */,
 				AA03000000000000000000A3 /* RAVEInput in Frameworks */,
 				AA03000000000000000000E3 /* RAVEPanel in Frameworks */,
+				AA07000000000000000000E9 /* RAVEBrowser in Frameworks */,
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
@@ -479,6 +481,7 @@
 				5511C0DE0000000000000015 /* Crypto */,
 				AA03000000000000000000A2 /* RAVEInput */,
 				AA03000000000000000000E2 /* RAVEPanel */,
+				AA07000000000000000000E8 /* RAVEBrowser */,
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
@@ -862,6 +865,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		1DA30DFD3068EFCD00952C39 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1DC83C262F74524200BF0482 /* Longwave */;
+			targetProxy = 1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */;
+		};
 		1DC83C532F745D6600BF0482 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			productRef = 1DC83C522F745D6600BF0482 /* RoyalVNCKit */;
@@ -875,11 +883,6 @@
 			isa = PBXTargetDependency;
 			target = CCBB00000000000000000005 /* LongwaveBroadcast */;
 			targetProxy = CCBB0000000000000000000B /* PBXContainerItemProxy */;
-		};
-		1DA30DFD3068EFCD00952C39 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 1DC83C262F74524200BF0482 /* Longwave */;
-			targetProxy = 1DA30DFC3068EFCD00952C39 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1658,11 +1661,6 @@
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
 			productName = RAVEInput;
 		};
-		AA03000000000000000000E2 /* RAVEPanel */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
-			productName = RAVEPanel;
-		};
 		AA03000000000000000000A4 /* RAVEInput */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
@@ -1677,6 +1675,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
 			productName = RAVEDiagnostics;
+		};
+		AA03000000000000000000E2 /* RAVEPanel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
+			productName = RAVEPanel;
 		};
 		AA07000000000000000000D2 /* RAVEUI */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1712,6 +1715,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVECamera;
+		};
+		AA07000000000000000000E8 /* RAVEBrowser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEBrowser;
 		};
 		BCF95F097C7D2DFE3EF72400 /* Opus */ = {
 			isa = XCSwiftPackageProductDependency;

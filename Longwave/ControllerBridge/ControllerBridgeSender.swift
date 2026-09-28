@@ -1797,10 +1797,34 @@ final class ControllerBridgeSender {
         gestureEngine.thumbTipWorld(hand)
     }
 
+    /// Why each hand's pinches are kept from the game. A hand is suppressed while any
+    /// reason holds, so the wrist HUD letting go of its hand cannot hand a pinch back
+    /// to the game while a web panel is still being touched or moved.
+    private var gestureSuppression: [BridgeHand: Set<GestureSuppressionReason>] = [:]
+
+    enum GestureSuppressionReason: Hashable {
+        /// The palm HUD is up on this hand.
+        case wristHUD
+        /// A pinned web panel is in touch or move mode.
+        case webPanels
+    }
+
     /// Stop a hand's pinches reaching the game while it is holding the HUD.
-    func setGestureSuppressed(_ suppressed: Bool, for hand: BridgeHand) {
-        if suppressed { gestureEngine.suppressedHands.insert(hand) }
-        else { gestureEngine.suppressedHands.remove(hand) }
+    func setGestureSuppressed(_ suppressed: Bool, for hand: BridgeHand,
+                              reason: GestureSuppressionReason = .wristHUD) {
+        var reasons = gestureSuppression[hand] ?? []
+        if suppressed { reasons.insert(reason) } else { reasons.remove(reason) }
+        gestureSuppression[hand] = reasons
+        if reasons.isEmpty { gestureEngine.suppressedHands.remove(hand) }
+        else { gestureEngine.suppressedHands.insert(hand) }
+    }
+
+    /// The head's full pose (not flattened), for content pinned to the view.
+    var headWorldTransform: simd_float4x4? {
+        guard worldProvider.state == .running,
+              let device = worldProvider.queryDeviceAnchor(atTimestamp: CACurrentMediaTime())
+        else { return nil }
+        return device.originFromAnchorTransform
     }
 
     /// Head-relative XZ basis (forward, right) for the joystick, arm swing and turn, plus

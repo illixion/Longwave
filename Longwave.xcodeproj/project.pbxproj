@@ -27,6 +27,7 @@
 		5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9B918A25E70DE211DA3B92A /* Cocoa.framework */; };
 		A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */; };
 		AA03000000000000000000A3 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A2 /* RAVEInput */; };
+		AA03000000000000000000E3 /* RAVEPanel in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000E2 /* RAVEPanel */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B2 /* RAVEDiagnostics */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
@@ -280,6 +281,7 @@
 				5511C0DE0000000000000024 /* NIOTransportServices in Frameworks */,
 				5511C0DE0000000000000025 /* Crypto in Frameworks */,
 				AA03000000000000000000A3 /* RAVEInput in Frameworks */,
+				AA03000000000000000000E3 /* RAVEPanel in Frameworks */,
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
@@ -476,6 +478,7 @@
 				5511C0DE0000000000000014 /* NIOTransportServices */,
 				5511C0DE0000000000000015 /* Crypto */,
 				AA03000000000000000000A2 /* RAVEInput */,
+				AA03000000000000000000E2 /* RAVEPanel */,
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
@@ -1654,6 +1657,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
 			productName = RAVEInput;
+		};
+		AA03000000000000000000E2 /* RAVEPanel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
+			productName = RAVEPanel;
 		};
 		AA03000000000000000000A4 /* RAVEInput */ = {
 			isa = XCSwiftPackageProductDependency;

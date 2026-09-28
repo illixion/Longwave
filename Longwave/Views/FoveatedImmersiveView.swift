@@ -14,6 +14,7 @@
 
 #if FOVEATED_ENABLED
 import RAVEInput
+import RAVEPanel
 import SwiftUI
 
 #if !targetEnvironment(simulator)
@@ -41,10 +42,8 @@ struct FoveatedImmersiveView: View {
     /// for them. Built once and re-posed — 52 entities created per frame would be a
     /// worse frame-time bug than the one they exist to diagnose.
     private let skeletonRoot = Entity()
-    private let wristEntity = Entity()
     private let wristDriver = WristHUDDriver()
     private let chargeEntity = Entity()
-    private let bannerEntity = Entity()
     private let bannerDriver = ImmersiveBannerDriver()
     private let joystickEntity = Entity()
 
@@ -92,21 +91,22 @@ struct FoveatedImmersiveView: View {
     /// Depth-tested against the streamed content, which is what makes it read as a
     /// hologram held over the hand rather than a label pasted on the display.
     private func buildWristHUD(content: RealityViewContent) {
-        wristEntity.components.set(ViewAttachmentComponent(
-            rootView: FoveatedHUDView().environment(manager).environment(limiter)))
+        let panel = RAVEPanel(name: "WristHUD", size: [0.14, 0.1]) {
+            FoveatedHUDView().environment(manager).environment(limiter)
+        }
         // Attachments are sized points→metres: the 380 pt panel is ~0.28 m at scale 1,
         // so half that is about a hand's width.
-        wristEntity.scale = .init(repeating: 0.5)
-        wristEntity.isEnabled = false
-        wristEntity.components.set(ClosureComponent { [weak wristEntity] deltaTime in
-            guard let wristEntity else { return }
-            wristDriver.update(entity: wristEntity,
-                               deltaTime: deltaTime,
+        panel.contentScale = 0.5
+        panel.opacity = 0
+        panel.root.components.set(ClosureComponent { [weak panel] _ in
+            guard let panel else { return }
+            wristDriver.update(panel: panel,
                                hand: wristHUDOnRight ? .right : .left,
                                enabled: wristHUDEnabled,
                                bridge: manager.controllerBridge)
         })
-        content.add(wristEntity)
+        wristDriver.panel = panel
+        content.add(panel.root)
     }
 
     // MARK: Menu-gesture charge ring
@@ -268,21 +268,22 @@ struct FoveatedImmersiveView: View {
     /// `limiter` and `bandwidthMonitor`, so it re-renders its own content on its own
     /// as their state moves, the same way the trial-only version already did.
     private func buildBanner(content: RealityViewContent) {
-        bannerEntity.components.set(ViewAttachmentComponent(
-            rootView: ImmersiveBannerRoot(limiter: limiter, bandwidthMonitor: bandwidthMonitor)))
+        let panel = RAVEPanel(name: "ImmersiveBanner", size: [0.2, 0.05]) {
+            ImmersiveBannerRoot(limiter: limiter, bandwidthMonitor: bandwidthMonitor)
+        }
         // 460 pt ≈ 0.34 m at scale 1. Slightly under half reads as a notice at
         // arm's length rather than a wall.
-        bannerEntity.scale = .init(repeating: 0.45)
-        bannerEntity.isEnabled = false
-        bannerEntity.components.set(ClosureComponent { [weak bannerEntity] deltaTime in
-            guard let bannerEntity else { return }
+        panel.contentScale = 0.45
+        panel.opacity = 0
+        panel.root.components.set(ClosureComponent { [weak panel] deltaTime in
+            guard let panel else { return }
             let showing = limiter.bannerRemaining != nil || bandwidthMonitor.bannerKind != nil
-            bannerDriver.update(entity: bannerEntity,
+            bannerDriver.update(panel: panel,
                                 deltaTime: deltaTime,
                                 showing: showing,
                                 bridge: manager.controllerBridge)
         })
-        content.add(bannerEntity)
+        content.add(panel.root)
     }
 
     // MARK: Sent-skeleton overlay
@@ -327,6 +328,11 @@ struct FoveatedImmersiveView: View {
 /// Show/hide and placement state for the wrist HUD. A reference type because the
 /// per-frame `ClosureComponent` needs somewhere durable to keep the hysteresis and the
 /// smoothed pose, and the enclosing view is a struct rebuilt on every state change.
+///
+/// Placing, following and fading are RAVEInput's `RAVEPalmAnchor` (the same one the
+/// Metal hosts' wrist HUDs use), applied to a `RAVEPanel`. The show/hide gate stays
+/// here, fed by the bridge's own palm-facing reading, as does what only Longwave
+/// knows: which hand is busy, and giving that hand's gestures back to the game.
 @MainActor
 private final class WristHUDDriver {
     /// Show/hide is RAVEInput's `RAVEPalmFacingGate.panel`, which is this panel's own
@@ -339,32 +345,28 @@ private final class WristHUDDriver {
     /// 0.95 for a frame or two and flashed the panel — and, worse, suppressed that hand's
     /// gestures in-game for as long as it was up.
     private var gate = RAVEPalmFacingGate.panel
-    /// Fade time once the gate has decided, in either direction.
-    private static let fade: TimeInterval = 0.22
-    /// How far off the palm the panel floats, along the palm normal.
-    private static let lift: Float = 0.18
+    /// 18 cm off the palm along its normal; a ~0.1 s ease, enough to take hand tremor out
+    /// of a panel the user is about to aim their eyes at without feeling detached from
+    /// the hand; a 0.22 s fade either way once the gate has decided. It snaps into place
+    /// on appearing, or it would swoop in from wherever the hand was last time.
+    private var anchor = RAVEPalmAnchor(tuning: .init(lift: 0.18, smoothing: 0.1, fadeIn: 0.22, fadeOut: 0.22))
 
-    private var visible = false
-    private var opacity: Float = 0
+    weak var panel: RAVEPanel?
     private var suppressedHand: BridgeHand?
 
-    func update(entity: Entity,
-                deltaTime: TimeInterval,
-                hand: BridgeHand,
-                enabled: Bool,
-                bridge: ControllerBridgeSender?) {
+    func update(panel: RAVEPanel, hand: BridgeHand, enabled: Bool, bridge: ControllerBridgeSender?) {
+        panel.tick(viewer: nil)
         guard enabled, let bridge else {
             hide(bridge: bridge)
-            if entity.isEnabled { entity.isEnabled = false }
             return
         }
+        let now = CACurrentMediaTime()
 
         // A lost hand reads as nil, which the gate treats as a lapse; the fade covers a
         // brief dropout on its own. A hand that is busy walking, turning or steering may
         // not summon the panel: a palm that faces you mid-jog is not a request for it.
-        visible = gate.update(facing: bridge.palmFacing(hand),
-                              now: CACurrentMediaTime(),
-                              showAllowed: !bridge.isHandBusy(hand)).engaged
+        let visible = gate.update(facing: bridge.palmFacing(hand), now: now,
+                                  showAllowed: !bridge.isHandBusy(hand)).engaged
 
         // The pinch that presses a HUD button is also mapped to a controller button, so
         // the holding hand stops feeding the game while its panel is up.
@@ -375,54 +377,18 @@ private final class WristHUDDriver {
             suppressedHand = wantSuppressed
         }
 
-        // Fade rather than switch. The entity stays enabled until it is fully transparent,
-        // so the panel is never yanked out mid-look.
-        let appearing = visible && opacity <= 0
-        let step = Float(deltaTime / Self.fade)
-        opacity = visible ? min(1, opacity + step) : max(0, opacity - step)
-        entity.components.set(OpacityComponent(opacity: opacity))
-        let shouldExist = opacity > 0
-        if entity.isEnabled != shouldExist { entity.isEnabled = shouldExist }
-
-        guard shouldExist,
-              let palm = bridge.palmPose(hand),
-              let head = bridge.headWorldPosition else { return }
-
-        let target = palm.position + palm.palmNormalOut * Self.lift
-        // A basis with +Z toward the head (the direction a SwiftUI attachment faces) and
-        // +Y world-up, so the panel stands upright facing the wearer however the hand is
-        // rolled — rather than tumbling with the palm.
-        let toHead = head - target
-        let length = simd_length(toHead)
-        guard length > 1e-4 else { return }
-        let z = toHead / length
-        var x = simd_cross(SIMD3<Float>(0, 1, 0), z)
-        let xLength = simd_length(x)
-        guard xLength > 1e-4 else { return }
-        x /= xLength
-        let orientation = simd_quatf(simd_float3x3(x, simd_cross(z, x), z))
-
-        if appearing {
-            // Snap, or it swoops in from wherever the hand was last time.
-            entity.setPosition(target, relativeTo: nil)
-            entity.setOrientation(orientation, relativeTo: nil)
-        } else {
-            // ~0.1 s time constant: enough to take hand tremor out of a panel the user
-            // is about to aim their eyes at, without feeling detached from the hand.
-            let alpha = 1 - exp(-10 * Float(deltaTime))
-            let current = entity.position(relativeTo: nil)
-            entity.setPosition(current + (target - current) * alpha, relativeTo: nil)
-            entity.setOrientation(
-                simd_slerp(entity.orientation(relativeTo: nil), orientation, alpha),
-                relativeTo: nil)
-        }
+        // Upright facing the head however the hand is rolled, rather than tumbling with
+        // the palm. Without a head pose it stays where it was and fades there.
+        anchor.update(pose: bridge.palmPose(hand), head: bridge.headWorldPosition ?? anchor.viewer,
+                      now: now, shown: visible)
+        panel.follow(anchor)
     }
 
     /// Drop the panel and, crucially, give the hand back to the game.
     func hide(bridge: ControllerBridgeSender?) {
-        visible = false
-        opacity = 0
         gate.reset()
+        anchor.reset()
+        panel?.opacity = 0
         if let suppressedHand { bridge?.setGestureSuppressed(false, for: suppressedHand) }
         suppressedHand = nil
     }
@@ -437,57 +403,34 @@ private final class WristHUDDriver {
 /// `Bool` by the time it reaches this driver.
 @MainActor
 private final class ImmersiveBannerDriver {
-    /// How far ahead of the viewer it sits. Comfortably beyond arm's reach, so it
-    /// never collides with hands that are busy holding something.
-    private static let distance: Float = 1.5
-    /// Below eye level: the centre of view belongs to the game.
-    private static let drop: Float = 0.28
+    /// 1.5 m ahead: comfortably beyond arm's reach, so it never collides with hands
+    /// that are busy holding something. 0.28 m below eye level: the centre of view
+    /// belongs to the game. A ~1.2 s time constant: slow enough that turning your head
+    /// does not drag it along, quick enough that it is back in front of you by the time
+    /// you go looking for what the noise was.
+    private var follow = RAVEPanelHeadFollow(distance: 1.5, drop: 0.28, smoothing: 1 / 0.85)
     private static let fade: TimeInterval = 0.35
-
     private var opacity: Float = 0
-    /// Nil until the first frame it is shown, so it materialises where the viewer
-    /// is looking rather than sliding in from wherever the last one closed.
-    private var placed: (position: SIMD3<Float>, orientation: simd_quatf)?
 
-    func update(entity: Entity,
-                deltaTime: TimeInterval,
-                showing: Bool,
-                bridge: ControllerBridgeSender?) {
+    func update(panel: RAVEPanel, deltaTime: TimeInterval, showing: Bool, bridge: ControllerBridgeSender?) {
+        panel.tick(viewer: nil)
         let step = Float(deltaTime / Self.fade)
         opacity = showing ? min(1, opacity + step) : max(0, opacity - step)
 
         guard opacity > 0 else {
-            if entity.isEnabled { entity.isEnabled = false }
-            placed = nil
+            if panel.opacity != 0 { panel.opacity = 0 }
+            // Next time it materialises where the viewer is looking rather than sliding
+            // in from wherever the last one closed.
+            follow.reset()
             return
         }
 
-        // No head pose (world tracking not up yet) means no sensible place to put
-        // it. Keep whatever pose it already had rather than dropping it on the origin.
-        if let pose = bridge?.headWorldPose {
-            let target = SIMD3<Float>(pose.position.x + pose.forward.x * Self.distance,
-                                      pose.position.y - Self.drop,
-                                      pose.position.z + pose.forward.z * Self.distance)
-            let orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1),
-                                         to: SIMD3<Float>(-pose.forward.x, 0, -pose.forward.z))
-            if var current = placed {
-                // ~1.2 s time constant. Slow enough that turning your head does not
-                // drag it along, quick enough that it is back in front of you by the
-                // time you go looking for what the noise was.
-                let alpha = 1 - exp(-0.85 * Float(deltaTime))
-                current.position += (target - current.position) * alpha
-                current.orientation = simd_slerp(current.orientation, orientation, alpha)
-                placed = current
-            } else {
-                placed = (target, orientation)
-            }
-        }
-
-        guard let placed else { return }
-        entity.isEnabled = true
-        entity.setPosition(placed.position, relativeTo: nil)
-        entity.setOrientation(placed.orientation, relativeTo: nil)
-        entity.components.set(OpacityComponent(opacity: opacity))
+        // No head pose (world tracking not up yet) means no sensible place to put it:
+        // keep whatever pose it already had rather than dropping it on the origin.
+        let viewer = bridge?.headWorldPose.map { RAVEPanelViewer(position: $0.position, forward: $0.forward) }
+        guard let pose = follow.update(viewer: viewer, deltaTime: deltaTime) else { return }
+        panel.follow(pose)
+        panel.opacity = opacity
     }
 }
 #endif

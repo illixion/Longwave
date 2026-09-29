@@ -1,5 +1,5 @@
+import DebugTrace
 import Foundation
-import os
 
 /// Runs GitHub's OAuth **device-authorization flow** on this device to mint a
 /// token for the GitHub Copilot CLI, so we never have to read it back out of the
@@ -22,7 +22,7 @@ enum GitHubDeviceFlow {
     private static let deviceCodePath = "/login/device/code"
     private static let tokenPath = "/login/oauth/access_token"
 
-    private static let log = Logger(subsystem: "pro.longwave", category: "GitHubDeviceFlow")
+    private static let log = DebugLogger(subsystem: "pro.longwave", category: "GitHubDeviceFlow")
 
     /// The user-facing step of the flow: show `userCode`, send them to
     /// `verificationURI`, then poll with `deviceCode`.
@@ -65,7 +65,7 @@ enum GitHubDeviceFlow {
         }
         let interval = (json["interval"] as? Int) ?? 5
         let expires = (json["expires_in"] as? Int) ?? 900
-        log.line("Device code issued; user_code shown, polling every \(interval)s")
+        log.log("Device code issued; user_code shown, polling every \(interval)s")
         return DeviceCode(deviceCode: device, userCode: user,
                           verificationURI: uri, interval: interval, expiresIn: expires)
     }
@@ -86,7 +86,7 @@ enum GitHubDeviceFlow {
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             ])
             if let token = json["access_token"] as? String, !token.isEmpty {
-                log.line("Device flow authorized; token captured")
+                log.log("Device flow authorized; token captured")
                 return token
             }
             switch json["error"] as? String {

@@ -19,8 +19,8 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
-import os
 
 @Observable
 final class PCVRBandwidthMonitor {
@@ -65,7 +65,7 @@ final class PCVRBandwidthMonitor {
     private var bannerClearAt: TimeInterval?
     private var stopInFlight = false
     private var task: Task<Void, Never>?
-    private let log = Logger(subsystem: "pro.longwave", category: "PCVRBandwidth")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRBandwidth")
 
     /// Starts the 1 Hz supervisor. Same reasoning as `PCVRSessionLimiter.start`: owned
     /// by the app, not a view, so switching tabs never pauses the clock.

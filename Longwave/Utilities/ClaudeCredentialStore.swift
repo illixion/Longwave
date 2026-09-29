@@ -1,5 +1,5 @@
+import DebugTrace
 import Foundation
-import os
 
 /// Keychain home for the full `ClaudeOAuth.Credential` bundle (access token +
 /// refresh token + expiry + granted scopes), one per saved connection.
@@ -17,7 +17,7 @@ import os
 enum ClaudeCredentialStore {
 
     private static let service = "pro.longwave.claudeOAuthCredential"
-    private static let log = Logger(subsystem: "pro.longwave", category: "ClaudeCredentials")
+    private static let log = DebugLogger(subsystem: "pro.longwave", category: "ClaudeCredentials")
 
     // MARK: - Storage
 
@@ -64,7 +64,7 @@ enum ClaudeCredentialStore {
         guard let credential = load(connectionID: connectionID) else { return nil }
         guard !credential.isFresh() else { return credential }
         guard credential.canRefresh else {
-            log.line("Credential stale and not refreshable; using it as-is")
+            log.log("Credential stale and not refreshable; using it as-is")
             return credential
         }
         do {
@@ -72,7 +72,7 @@ enum ClaudeCredentialStore {
             save(refreshed, connectionID: connectionID)
             return refreshed
         } catch {
-            log.line("Refresh failed (\(error.localizedDescription)); falling back to stored credential")
+            log.log("Refresh failed (\(error.localizedDescription)); falling back to stored credential")
             return credential
         }
     }

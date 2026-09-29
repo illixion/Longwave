@@ -11,7 +11,6 @@ Longwave/
 │   ├── AudioStreamManager.swift        — Audio manager + AudioStreamReceiver (reconnect, mute, now-playing, Music-mode arbitration)
 │   ├── MacNativeStreamManager.swift    — Native stream lifecycle, per-window sessions, display layer (all clients)
 │   ├── MacNativeSessionStore.swift     — One Native session per saved connection; scene keys, per-session audio player
-│   ├── LogStore.swift                  — OSLogStore poller backing the Console tab/window
 │   ├── MoonlightConnectionManager.swift — Moonlight orchestrator for one session, state machine, @Observable
 │   └── MoonlightSessionStore.swift     — One Moonlight session per linked library copy; picks the session for a row, mirrors input focus
 ├── Views/
@@ -57,7 +56,7 @@ Longwave/
 │   ├── NvPairingManager.swift          — Challenge-response pairing handshake
 │   └── CryptoManager.swift             — X.509, PKCS#12, AES-128-ECB, RSA (CommonCrypto)
 ├── Utilities/
-│   ├── AppLog.swift                    — os.Logger per category + Logger.line() helper
+│   ├── AppLog.swift                    — DebugLogger per category + DebugTrace.configure at launch
 │   ├── ConnectionDefaults.swift        — UserDefaults keys/getters for new-connection defaults
 │   ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
 │   ├── ClaudeOAuth.swift               — Claude Code OAuth PKCE flow → full-scope token (constants extracted from the CLI binary)
@@ -105,7 +104,7 @@ LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS targ
 └── Info.plist                          — Single-scene, landscape allowed, background audio
 
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
-├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLog (AppLog is app-only)
+├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLogger (AppLog is app-only)
 ├── RTPPacketizer.swift                 — RTP/RTCP framing, H.264 RFC 6184 + Opus RFC 7587 (unit-tested)
 ├── SDPBuilder.swift                    — ANNOUNCE SDP from live SPS/PPS (unit-tested)
 ├── RTSPPublisher.swift                 — RTSP record client over NWConnection, interleaved RTP, Basic auth

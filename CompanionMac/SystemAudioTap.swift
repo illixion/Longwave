@@ -1,7 +1,7 @@
+import DebugTrace
 import Foundation
 import CoreAudio
 import AudioToolbox
-import os
 
 /// Captures system-wide audio output via a Core Audio process tap
 /// (macOS 14.2+) — no virtual audio driver (BlackHole etc.) required.
@@ -82,7 +82,7 @@ final class SystemAudioTap: @unchecked Sendable {
     /// whether the clipping is cosmetic or audible.
     private nonisolated(unsafe) var peakSample: Float = 0
     private nonisolated(unsafe) var lastClipLogNanos: UInt64 = 0
-    private let log = Logger(subsystem: "pro.longwave.companion", category: "SystemAudioTap")
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "SystemAudioTap")
 
     nonisolated init() {}
 

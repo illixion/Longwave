@@ -1,3 +1,4 @@
+import DebugTrace
 import SwiftUI
 
 /// App delegate whose sole job is to surface the Local Network permission
@@ -43,6 +44,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// permission dialog. The value is discarded — the read is the trigger.
     private func triggerLocalNetworkAccessPrompt() {
         let hostName = ProcessInfo.processInfo.hostName
-        AppLog.app.line("Local network access prompt triggered (host: \(hostName))")
+        AppLog.app.log("Local network access prompt triggered (host: \(hostName))")
     }
 }

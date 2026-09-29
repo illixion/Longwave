@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import AVFAudio
 import CoreMedia
@@ -73,7 +74,7 @@ final class BroadcastAudioEncoder: @unchecked Sendable {
         newConverter.bitRate = 96_000
         converter = newConverter
         outputFormat = opusFormat
-        broadcastLog("🎙️ Opus encoder ready: \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch → 48 kHz \(channels)ch")
+        broadcastLogger.log("🎙️ Opus encoder ready: \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch → 48 kHz \(channels)ch")
     }
 
     /// CMSampleBuffer entry point — used by the broadcast extension, whose

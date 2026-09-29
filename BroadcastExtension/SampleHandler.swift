@@ -1,3 +1,4 @@
+import DebugTrace
 import ReplayKit
 import CoreMedia
 
@@ -21,7 +22,7 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         let password = BroadcastShared.getPassword()
-        broadcastLog("🔧 View broadcast config: group=\(BroadcastShared.appGroup) password=\(password == nil ? "MISSING" : "present")")
+        broadcastLogger.log("🔧 View broadcast config: group=\(BroadcastShared.appGroupSource, privacy: .public) \(BroadcastShared.appGroup) password=\(password == nil ? "MISSING" : "present", privacy: .public)")
         guard let config = BroadcastShared.serverConfig(viewStream: true, password: password) else {
             finishBroadcastWithError(NSError(
                 domain: "LongwaveBroadcast", code: 1,
@@ -55,9 +56,9 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
         }
         audioEncoder.onError = { message in
             // Non-fatal: continue video-only.
-            broadcastLog("⚠️ \(message) — view broadcast continuing video-only")
+            broadcastLogger.log("⚠️ \(message) — view broadcast continuing video-only")
         }
-        broadcastLog("▶️ View broadcast starting: \(config.host):\(config.port)/\(config.path)")
+        broadcastLogger.log("▶️ View broadcast starting: \(config.host, privacy: .private(mask: .hash)):\(config.port)/\(config.path)")
     }
 
     private func startPublisher(config: BroadcastShared.ServerConfig, sps: Data, pps: Data) {
@@ -68,7 +69,7 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
         publisher.onEvent = { [weak self] event in
             switch event {
             case .ready:
-                broadcastLog("✅ View broadcast live")
+                broadcastLogger.log("✅ View broadcast live")
             case .failed(let message):
                 self?.failBroadcast(message)
             }
@@ -101,22 +102,22 @@ nonisolated final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastPaused() {
-        broadcastLog("⏸️ View broadcast paused")
+        broadcastLogger.log("⏸️ View broadcast paused")
     }
 
     override func broadcastResumed() {
-        broadcastLog("▶️ View broadcast resumed")
+        broadcastLogger.log("▶️ View broadcast resumed")
     }
 
     override func broadcastFinished() {
         teardown()
-        broadcastLog("⏹️ View broadcast finished")
+        broadcastLogger.log("⏹️ View broadcast finished")
     }
 
     private func failBroadcast(_ message: String) {
         guard !stopped else { return }
         teardown()
-        broadcastLog("❌ View broadcast error: \(message)")
+        broadcastLogger.log("❌ View broadcast error: \(message)")
         finishBroadcastWithError(NSError(
             domain: "LongwaveBroadcast", code: 2,
             userInfo: [NSLocalizedDescriptionKey: message]))

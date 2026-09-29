@@ -119,7 +119,8 @@
 
 ## Logging
 
-- visionOS app logs via `AppLog` (`os.Logger`, one category per component, `.line()` helper marks messages `.public` so OSLogStore shows them un-redacted — never use for secrets). `LogStore` polls the process-scoped OSLogStore (~1 s, viewer-refcounted, only while a Console view is visible).
+- Every Swift target logs through DebugTrace's `DebugLogger` (`AppLog`, one category per component; feature loggers under `pro.longwave`, the Mac companion code under `pro.longwave.companion`, the broadcast core under `broadcastLogger`). Lines go to DebugTrace's in-memory ring, which the Console tab (RAVEConsole) tails and debug traces export, and to the unified log with non-public values withheld. Privacy is per interpolation, os_log's default: numbers and bools public, everything else private. Mark code-defined values (states, codecs, reasons the app wrote) `.public`; leave hosts, names, paths, server text and `error.localizedDescription` private (`.private(mask: .hash)` for a host or id worth matching across lines); never log a credential, or mark it `.sensitive`. Cloud models and App Store support read the exports.
+- RAVEInput's controller sources hand over finished strings, so their lines are private whole. Private values are readable only on the device's own console in development builds — the unified log (Xcode, `log stream`) never shows them.
 
 ## General
 

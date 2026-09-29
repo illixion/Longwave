@@ -29,6 +29,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import Network
 import os
@@ -45,7 +46,7 @@ enum FoveatedHostInfo {
     /// the wrong immersion, which is far more expensive than waiting.
     private static let deadline: Duration = .seconds(5)
 
-    private static let log = Logger(subsystem: "pro.longwave", category: "FoveatedHostInfo")
+    private static let log = DebugLogger(subsystem: "pro.longwave", category: "FoveatedHostInfo")
 
     /// Where the PC was last reached, so discovery failing once does not mean starting
     /// from nothing. Bonjour is the fragile step in the chain — a browse that comes back
@@ -153,7 +154,7 @@ enum FoveatedHostInfo {
             lastPayload = payload
             return payload
         } catch {
-            log.notice("Host info over HTTP failed: \(error.localizedDescription, privacy: .public)")
+            log.notice("Host info over HTTP failed: \(error.localizedDescription)")
             return nil
         }
     }

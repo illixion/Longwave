@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 import SwiftUI
 import AVFoundation
 import QuartzCore
@@ -375,7 +375,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 // Launch or resume the app via HTTP
                 let launchPath = info.currentGameId == app.id ? "resume"
                     : (info.currentGameId != 0 ? "quit+launch" : "launch")
-                AppLog.moonlightStream.line("Launch app=\(app.id) '\(app.name)' path=\(launchPath) currentGameId=\(info.currentGameId) mode=\(effectiveWidth)x\(effectiveHeight)x\(effectiveFPS) bitrate=\(connection.moonlightBitrate) hdr=\(enableHDR) videoFormats=0x\(String(videoFormats, radix: 16))")
+                AppLog.moonlightStream.log("Launch app=\(app.id) '\(app.name)' path=\(launchPath, privacy: .public) currentGameId=\(info.currentGameId) mode=\(effectiveWidth)x\(effectiveHeight)x\(effectiveFPS) bitrate=\(connection.moonlightBitrate) hdr=\(enableHDR) videoFormats=0x\(String(videoFormats, radix: 16), privacy: .public)")
                 let sessionUrl: String
                 if info.currentGameId == app.id {
                     // App already running — resume
@@ -501,7 +501,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                     }
                 }
             } catch {
-                AppLog.moonlightStream.line("Launch failed: \(error.localizedDescription)")
+                AppLog.moonlightStream.log("Launch failed: \(error.localizedDescription)")
                 await MainActor.run {
                     self.connectionState = .error("Launch failed: \(error.localizedDescription)")
                     self.statusMessage = "Launch failed"
@@ -628,7 +628,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     private func updateStreamFrame() {
         guard let renderer = videoRenderer else {
             if displayLinkLogCount < 3 {
-                AppLog.moonlightStream.line("Display link: no videoRenderer")
+                AppLog.moonlightStream.log("Display link: no videoRenderer")
                 displayLinkLogCount += 1
             }
             return
@@ -859,7 +859,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         isAutoReconnecting = true
         let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
-        AppLog.moonlightStream.line("Reconnecting in \(Int(delay)) s")
+        AppLog.moonlightStream.log("Reconnecting in \(Int(delay)) s")
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -884,7 +884,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
             serverInfo = try await client.getServerInfo()
             launchApp(app)
         } catch {
-            AppLog.moonlightStream.line("Reconnect failed: \(error.localizedDescription)")
+            AppLog.moonlightStream.log("Reconnect failed: \(error.localizedDescription)")
             connectionState = .error("Reconnect failed: \(error.localizedDescription)")
             statusMessage = "Reconnect failed"
             scheduleReconnect()

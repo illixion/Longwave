@@ -1,3 +1,4 @@
+import DebugTrace
 import SwiftUI
 import UIKit
 import RoyalVNCKit
@@ -54,7 +55,7 @@ final class KeyCaptureView: KeyCaptureResponderView {
         }
         if !loggedFirstPress {
             loggedFirstPress = true
-            AppLog.app.line("KeyCaptureView received first hardware key press")
+            AppLog.app.log("KeyCaptureView received first hardware key press")
         }
         var handled = false
 

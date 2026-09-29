@@ -1,8 +1,8 @@
+import DebugTrace
 import Foundation
 import AppKit
 import CryptoKit
 import Observation
-import os
 
 /// One-button mediamtx management for the Vision Pro broadcast feature:
 /// generates a publish password + self-signed TLS cert, writes the mediamtx
@@ -24,7 +24,7 @@ final class BroadcastServerManager {
     private(set) var certFingerprintHex: String?
     private(set) var configuredHost: String?
 
-    private let log = Logger(subsystem: "pro.longwave.companion", category: "BroadcastServer")
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "BroadcastServer")
 
     var password: String = BroadcastServerManager.loadOrCreatePassword() {
         didSet { UserDefaults.standard.set(password, forKey: "broadcastPublishPassword") }

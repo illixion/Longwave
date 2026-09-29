@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 @preconcurrency import MoonlightCommonC
 
 // MARK: - Stream Delegate Protocol
@@ -58,26 +58,26 @@ enum MoonlightBridge {
 
     nonisolated static func videoSetup(_ slot: Int, _ videoFormat: Int32, _ width: Int32, _ height: Int32,
                                        _ redrawRate: Int32) -> Int32 {
-        AppLog.moonlightBridge.line("[\(slot)] Video setup: \(width)x\(height)@\(redrawRate) format=0x\(String(videoFormat, radix: 16))")
+        AppLog.moonlightBridge.log("[\(slot)] Video setup: \(width)x\(height)@\(redrawRate) format=0x\(String(videoFormat, radix: 16), privacy: .public)")
         guard let renderer = library(slot).videoRenderer else {
-            AppLog.moonlightBridge.line("[\(slot)] ERROR: No video renderer!")
+            AppLog.moonlightBridge.log("[\(slot)] ERROR: No video renderer!")
             return -1
         }
         return renderer.setup(videoFormat: videoFormat, width: width, height: height, fps: redrawRate)
     }
 
     nonisolated static func videoStart(_ slot: Int) {
-        AppLog.moonlightBridge.line("[\(slot)] Video start")
+        AppLog.moonlightBridge.log("[\(slot)] Video start")
         library(slot).videoRenderer?.start()
     }
 
     nonisolated static func videoStop(_ slot: Int) {
-        AppLog.moonlightBridge.line("[\(slot)] Video stop")
+        AppLog.moonlightBridge.log("[\(slot)] Video stop")
         library(slot).videoRenderer?.stop()
     }
 
     nonisolated static func videoCleanup(_ slot: Int) {
-        AppLog.moonlightBridge.line("[\(slot)] Video cleanup")
+        AppLog.moonlightBridge.log("[\(slot)] Video cleanup")
         library(slot).videoRenderer?.cleanup()
     }
 
@@ -106,37 +106,37 @@ enum MoonlightBridge {
     // MARK: Connection listener
 
     nonisolated static func stageStarting(_ slot: Int, _ stage: Int32) {
-        AppLog.moonlightBridge.line("[\(slot)] Stage starting: \(stageName(stage)) (\(stage))")
+        AppLog.moonlightBridge.log("[\(slot)] Stage starting: \(stageName(stage), privacy: .public) (\(stage))")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamStageStarting(stage) }
     }
 
     nonisolated static func stageComplete(_ slot: Int, _ stage: Int32) {
-        AppLog.moonlightBridge.line("[\(slot)] Stage complete: \(stageName(stage)) (\(stage))")
+        AppLog.moonlightBridge.log("[\(slot)] Stage complete: \(stageName(stage), privacy: .public) (\(stage))")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamStageComplete(stage) }
     }
 
     nonisolated static func stageFailed(_ slot: Int, _ stage: Int32, _ errorCode: Int32) {
-        AppLog.moonlightBridge.line("[\(slot)] Stage FAILED: \(stageName(stage)) (\(stage)), error=\(errorCode)")
+        AppLog.moonlightBridge.log("[\(slot)] Stage FAILED: \(stageName(stage), privacy: .public) (\(stage)), error=\(errorCode)")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamStageFailed(stage, errorCode: errorCode) }
     }
 
     nonisolated static func connectionStarted(_ slot: Int) {
-        AppLog.moonlightBridge.line("[\(slot)] Connection started successfully!")
+        AppLog.moonlightBridge.log("[\(slot)] Connection started successfully!")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamConnectionStarted() }
     }
 
     nonisolated static func connectionTerminated(_ slot: Int, _ errorCode: Int32) {
-        AppLog.moonlightBridge.line("[\(slot)] Connection terminated, error=\(errorCode)")
+        AppLog.moonlightBridge.log("[\(slot)] Connection terminated, error=\(errorCode)")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamConnectionTerminated(errorCode) }
     }
 
     nonisolated static func connectionStatusUpdate(_ slot: Int, _ status: Int32) {
-        AppLog.moonlightBridge.line("[\(slot)] Connection status update: \(status)")
+        AppLog.moonlightBridge.log("[\(slot)] Connection status update: \(status)")
         let delegate = library(slot).delegate
         Task { @MainActor in delegate?.moonlightStreamConnectionStatusUpdate(status) }
     }
@@ -146,7 +146,7 @@ enum MoonlightBridge {
     }
 
     nonisolated static func setHdrMode(_ slot: Int, _ hdrEnabled: Bool) {
-        AppLog.moonlightBridge.line("[\(slot)] HDR mode: \(hdrEnabled)")
+        AppLog.moonlightBridge.log("[\(slot)] HDR mode: \(hdrEnabled)")
         // Forward HDR mode to renderer so it can update metadata and request IDR
         library(slot).videoRenderer?.setHdrMode(hdrEnabled)
         let delegate = library(slot).delegate
@@ -370,7 +370,7 @@ nonisolated func startMoonlightStream(
     var callbacks = MoonlightBridge.makeCallbacks(slot: library.slot)
 
     // Start connection (blocks until connected or failed)
-    AppLog.moonlightBridge.line("[\(library.slot)] Calling LiStartConnection...")
+    AppLog.moonlightBridge.log("[\(library.slot)] Calling LiStartConnection...")
     let result = withUnsafeMutablePointer(to: &serverInfo) { serverInfoPtr in
         withUnsafeMutablePointer(to: &streamConfig) { streamConfigPtr in
             withUnsafeMutablePointer(to: &callbacks.connection) { clPtr in
@@ -388,19 +388,19 @@ nonisolated func startMoonlightStream(
             }
         }
     }
-    AppLog.moonlightBridge.line("[\(library.slot)] LiStartConnection returned: \(result)")
+    AppLog.moonlightBridge.log("[\(library.slot)] LiStartConnection returned: \(result)")
 
     return result
 }
 
 /// Stops the streaming session running on `library`.
 nonisolated func stopMoonlightStream(library: MoonlightLibrary) {
-    AppLog.moonlightBridge.line("[\(library.slot)] Stopping stream...")
+    AppLog.moonlightBridge.log("[\(library.slot)] Stopping stream...")
     library.functions.stopConnection()
     library.videoRenderer = nil
     library.audioRenderer = nil
     library.delegate = nil
     library.gamepadManager = nil
-    AppLog.moonlightBridge.line("[\(library.slot)] Stream stopped")
+    AppLog.moonlightBridge.log("[\(library.slot)] Stream stopped")
 }
 #endif

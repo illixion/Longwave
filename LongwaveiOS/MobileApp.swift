@@ -42,6 +42,10 @@ struct LongwaveMobileApp: App {
     @State private var moonlightSessions = MoonlightSessionStore()
     #endif
 
+    init() {
+        AppLog.configureDebugTrace()
+    }
+
     var body: some Scene {
         WindowGroup {
             MobileRootView()

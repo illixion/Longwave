@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import AVFoundation
 import CoreMedia
@@ -144,7 +145,7 @@ final class BroadcastManager {
         username = setup.username
         password = setup.password
         certFingerprint = setup.certFingerprintHex ?? ""
-        AppLog.broadcast.line("📥 Imported broadcast server setup for \(setup.host) (TLS: \(certFingerprint.isEmpty ? "off" : "pinned"), group: \(BroadcastShared.appGroup))")
+        AppLog.broadcast.log("📥 Imported broadcast server setup for \(setup.host, privacy: .private(mask: .hash)) (TLS: \(certFingerprint.isEmpty ? "off" : "pinned", privacy: .public), group: \(BroadcastShared.appGroupSource, privacy: .public) \(BroadcastShared.appGroup))")
     }
 
     var isActive: Bool {
@@ -177,7 +178,7 @@ final class BroadcastManager {
         var useMic = micEnabled
         if useMic {
             useMic = await AVCaptureDevice.requestAccess(for: .audio)
-            if !useMic { AppLog.broadcast.line("⚠️ Mic access denied — broadcasting video-only") }
+            if !useMic { AppLog.broadcast.log("⚠️ Mic access denied — broadcasting video-only") }
         }
 
         refreshCameras()
@@ -202,7 +203,7 @@ final class BroadcastManager {
                 try mic.start()
                 micCapture = mic
             } catch {
-                AppLog.broadcast.line("⚠️ Mic capture failed (\(error.localizedDescription)) — broadcasting video-only")
+                AppLog.broadcast.log("⚠️ Mic capture failed (\(error.localizedDescription)) — broadcasting video-only")
                 useMic = false
             }
         }
@@ -246,7 +247,7 @@ final class BroadcastManager {
         }
         audioEncoder?.onError = { [weak self] message in
             // Non-fatal: continue video-only.
-            AppLog.broadcast.line("⚠️ \(message) — continuing video-only")
+            AppLog.broadcast.log("⚠️ \(message) — continuing video-only")
             Task { @MainActor in self?.audioActive = false }
         }
 
@@ -259,7 +260,7 @@ final class BroadcastManager {
 
         capture.start()
         startStatsTimer()
-        AppLog.broadcast.line("▶️ Broadcast starting: \(host):\(port)/\(streamPath)")
+        AppLog.broadcast.log("▶️ Broadcast starting: \(host, privacy: .private(mask: .hash)):\(port)/\(streamPath)")
     }
 
     func stop() {
@@ -314,7 +315,7 @@ final class BroadcastManager {
 
     private func handlePipelineFailure(_ message: String) {
         guard !userStopped, isActive else { return }
-        AppLog.broadcast.line("❌ Broadcast error: \(message) — retrying in 3 s")
+        AppLog.broadcast.log("❌ Broadcast error: \(message) — retrying in 3 s")
         teardownPipeline()
         state = .error(message)
         reconnectTask = Task { @MainActor [weak self] in

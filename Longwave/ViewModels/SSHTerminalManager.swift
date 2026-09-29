@@ -1,8 +1,8 @@
+import DebugTrace
 import Foundation
 import SwiftTerm
 import NIOSSH
 import NIOTransportServices
-import os
 
 /// Window value for a terminal scene — one window per SSH session.
 ///
@@ -390,7 +390,7 @@ final class SSHTerminalManager {
 
     private let group = NIOTSEventLoopGroup()
     private var cachedKey: SecureEnclaveSSHKey?
-    private let log = Logger(subsystem: "pro.longwave", category: "SSHManager")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "SSHManager")
 
     /// The Vision Pro's SSH identity (Secure Enclave where available).
     func deviceKey() throws -> SecureEnclaveSSHKey {
@@ -464,7 +464,7 @@ final class SSHTerminalManager {
         let session = SSHSession(id: id, title: title, host: host, port: port, username: username, kind: kind, cwd: cwd)
         sessions.append(session)
         session.start(config: config, privateKey: key.nioPrivateKey, group: group)
-        log.info("Opened SSH session \(slug, privacy: .public) to \(host, privacy: .public)")
+        log.info("Opened SSH session \(slug, privacy: .private(mask: .hash)) to \(host, privacy: .private(mask: .hash))")
         return id
     }
 
@@ -861,7 +861,7 @@ final class SSHTerminalManager {
                 session.prepareLazy(config: config, privateKey: key.nioPrivateKey, group: group)
             }
             sessions.append(session)
-            log.info("Rediscovered tmux session \(name, privacy: .public) on \(host, privacy: .public)")
+            log.info("Rediscovered tmux session \(name, privacy: .private(mask: .hash)) on \(host, privacy: .private(mask: .hash))")
         }
     }
 

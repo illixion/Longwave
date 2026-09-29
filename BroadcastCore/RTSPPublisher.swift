@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import Network
 import Security
@@ -102,7 +103,7 @@ final class RTSPPublisher: @unchecked Sendable {
                 self.receiveLoop()
                 self.handshake()
             case .waiting(let error):
-                broadcastLog("⚠️ RTSP connection waiting: \(error.localizedDescription)")
+                broadcastLogger.log("⚠️ RTSP connection waiting: \(error.localizedDescription)")
             case .failed(let error):
                 self.fail("Connection failed: \(error.localizedDescription)")
             case .cancelled:
@@ -205,7 +206,7 @@ final class RTSPPublisher: @unchecked Sendable {
             recording = true
             startKeepalive()
             startRTCP()
-            broadcastLog("✅ RTSP publishing to \(baseURL)")
+            broadcastLogger.log("✅ RTSP publishing to \(baseURL)")
             onEvent?(.ready)
         }
     }

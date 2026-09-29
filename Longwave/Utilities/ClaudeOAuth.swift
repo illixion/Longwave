@@ -1,6 +1,6 @@
 import CryptoKit
+import DebugTrace
 import Foundation
-import os
 
 /// Runs Claude Code's own OAuth **authorization-code + PKCE** flow on this
 /// device, so a Vision Pro can mint its own `CLAUDE_CODE_OAUTH_TOKEN` without a
@@ -99,7 +99,7 @@ enum ClaudeOAuth {
         // here without dropping scopes — `ClaudeOAuthTests` guards it.
     }
 
-    private static let log = Logger(subsystem: "pro.longwave", category: "ClaudeOAuth")
+    private static let log = DebugLogger(subsystem: "pro.longwave", category: "ClaudeOAuth")
 
     // MARK: - Credential
 
@@ -337,8 +337,10 @@ enum ClaudeOAuth {
             authorizationCodeBody(code: code, pkce: pkce, useManualRedirect: useManualRedirect)
         )
         credential.apply(await fetchProfile(accessToken: credential.accessToken))
-        log.line("Exchange granted scopes=\(credential.scopes.joined(separator: ",")) "
-                 + "plan=\(credential.subscriptionType ?? "unknown")")
+        log.log("""
+            Exchange granted scopes=\(credential.scopes.joined(separator: ","), privacy: .public) \
+            plan=\(credential.subscriptionType ?? "unknown", privacy: .public)
+            """)
         return credential
     }
 
@@ -358,7 +360,7 @@ enum ClaudeOAuth {
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log.line("Profile fetch failed; session will report no subscription tier")
+            log.log("Profile fetch failed; session will report no subscription tier")
             return Profile()
         }
         let organization = json["organization"] as? [String: Any]
@@ -402,7 +404,7 @@ enum ClaudeOAuth {
         if refreshed.subscriptionType == nil {
             refreshed.apply(await fetchProfile(accessToken: refreshed.accessToken))
         }
-        log.line("Refreshed; scopes=\(refreshed.scopes.joined(separator: ","))")
+        log.log("Refreshed; scopes=\(refreshed.scopes.joined(separator: ","), privacy: .public)")
         return refreshed
     }
 
@@ -455,7 +457,7 @@ enum ClaudeOAuth {
             // success path would carry the token itself.
             let detail = (json?["error_description"] as? String)
                 ?? (json?["error"] as? String)
-            log.line("Token endpoint failed status=\(http.statusCode)")
+            log.log("Token endpoint failed status=\(http.statusCode)")
             throw FlowError.http(http.statusCode, detail)
         }
         guard let json, let access = json["access_token"] as? String, !access.isEmpty else {

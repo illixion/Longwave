@@ -1,5 +1,5 @@
 import AppKit
-import os
+import DebugTrace
 
 /// Tracks Music.app playback state and provides transport control, using
 /// only public APIs:
@@ -13,7 +13,7 @@ import os
 /// `tell application "Music"` would otherwise launch Music.
 final class MusicAppBridge {
 
-    private static let log = Logger(
+    private static let log = DebugLogger(
         subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave.companion",
         category: "MusicBridge"
     )
@@ -198,7 +198,7 @@ final class MusicAppBridge {
         var error: NSDictionary?
         let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
         if let error {
-            Self.log.log("AppleScript error: \(String(describing: error), privacy: .public)")
+            Self.log.log("AppleScript error: \(String(describing: error))")
             return nil
         }
         return result

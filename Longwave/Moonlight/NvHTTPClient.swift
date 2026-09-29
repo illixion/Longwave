@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 import Network
 @preconcurrency import Security
 
@@ -94,9 +94,9 @@ actor NvHTTPClient {
         // Parse app list XML with specialized parser
         let parser = AppListXMLParser()
         let result = parser.parse(data: data)
-        AppLog.nvHTTPClient.line("applist: \(data.count) bytes, status=\(parser.lastStatusCode ?? "none"), parsed \(result.count) app(s)")
+        AppLog.nvHTTPClient.log("applist: \(data.count) bytes, status=\(parser.lastStatusCode ?? "none", privacy: .public), parsed \(result.count) app(s)")
         if result.isEmpty, let body = String(data: data, encoding: .utf8) {
-            AppLog.nvHTTPClient.line("applist empty — body: \(body.prefix(600))")
+            AppLog.nvHTTPClient.log("applist empty — body: \(body.prefix(600))")
         }
         return result
     }
@@ -135,7 +135,7 @@ actor NvHTTPClient {
         }
 
         let xml = try await nwRequest("launch", args: args, port: httpsPort, useTLS: true, timeout: 120)
-        AppLog.nvHTTPClient.line("launch app=\(appId) mode=\(width)x\(height)x\(fps) sops=\(optimizeGameSettings) → status=\(xml.rootAttributes["status_code"] ?? "?") msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-") gamesession=\(xml.elements["gamesession"] ?? "-") sessionUrl0=\(xml.elements["sessionUrl0"] != nil)")
+        AppLog.nvHTTPClient.log("launch app=\(appId) mode=\(width)x\(height)x\(fps) sops=\(optimizeGameSettings) → status=\(xml.rootAttributes["status_code"] ?? "?", privacy: .public) msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-") gamesession=\(xml.elements["gamesession"] ?? "-", privacy: .private(mask: .hash)) sessionUrl0=\(xml.elements["sessionUrl0"] != nil)")
         try xml.verifyStatus()
 
         guard let sessionUrl = xml.elements["sessionUrl0"] else {
@@ -155,7 +155,7 @@ actor NvHTTPClient {
         ]
 
         let xml = try await nwRequest("resume", args: args, port: httpsPort, useTLS: true, timeout: 30)
-        AppLog.nvHTTPClient.line("resume → status=\(xml.rootAttributes["status_code"] ?? "?") msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-") sessionUrl0=\(xml.elements["sessionUrl0"] != nil)")
+        AppLog.nvHTTPClient.log("resume → status=\(xml.rootAttributes["status_code"] ?? "?", privacy: .public) msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-") sessionUrl0=\(xml.elements["sessionUrl0"] != nil)")
         try xml.verifyStatus()
 
         guard let sessionUrl = xml.elements["sessionUrl0"] else {
@@ -168,7 +168,7 @@ actor NvHTTPClient {
         guard serverCertDER != nil else { throw MoonlightError.notPaired }
 
         let xml = try await nwRequest("cancel", port: httpsPort, useTLS: true, timeout: 30)
-        AppLog.nvHTTPClient.line("quit → status=\(xml.rootAttributes["status_code"] ?? "?") msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-")")
+        AppLog.nvHTTPClient.log("quit → status=\(xml.rootAttributes["status_code"] ?? "?", privacy: .public) msg=\(xml.rootAttributes["status_message"] ?? xml.elements["status_message"] ?? "-")")
         try xml.verifyStatus()
     }
 
@@ -331,10 +331,10 @@ actor NvHTTPClient {
             if let secIdentity = sec_identity_create(identity) {
                 sec_protocol_options_set_local_identity(secOptions, secIdentity)
             } else {
-                AppLog.nvHTTPClient.line("WARNING: sec_identity_create returned nil — TLS client auth will fail")
+                AppLog.nvHTTPClient.log("WARNING: sec_identity_create returned nil — TLS client auth will fail")
             }
         } catch {
-            AppLog.nvHTTPClient.line("ERROR: Failed to get client identity for TLS: \(error)")
+            AppLog.nvHTTPClient.log("ERROR: Failed to get client identity for TLS: \(error)")
         }
 
         return NWParameters(tls: tlsOptions)

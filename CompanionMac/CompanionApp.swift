@@ -1,6 +1,6 @@
+import DebugTrace
 import SwiftUI
 import AppKit
-import os
 
 /// Menu bar companion app for Longwave (macOS side): streams system audio
 /// to the Vision Pro via a Core Audio process tap, relays Music.app now-playing
@@ -14,11 +14,14 @@ struct CompanionApp: App {
     @State private var broadcastServer = BroadcastServerManager()
 
     init() {
+        DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
+            .compactMap { $0 }
+            .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }))
         // Surface the Local Network permission prompt at launch rather than
         // waiting for the first stream — reading hostName performs a
         // local-network lookup, which is enough to trigger the dialog.
         let hostName = ProcessInfo.processInfo.hostName
-        Logger(subsystem: "pro.longwave.companion", category: "App")
+        DebugLogger(subsystem: "pro.longwave.companion", category: "App")
             .info("Local network access prompt triggered (host: \(hostName, privacy: .private))")
     }
 

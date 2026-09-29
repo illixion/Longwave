@@ -34,6 +34,10 @@ struct LongwaveApp: App {
     }
     #endif
 
+    init() {
+        AppLog.configureDebugTrace()
+    }
+
     var body: some Scene {
         // Value-typed with a single constant identity (`MainWindowID.shared`)
         // so every `openWindow(id: "main", value:)` reactivates this one window

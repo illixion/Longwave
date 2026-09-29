@@ -1,12 +1,12 @@
 import RAVEConsole
 import SwiftUI
 
-/// Console tab: a live view of this app's os_log output.
+/// Console tab: a live view of this app's own log lines.
 ///
-/// The viewer itself is RAVEConsole now — it was one of three independent
-/// implementations of the same OSLogStore-polling screen across these apps.
-/// Its level and category filters and its clipboard export are new here; this
-/// copy had auto-scroll and a level picker only.
+/// The viewer is RAVEConsole, which tails DebugTrace's in-memory log buffer —
+/// every `DebugLogger` line, debug included (see `AppLog`). Lines from Apple
+/// frameworks and packages still on `os.Logger` are not shown; a debug trace
+/// carries them.
 struct ConsoleTabView: View {
     @Environment(\.openWindow) private var openWindow
 

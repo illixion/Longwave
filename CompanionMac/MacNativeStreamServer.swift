@@ -1,6 +1,6 @@
+import DebugTrace
 import Foundation
 import Network
-import os
 
 /// Authenticated multi-viewer server for the native Mac stream. Every client
 /// that completes TLS and sends its hello joins the set of viewers; an
@@ -103,7 +103,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         label: "pro.longwave.companion.mac-native.server",
         qos: .userInteractive
     )
-    private let log = Logger(
+    private let log = DebugLogger(
         subsystem: "pro.longwave.companion",
         category: "MacNativeStreamServer"
     )

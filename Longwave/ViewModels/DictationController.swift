@@ -1,5 +1,6 @@
 #if os(visionOS)
 import AVFoundation
+import DebugTrace
 import Speech
 
 /// In-app dictation for the terminal composer, transcribed on device.
@@ -105,7 +106,7 @@ final class DictationController {
         } catch {
             await teardown()
             status = .failed(Self.message(for: error))
-            AppLog.app.line("Dictation start failed: \(error)")
+            AppLog.app.log("Dictation start failed: \(error)")
         }
     }
 
@@ -154,7 +155,7 @@ final class DictationController {
             } catch {
                 // A cancelled task is us tearing the session down, not a failure.
                 guard let self, !Task.isCancelled else { return }
-                AppLog.app.line("Dictation results ended: \(error)")
+                AppLog.app.log("Dictation results ended: \(error)")
                 self.status = .failed("Dictation stopped unexpectedly.")
             }
         }
@@ -267,7 +268,7 @@ final class DictationController {
                                     mode: restoreSession.mode,
                                     options: restoreSession.options)
         } catch {
-            AppLog.app.line("Dictation: failed to restore the audio session: \(error)")
+            AppLog.app.log("Dictation: failed to restore the audio session: \(error)")
         }
     }
 

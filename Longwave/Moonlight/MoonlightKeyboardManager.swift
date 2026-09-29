@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 #if canImport(UIKit)
 import GameController
 import UIKit
@@ -39,7 +39,7 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
     @ObservationIgnored private nonisolated(unsafe) var activeModifiers: Int8 = 0
 
     func startListening() {
-        AppLog.gamepadManager.line("Starting keyboard listening")
+        AppLog.gamepadManager.log("Starting keyboard listening")
 
         connectObserver = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidConnect, object: nil, queue: .main
@@ -60,7 +60,7 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
     }
 
     func stopListening() {
-        AppLog.gamepadManager.line("Stopping keyboard listening")
+        AppLog.gamepadManager.log("Stopping keyboard listening")
         if let obs = connectObserver { NotificationCenter.default.removeObserver(obs); connectObserver = nil }
         if let obs = disconnectObserver { NotificationCenter.default.removeObserver(obs); disconnectObserver = nil }
         GCKeyboard.coalesced?.keyboardInput?.keyChangedHandler = nil
@@ -68,7 +68,7 @@ final class MoonlightKeyboardManager: @unchecked Sendable {
     }
 
     private func keyboardConnected(_ keyboard: GCKeyboard) {
-        AppLog.gamepadManager.line("Keyboard connected: \(keyboard.vendorName ?? "unknown")")
+        AppLog.gamepadManager.log("Keyboard connected: \(keyboard.vendorName ?? "unknown")")
         keyboard.keyboardInput?.keyChangedHandler = { [weak self] _, _, keyCode, pressed in
             self?.handle(keyCode: keyCode, pressed: pressed)
         }

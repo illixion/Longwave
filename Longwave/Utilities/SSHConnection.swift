@@ -1,9 +1,9 @@
+import DebugTrace
 import Foundation
 import Network
 import NIOCore
 import NIOTransportServices
 import NIOSSH
-import os
 
 enum SSHConnectionError: Error, CustomStringConvertible {
     case invalidChannelType
@@ -52,7 +52,7 @@ final class SSHConnection: @unchecked Sendable {
     private let config: Config
     private let privateKey: NIOSSHPrivateKey
     private let group: NIOTSEventLoopGroup
-    private let log = Logger(subsystem: "pro.longwave", category: "SSH")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "SSH")
 
     private nonisolated(unsafe) var channel: Channel?
     private nonisolated(unsafe) var sessionChannel: Channel?

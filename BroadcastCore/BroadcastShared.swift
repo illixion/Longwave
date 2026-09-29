@@ -1,17 +1,13 @@
+import DebugTrace
 import Foundation
 import Security
-import os
 
 /// Logging for BroadcastCore, which compiles into both the app and the
-/// broadcast extension (where `AppLog` isn't available). Public privacy,
-/// same caveat as `Logger.line()`: never log secrets.
-nonisolated let broadcastLogger = Logger(
+/// broadcast extension (where `AppLog` isn't available). Per-value privacy
+/// like any `DebugLogger`: hosts, URLs and error text stay private.
+nonisolated let broadcastLogger = DebugLogger(
     subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave",
     category: "Broadcast")
-
-nonisolated func broadcastLog(_ message: String) {
-    broadcastLogger.log("\(message, privacy: .public)")
-}
 
 /// Configuration shared between the app (writes, via the Broadcast tab) and
 /// the broadcast upload extension (reads, in its own process) — hence the
@@ -68,6 +64,12 @@ nonisolated enum BroadcastShared {
         if groups.contains(preferredAppGroup) { return preferredAppGroup }
         return groups.sorted().first ?? preferredAppGroup
     }()
+
+    /// For logs: whether `appGroup` is ours or came from a sideload profile,
+    /// whose group ids can carry the signer's name and so stay private.
+    static var appGroupSource: String {
+        appGroup == preferredAppGroup ? "preferred" : "from profile"
+    }
 
     static var defaults: UserDefaults {
         UserDefaults(suiteName: appGroup) ?? .standard

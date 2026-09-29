@@ -1,8 +1,8 @@
+import DebugTrace
 import Foundation
 import Crypto
 import NIOSSH
 import Security
-import os
 
 enum SSHKeyError: Error {
     case keychain(OSStatus)
@@ -80,7 +80,7 @@ struct SecureEnclaveSSHKey: @unchecked Sendable {
     // MARK: - Persistence
 
     private static let service = "pro.longwave.sshDeviceKey"
-    private static let log = Logger(subsystem: "pro.longwave", category: "SSHKey")
+    private static let log = DebugLogger(subsystem: "pro.longwave", category: "SSHKey")
 
     /// Loads the persisted device key, generating one on first use.
     static func loadOrCreate() throws -> SecureEnclaveSSHKey {

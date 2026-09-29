@@ -16,14 +16,14 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import Network
-import os
 
 nonisolated final class BridgeDatagramChannel: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "pro.longwave.controllerbridge.net")
-    private let log = Logger(subsystem: "pro.longwave", category: "BridgeDatagram")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "BridgeDatagram")
 
     private var connection: NWConnection?
     private var seal: BridgeSeal?
@@ -65,7 +65,7 @@ nonisolated final class BridgeDatagramChannel: @unchecked Sendable {
         }
         conn.start(queue: queue)
         log.notice("""
-            ControllerBridge UDP → \(host, privacy: .public):\(port, privacy: .public) \
+            ControllerBridge UDP → \(host, privacy: .private(mask: .hash)):\(port, privacy: .public) \
             (\(self.isSealed ? "sealed" : self.plaintextAllowed ? "PLAINTEXT (dev)" : "waiting for keys", privacy: .public))
             """)
     }

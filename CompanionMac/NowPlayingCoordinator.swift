@@ -1,5 +1,5 @@
+import DebugTrace
 import Foundation
-import os
 
 /// Single now-playing source for the rest of the companion, presenting the same
 /// interface `MusicAppBridge` always did while choosing between two backends:
@@ -17,7 +17,7 @@ import os
 /// is playing, Music.app's own answer is used and the user sees no difference.
 final class NowPlayingCoordinator {
 
-    private static let log = Logger(
+    private static let log = DebugLogger(
         subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave.companion",
         category: "NowPlaying"
     )

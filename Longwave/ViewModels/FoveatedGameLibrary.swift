@@ -21,8 +21,8 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
-import OSLog
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -53,7 +53,7 @@ final class FoveatedGameLibrary {
     /// close without hiding failures the user still needs to read.
     private(set) var lastSuccessfulLaunchID: String?
 
-    private let log = Logger(subsystem: "pro.longwave", category: "GameLibrary")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "GameLibrary")
 
     private weak var bridge: ControllerBridgeSender?
     /// The sender's control link. Nil-safe via `bridge`, which owns it.
@@ -316,7 +316,7 @@ final class FoveatedGameLibrary {
         default:
             break
         }
-        log.error("Game library op \(done.op.rawValue, privacy: .public) failed: \(message, privacy: .public)")
+        log.error("Game library op \(done.op.rawValue, privacy: .public) failed: \(message)")
     }
 
     // MARK: Helpers

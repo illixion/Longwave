@@ -1,6 +1,6 @@
+import DebugTrace
 import Foundation
 import Network
-import os
 
 /// TLS-1.2-PSK TCP server for the text-injection channel (port 4856 by
 /// default), independent of the audio server — its own queue, single client
@@ -22,7 +22,7 @@ final class CompanionInjectServer: @unchecked Sendable {
     private nonisolated(unsafe) var client: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     private nonisolated(unsafe) var availability = CompanionInjectProtocol.Status.disabled.rawValue
-    private let log = Logger(subsystem: "pro.longwave.companion", category: "CompanionInjectServer")
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "CompanionInjectServer")
 
     nonisolated init(port: UInt16, token: String) {
         self.port = port

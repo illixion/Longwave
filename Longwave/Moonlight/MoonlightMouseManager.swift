@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 import GameController
 @preconcurrency import MoonlightCommonC
 
@@ -80,7 +80,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
     // MARK: - Lifecycle
 
     func startListening() {
-        AppLog.gamepadManager.line("Starting mouse listening")
+        AppLog.gamepadManager.log("Starting mouse listening")
 
         connectObserver = NotificationCenter.default.addObserver(
             forName: .GCMouseDidConnect,
@@ -107,7 +107,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
     }
 
     func stopListening() {
-        AppLog.gamepadManager.line("Stopping mouse listening")
+        AppLog.gamepadManager.log("Stopping mouse listening")
 
         if let obs = connectObserver {
             NotificationCenter.default.removeObserver(obs)
@@ -127,7 +127,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
     private func mouseConnected(_ mouse: GCMouse) {
         guard !mice.contains(where: { $0 === mouse }) else { return }
         mice.append(mouse)
-        AppLog.gamepadManager.line("Mouse connected: \(mouse.vendorName ?? "unknown")")
+        AppLog.gamepadManager.log("Mouse connected: \(mouse.vendorName ?? "unknown")")
         setupHandlers(mouse)
         onConnectedChange?(!mice.isEmpty)
     }
@@ -135,7 +135,7 @@ final class MoonlightMouseManager: @unchecked Sendable {
     private func mouseDisconnected(_ mouse: GCMouse) {
         clearHandlers(mouse)
         mice.removeAll { $0 === mouse }
-        AppLog.gamepadManager.line("Mouse disconnected: \(mouse.vendorName ?? "unknown")")
+        AppLog.gamepadManager.log("Mouse disconnected: \(mouse.vendorName ?? "unknown")")
         onConnectedChange?(!mice.isEmpty)
     }
 

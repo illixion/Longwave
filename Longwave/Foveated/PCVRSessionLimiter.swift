@@ -17,8 +17,8 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
-import os
 
 @Observable
 final class PCVRSessionLimiter {
@@ -47,7 +47,7 @@ final class PCVRSessionLimiter {
     private var lastTickAt: TimeInterval?
     private var cutoffInFlight = false
     private var task: Task<Void, Never>?
-    private let log = Logger(subsystem: "pro.longwave", category: "PCVRTrial")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRTrial")
 
     /// Starts the 1 Hz supervisor. Called once, from the app, and left running:
     /// a timer that only exists while some view is on screen would stop counting

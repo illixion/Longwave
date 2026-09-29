@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import AVFoundation
 
@@ -42,7 +43,7 @@ final class BroadcastMicCapture: @unchecked Sendable {
         engine.prepare()
         try engine.start()
         self.engine = engine
-        AppLog.broadcast.line("🎙️ Mic capture started: \(format.sampleRate) Hz \(format.channelCount)ch")
+        AppLog.broadcast.log("🎙️ Mic capture started: \(format.sampleRate) Hz \(format.channelCount)ch")
     }
 
     nonisolated func stop() {

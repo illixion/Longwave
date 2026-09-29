@@ -64,11 +64,11 @@
 //  wrist poses reach the game, at the palm rather than the wrist.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import Network
 import RAVEInput
 import simd
-import os
 import GameController
 import CoreHaptics
 import ARKit
@@ -83,7 +83,7 @@ import FoveatedStreaming
 final class ControllerBridgeSender {
 
     private let host: String
-    private let log = Logger(subsystem: "pro.longwave", category: "ControllerBridge")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "ControllerBridge")
 
     /// Most recent tracked wrist poses, written by the ARKit update loop.
     private var leftHand: ControllerBridgeHandPose?
@@ -148,9 +148,11 @@ final class ControllerBridgeSender {
 
     /// Spatial controllers (PSVR2 Sense etc.) — their own discovery, their own
     /// ARKit provider, per-hand rather than adopted-singular. See the class doc.
+    /// RAVEInput hands over finished strings (controller names, ARKit error
+    /// text), so the whole line is private: there is no value to split out.
     let spatialSource = RAVESpatialAccessorySource(log: { message in
-        Logger(subsystem: "pro.longwave", category: "SpatialAccessory")
-            .notice("\(message, privacy: .public)")
+        DebugLogger(subsystem: "pro.longwave", category: "SpatialAccessory")
+            .notice("\(message, privacy: .private)")
     })
 
     /// Quest Touch controllers from a Quest on the desk, while the user has them on.
@@ -602,7 +604,7 @@ final class ControllerBridgeSender {
         if questControllersEnabled { startQuestSource() }
         startHandTracking()
         startSendLoop()
-        log.notice("ControllerBridge sender started → \(self.host, privacy: .public)")
+        log.notice("ControllerBridge sender started → \(self.host, privacy: .private(mask: .hash))")
     }
 
     // MARK: Physical controller lifecycle
@@ -652,13 +654,13 @@ final class ControllerBridgeSender {
             m.sensorsActive = true
             motion = m
             log.notice("""
-                Controller \(candidate.vendorName ?? "unknown", privacy: .public) attached \
+                Controller \(candidate.vendorName ?? "unknown") attached \
                 with motion (attitude: \(m.hasAttitude ? "yes" : "no", privacy: .public)).
                 """)
         } else {
             motion = nil
             log.notice("""
-                Controller \(candidate.vendorName ?? "unknown", privacy: .public) attached; \
+                Controller \(candidate.vendorName ?? "unknown") attached; \
                 no rotation rate, so no IMU contribution.
                 """)
         }
@@ -817,9 +819,10 @@ final class ControllerBridgeSender {
 
     private func startQuestSource() {
         guard questSource == nil else { return }
-        let logger = Logger(subsystem: "pro.longwave", category: "QuestBridge")
+        let logger = DebugLogger(subsystem: "pro.longwave", category: "QuestBridge")
+        // Finished strings that carry the Quest's address and advertised name.
         let source = RAVEQuestBridgeSource(log: { message in
-            logger.notice("\(message, privacy: .public)")
+            logger.notice("\(message, privacy: .private)")
         })
         do {
             try source.start()
@@ -827,7 +830,7 @@ final class ControllerBridgeSender {
             questStartError = nil
         } catch {
             questStartError = error.localizedDescription
-            log.error("Quest controllers: could not listen — \(error.localizedDescription, privacy: .public)")
+            log.error("Quest controllers: could not listen — \(error.localizedDescription)")
         }
     }
 
@@ -933,7 +936,7 @@ final class ControllerBridgeSender {
             activeGame = telemetry.activeClient
             applyGameProfile(for: activeGame)
             log.notice("""
-                Profile for \(self.activeGame ?? "no title", privacy: .public): \
+                Profile for \(self.activeGame ?? "no title"): \
                 \(self.gameProfileSource.rawValue, privacy: .public)
                 """)
         }
@@ -1022,7 +1025,7 @@ final class ControllerBridgeSender {
                 }
             }
             do { try created.start() } catch {
-                log.error("Haptic engine start failed: \(error.localizedDescription, privacy: .public)")
+                log.error("Haptic engine start failed: \(error.localizedDescription)")
                 return
             }
             hapticEngines[haptic.controller] = created
@@ -1049,7 +1052,7 @@ final class ControllerBridgeSender {
             hapticPlayers[haptic.controller] = player
             try player.start(atTime: CHHapticTimeImmediate)
         } catch {
-            log.debug("Haptic play failed: \(error.localizedDescription, privacy: .public)")
+            log.debug("Haptic play failed: \(error.localizedDescription)")
         }
     }
 
@@ -1071,7 +1074,7 @@ final class ControllerBridgeSender {
                 // head-relative basis; it needs no separate authorization prompt.
                 try await arSession.run([handProvider, worldProvider])
             } catch {
-                log.error("ARKit run failed: \(error.localizedDescription, privacy: .public)")
+                log.error("ARKit run failed: \(error.localizedDescription)")
                 return
             }
             for await update in handProvider.anchorUpdates {

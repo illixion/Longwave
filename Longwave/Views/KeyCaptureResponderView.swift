@@ -1,6 +1,6 @@
 #if canImport(UIKit)
+import DebugTrace
 import UIKit
-import os
 
 /// The first-responder etiquette shared by every hardware-keyboard capture view
 /// (VNC, Moonlight, Native). Each transport subclasses this and only implements
@@ -28,7 +28,7 @@ class KeyCaptureResponderView: UIView {
     var mayCaptureKeys: Bool { !TextInputActivity.shared.isEntering }
 
     /// Which log category this transport's grab attempts are recorded under.
-    var captureLog: Logger { AppLog.app }
+    var captureLog: DebugLogger { AppLog.app }
 
     /// Name used in those log lines.
     var captureLogName: String { "KeyCaptureView" }
@@ -99,7 +99,7 @@ class KeyCaptureResponderView: UIView {
         if isFirstResponder { return }
         if afterTextEntry, !mayTakeKeyFocus(from: window) { return }
         let ok = becomeFirstResponder()
-        captureLog.line("\(captureLogName) becomeFirstResponder -> \(ok) (isKeyWindow=\(window.isKeyWindow))")
+        captureLog.log("\(captureLogName, privacy: .public) becomeFirstResponder -> \(ok) (isKeyWindow=\(window.isKeyWindow))")
     }
 
     /// Hand the keyboard to the text session that just started. The responder
@@ -107,7 +107,7 @@ class KeyCaptureResponderView: UIView {
     private func yieldToTextEntry() {
         guard isFirstResponder else { return }
         _ = resignFirstResponder()
-        captureLog.line("\(captureLogName) yielded first responder to text entry")
+        captureLog.log("\(captureLogName, privacy: .public) yielded first responder to text entry")
     }
 
     /// visionOS frequently reports *no* key window at all, so a plain

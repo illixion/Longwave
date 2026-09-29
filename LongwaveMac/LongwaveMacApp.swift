@@ -19,6 +19,10 @@ struct LongwaveMacApp: App {
     @State private var companionController = AudioStreamerController()
     @State private var broadcastServer = BroadcastServerManager()
 
+    init() {
+        AppLog.configureDebugTrace()
+    }
+
     var body: some Scene {
         // Value-typed with the shared constant identity so every
         // `openWindow(id: "main", value:)` reactivates this one window instead

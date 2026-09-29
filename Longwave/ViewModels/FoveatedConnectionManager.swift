@@ -15,9 +15,9 @@
 //  on device it is the real framework type.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import SwiftUI
 import Network
-import os
 
 #if !targetEnvironment(simulator)
 import FoveatedStreaming
@@ -116,7 +116,7 @@ final class FoveatedConnectionManager {
     private var bridgeSupervisorTask: Task<Void, Never>?
     private var pauseRequestInFlight = false
     private var disconnectInFlight = false
-    private let log = Logger(subsystem: "pro.longwave", category: "Foveated")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "Foveated")
 
     // MARK: Derived state
 
@@ -226,7 +226,7 @@ final class FoveatedConnectionManager {
                 self.expectedDisconnect = true   // the failure is reported as lastError, not twice
                 await self.session.disconnect()
                 self.lastError = error.localizedDescription
-                self.log.error("Foveated connect failed: \(error.localizedDescription, privacy: .public)")
+                self.log.error("Foveated connect failed: \(error.localizedDescription)")
             }
         }
     }
@@ -394,7 +394,7 @@ final class FoveatedConnectionManager {
         do {
             try await session.pause()
         } catch {
-            log.error("Foveated pause failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Foveated pause failed: \(error.localizedDescription)")
         }
     }
 
@@ -404,7 +404,7 @@ final class FoveatedConnectionManager {
         do {
             try await session.resume()
         } catch {
-            log.error("Foveated resume failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Foveated resume failed: \(error.localizedDescription)")
         }
     }
 
@@ -552,7 +552,11 @@ final class FoveatedConnectionManager {
         controllerBridge = bridge
         gameLibrary.attach(to: bridge)
         startChannelMonitor(for: bridge)
-        log.notice("Controller bridge started (UDP host: \(host.isEmpty ? "none — channel only" : host, privacy: .public))")
+        if host.isEmpty {
+            log.notice("Controller bridge started (UDP host: none — channel only)")
+        } else {
+            log.notice("Controller bridge started (UDP host: \(host, privacy: .private(mask: .hash)))")
+        }
     }
 
     /// Watch the session for the bridge message channel and hand it to the

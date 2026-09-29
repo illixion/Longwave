@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 import AVFoundation
+import DebugTrace
 import Foundation
-import os
 
 /// Process-wide owner of the app's one `AVAudioSession`.
 ///
@@ -25,13 +25,8 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
     static let shared = AudioSessionCoordinator()
 
     private let lock = NSLock()
-    /// The same category `AppLog.audioStream` uses, so these land beside the
-    /// receiver's own lines in the in-app console — but constructed here,
-    /// because `AppLog`'s statics are main-actor isolated and this is not.
-    private let log = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave",
-        category: "AudioStream"
-    )
+    /// The receiver's own category, so these land beside its lines.
+    private let log = AppLog.audioStream
     /// Every receiver currently holding a configured session, by mode.
     private var participants: [ObjectIdentifier: AudioMode] = [:]
     /// The options last applied, or nil when nothing has been configured yet
@@ -62,7 +57,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
             do {
                 try session.setCategory(.playback, mode: .default, options: options)
             } catch {
-                log.log("Failed to configure audio session: \(error, privacy: .public)")
+                log.log("Failed to configure audio session: \(error)")
                 configured = false
             }
         }
@@ -101,7 +96,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
         do {
             try session.setCategory(.playback, mode: .default, options: options)
         } catch {
-            log.log("Failed to re-configure audio session: \(error, privacy: .public)")
+            log.log("Failed to re-configure audio session: \(error)")
         }
         applySessionTraits(spatialAudioMode: nil, options: options)
     }

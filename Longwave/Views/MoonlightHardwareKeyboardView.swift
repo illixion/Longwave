@@ -1,8 +1,8 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import SwiftUI
 import UIKit
 import GameController
-import os
 @preconcurrency import MoonlightCommonC
 
 /// A UIViewRepresentable that captures hardware/Bluetooth keyboard events
@@ -32,7 +32,7 @@ final class MoonlightKeyCaptureView: KeyCaptureResponderView {
 
     private var loggedFirstPress = false
 
-    override var captureLog: Logger { AppLog.moonlightStream }
+    override var captureLog: DebugLogger { AppLog.moonlightStream }
     override var captureLogName: String { "MoonlightKeyCaptureView" }
 
     // MARK: - Press Events
@@ -51,7 +51,7 @@ final class MoonlightKeyCaptureView: KeyCaptureResponderView {
         }
         if !loggedFirstPress {
             loggedFirstPress = true
-            AppLog.moonlightStream.line("MoonlightKeyCaptureView received first hardware key press")
+            AppLog.moonlightStream.log("MoonlightKeyCaptureView received first hardware key press")
         }
         var handled = false
 

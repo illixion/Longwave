@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import os
 
@@ -49,12 +50,12 @@ final class AudioFrameRing: @unchecked Sendable {
     private let running = OSAllocatedUnfairLock(initialState: false)
 
     /// Drop bookkeeping for the consumer thread's throttled reporting. The
-    /// producer can't log: `Logger` allocates, and it runs on the realtime
+    /// producer can't log: `DebugLogger` allocates, and it runs on the realtime
     /// thread.
     private var reportedDrops = 0
     private var lastHealthLogNanos: UInt64 = 0
 
-    private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioFrameRing")
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "AudioFrameRing")
 
     /// - Parameters:
     ///   - slotCount: buffers in flight before the producer starts dropping.
@@ -174,7 +175,7 @@ final class AudioFrameRing: @unchecked Sendable {
     }
 
     /// Periodic ring health from the consumer thread — the producer can't
-    /// log, since `Logger` allocates and it runs on the realtime thread.
+    /// log, since `DebugLogger` allocates and it runs on the realtime thread.
     ///
     /// Occupancy is reported even when nothing is wrong: a drop is audio
     /// that never reached the network at all and sounds exactly like a

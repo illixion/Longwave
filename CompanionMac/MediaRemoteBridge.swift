@@ -1,5 +1,5 @@
+import DebugTrace
 import Foundation
-import os
 
 /// System-wide now-playing metadata, for *any* player — Music.app (local files
 /// and Apple Music streaming alike), Spotify, video in Safari/Chrome/Firefox,
@@ -23,7 +23,7 @@ import os
 ///   the fallback takes over.
 final class MediaRemoteBridge {
 
-    private static let log = Logger(
+    private static let log = DebugLogger(
         subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave.companion",
         category: "MediaRemote"
     )
@@ -160,7 +160,7 @@ final class MediaRemoteBridge {
                       .trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty
             else { return }
-            Self.log.log("helper stderr: \(text, privacy: .public)")
+            Self.log.log("helper stderr: \(text)")
         }
 
         task.terminationHandler = { [weak self] finished in
@@ -172,7 +172,7 @@ final class MediaRemoteBridge {
         do {
             try task.run()
         } catch {
-            Self.log.error("failed to launch helper: \(error.localizedDescription, privacy: .public)")
+            Self.log.error("failed to launch helper: \(error.localizedDescription)")
             setAvailable(false)
             return
         }
@@ -281,7 +281,7 @@ final class MediaRemoteBridge {
             } catch {
                 task.terminationHandler = nil
                 let reason = error.localizedDescription
-                Self.log.error("transport \(command.rawValue, privacy: .public) failed to launch: \(reason, privacy: .public)")
+                Self.log.error("transport \(command.rawValue, privacy: .public) failed to launch: \(reason)")
                 continuation.resume(returning: false)
             }
         }

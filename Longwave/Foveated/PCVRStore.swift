@@ -13,10 +13,10 @@
 //  no purchase code at all rather than code that is switched off.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import StoreKit
 import SwiftUI
-import os
 
 @Observable
 final class PCVRStore {
@@ -63,7 +63,7 @@ final class PCVRStore {
     var isResolved: Bool { unlock != nil }
 
     private var updatesTask: Task<Void, Never>?
-    private let log = Logger(subsystem: "pro.longwave", category: "PCVRStore")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRStore")
 
     init() {
         // Transactions can arrive without the app asking: a renewal, a purchase
@@ -136,7 +136,7 @@ final class PCVRStore {
             products = ProductID.all.compactMap { id in loaded.first { $0.id == id } }
             loadFailure = products.isEmpty ? "No purchase options are available right now." : nil
         } catch {
-            log.error("Product load failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Product load failed: \(error.localizedDescription)")
             loadFailure = "Could not reach the App Store. Check your connection and try again."
         }
     }
@@ -172,7 +172,7 @@ final class PCVRStore {
                 return .failed("The App Store returned an unexpected result.")
             }
         } catch {
-            log.error("Purchase failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Purchase failed: \(error.localizedDescription)")
             return .failed(error.localizedDescription)
         }
     }

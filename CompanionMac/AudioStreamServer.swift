@@ -1,6 +1,6 @@
+import DebugTrace
 import Foundation
 import Network
-import os
 
 /// TCP server that streams interleaved signed int24 PCM to the connected
 /// Longwave client. Sends the AudioStreamHeader on accept, then
@@ -82,7 +82,7 @@ final class AudioStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var keepAliveTimer: DispatchSourceTimer?
     private static let keepAliveFrame = AudioStreamProtocol.encodeFrame(.keepAlive, Data())
 
-    private let log = Logger(subsystem: "pro.longwave.companion", category: "AudioStreamServer")
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "AudioStreamServer")
 
     /// Latest now-playing state, replayed to newly connected clients right
     /// after the header. Artwork is kept as raw bytes (not a pre-encoded
@@ -324,7 +324,7 @@ final class AudioStreamServer: @unchecked Sendable {
         let client = Client(connection: connection)
         clients[ObjectIdentifier(connection)] = client
 
-        log.info("Client connecting from \(String(describing: connection.endpoint)) — starting TLS-PSK handshake")
+        log.info("Client connecting from \(String(describing: connection.endpoint), privacy: .private(mask: .hash)) — starting TLS-PSK handshake")
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -371,7 +371,7 @@ final class AudioStreamServer: @unchecked Sendable {
         udp.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                self?.log.info("Low-latency UDP attached → \(String(describing: host)):\(udpPort)")
+                self?.log.info("Low-latency UDP attached → \(String(describing: host), privacy: .private(mask: .hash)):\(udpPort)")
             case .failed(let error):
                 self?.log.error("UDP path failed: \(error.localizedDescription)")
             default:

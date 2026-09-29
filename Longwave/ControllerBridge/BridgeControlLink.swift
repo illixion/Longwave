@@ -32,9 +32,9 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import Network
-import OSLog
 
 /// One TCP connection to the host's control port, with reassembled library
 /// responses and raw non-library packets delivered on the main actor.
@@ -52,7 +52,7 @@ final class BridgeControlLink {
     /// The endpoint currently in use, for the debug HUD.
     private(set) var activeEndpoint: String?
 
-    private let log = Logger(subsystem: "pro.longwave", category: "BridgeControlLink")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "BridgeControlLink")
     private let queue = DispatchQueue(label: "pro.longwave.bridge.control")
 
     private var rendezvous: ControllerBridgeRendezvous?
@@ -92,7 +92,7 @@ final class BridgeControlLink {
         // retry cycle in `advance()` looks after failures on its own.
         if sameSession, connection != nil { return }
         log.notice("""
-            Rendezvous: \(new.endpoints.joined(separator: ", "), privacy: .public) \
+            Rendezvous: \(new.endpoints.joined(separator: ", "), privacy: .private(mask: .hash)) \
             control port \(new.controlPort, privacy: .public)
             """)
         rendezvous = new
@@ -142,7 +142,7 @@ final class BridgeControlLink {
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let error else { return }
             Task { @MainActor in
-                self?.log.error("Control send failed: \(error.localizedDescription, privacy: .public)")
+                self?.log.error("Control send failed: \(error.localizedDescription)")
                 // A partial frame leaves the host hunting for a length prefix inside a
                 // packet, so the connection cannot be reused after a failed write.
                 self?.dropAndReconnect()
@@ -193,15 +193,15 @@ final class BridgeControlLink {
             activeEndpoint = host
             guard !isReady else { return }
             isReady = true
-            log.notice("Control link ready via \(host, privacy: .public)")
+            log.notice("Control link ready via \(host, privacy: .private(mask: .hash))")
             onReady?(host)
         case .failed(let error):
-            log.notice("Control endpoint \(host, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            log.notice("Control endpoint \(host, privacy: .private(mask: .hash)) failed: \(error.localizedDescription)")
             advance()
         case .waiting(let error):
             // No route, or nothing listening. Another address may work, so move on
             // rather than waiting for this one to become viable.
-            log.notice("Control endpoint \(host, privacy: .public) unusable: \(error.localizedDescription, privacy: .public)")
+            log.notice("Control endpoint \(host, privacy: .private(mask: .hash)) unusable: \(error.localizedDescription)")
             advance()
         case .cancelled:
             break

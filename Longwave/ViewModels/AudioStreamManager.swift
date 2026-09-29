@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import os
 import Network
@@ -542,7 +543,7 @@ final class AudioStreamManager {
             // its health within ~0.5 s of resume; give it a grace window to
             // prove it, and only reconnect if it stays silent (truly dead).
             if effectiveAudioMode == .speaker {
-                AppLog.audioStream.line("Connection unhealthy after scene activation — reconnecting")
+                AppLog.audioStream.log("Connection unhealthy after scene activation — reconnecting")
                 reconnectLast()
             } else {
                 scheduleMusicHealthRecheck()
@@ -556,7 +557,7 @@ final class AudioStreamManager {
     /// connection reports healthy by the time the grace window elapses.
     private func scheduleMusicHealthRecheck() {
         guard healthRecheckTask == nil else { return }
-        AppLog.audioStream.line("Music mode: connection stale on restore — waiting for keepalive before reconnecting")
+        AppLog.audioStream.log("Music mode: connection stale on restore — waiting for keepalive before reconnecting")
         #if os(iOS)
         beginBackgroundRetryWindow()
         #endif
@@ -566,12 +567,12 @@ final class AudioStreamManager {
             self.healthRecheckTask = nil
             guard self.state == .streaming else { return }
             if self.isHealthy {
-                AppLog.audioStream.line("Music mode: keepalive arrived — connection alive, not reconnecting")
+                AppLog.audioStream.log("Music mode: keepalive arrived — connection alive, not reconnecting")
                 #if os(iOS)
                 self.endBackgroundRetryWindow()
                 #endif
             } else {
-                AppLog.audioStream.line("Music mode: still no data after grace — reconnecting")
+                AppLog.audioStream.log("Music mode: still no data after grace — reconnecting")
                 self.reconnectLast()
             }
         }
@@ -606,7 +607,7 @@ final class AudioStreamManager {
             #if os(iOS)
             endBackgroundRetryWindow()
             #endif
-            AppLog.audioStream.line("Connected: \(channels)ch @ \(Int(rate)) Hz")
+            AppLog.audioStream.log("Connected: \(channels)ch @ \(Int(rate)) Hz")
         case .bytesReceived(let total):
             bytesReceived = total
             lastActivityAt = Date()
@@ -644,13 +645,13 @@ final class AudioStreamManager {
             // If the system re-interrupts straight after a reload, don't
             // hot-loop — fall back to the backoff retry path.
             if let lastReloadAt, Date().timeIntervalSince(lastReloadAt) < 2 {
-                AppLog.audioStream.line("Reload requested again too soon (\(reason)) — backing off")
+                AppLog.audioStream.log("Reload requested again too soon (\(reason, privacy: .public)) — backing off")
                 state = .idle
                 scheduleRetry()
                 return
             }
             lastReloadAt = Date()
-            AppLog.audioStream.line("Reloading stream: \(reason)")
+            AppLog.audioStream.log("Reloading stream: \(reason, privacy: .public)")
             reconnectLast()
         case .authFailed(let reason):
             guard receiver != nil else { return }
@@ -667,11 +668,11 @@ final class AudioStreamManager {
             #endif
             state = .error(reason)
             releaseMusicMode()
-            AppLog.audioStream.line("Authentication failed: \(reason)")
+            AppLog.audioStream.log("Authentication failed: \(reason, privacy: .public)")
         case .lowLatencyEngaged:
             lowLatencyActive = true
             lowLatencyDegraded = false
-            AppLog.audioStream.line("Low-latency UDP engaged")
+            AppLog.audioStream.log("Low-latency UDP engaged")
         case .lowLatencyUnavailable:
             // UDP couldn't deliver — reconnect once over plain TCP. Keep the
             // saved preference intact (override only this session) so it
@@ -681,7 +682,7 @@ final class AudioStreamManager {
             lowLatencyActive = false
             lowLatencyDegraded = true
             lowLatencyOverride = false
-            AppLog.audioStream.line("Low-latency UDP unavailable — reconnecting over TCP")
+            AppLog.audioStream.log("Low-latency UDP unavailable — reconnecting over TCP")
             reconnectLast()
         case .disconnected(let reason):
             // Ignore events from a receiver we already tore down
@@ -692,10 +693,10 @@ final class AudioStreamManager {
             pendingArtwork = nil
             if let reason {
                 state = .error(reason)
-                AppLog.audioStream.line("Disconnected: \(reason)")
+                AppLog.audioStream.log("Disconnected: \(reason)")
             } else {
                 state = .idle
-                AppLog.audioStream.line("Disconnected: sender closed the stream")
+                AppLog.audioStream.log("Disconnected: sender closed the stream")
             }
             scheduleRetry()
         }
@@ -708,7 +709,7 @@ final class AudioStreamManager {
         retryTask?.cancel()
         let delay = retryDelay
         retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
-        AppLog.audioStream.line("Reconnecting in \(Int(delay)) s")
+        AppLog.audioStream.log("Reconnecting in \(Int(delay)) s")
         #if os(iOS)
         beginBackgroundRetryWindow()
         #endif
@@ -1173,7 +1174,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             do {
                 try AVAudioSession.sharedInstance().setIntendedSpatialExperience(experience)
             } catch {
-                AppLog.audioStream.line("Failed to update spatial audio experience: \(error)")
+                AppLog.audioStream.log("Failed to update spatial audio experience: \(error)")
             }
             #endif
         }
@@ -1204,7 +1205,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 // a TLS handshake stall) — NWConnection retries silently, so
                 // surface the underlying error instead of hanging on
                 // "Connecting…".
-                AppLog.audioStream.line("⚠️ Connection waiting: \(error.localizedDescription)")
+                AppLog.audioStream.log("⚠️ Connection waiting: \(error.localizedDescription)")
             case .failed(let error):
                 // A TLS failure before the header almost always means the
                 // PSK (token) didn't match — surface it as terminal so we
@@ -1244,7 +1245,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             switch rawType {
             case AVAudioSession.InterruptionType.began.rawValue:
-                AppLog.audioStream.line("Audio session interrupted (began)")
+                AppLog.audioStream.log("Audio session interrupted (began)")
                 if self.mode == .music {
                     // Pause the source instead of reloading — exclusive Music
                     // mode should yield gracefully to a call, not fight it.
@@ -1253,7 +1254,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                     self.requestReload("audio session interrupted")
                 }
             case AVAudioSession.InterruptionType.ended.rawValue:
-                AppLog.audioStream.line("Audio session interruption ended")
+                AppLog.audioStream.log("Audio session interruption ended")
                 if self.mode == .music {
                     let raw = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                     let shouldResume = AVAudioSession.InterruptionOptions(rawValue: raw).contains(.shouldResume)
@@ -1270,7 +1271,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             object: AVAudioSession.sharedInstance(),
             queue: nil
         ) { [weak self] _ in
-            AppLog.audioStream.line("Media services reset — rebuilding engine")
+            AppLog.audioStream.log("Media services reset — rebuilding engine")
             self?.sessionConfigured = false // session state was wiped
             // …and so was the category the coordinator thinks it applied.
             AudioSessionCoordinator.shared.forgetAppliedState()
@@ -1287,9 +1288,9 @@ final class AudioStreamReceiver: @unchecked Sendable {
             let reason = AVAudioSession.RouteChangeReason(rawValue: raw)
             let session = AVAudioSession.sharedInstance()
             let outs = session.currentRoute.outputs
-                .map { "\($0.portType.rawValue):\($0.portName)" }
-                .joined(separator: ",")
-            AppLog.audioStream.line("Route change (\(reason.map(String.init(describing:)) ?? "?")) → outputs=[\(outs)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint)")
+            let outTypes = outs.map(\.portType.rawValue).joined(separator: ",")
+            let outNames = outs.map(\.portName).joined(separator: ",")
+            AppLog.audioStream.log("Route change (\(reason.map(String.init(describing:)) ?? "?", privacy: .public)) → outputs=[\(outTypes, privacy: .public)] names=[\(outNames)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint)")
             guard let self, reason == .categoryChange else { return }
             // A category change we didn't cause — the broadcast pipeline's
             // mic capture (`BroadcastMicCapture`) shares this process's one
@@ -1305,7 +1306,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 do {
                     try session.setIntendedSpatialExperience(experience)
                 } catch {
-                    AppLog.audioStream.line("Failed to reclaim spatial audio experience after category change: \(error)")
+                    AppLog.audioStream.log("Failed to reclaim spatial audio experience after category change: \(error)")
                 }
             }
             #endif
@@ -1322,7 +1323,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             guard let self else { return }
             let raw = notification.userInfo?[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt ?? 0
             let type = AVAudioSession.SilenceSecondaryAudioHintType(rawValue: raw)
-            AppLog.audioStream.line("Silence-secondary-audio hint: \(type.map(String.init(describing:)) ?? "?")")
+            AppLog.audioStream.log("Silence-secondary-audio hint: \(type.map(String.init(describing:)) ?? "?", privacy: .public)")
             // Mixable (Speaker) only: this hint signals the People-channel
             // reroute, which doesn't apply to an exclusive Music-mode session.
             if self.mode == .speaker {
@@ -1447,7 +1448,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             pendingOffset += AudioStreamProtocol.headerSize
             header = parsed
             arrivalStats = AudioArrivalStats(sampleRate: parsed.sampleRate)
-            AppLog.audioStream.line("Cushion starts at \(Int(targetBufferSeconds * 1000)) ms")
+            AppLog.audioStream.log("Cushion starts at \(Int(targetBufferSeconds * 1000)) ms")
             guard setupAudio(header: parsed) else {
                 fail("Unsupported audio format (\(parsed.channelCount)ch @ \(parsed.sampleRate) Hz)")
                 return
@@ -1483,7 +1484,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 if let info = NowPlayingInfo.decode(payload) {
                     onEvent?(.nowPlaying(info))
                 } else {
-                    AppLog.audioStream.line("Skipping malformed now-playing frame (\(payload.count) bytes)")
+                    AppLog.audioStream.log("Skipping malformed now-playing frame (\(payload.count) bytes)")
                 }
             case .artwork:
                 // Chunked as of protocol v7: a 1-byte continuation flag then
@@ -1492,7 +1493,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 guard let final = payload.first else { break }
                 artworkAssembly.append(payload.dropFirst())
                 if artworkAssembly.count > AudioStreamProtocol.maxArtworkBytes {
-                    AppLog.audioStream.line("Artwork exceeded \(AudioStreamProtocol.maxArtworkBytes) bytes — discarding")
+                    AppLog.audioStream.log("Artwork exceeded \(AudioStreamProtocol.maxArtworkBytes) bytes — discarding")
                     artworkAssembly = Data()
                 } else if final == 1 {
                     onEvent?(.artwork(artworkAssembly))
@@ -1537,7 +1538,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         do {
             listener = try NWListener(using: AudioCrypto.dtlsUDPParameters(token: token))
         } catch {
-            AppLog.audioStream.line("Low-latency UDP listener failed to open: \(error.localizedDescription) — staying on TCP")
+            AppLog.audioStream.log("Low-latency UDP listener failed to open: \(error.localizedDescription) — staying on TCP")
             onEvent?(.lowLatencyUnavailable)
             return
         }
@@ -1547,14 +1548,14 @@ final class AudioStreamReceiver: @unchecked Sendable {
             switch state {
             case .ready:
                 guard let udpPort = listener.port?.rawValue else { return }
-                AppLog.audioStream.line("Low-latency UDP listening on port \(udpPort) — advertising to sender")
+                AppLog.audioStream.log("Low-latency UDP listening on port \(udpPort) — advertising to sender")
                 var payload = Data(count: 2)
                 payload[0] = UInt8(udpPort & 0xff)
                 payload[1] = UInt8(udpPort >> 8)
                 let hello = AudioStreamProtocol.encodeFrame(.udpHello, payload)
                 self.connection?.send(content: hello, completion: .contentProcessed { _ in })
             case .failed(let error):
-                AppLog.audioStream.line("Low-latency UDP listener failed: \(error.localizedDescription)")
+                AppLog.audioStream.log("Low-latency UDP listener failed: \(error.localizedDescription)")
             default:
                 break
             }
@@ -1566,7 +1567,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             self.udpConnection = connection
             connection.stateUpdateHandler = { state in
                 if case .failed(let error) = state {
-                    AppLog.audioStream.line("⚠️ UDP DTLS failed: \(error.localizedDescription)")
+                    AppLog.audioStream.log("⚠️ UDP DTLS failed: \(error.localizedDescription)")
                 }
             }
             connection.start(queue: self.queue)
@@ -1578,7 +1579,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // to plain TCP for this session and surface it loudly.
         queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, !self.stopped, self.udpFramesReceived == 0 else { return }
-            AppLog.audioStream.line("⚠️ No UDP PCM within 2 s — low-latency unavailable, falling back to TCP")
+            AppLog.audioStream.log("⚠️ No UDP PCM within 2 s — low-latency unavailable, falling back to TCP")
             self.udpListener?.cancel()
             self.udpListener = nil
             self.udpConnection?.cancel()
@@ -1596,14 +1597,14 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 // must still see the path as live.
                 self.udpFramesReceived += 1
                 if self.udpFramesReceived == 1 {
-                    AppLog.audioStream.line("First low-latency UDP datagram received (\(data.count) bytes) — engaging")
+                    AppLog.audioStream.log("First low-latency UDP datagram received (\(data.count) bytes) — engaging")
                     self.onEvent?(.lowLatencyEngaged)
                 }
                 self.totalBytes += data.count
                 self.processUDPDatagram(data)
             }
             if let error {
-                AppLog.audioStream.line("⚠️ UDP receive error: \(String(describing: error))")
+                AppLog.audioStream.log("⚠️ UDP receive error: \(String(describing: error))")
             } else {
                 self.udpReceiveLoop(connection)
             }
@@ -1756,19 +1757,19 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // interruption-ended notification rebuilds us and re-activates then.
         // (Speaker mode is mixable, so this never applies.)
         if mode == .music, session.isOtherAudioPlaying {
-            AppLog.audioStream.line("Music mode: other audio is playing — yielding, not reacquiring the session")
+            AppLog.audioStream.log("Music mode: other audio is playing — yielding, not reacquiring the session")
         } else {
             do {
                 try session.setActive(true)
             } catch {
-                AppLog.audioStream.line("Failed to activate audio session: \(error)")
+                AppLog.audioStream.log("Failed to activate audio session: \(error)")
                 return false
             }
         }
         let outs = session.currentRoute.outputs
-            .map { "\($0.portType.rawValue):\($0.portName)" }
-            .joined(separator: ",")
-        AppLog.audioStream.line("Session activated — outputs=[\(outs)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint) otherAudio=\(session.isOtherAudioPlaying)")
+        let outTypes = outs.map(\.portType.rawValue).joined(separator: ",")
+        let outNames = outs.map(\.portName).joined(separator: ",")
+        AppLog.audioStream.log("Session activated — outputs=[\(outTypes, privacy: .public)] names=[\(outNames)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint) otherAudio=\(session.isOtherAudioPlaying)")
         #endif
 
         // The wire format is interleaved int24, but AVAudioEngine requires
@@ -1796,7 +1797,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         do {
             try engine.start()
         } catch {
-            AppLog.audioStream.line("Failed to start audio engine: \(error)")
+            AppLog.audioStream.log("Failed to start audio engine: \(error)")
             return false
         }
 
@@ -1811,12 +1812,12 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // what the `floor` in the health line has to be read against.
         let presentationMs = Int(engine.outputNode.presentationLatency * 1000)
         #if canImport(UIKit)
-        AppLog.audioStream.line(
-            "Output latency \(Int(session.outputLatency * 1000)) ms, IO buffer "
-            + "\(Int(session.ioBufferDuration * 1000)) ms, output node \(presentationMs) ms"
-        )
+        AppLog.audioStream.log("""
+            Output latency \(Int(session.outputLatency * 1000)) ms, IO buffer \
+            \(Int(session.ioBufferDuration * 1000)) ms, output node \(presentationMs) ms
+            """)
         #else
-        AppLog.audioStream.line("Output node latency \(presentationMs) ms")
+        AppLog.audioStream.log("Output node latency \(presentationMs) ms")
         #endif
         // Fresh node, fresh cushion. The target keeps any growth an earlier
         // underrun earned — a link that needed 140 ms before needs it now.
@@ -1840,7 +1841,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             queue: nil
         ) { [weak self] _ in
             guard let self else { return }
-            AppLog.audioStream.line("Audio engine configuration changed")
+            AppLog.audioStream.log("Audio engine configuration changed")
             if self.mode == .music {
                 // Keep the exclusive session; just rebuild the engine graph.
                 self.scheduleAudioRebuild(delay: .milliseconds(100))
@@ -1860,11 +1861,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
             guard let self, !self.stopped, let header = self.header else { return }
             self.teardownAudio()
             if self.setupAudio(header: header) {
-                AppLog.audioStream.line("Audio engine rebuilt")
+                AppLog.audioStream.log("Audio engine rebuilt")
             } else if attempt < 5 {
                 self.scheduleAudioRebuild(delay: .milliseconds(500 * (attempt + 1)), attempt: attempt + 1)
             } else {
-                AppLog.audioStream.line("Audio engine rebuild failed after \(attempt + 1) attempts")
+                AppLog.audioStream.log("Audio engine rebuild failed after \(attempt + 1) attempts")
             }
         }
     }
@@ -2002,7 +2003,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         guard sessionFrames >= Int(AudioLeadMemory.minimumSessionSeconds * wireSampleRate) else { return }
         let lead = max(baseTargetBufferSeconds, sessionDemandSeconds)
         AudioLeadMemory.remember(lead, host: hostname, port: port, lowLatency: lowLatency)
-        AppLog.audioStream.line("Remembering a \(Int(lead * 1000)) ms lead for the next session")
+        AppLog.audioStream.log("Remembering a \(Int(lead * 1000)) ms lead for the next session")
     }
 
     /// Periodic one-liner so a real-device session can be read back from the
@@ -2062,16 +2063,17 @@ final class AudioStreamReceiver: @unchecked Sendable {
             .joined(separator: "/")
         let transport = udpFramesReceived > 0 ? "" : "maxread \(biggestRead / 1024) KB · "
         let restarts = net.discontinuities > 0 ? " restarts=\(net.discontinuities)" : ""
-        AppLog.audioStream.line(
-            "Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, "
-            + "target \(Int(targetBufferSeconds * 1000)) ms · "
-            + "floor \(ms(Double(floor))) ms · "
-            + "in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · "
-            + "late p50/95/99/max \(delays) ms · "
-            + "holes=\(net.holes) (\(ms(Double(net.holeFrames))) ms) ooo=\(net.late) resumes=\(net.resumes)\(restarts) · "
-            + transport
-            + "underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)"
-        )
+        AppLog.audioStream.log("""
+            Audio buffer: \(ms(Double(depth))) ms now, \(ms(depthAverage)) ms avg, \
+            target \(Int(targetBufferSeconds * 1000)) ms · \
+            floor \(ms(Double(floor))) ms · \
+            in \(Int(inputRate)) Hz (nominal \(Int(wireSampleRate))) maxgap \(maxGapMs) ms · \
+            late p50/95/99/max \(delays, privacy: .public) ms · \
+            holes=\(net.holes) (\(ms(Double(net.holeFrames))) ms) ooo=\(net.late) \
+            resumes=\(net.resumes)\(restarts, privacy: .public) · \
+            \(transport, privacy: .public)\
+            underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)
+            """)
     }
 
     private nonisolated func schedule(_ payload: Data) {
@@ -2111,7 +2113,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // 200 ms threshold fired on ordinary stalls the cushion had already
         // absorbed, and each firing added a whole target of silence on top.
         if playing, gapNanos > Self.sourceSuppressionGapNanos {
-            AppLog.audioStream.line(
+            AppLog.audioStream.log(
                 "Audio resumed after a \(gapNanos / 1_000_000) ms source gap — re-priming"
             )
             rebuildCushion()
@@ -2146,11 +2148,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
                     maxTargetBufferSeconds,
                     max(targetBufferSeconds + Self.bufferGrowthFloor, targetBufferSeconds * Self.bufferGrowthFactor)
                 ))
-                AppLog.audioStream.line(
+                AppLog.audioStream.log(
                     "⚠️ Audio underrun #\(underrunCount) — riding out, target now \(Int(targetBufferSeconds * 1000)) ms"
                 )
             } else if nowNanos &- starvedSinceNanos > Self.starvationGraceNanos {
-                AppLog.audioStream.line(
+                AppLog.audioStream.log(
                     "⚠️ Queue still empty after \((nowNanos &- starvedSinceNanos) / 1_000_000) ms — re-priming"
                 )
                 rebuildCushion()
@@ -2163,7 +2165,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         if playing, depth > ceilingFrames {
             if !trimming {
                 trimming = true
-                AppLog.audioStream.line(
+                AppLog.audioStream.log(
                     "⚠️ Audio queue at \(Int(Double(depth) / wireSampleRate * 1000)) ms — trimming to target"
                 )
             }

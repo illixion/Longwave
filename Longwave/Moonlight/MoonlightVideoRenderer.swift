@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 import AVFoundation
 @preconcurrency import MoonlightCommonC
 
@@ -142,17 +142,17 @@ class MoonlightVideoRenderer: @unchecked Sendable {
             codecName = "H.264"
         }
         let is10Bit = (videoFormat & Int32(VIDEO_FORMAT_MASK_10BIT)) != 0
-        AppLog.moonlightVideo.line("Setup: \(width)x\(height)@\(fps) format=0x\(String(videoFormat, radix: 16)) (\(codecName)\(is10Bit ? " 10-bit" : ""))")
+        AppLog.moonlightVideo.log("Setup: \(width)x\(height)@\(fps) format=0x\(String(videoFormat, radix: 16), privacy: .public) (\(codecName, privacy: .public)\(is10Bit ? " 10-bit" : "", privacy: .public))")
 
         return 0
     }
 
     nonisolated func start() {
-        AppLog.moonlightVideo.line("Start")
+        AppLog.moonlightVideo.log("Start")
     }
 
     nonisolated func stop() {
-        AppLog.moonlightVideo.line("Stop")
+        AppLog.moonlightVideo.log("Stop")
     }
 
     nonisolated func cleanup() {
@@ -173,7 +173,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
     nonisolated func setHdrMode(_ enabled: Bool) {
         let wasHDR = isHDRContent
         isHDRContent = enabled
-        AppLog.moonlightVideo.line("HDR mode: \(enabled)")
+        AppLog.moonlightVideo.log("HDR mode: \(enabled)")
 
         if enabled {
             if var metadata = library.hdrMetadata() {
@@ -202,7 +202,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         let hdrActive = du.pointee.hdrActive
         if hdrActive != isHDRContent {
             isHDRContent = hdrActive
-            AppLog.moonlightVideo.line("HDR state changed: \(hdrActive ? "active" : "inactive")")
+            AppLog.moonlightVideo.log("HDR state changed: \(hdrActive ? "active" : "inactive", privacy: .public)")
         }
 
         if (videoFormat & VIDEO_FORMAT_MASK_AV1) != 0 {
@@ -287,7 +287,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
 
         guard !pictureData.isEmpty, let fmtDesc = formatDescription else {
             if frameCount == 0 {
-                AppLog.moonlightVideo.line("No format description yet, requesting IDR")
+                AppLog.moonlightVideo.log("No format description yet, requesting IDR")
             }
             return DR_NEED_IDR
         }
@@ -351,7 +351,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
                 }
             } else if formatDescription == nil {
                 if frameCount == 0 {
-                    AppLog.moonlightVideo.line("AV1: No sequence header found, requesting IDR")
+                    AppLog.moonlightVideo.log("AV1: No sequence header found, requesting IDR")
                 }
                 return DR_NEED_IDR
             }
@@ -382,7 +382,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         guard let layer = displayLayer else { return DR_NEED_IDR }
 
         if layer.status == .failed {
-            AppLog.moonlightVideo.line("Display layer failed: \(layer.error?.localizedDescription ?? "unknown")")
+            AppLog.moonlightVideo.log("Display layer failed: \(layer.error?.localizedDescription ?? "unknown")")
             layer.flush()
             formatDescription = nil
             return DR_NEED_IDR
@@ -392,9 +392,9 @@ class MoonlightVideoRenderer: @unchecked Sendable {
 
         frameCount += 1
         if frameCount == 1 {
-            AppLog.moonlightVideo.line("First frame enqueued!")
+            AppLog.moonlightVideo.log("First frame enqueued!")
         } else if frameCount % 300 == 0 {
-            AppLog.moonlightVideo.line("Frame \(frameCount) enqueued")
+            AppLog.moonlightVideo.log("Frame \(frameCount) enqueued")
         }
 
         return DR_OK
@@ -473,9 +473,9 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         if status == noErr, let desc = newFmtDesc {
             formatDescription = desc
             let dimensions = CMVideoFormatDescriptionGetDimensions(desc)
-            AppLog.moonlightVideo.line("Format description created: \(dimensions.width)x\(dimensions.height)\(masteringDisplayColorVolume != nil ? " (HDR)" : "")")
+            AppLog.moonlightVideo.log("Format description created: \(dimensions.width)x\(dimensions.height)\(masteringDisplayColorVolume != nil ? " (HDR)" : "", privacy: .public)")
         } else {
-            AppLog.moonlightVideo.line("Failed to create format description: OSStatus \(status)")
+            AppLog.moonlightVideo.log("Failed to create format description: OSStatus \(status)")
         }
     }
 
@@ -574,10 +574,10 @@ class MoonlightVideoRenderer: @unchecked Sendable {
 
         if status == noErr, let desc = formatDesc {
             let dims = CMVideoFormatDescriptionGetDimensions(desc)
-            AppLog.moonlightVideo.line("AV1 format description: \(dims.width)x\(dims.height), \(sequenceHeader.bitDepth)-bit\(masteringDisplayColorVolume != nil ? " (HDR)" : "")")
+            AppLog.moonlightVideo.log("AV1 format description: \(dims.width)x\(dims.height), \(sequenceHeader.bitDepth)-bit\(masteringDisplayColorVolume != nil ? " (HDR)" : "", privacy: .public)")
             return desc
         } else {
-            AppLog.moonlightVideo.line("AV1 format description failed: OSStatus \(status)")
+            AppLog.moonlightVideo.log("AV1 format description failed: OSStatus \(status)")
             return nil
         }
     }
@@ -667,7 +667,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
                 let payloadData = data[obuPayloadStart..<obuEnd]
 
                 if let seqHeader = parseSequenceHeaderPayload(Data(payloadData)) {
-                    AppLog.moonlightVideo.line("AV1 sequence header: \(seqHeader.frameWidth)x\(seqHeader.frameHeight), \(seqHeader.bitDepth)-bit, profile=\(seqHeader.seqProfile)")
+                    AppLog.moonlightVideo.log("AV1 sequence header: \(seqHeader.frameWidth)x\(seqHeader.frameHeight), \(seqHeader.bitDepth)-bit, profile=\(seqHeader.seqProfile)")
                     return (seqHeader, Data(rawOBU))
                 }
             }
@@ -909,7 +909,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         )
 
         guard status == noErr, let sb = sampleBuffer else {
-            AppLog.moonlightVideo.line("Failed to create sample buffer: OSStatus \(status)")
+            AppLog.moonlightVideo.log("Failed to create sample buffer: OSStatus \(status)")
             return nil
         }
 
@@ -980,7 +980,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         appendBigEndianUInt16(&cll, maxFALL)
         contentLightLevelInfo = cll
 
-        AppLog.moonlightVideo.line("HDR metadata: maxCLL=\(maxCLL), maxFALL=\(maxFALL), maxLum=\(maxLum)")
+        AppLog.moonlightVideo.log("HDR metadata: maxCLL=\(maxCLL), maxFALL=\(maxFALL), maxLum=\(maxLum)")
     }
 
     private nonisolated func appendBigEndianUInt16(_ data: inout Data, _ value: UInt16) {

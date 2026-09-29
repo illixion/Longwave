@@ -1,3 +1,4 @@
+import DebugTrace
 import SwiftUI
 
 /// The main ("Connections") window is value-typed with a single constant
@@ -87,10 +88,10 @@ final class WindowSessionRegistry {
     func ensureMainWindowVisible() {
         guard mainWindowCount == 0 else { return }
         guard let openWindow else {
-            AppLog.app.line("ensureMainWindowVisible: no openWindow action captured")
+            AppLog.app.log("ensureMainWindowVisible: no openWindow action captured")
             return
         }
-        AppLog.app.line("ensureMainWindowVisible: summoning main window")
+        AppLog.app.log("ensureMainWindowVisible: summoning main window")
         openWindow(id: "main", value: MainWindowID.shared)
     }
 
@@ -138,7 +139,7 @@ final class WindowSessionRegistry {
                 waitedMS += Self.mainWindowPollMS
             }
             if mainWindowCount == 0 {
-                AppLog.app.line("closeAfterSurfacingMain: main window never appeared; closing anyway")
+                AppLog.app.log("closeAfterSurfacingMain: main window never appeared; closing anyway")
             }
             close()
         }

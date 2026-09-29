@@ -1,3 +1,4 @@
+import DebugTrace
 import SwiftUI
 
 /// iOS app delegate. Same job as the visionOS `AppDelegate` — surface the Local
@@ -22,6 +23,6 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate {
     /// permission dialog. The value is discarded — the read is the trigger.
     private func triggerLocalNetworkAccessPrompt() {
         let hostName = ProcessInfo.processInfo.hostName
-        AppLog.app.line("Local network access prompt triggered (host: \(hostName))")
+        AppLog.app.log("Local network access prompt triggered (host: \(hostName))")
     }
 }

@@ -1,6 +1,6 @@
 #if MOONLIGHT_ENABLED
+import DebugTrace
 import Foundation
-import os
 import AVFoundation
 import Opus
 @preconcurrency import MoonlightCommonC
@@ -55,7 +55,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         }
 
         guard error == OPUS_OK, decoder != nil else {
-            AppLog.moonlightAudio.line("Failed to create Opus decoder: \(error)")
+            AppLog.moonlightAudio.log("Failed to create Opus decoder: \(error)")
             return -1
         }
 
@@ -77,7 +77,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
             channels: AVAudioChannelCount(channelCount),
             interleaved: true
         ) else {
-            AppLog.moonlightAudio.line("Failed to create audio format")
+            AppLog.moonlightAudio.log("Failed to create audio format")
             return -1
         }
 
@@ -97,7 +97,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
             try audioEngine?.start()
             playerNode?.play()
         } catch {
-            AppLog.moonlightAudio.line("Failed to start audio engine: \(error)")
+            AppLog.moonlightAudio.log("Failed to start audio engine: \(error)")
         }
     }
 
@@ -140,7 +140,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
             #endif
             try session.setActive(true)
         } catch {
-            AppLog.moonlightAudio.line("Failed to configure audio session: \(error)")
+            AppLog.moonlightAudio.log("Failed to configure audio session: \(error)")
         }
     }
     #endif
@@ -157,7 +157,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
                 enabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
             )
         } catch {
-            AppLog.moonlightAudio.line("Failed to update spatial audio experience: \(error)")
+            AppLog.moonlightAudio.log("Failed to update spatial audio experience: \(error)")
         }
         #endif
     }

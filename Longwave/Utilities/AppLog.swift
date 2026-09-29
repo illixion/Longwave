@@ -1,40 +1,46 @@
+import DebugTrace
 import Foundation
-import RAVEConsole
-import os
 
-/// Central os.Logger instances, one category per subsystem component.
-/// Logs are visible in Console.app/Xcode and surfaced in-app by the
-/// Console tab (`LogStore` polls OSLogStore for this subsystem).
-enum AppLog {
+/// Central loggers, one category per subsystem component.
+///
+/// `DebugLogger` keeps every line (debug included) in DebugTrace's in-memory
+/// ring, which the Console tab tails and debug traces export, and forwards it
+/// to the unified log with non-public values withheld. Privacy is per
+/// interpolation, os_log style: numbers and bools are public, everything else
+/// is private unless marked. Mark code-defined values `.public`; leave
+/// anything from the user, the network or the filesystem private (use
+/// `.private(mask: .hash)` for a host or id worth matching across lines), and
+/// mark credentials `.sensitive`.
+///
+/// `nonisolated` because the loggers are `Sendable` and are called from the
+/// audio, video and network queues as much as from the main actor.
+nonisolated enum AppLog {
     static let subsystem = Bundle.main.bundleIdentifier ?? "pro.longwave"
 
-    static let audioStream = Logger(subsystem: subsystem, category: "AudioStream")
-    static let broadcast = Logger(subsystem: subsystem, category: "Broadcast")
-    static let cryptoManager = Logger(subsystem: subsystem, category: "CryptoManager")
-    static let gamepadManager = Logger(subsystem: subsystem, category: "GamepadManager")
-    static let moonlightAudio = Logger(subsystem: subsystem, category: "MoonlightAudio")
-    static let moonlightBridge = Logger(subsystem: subsystem, category: "MoonlightBridge")
-    static let moonlightStream = Logger(subsystem: subsystem, category: "MoonlightStream")
-    static let moonlightVideo = Logger(subsystem: subsystem, category: "MoonlightVideo")
-    static let nvHTTPClient = Logger(subsystem: subsystem, category: "NvHTTPClient")
-    static let app = Logger(subsystem: subsystem, category: "App")
-}
+    static let audioStream = DebugLogger(subsystem: subsystem, category: "AudioStream")
+    static let broadcast = DebugLogger(subsystem: subsystem, category: "Broadcast")
+    static let cryptoManager = DebugLogger(subsystem: subsystem, category: "CryptoManager")
+    static let gamepadManager = DebugLogger(subsystem: subsystem, category: "GamepadManager")
+    static let moonlightAudio = DebugLogger(subsystem: subsystem, category: "MoonlightAudio")
+    static let moonlightBridge = DebugLogger(subsystem: subsystem, category: "MoonlightBridge")
+    static let moonlightStream = DebugLogger(subsystem: subsystem, category: "MoonlightStream")
+    static let moonlightVideo = DebugLogger(subsystem: subsystem, category: "MoonlightVideo")
+    static let nvHTTPClient = DebugLogger(subsystem: subsystem, category: "NvHTTPClient")
+    static let app = DebugLogger(subsystem: subsystem, category: "App")
 
-extension Logger {
-    /// Log a pre-formatted message at default level, visible (non-redacted)
-    /// in OSLogStore. Only use for messages with no sensitive content.
-    func line(_ message: String) {
-        self.log("\(message, privacy: .public)")
+    /// Every subsystem the app logs under: the bundle id (`AppLog`, the
+    /// broadcast core), the fixed `pro.longwave` most feature loggers use, and
+    /// on macOS the companion code built into the app.
+    static var subsystems: [String] {
+        var all = [subsystem, "pro.longwave"]
+        #if os(macOS)
+        all.append("pro.longwave.companion")
+        #endif
+        return all.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
     }
 
-    /// A verbose line that should reach the in-app console when one is open and
-    /// cost nothing when it is not.
-    ///
-    /// The unified log keeps `.debug` in a memory ring buffer only — OSLogStore
-    /// never returns it — so a plain `.debug` call is invisible in the console
-    /// no matter how the level filter is set. Promoting to `.info` while a
-    /// viewer is registered is the way around that.
-    func detail(_ message: String) {
-        self.log(level: RAVELogStore.effectiveDebugLevel, "\(message, privacy: .public)")
+    /// Call once at launch, before the first line worth keeping.
+    static func configureDebugTrace() {
+        DebugTrace.configure(.init(subsystems: subsystems))
     }
 }

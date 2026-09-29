@@ -1,6 +1,6 @@
+import DebugTrace
 import Foundation
 import Network
-import os
 
 /// Client for the companion text-injection channel. Connects to the macOS
 /// companion over TLS-1.2-PSK (`CompanionInjectCrypto`) and sends only literal
@@ -30,7 +30,7 @@ final class CompanionInjectClient: @unchecked Sendable {
     private nonisolated(unsafe) var connection: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     private nonisolated(unsafe) var closed = false
-    private let log = Logger(subsystem: "pro.longwave", category: "CompanionInject")
+    private let log = DebugLogger(subsystem: "pro.longwave", category: "CompanionInject")
 
     init(config: Config) {
         self.config = config

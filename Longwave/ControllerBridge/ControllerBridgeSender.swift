@@ -148,11 +148,10 @@ final class ControllerBridgeSender {
 
     /// Spatial controllers (PSVR2 Sense etc.) — their own discovery, their own
     /// ARKit provider, per-hand rather than adopted-singular. See the class doc.
-    /// RAVEInput hands over finished strings (controller names, ARKit error
-    /// text), so the whole line is private: there is no value to split out.
+    /// RAVEInput's messages carry their own privacy: the controller name and
+    /// ARKit error text private, counts and error codes public.
     let spatialSource = RAVESpatialAccessorySource(log: { message in
-        DebugLogger(subsystem: "pro.longwave", category: "SpatialAccessory")
-            .notice("\(message, privacy: .private)")
+        DebugLogger(subsystem: "pro.longwave", category: "SpatialAccessory").notice(message)
     })
 
     /// Quest Touch controllers from a Quest on the desk, while the user has them on.
@@ -820,9 +819,10 @@ final class ControllerBridgeSender {
     private func startQuestSource() {
         guard questSource == nil else { return }
         let logger = DebugLogger(subsystem: "pro.longwave", category: "QuestBridge")
-        // Finished strings that carry the Quest's address and advertised name.
+        // The Quest's address (hashed) and advertised name stay private;
+        // calibration numbers are public.
         let source = RAVEQuestBridgeSource(log: { message in
-            logger.notice("\(message, privacy: .private)")
+            logger.notice(message)
         })
         do {
             try source.start()

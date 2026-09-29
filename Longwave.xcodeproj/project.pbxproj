@@ -53,11 +53,15 @@
 		DD101000000000000000002B /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = DD101000000000000000002A /* RAVEMedia */; };
 		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
 		AA0D00000000000000000011 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000010 /* DebugTrace */; };
+		581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 49DA0DAB242221098318CF98 /* DebugTraceServer */; };
 		AA0D00000000000000000013 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000012 /* DebugTrace */; };
+		E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = F2152CE5902DF25125171222 /* DebugTraceServer */; };
 		AA0D00000000000000000015 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000014 /* DebugTrace */; };
+		FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 5AA06485057FFDC64EA7AB06 /* DebugTraceServer */; };
 		AA0E00000000000000000001 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA0E00000000000000000002 /* RAVEConsole */; };
 		AA0D00000000000000000017 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000016 /* DebugTrace */; };
 		AA0D00000000000000000019 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000018 /* DebugTrace */; };
+		F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 2400FFE83ED88B2946B909F6 /* DebugTraceServer */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -278,6 +282,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000011 /* DebugTrace in Frameworks */,
+				581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */,
 				1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */,
 				1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */,
 				1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */,
@@ -304,6 +309,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000015 /* DebugTrace in Frameworks */,
+				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,
 				AA0E00000000000000000001 /* RAVEConsole in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -329,6 +335,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000019 /* DebugTrace in Frameworks */,
+				F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */,
 				DD1010000000000000000021 /* RoyalVNCKit in Frameworks */,
 				1D8097C30000000000000002 /* MoonlightCommonC in Frameworks */,
 				1D8097C30000000000000004 /* Opus in Frameworks */,
@@ -351,6 +358,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000013 /* DebugTrace in Frameworks */,
+				E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */,
 				5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */,
 				113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */,
 				A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */,
@@ -482,6 +490,7 @@
 			name = Longwave;
 			packageProductDependencies = (
 				AA0D00000000000000000010 /* DebugTrace */,
+				49DA0DAB242221098318CF98 /* DebugTraceServer */,
 				1DC83C3C2F74587300BF0482 /* RoyalVNCKit */,
 				1D8097B12F7FCBED00C67700 /* MoonlightCommonC */,
 				1D8097B42F7FCBFA00C67700 /* Opus */,
@@ -527,6 +536,7 @@
 			name = LongwaveMac;
 			packageProductDependencies = (
 				AA0D00000000000000000012 /* DebugTrace */,
+				F2152CE5902DF25125171222 /* DebugTraceServer */,
 				FEC92747F5953D917428BFA0 /* RoyalVNCKit */,
 				3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */,
 				BCF95F097C7D2DFE3EF72400 /* Opus */,
@@ -562,6 +572,7 @@
 			name = LongwaveCompanion;
 			packageProductDependencies = (
 				AA0D00000000000000000014 /* DebugTrace */,
+				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,
 				AA0E00000000000000000002 /* RAVEConsole */,
 			);
 			productName = LongwaveCompanion;
@@ -634,6 +645,7 @@
 			name = LongwaveiOS;
 			packageProductDependencies = (
 				AA0D00000000000000000018 /* DebugTrace */,
+				2400FFE83ED88B2946B909F6 /* DebugTraceServer */,
 				DD1010000000000000000011 /* RoyalVNCKit */,
 				1D8097C30000000000000001 /* MoonlightCommonC */,
 				1D8097C30000000000000003 /* Opus */,
@@ -1814,10 +1826,20 @@
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
 			productName = DebugTrace;
 		};
+		49DA0DAB242221098318CF98 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
+		};
 		AA0D00000000000000000012 /* DebugTrace */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
 			productName = DebugTrace;
+		};
+		F2152CE5902DF25125171222 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
 		};
 		AA0E00000000000000000002 /* RAVEConsole */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1829,6 +1851,11 @@
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
 			productName = DebugTrace;
 		};
+		5AA06485057FFDC64EA7AB06 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
+		};
 		AA0D00000000000000000016 /* DebugTrace */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
@@ -1838,6 +1865,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
 			productName = DebugTrace;
+		};
+		2400FFE83ED88B2946B909F6 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

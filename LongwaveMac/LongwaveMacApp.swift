@@ -1,6 +1,7 @@
 import RAVEConsole
 import SwiftUI
 import SwiftData
+import DebugTraceServer
 import AppKit
 
 /// macOS app entry. The Mac already ships an SSH client, so this target keeps
@@ -21,6 +22,7 @@ struct LongwaveMacApp: App {
 
     init() {
         AppLog.configureDebugTrace()
+        DebugTraceServer.startIfRequested()
     }
 
     var body: some Scene {

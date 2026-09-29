@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import DebugTraceServer
 #if FOVEATED_ENABLED && !targetEnvironment(simulator)
 import FoveatedStreaming
 #endif
@@ -36,6 +37,7 @@ struct LongwaveApp: App {
 
     init() {
         AppLog.configureDebugTrace()
+        DebugTraceServer.startIfRequested()
     }
 
     var body: some Scene {

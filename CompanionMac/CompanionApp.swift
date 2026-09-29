@@ -1,4 +1,5 @@
 import DebugTrace
+import DebugTraceServer
 import SwiftUI
 import AppKit
 
@@ -17,6 +18,7 @@ struct CompanionApp: App {
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
             .compactMap { $0 }
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }))
+        DebugTraceServer.startIfRequested()
         // Surface the Local Network permission prompt at launch rather than
         // waiting for the first stream — reading hostName performs a
         // local-network lookup, which is enough to trigger the dialog.

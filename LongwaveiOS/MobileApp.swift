@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import DebugTraceServer
 
 /// iPhone / iPad entry point.
 ///
@@ -44,6 +45,7 @@ struct LongwaveMobileApp: App {
 
     init() {
         AppLog.configureDebugTrace()
+        DebugTraceServer.startIfRequested()
     }
 
     var body: some Scene {

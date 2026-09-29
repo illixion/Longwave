@@ -63,6 +63,11 @@ struct CompanionMenuView: View {
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 .help("Access token, broadcast server (OBS), SSH keys, and keyboard control.")
+
+                Button("Show Console…") {
+                    CompanionConsoleWindow.shared.show()
+                }
+                .help("The companion's own log: streaming, injection, SSH and broadcast activity. Private values show only here, never in exports.")
             }
 
             Button("Quit") {

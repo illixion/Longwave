@@ -216,6 +216,28 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Flags for a session inside the macOS agent sandbox (LongwaveMac's local
+    /// Projects), where the separate, resettable account is the security
+    /// boundary: every CLI starts with its own prompts and sandbox fully off.
+    /// Codex's Seatbelt sandbox would also break xcodebuild and the simulators.
+    /// Never used for SSH hosts — those are the user's real accounts, which keep
+    /// `defaultFlags`. `.custom` stays verbatim, as above.
+    var sandboxFlags: [String] {
+        switch self {
+        case .claude: ["--dangerously-skip-permissions"]
+        case .codex: ["--dangerously-bypass-approvals-and-sandbox"]
+        case .copilot: ["--allow-all"]
+        case .custom: []
+        }
+    }
+
+    /// Launch command line for the macOS agent sandbox (binary + `sandboxFlags`).
+    var sandboxLaunchCommand: String {
+        ([defaultCommand] + sandboxFlags)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     /// Full built-in launch command line (binary + `defaultFlags`).
     var defaultLaunchCommand: String {
         ([defaultCommand] + defaultFlags)

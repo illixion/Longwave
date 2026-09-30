@@ -54,6 +54,23 @@ final class SavedConnectionEnvTests: XCTestCase {
 
     // MARK: - Per-agent command / env-name resolution
 
+    /// The macOS agent sandbox starts every built-in CLI with its own permission
+    /// prompts and sandbox off; SSH hosts (the user's real accounts) must not.
+    func testSandboxLaunchCommandsBypassPermissionsOnlyForSandbox() {
+        XCTAssertEqual(SSHAgent.claude.sandboxLaunchCommand, "claude --dangerously-skip-permissions")
+        XCTAssertEqual(SSHAgent.codex.sandboxLaunchCommand, "codex --dangerously-bypass-approvals-and-sandbox")
+        XCTAssertEqual(SSHAgent.copilot.sandboxLaunchCommand, "copilot --allow-all")
+        XCTAssertTrue(SSHAgent.custom.sandboxFlags.isEmpty)
+
+        let remote = SavedConnection(hostname: "host", port: 22, connectionType: .ssh)
+        for agent in SSHAgent.allCases {
+            let cmd = remote.effectiveCommand(for: agent)
+            XCTAssertFalse(cmd.contains("--dangerously-skip-permissions"), cmd)
+            XCTAssertFalse(cmd.contains("--dangerously-bypass-approvals-and-sandbox"), cmd)
+            XCTAssertFalse(cmd.contains("--allow-all"), cmd)
+        }
+    }
+
     func testAgentDefaultCommandsAndEnvNames() {
         let c = SavedConnection(hostname: "host", port: 22, connectionType: .ssh)
         XCTAssertEqual(c.effectiveCommand(for: .claude),

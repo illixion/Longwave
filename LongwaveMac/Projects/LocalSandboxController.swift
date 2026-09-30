@@ -436,7 +436,10 @@ final class LocalSandboxController {
             let slug = agent.sessionKey.isEmpty ? base : AgentSessionCommands.slug("\(base)-\(agent.sessionKey)")
             let launch = AgentSessionCommands.agentLaunch(
                 tmuxSession: slug, folder: folder,
-                clientCommand: connection.effectiveCommand(for: agent),
+                // The sandbox account is the boundary, so built-in agents start
+                // with their own permission prompts off; custom stays verbatim.
+                clientCommand: agent == .custom ? connection.effectiveCommand(for: agent)
+                                                : agent.sandboxLaunchCommand,
                 environment: environment,
                 setup: connection.sessionSetup(for: agent, environment: environment))
             let out = try await ssh(launch.create, stdin: launch.payload)

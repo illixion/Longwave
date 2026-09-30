@@ -151,7 +151,9 @@ enum AgentSchedule {
         case .codex:
             return "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never \(prompt)"
         case .copilot:
-            return "copilot -p \(prompt) --allow-all-tools --allow-all-paths"
+            // --allow-all = tools + paths + URLs (--allow-all-tools/-paths left
+            // URL fetches prompting, which a headless run can't answer).
+            return "copilot -p \(prompt) --allow-all"
         case .custom:
             return "zsh -c \(prompt)"
         }

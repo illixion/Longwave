@@ -155,6 +155,7 @@ Run as `sudo -n /usr/local/libexec/longwave-sandbox <verb>`:
 | `stop` | `launchctl bootout user/<uid>`, which ends SSH and the GUI session, then `pkill -9 -u`. |
 | `reset` | stop, delete the home, clone the golden copy back (or create a fresh home if there's no golden copy yet), re-apply authorized keys, clear per-user temp dirs, `/private/tmp`, `/Users/Shared` and cron/at. |
 | `snapshot-golden` | stop, then save the current home as the golden copy. Keys are left out; they come from the overlay. |
+| `configure-desktop` | needs the agent's GUI session; reads the agent's password on **stdin** (the app pipes it from the owner's keychain). Turns off the screen lock ("require password after screen saver begins or display is turned off" → never; a VNC lock screen can't take a pasted password), sets the idle screen saver to never, and sets a plain black wallpaper (the default aerial one animates on the lock screen and as the linked screen saver). These live in the home, so run it before `snapshot-golden`. |
 | `authorize-key '<line>'` | add one `ssh-ed25519` or `ecdsa-sha2-nistp256` public key (checked with `ssh-keygen -l`, no options prefix allowed), e.g. the headset's Secure Enclave key. The key survives resets. |
 | `firewall on\|off\|status` | opt-in: load or flush the anchor and take or release the pf enable token. Only an explicit `on` persists across reboots (through the daemon). Disables iCloud Private Relay while loaded. |
 

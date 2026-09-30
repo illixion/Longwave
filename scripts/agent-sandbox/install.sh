@@ -247,6 +247,7 @@ cat <<EOF
 Installed. Next steps:
   1. In LongwaveMac, open Projects > Sandbox desktop and complete macOS first-run
      setup for "$AGENT_REALNAME" yourself, then press "Setup complete" (this runs
-     'longwave-sandbox snapshot-golden', so every reset restores a set-up home).
+     'longwave-sandbox configure-desktop' — no screen lock, no screen saver, black
+     wallpaper — then 'snapshot-golden', so every reset restores a set-up home).
   2. Check status any time:  sudo -n $LIBEXEC/longwave-sandbox status
 EOF

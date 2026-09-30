@@ -285,6 +285,54 @@ cmd_snapshot_golden() {
     echo "snapshot OK"
 }
 
+# Make the agent's desktop usable over VNC: no screen lock (the VNC lock screen
+# can't take a pasted password), no idle screen saver, and a plain black
+# wallpaper (the default aerial wallpaper animates on the lock screen and as the
+# linked screen saver). Needs the agent's GUI session; the agent's password
+# arrives on stdin (the app reads it from the owner's keychain) and is handed
+# to sysadminctl on stdin too, so it never appears in argv. Settings live in the
+# home, so run this before snapshot-golden and resets keep them.
+readonly BLACK_WALLPAPER_CONFIG=YnBsaXN0MDDSAQIDAVtzeXN0ZW1Db2xvclR0eXBl0QQFVWJsYWNr0AgNGR4hJwAAAAAAAAEBAAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAo
+cmd_configure_desktop() {
+    agent_exists || die "agent user missing"
+    has_gui_session || die "the agent has no GUI session; log it in (loopback VNC) first"
+    local pw=""
+    IFS= read -r pw || true
+    case "$pw" in ""|*[[:cntrl:]]*) die "expected the agent password on stdin" ;; esac
+    as_agent() { launchctl asuser "$AGENT_UID" sudo -n -u "$AGENT_USER" "$@"; }
+
+    printf '%s\n' "$pw" | as_agent /usr/sbin/sysadminctl -screenLock off -password - >/dev/null 2>&1 || true
+    unset pw
+    as_agent /usr/sbin/sysadminctl -screenLock status 2>&1 | /usr/bin/grep -q 'screenLock is off' \
+        || die "could not turn off the screen lock (wrong password?)"
+
+    as_agent /usr/bin/defaults -currentHost write com.apple.screensaver idleTime -int 0
+
+    # Wallpaper store (macOS 14+): one linked choice for every space and display,
+    # the same system-black colour choice System Settings writes.
+    local dir="$AGENT_HOME/Library/Application Support/com.apple.wallpaper/Store"
+    local ts xml
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    install -d -o "$AGENT_USER" -g staff -m 755 "$dir"
+    xml=$(mktemp "$STATE_DIR/wallpaper.XXXXXX")
+    local linked="<dict><key>Content</key><dict><key>Choices</key><array><dict><key>Configuration</key><data>$BLACK_WALLPAPER_CONFIG</data><key>Files</key><array/><key>Provider</key><string>com.apple.wallpaper.choice.color</string></dict></array><key>EncodedOptionValues</key><string>\$null</string><key>Shuffle</key><string>\$null</string></dict><key>LastSet</key><date>$ts</date><key>LastUse</key><date>$ts</date></dict>"
+    cat > "$xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>AllSpacesAndDisplays</key><dict><key>Linked</key>$linked<key>Type</key><string>linked</string></dict>
+<key>Displays</key><dict/>
+<key>Spaces</key><dict/>
+<key>SystemDefault</key><dict><key>Linked</key>$linked<key>Type</key><string>linked</string></dict>
+</dict></plist>
+EOF
+    plutil -convert binary1 "$xml" || { rm -f "$xml"; die "bad wallpaper plist"; }
+    install -o "$AGENT_USER" -g staff -m 644 "$xml" "$dir/Index.plist"
+    rm -f "$xml"
+    as_agent /usr/bin/killall WallpaperAgent >/dev/null 2>&1 || true
+    echo "desktop configured"
+}
+
 cmd_authorize_key() {
     [ $# -eq 1 ] || die "authorize-key takes exactly one quoted public-key line"
     local line=$1
@@ -409,8 +457,9 @@ case "$verb" in
     stop) [ $# -eq 0 ] || die "stop takes no arguments"; cmd_stop; echo "stop OK" ;;
     reset) [ $# -eq 0 ] || die "reset takes no arguments"; cmd_reset ;;
     snapshot-golden) [ $# -eq 0 ] || die "snapshot-golden takes no arguments"; cmd_snapshot_golden ;;
+    configure-desktop) [ $# -eq 0 ] || die "configure-desktop takes no arguments (password on stdin)"; cmd_configure_desktop ;;
     authorize-key) cmd_authorize_key "$@" ;;
     firewall) [ $# -eq 1 ] || die "usage: firewall on|off|status"; cmd_firewall "$1" ;;
     daemon) [ $# -eq 0 ] || die "daemon takes no arguments"; cmd_daemon ;;
-    *) die "usage: status [--size] | stop | reset | snapshot-golden | authorize-key '<pubkey>' | firewall on|off|status" ;;
+    *) die "usage: status [--size] | stop | reset | snapshot-golden | configure-desktop < password | authorize-key '<pubkey>' | firewall on|off|status" ;;
 esac

@@ -99,8 +99,13 @@ if [ "$created_user" -eq 1 ] || ! sudo -u "$OWNER" -H security find-generic-pass
     fi
     # security -i also takes commands on stdin, so the value never shows in ps.
     # -U updates an existing item; the hex password needs no quoting.
-    printf 'add-generic-password -U -s %s -a %s -l "Longwave agent sandbox" -D "application password" -w %s\n' \
-        "$KEYCHAIN_SERVICE" "$AGENT_USER" "$AGENT_PW" \
+    # -T pre-authorizes LongwaveMac (its session keeper reads this for the
+    # loopback VNC login) so the first desktop login doesn't raise a keychain
+    # prompt; the ACL follows the app's code signature, not the path.
+    trusted=""
+    [ -d /Applications/LongwaveMac.app ] && trusted='-T /Applications/LongwaveMac.app'
+    printf 'add-generic-password -U -s %s -a %s -l "Longwave agent sandbox" -D "application password" %s -w %s\n' \
+        "$KEYCHAIN_SERVICE" "$AGENT_USER" "$trusted" "$AGENT_PW" \
         | sudo -u "$OWNER" -H security -i >/dev/null 2>&1 || true
     unset AGENT_PW
     sudo -u "$OWNER" -H security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$AGENT_USER" \

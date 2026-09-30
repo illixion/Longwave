@@ -85,12 +85,22 @@ Known gaps this roadmap closes:
    with a login-only RFB client in the Companion (~200 lines: RFB 3.889
    greeting, ARD security type 30 Diffie-Hellman, AES-128 credential block,
    ClientInit, wait for the session, disconnect), using CryptoKit and
-   CommonCrypto. Decided: our own client, provided the spike confirms the
-   session is created without requesting framebuffer updates (fallback:
-   RoyalVNCKit headless). It reports distinct failures the UI can act on:
-   Screen Sharing off (connection refused on 5900), agent not allowed to use
-   Screen Sharing (ARD auth rejected, with the server's reason string), wrong
-   password, and session never appeared. The helper's `status` adds
+   CommonCrypto — **spike 2026-09-30 did not confirm it, so the keeper links
+   RoyalVNCKit headless (the proven path) instead.** Findings: disconnecting
+   right after ARD auth creates no session; completing `ClientInit` without
+   pixel-format/encodings/update requests got a 0×0 `ServerInit` after ~70 s
+   and no session. The abandoned attempts left an orphaned root `loginwindow`
+   for a half-created session, `screensharingd` restarted, and the owner's
+   Control Center froze until the orphan was killed. Consequences for the
+   keeper: never abandon a login mid-way (hold the connection until the
+   framebuffer arrives, then disconnect cleanly), no retry loops, and on
+   failure look for and clear an orphaned session `loginwindow` for the agent.
+   Keep signed-in fast-user-switching sessions to the one agent account:
+   each extra one destabilises macOS. Failures the UI can act on:
+   Screen Sharing off (connection refused on 5900), ARD auth rejected (macOS
+   gives the same "Authentication or authorization failure" for a wrong
+   password and for a user outside `access_screensharing`, so the helper's
+   group check tells them apart), and session never appeared. The helper's `status` adds
    `screenSharing` and `remoteLogin` state plus the agent's
    `access_screensharing` / `access_ssh` membership, so the Companion can
    show what's missing before any login is tried; fixes are a helper verb
@@ -375,8 +385,9 @@ headset targets, used for repo tasks and memory alike.
 
 ## Order and verification
 
-1. **A.** Spike login-only RFB client; move code; LongwaveMac as client over
-   loopback. Verify: fresh install → keeper login → automatic golden → reset →
+1. **A.** Move code (keeper on RoyalVNCKit headless); LongwaveMac as client
+   over loopback. No spike user accounts with live sessions: test against
+   `longwave-agent` only. Verify: fresh install → keeper login → automatic golden → reset →
    visionOS 4K simulator boots with nobody at the Mac.
 2. **C** (before B, it only needs local pieces). Verify: attach from each
    supported terminal and via `ssh lw-<task>`; Remote Login enabled for the
@@ -400,8 +411,8 @@ Commit per phase on `main`, unsigned.
 
 ## Decisions
 
-- Own login-only RFB client, if the spike confirms a login alone starts the
-  session.
+- Session keeper uses RoyalVNCKit headless; the login-only client spike
+  failed and destabilised the owner's session (see Phase A).
 - Archived tasks keep their branches and checkpoints until deleted in the UI.
 - Native stream pairing and Projects are separate grants; Projects enrollment
   is approved from a macOS notification (Approve / Deny / Block).

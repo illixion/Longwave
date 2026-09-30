@@ -58,7 +58,8 @@ if dscl . -read "/Users/$AGENT_USER" UniqueID >/dev/null 2>&1; then
         dseditgroup -o edit -d "$AGENT_USER" -t user "$g" >/dev/null 2>&1 || true
     done
     find /private/var/folders -mindepth 2 -maxdepth 2 -type d -user "$AGENT_UID" -exec rm -rf {} + 2>/dev/null || true
-    find /private/tmp /Users/Shared -xdev -mindepth 1 -user "$AGENT_UID" -prune -exec rm -rf {} + 2>/dev/null || true
+    find /private/tmp /Users/Shared -xdev -mindepth 1 \( -user "$AGENT_UID" -prune -exec rm -rf {} + \) \
+        -o \( -type d ! -perm -0002 ! -perm -0020 -prune \) 2>/dev/null || true
     rm -f "/private/var/db/com.apple.xpc.launchd/disabled.$AGENT_UID.plist"
     sysadminctl -deleteUser "$AGENT_USER" >/dev/null 2>&1 || dscl . -delete "/Users/$AGENT_USER"
     rm -rf "/Users/$AGENT_USER"

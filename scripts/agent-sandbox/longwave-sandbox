@@ -12,7 +12,8 @@
 #   reset                    stop, then restore the home from the golden copy
 #   snapshot-golden          stop, then save the current home as the golden copy
 #   authorize-key <line>     allow one more SSH public key into the agent account
-#   firewall on|off|status   the pf anchor that keeps the agent off LAN/tailnet/loopback
+#   firewall on|off|status   opt-in pf anchor keeping the agent off LAN/tailnet/loopback
+#                            (disables iCloud Private Relay while loaded)
 #   daemon                   LaunchDaemon entry point (restores firewall, runs semd)
 #
 # Must stay compatible with macOS /bin/bash 3.2.
@@ -107,7 +108,7 @@ cmd_status() {
     printf '"goldenPresent":%s,' "$(json_bool test -d "$GOLDEN/Library")"
     printf '"goldenSnapshotAt":%s,' "$( [ -n "$golden_ts" ] && json_str "$golden_ts" || echo null )"
     printf '"lastResetAt":%s,' "$( r=$(read_state last-reset); [ -n "$r" ] && json_str "$r" || echo null )"
-    printf '"firewallWanted":%s,' "$( [ "$(read_state firewall)" = "off" ] && echo false || echo true )"
+    printf '"firewallWanted":%s,' "$( [ "$(read_state firewall)" = "on" ] && echo true || echo false )"
     printf '"firewallAnchorLoaded":%s,' "$(json_bool anchor_loaded)"
     printf '"pfEnabled":%s,' "$(json_bool pf_enabled)"
     printf '"daemonLoaded":%s' "$(json_bool daemon_loaded)"
@@ -168,13 +169,25 @@ cmd_reset() {
     chown "$AGENT_USER:staff" "$AGENT_HOME"
     chmod 750 "$AGENT_HOME"
     apply_keys_overlay
-    local d
+    # Empty the per-user temp/cache dirs rather than deleting them: the per-user
+    # dir itself and data vaults inside it (0/com.apple.LaunchServices.dv,
+    # T/com.apple.trustd) are protected even from root ("Operation not
+    # permitted", verified on macOS 27), and one failed rm must not abort the
+    # rest of the reset under `set -e`.
+    local d sub
     for d in $folders $(agent_var_folders); do
-        case "$d" in /private/var/folders/??/?*) rm -rf "$d" ;; esac
+        case "$d" in /private/var/folders/??/?*) ;; *) continue ;; esac
+        for sub in 0 C T X; do
+            [ -d "$d/$sub" ] || continue
+            find "$d/$sub" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+        done
     done
     # World-writable places a standard user can still leave things in.
-    find /private/tmp /Users/Shared -xdev -mindepth 1 -user "$AGENT_UID" -prune \
-        -exec rm -rf {} + 2>/dev/null || true
+    # Only descend into directories the agent could have written into (world- or
+    # group-writable — it is in staff); walking all of /private/tmp took ~35 s.
+    find /private/tmp /Users/Shared -xdev -mindepth 1 \
+        \( -user "$AGENT_UID" -prune -exec rm -rf {} + \) \
+        -o \( -type d ! -perm -0002 ! -perm -0020 -prune \) 2>/dev/null || true
     crontab -r -u "$AGENT_USER" >/dev/null 2>&1 || true
     rm -f "/usr/lib/cron/tabs/$AGENT_USER"
     local job
@@ -299,12 +312,16 @@ cmd_firewall() {
         off) firewall_off ;;
         status)
             printf '{"wanted":%s,"anchorLoaded":%s,"pfEnabled":%s}\n' \
-                "$( [ "$(read_state firewall)" = "off" ] && echo false || echo true )" \
+                "$( [ "$(read_state firewall)" = "on" ] && echo true || echo false )" \
                 "$(json_bool anchor_loaded)" "$(json_bool pf_enabled)" ;;
         restore)
             # Boot path: stale token from before the reboot is meaningless.
             rm -f "$STATE_DIR/pf-token"
-            if [ "$(read_state firewall)" != "off" ]; then firewall_on; fi ;;
+            # Opt-in only: any custom pf rule makes iCloud Private Relay report
+            # "System Incompatible" and switch itself off (verified 2026-09-30 on
+            # macOS 27 — even a single inbound block of a TEST-NET range), so
+            # the firewall is never restored unless it was explicitly turned on.
+            if [ "$(read_state firewall)" = "on" ]; then firewall_on; fi ;;
         *) die "usage: firewall on|off|status" ;;
     esac
 }

@@ -28,13 +28,11 @@ injection from something it fetched or a bad tool call, doing any of these:
 - **Your files.** Your home must be `700`. install.sh doesn't change it; the dev Mac's was
   fixed by hand, so check with `ls -ld ~`.
 - **Your SSH agent, keychain and browser profiles.** They belong to your account.
-- **The network.** A pf anchor keeps the agent off RFC1918, CGNAT/tailnet (`100.64/10`),
-  link-local and multicast. On loopback it may only use ports `40000–40999`, its own range
-  for dev servers. That blocks your localhost dev servers, debug/MCP endpoints, Screen
-  Sharing, SSH and SMB. DNS (port 53) stays open. The internet stays open.
-- **Credentials.** Each session gets short-lived tokens (Claude about 8 h, Codex's access
-  token) on stdin from the app. Refresh tokens stay in the app's keychain, and nothing
-  long-lived is written into the agent's home.
+- **Credentials.** Each session gets its tokens on stdin from the app, never on a command
+  line. Refresh tokens stay in the app's keychain. Claude's access token (about 8 h) lives
+  only in the session's environment. Codex reads ChatGPT logins from no environment
+  variable, so its session gets an `auth.json` (access token, which lasts about 10 days, and
+  no refresh token) under `~/.codex-longwave/`; `reset` wipes it with the rest of the home.
 - **Persistence.** `reset` logs the agent out, restores its home from a golden copy with an
   APFS clone (seconds), and clears the places a standard user can still write outside its
   home: per-user `/private/var/folders` dirs, `/private/tmp`, `/Users/Shared`, launchd
@@ -43,6 +41,15 @@ injection from something it fetched or a bad tool call, doing any of these:
   tools are denied in its settings. The app is the only scheduler.
 
 **Not isolated. Know these:**
+- **The network, by default.** The agent can reach anything that needs no login: your
+  localhost dev servers and debug/MCP endpoints, and any unauthenticated LAN or tailnet web
+  UIs. It holds no SSH keys or passwords for your other machines. An opt-in pf anchor
+  (`longwave-sandbox firewall on`, or `install.sh --firewall`) closes this: it keeps the
+  agent off RFC1918, CGNAT/tailnet (`100.64/10`), link-local and multicast, and allows
+  loopback only on ports `40000–40999`. **Loading it switches iCloud Private Relay off**:
+  any custom pf rule makes `networkserviceproxy` report "System Incompatible" (verified on
+  macOS 27, even with a single inbound rule), and Private Relay comes back once the anchor is
+  flushed. That is why it's off by default.
 - **Anything world-readable outside your home**, including `/opt/homebrew`, `/Applications`
   and `/Library`. The agent can use Homebrew's tools, but can't write to them.
 - **Volumes mounted with ownership ignored (`noowners`).** This covers exFAT/FAT drives and
@@ -50,11 +57,10 @@ injection from something it fetched or a bad tool call, doing any of these:
   Enable ownership (`diskutil enableOwnership`), or don't mount them while agents run.
 - **`/Users/Shared` and `/private/tmp`** are shared with every user between resets. Don't
   put anything there you'd mind the agent reading.
-- **ICMP**, because pf's `user` match only covers TCP/UDP. The agent can ping LAN hosts, but
-  can't connect to them.
+- **ICMP**, even with the firewall on, because pf's `user` match only covers TCP/UDP.
 - **SMB sharepoint groups.** New local users are in every `com.apple.sharepoint.group.*`
-  through the nested `everyone` group, which can't be undone per user. The firewall keeps
-  the agent off SMB, and it doesn't know its own password.
+  through the nested `everyone` group, which can't be undone per user. The agent doesn't know
+  its own password, so it can't authenticate to SMB (the opt-in firewall also blocks it).
 - **The kernel.** A local privilege escalation beats any user boundary. This setup raises the
   bar; it doesn't replace a VM or a separate Mac.
 
@@ -114,8 +120,9 @@ Run it from your own admin account; it uses `SUDO_USER` as the owner. It does th
    helper without a password. It's checked with `visudo -c`.
 6. **Sets up your SSH key.** `~/.ssh/longwave_sandbox_ed25519` is generated for you and
    authorized for the agent.
-7. **Turns on the firewall.** The stock `/etc/pf.conf` already evaluates `com.apple/*`
-   anchors, so it isn't edited. pf is enabled with a reference token (`pfctl -E`), not a
+7. **Leaves the firewall off** unless run with `--firewall` (see the Private Relay caveat
+   above). When on, the stock `/etc/pf.conf` already evaluates `com.apple/*` anchors, so it
+   isn't edited. pf is enabled with a reference token (`pfctl -E`), not a
    bare `-e`, so other pf users keep their references.
 8. **Provisions the home.** `provision-golden.sh` runs as the agent:
    - Claude, Codex and Copilot CLIs from their official installers, into `~/.local`
@@ -149,7 +156,7 @@ Run as `sudo -n /usr/local/libexec/longwave-sandbox <verb>`:
 | `reset` | stop, delete the home, clone the golden copy back (or create a fresh home if there's no golden copy yet), re-apply authorized keys, clear per-user temp dirs, `/private/tmp`, `/Users/Shared` and cron/at. |
 | `snapshot-golden` | stop, then save the current home as the golden copy. Keys are left out; they come from the overlay. |
 | `authorize-key '<line>'` | add one `ssh-ed25519` or `ecdsa-sha2-nistp256` public key (checked with `ssh-keygen -l`, no options prefix allowed), e.g. the headset's Secure Enclave key. The key survives resets. |
-| `firewall on\|off\|status` | load or flush the anchor and take or release the pf enable token. The setting persists across reboots through the daemon. |
+| `firewall on\|off\|status` | opt-in: load or flush the anchor and take or release the pf enable token. Only an explicit `on` persists across reboots (through the daemon). Disables iCloud Private Relay while loaded. |
 
 ## Loopback port range
 

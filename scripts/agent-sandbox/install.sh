@@ -182,13 +182,11 @@ EOF
 if ! visudo -cf "$tmpsudo" >/dev/null; then rm -f "$tmpsudo"; die "generated sudoers failed visudo -c"; fi
 install -o root -g wheel -m 440 "$tmpsudo" "$SUDOERS"
 rm -f "$tmpsudo"
-visudo -c >/dev/null || die "sudoers no longer validates — inspect $SUDOERS"
+# Check our file alone: a whole-tree `visudo -c` also fails on other packages'
+# sudoers.d files that are 0644 instead of 0440 (colima, lima, … ship that way),
+# which sudo itself still reads and which aren't ours to change.
+visudo -cf "$SUDOERS" >/dev/null || die "installed sudoers file does not validate — inspect $SUDOERS"
 
-say "installing and (re)starting $DAEMON_PLIST"
-install -o root -g wheel -m 644 "$HERE/pro.longwave.sandbox.plist" "$DAEMON_PLIST"
-plutil -lint "$DAEMON_PLIST" >/dev/null || die "bad plist"
-launchctl bootout system/pro.longwave.sandbox >/dev/null 2>&1 || true
-launchctl bootstrap system "$DAEMON_PLIST"
 
 # --- 4. SSH key for the owner ---------------------------------------------------
 
@@ -202,22 +200,44 @@ chmod 600 "$KEY"
 "$LIBEXEC/longwave-sandbox" authorize-key "$(cat "$KEY.pub")" >/dev/null
 say "SSH key authorized"
 
-# --- 5. Firewall ----------------------------------------------------------------
+# --- 5. Firewall (opt-in) ------------------------------------------------------
 
-# The stock /etc/pf.conf evaluates every com.apple/* anchor, so ours needs no
-# pf.conf edit — confirm this Mac still has that anchor point before relying on it.
-if /usr/bin/grep -q '^anchor "com.apple/\*"' /etc/pf.conf; then
-    "$LIBEXEC/longwave-sandbox" firewall on
+# Not enabled by default: loading any custom pf rule makes iCloud Private Relay
+# switch itself off ("System Incompatible"). The sandbox holds no credentials,
+# so the default is no network filtering; `longwave-sandbox firewall on` opts in.
+if [ "${1:-}" = "--firewall" ]; then
+    if /usr/bin/grep -q '^anchor "com.apple/\*"' /etc/pf.conf; then
+        "$LIBEXEC/longwave-sandbox" firewall on
+    else
+        say "WARNING: /etc/pf.conf has no 'anchor \"com.apple/*\"' line; firewall NOT enabled."
+    fi
 else
-    say "WARNING: /etc/pf.conf has no 'anchor \"com.apple/*\"' line; firewall NOT enabled."
+    say "network firewall left off (Private Relay-safe); opt in with: sudo $LIBEXEC/longwave-sandbox firewall on"
 fi
+
+# The daemon's RunAtLoad restores the firewall too, so it is started only after
+# the step above: bootstrapping it earlier raced `firewall on` (both rendered and
+# reloaded the anchor at once, and the loser's check saw an empty anchor).
+say "installing and (re)starting $DAEMON_PLIST"
+install -o root -g wheel -m 644 "$HERE/pro.longwave.sandbox.plist" "$DAEMON_PLIST"
+plutil -lint "$DAEMON_PLIST" >/dev/null || die "bad plist"
+launchctl bootout system/pro.longwave.sandbox >/dev/null 2>&1 || true
+launchctl bootstrap system "$DAEMON_PLIST"
 
 # --- 6. Golden home -------------------------------------------------------------
 
 say "provisioning the agent's home (CLIs, git identity, simulator devices)"
 install -o root -g wheel -m 755 "$HERE/provision-golden.sh" "$BASE/provision-golden.sh"
-if sudo -u "$AGENT_USER" -H /bin/bash "$BASE/provision-golden.sh"; then
+# cd / first: the invoking cwd is usually inside the owner's 700 home, which
+# the agent cannot stat (bash then warns "getcwd: cannot access parent directories").
+if (cd / && sudo -u "$AGENT_USER" -H /bin/bash "$BASE/provision-golden.sh"); then
     say "provisioning OK"
+    # A first golden copy right away, so a reset before first-run setup restores
+    # the provisioned home instead of an empty one. "Setup complete" in the app
+    # replaces it with a post-setup snapshot.
+    if ! [ -d "$BASE/agent-golden/Library" ]; then
+        "$LIBEXEC/longwave-sandbox" snapshot-golden >/dev/null && say "initial golden snapshot taken"
+    fi
 else
     say "WARNING: provisioning reported errors (see above); re-run: sudo -u $AGENT_USER -H /bin/bash $BASE/provision-golden.sh"
 fi

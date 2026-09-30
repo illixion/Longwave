@@ -64,6 +64,9 @@ struct ConnectionBackup: Codable {
     var sshHasAuthToken: Bool
     var sshHasCopilotToken: Bool
     var sshHasCustomToken: Bool
+    /// Optional where its siblings aren't: it postdates them, so backups
+    /// written before Codex support simply lack the key and must still decode.
+    var sshHasCodexToken: Bool?
     var sshAgentRawValue: String
     var sshInjectClaudeRefreshToken: Bool
     var sshUseTmux: Bool
@@ -118,6 +121,7 @@ struct ConnectionBackup: Codable {
         sshHasAuthToken = connection.sshHasAuthToken
         sshHasCopilotToken = connection.sshHasCopilotToken
         sshHasCustomToken = connection.sshHasCustomToken
+        sshHasCodexToken = connection.sshHasCodexToken
         sshAgentRawValue = connection.sshAgentRawValue
         sshInjectClaudeRefreshToken = connection.sshInjectClaudeRefreshToken
         sshUseTmux = connection.sshUseTmux
@@ -170,6 +174,7 @@ struct ConnectionBackup: Codable {
         connection.sshHasAuthToken = sshHasAuthToken
         connection.sshHasCopilotToken = sshHasCopilotToken
         connection.sshHasCustomToken = sshHasCustomToken
+        connection.sshHasCodexToken = sshHasCodexToken ?? false
         connection.sshAgentRawValue = sshAgentRawValue
         connection.sshInjectClaudeRefreshToken = sshInjectClaudeRefreshToken
         connection.sshUseTmux = sshUseTmux

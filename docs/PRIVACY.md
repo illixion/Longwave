@@ -41,11 +41,13 @@ chose.
   data is used only while a session is running and is not stored.
 - **Broadcast.** When you start a broadcast, the camera, microphone and screen content
   you selected are sent to the streaming server you configured.
-- **Claude Code and GitHub Copilot sign-in.** If you sign in to either service from the
-  Projects tab, Longwave talks directly to Anthropic or GitHub to get a sign-in token,
-  then stores that token in the device keychain. It sends the token only to the SSH hosts
-  you connect those agents to. Those services' own privacy policies apply to your
-  accounts with them.
+- **Claude Code, GitHub Copilot and OpenAI Codex sign-in.** If you sign in to any of
+  these services from the Projects tab, Longwave talks directly to Anthropic, GitHub or
+  OpenAI (`auth.openai.com`) to get a sign-in token, then stores it in the device
+  keychain. It sends a token only to the SSH hosts you connect those agents to. For
+  Codex, the host receives a short-lived sign-in file without the long-lived renewal
+  token, which stays on your Vision Pro. Those services' own privacy policies apply to
+  your accounts with them.
 - **Purchases.** In-app purchases are handled by Apple. The developer receives the
   standard, anonymous sales reports Apple provides to all developers. Longwave checks
   your purchase status with StoreKit on the device.

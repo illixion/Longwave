@@ -397,7 +397,7 @@ struct ConnectionFormView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
 
-            Text("Command for the Projects tab's “Custom” agent — point it at any CLI. Claude and Copilot are built in with fixed commands. Pick the agent and set its login in the Projects tab.")
+            Text("Command for the Projects tab's “Custom” agent — point it at any CLI. Claude, Copilot and Codex are built in with fixed commands. Pick the agent and set its login in the Projects tab.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -409,7 +409,7 @@ struct ConnectionFormView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
 
-            Text("Injected before the command runs (inline; readable by your own processes on the Mac, so keep these non-secret). Agent login tokens (Claude / Copilot / Custom) are set separately per agent in the Projects tab and kept in this device's keychain.")
+            Text("Injected before the command runs (inline; readable by your own processes on the Mac, so keep these non-secret). Agent logins (Claude / Copilot / Codex / Custom) are set separately per agent in the Projects tab and kept in this device's keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

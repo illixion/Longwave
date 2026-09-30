@@ -113,4 +113,20 @@ final class BackupManagerTests: XCTestCase {
         XCTAssertEqual(decoded.version, LongwaveBackup.currentVersion)
         XCTAssertEqual(decoded.connections?.first?.hostname, "round.trip")
     }
+
+    /// Backups written before Codex support have no `sshHasCodexToken` key and
+    /// must still decode — and restore it as false.
+    func testBackupWithoutCodexFlagStillDecodes() throws {
+        let connection = SavedConnection(hostname: "mac.local", port: 22, connectionType: .ssh)
+        connection.sshHasCodexToken = true
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(ConnectionBackup(from: connection))) as? [String: Any])
+        XCTAssertEqual(object["sshHasCodexToken"] as? Bool, true)
+        object.removeValue(forKey: "sshHasCodexToken")
+
+        let legacy = try JSONDecoder().decode(ConnectionBackup.self,
+                                              from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(legacy.sshHasCodexToken)
+        XCTAssertEqual(legacy.hostname, "mac.local")
+    }
 }

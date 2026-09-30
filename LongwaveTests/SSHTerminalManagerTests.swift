@@ -73,6 +73,34 @@ final class SSHTerminalManagerTests: XCTestCase {
                        "TOK=\(Data("secret".utf8).base64EncodedString())\n")
     }
 
+    /// A session setup (Codex's `auth.json`) consumes its variable before tmux
+    /// starts: the JSON crosses stdin like any token but is never registered
+    /// with tmux, while the name the script exports is.
+    func testSessionSetupConsumesItsVariableAndRegistersItsExports() {
+        let authJSON = #"{"tokens":{"access_token":"at-SECRET-jwt"}}"#
+        let setup = AgentSessionSetup(script: "SETUP_MARKER; ",
+                                      exportedNames: ["CODEX_HOME"],
+                                      consumedNames: ["LONGWAVE_CODEX_AUTH_JSON"])
+        let launch = SSHTerminalManager.agentLaunch(
+            tmuxSession: "p-codex", folder: "/p", clientCommand: "codex",
+            environment: [(name: "LONGWAVE_CODEX_AUTH_JSON", value: authJSON), (name: "EXTRA", value: "1")],
+            setup: setup)
+        XCTAssertTrue(launch.create.contains("SETUP_MARKER"))
+        // The stand-in script never mentions the name, so any occurrence would
+        // be a tmux registration importing it into the session.
+        XCTAssertFalse(launch.create.contains("LONGWAVE_CODEX_AUTH_JSON"),
+                       "a consumed variable must not be imported into the session")
+        XCTAssertTrue(launch.create.contains("CODEX_HOME"))
+        XCTAssertTrue(launch.create.contains("EXTRA"))
+        XCTAssertFalse(launch.create.contains("SECRET"))
+        XCTAssertTrue(String(decoding: launch.payload, as: UTF8.self)
+            .contains("LONGWAVE_CODEX_AUTH_JSON=\(Data(authJSON.utf8).base64EncodedString())"))
+        // The setup runs before tmux, so the file exists when codex starts.
+        let setupAt = launch.create.range(of: "SETUP_MARKER")!.lowerBound
+        let tmuxNewAt = launch.create.range(of: "tmux new -d")!.lowerBound
+        XCTAssertLessThan(setupAt, tmuxNewAt)
+    }
+
     func testEnvPayloadRoundTripsHostileValues() throws {
         let payload = String(decoding: SSHTerminalManager.envPayload(hostileSecrets), as: UTF8.self)
         let lines = payload.split(separator: "\n", omittingEmptySubsequences: true)
@@ -248,6 +276,7 @@ final class SSHTerminalManagerTests: XCTestCase {
         // multi-agent support keep working; others are suffixed.
         XCTAssertEqual(SSHAgent.claude.sessionKey, "")
         XCTAssertEqual(SSHAgent.copilot.sessionKey, "copilot")
+        XCTAssertEqual(SSHAgent.codex.sessionKey, "codex")
         XCTAssertEqual(SSHAgent.custom.sessionKey, "custom")
     }
 
@@ -259,12 +288,14 @@ final class SSHTerminalManagerTests: XCTestCase {
         }
         let claude = slug(SSHAgent.claude.sessionKey)
         let copilot = slug(SSHAgent.copilot.sessionKey)
+        let codex = slug(SSHAgent.codex.sessionKey)
         let custom = slug(SSHAgent.custom.sessionKey)
         XCTAssertEqual(claude, "my-project")
         XCTAssertEqual(copilot, "my-project-copilot")
+        XCTAssertEqual(codex, "my-project-codex")
         XCTAssertEqual(custom, "my-project-custom")
         // Distinct slugs are what stop the manager re-attaching the wrong agent's session.
-        XCTAssertEqual(Set([claude, copilot, custom]).count, 3)
+        XCTAssertEqual(Set([claude, copilot, codex, custom]).count, 4)
     }
 
     // MARK: - Stale-session reap

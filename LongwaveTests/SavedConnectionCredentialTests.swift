@@ -316,4 +316,67 @@ final class SavedConnectionCredentialTests: XCTestCase {
                 .map { ($0.name, $0.value) })
         XCTAssertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "pasted-token")
     }
+
+    // MARK: - Codex (ChatGPT device sign-in)
+
+    private func cleanUpCodex(_ c: SavedConnection) {
+        CodexCredentialStore.delete(connectionID: c.id)
+        c.setSSHAuthToken(nil, for: .codex)
+    }
+
+    func testCodexCredentialSatisfiesTheFlagAndSurvivesClearingAPastedToken() {
+        let c = makeConnection()
+        defer { cleanUpCodex(c) }
+        XCTAssertFalse(c.hasToken(for: .codex))
+
+        c.setCodexCredential(CodexOAuthTests.credential())
+        XCTAssertTrue(c.hasCodexCredential)
+        XCTAssertTrue(c.hasToken(for: .codex))
+
+        c.setSSHAuthToken("at-pat", for: .codex)
+        c.setSSHAuthToken(nil, for: .codex)
+        XCTAssertTrue(c.hasToken(for: .codex), "removing the PAT leaves the ChatGPT sign-in")
+    }
+
+    /// The CLI prefers `CODEX_ACCESS_TOKEN` over `auth.json`, so a stored PAT
+    /// injected next to the credential would silently win. It must not travel.
+    func testCodexCredentialReplacesAPastedTokenAndCarriesNoRefreshToken() throws {
+        let c = makeConnection()
+        defer { cleanUpCodex(c) }
+        c.setSSHAuthToken("at-pat", for: .codex)
+        c.setCodexCredential(CodexOAuthTests.credential(refresh: "rt-secret"))
+
+        let resolved = c.resolvedSSHEnvironment(for: .codex)
+        let e = Dictionary(uniqueKeysWithValues: resolved.map { ($0.name, $0.value) })
+        XCTAssertNil(e["CODEX_ACCESS_TOKEN"])
+        let json = try XCTUnwrap(e[CodexOAuth.Constants.authJSONEnvName])
+        XCTAssertFalse(json.contains("rt-secret"))
+        XCTAssertFalse(resolved.contains { $0.value.contains("rt-secret") })
+        XCTAssertNotNil(c.sessionSetup(for: .codex, environment: resolved))
+        XCTAssertNil(c.sessionSetup(for: .claude, environment: resolved),
+                     "only a Codex session writes auth.json")
+    }
+
+    func testCodexCredentialDoesNotLeakIntoOtherAgents() {
+        let c = makeConnection()
+        defer { cleanUpCodex(c) }
+        c.setCodexCredential(CodexOAuthTests.credential())
+        for agent in [SSHAgent.claude, .copilot, .custom] {
+            XCTAssertFalse(c.resolvedSSHEnvironment(for: agent)
+                .contains { $0.name == CodexOAuth.Constants.authJSONEnvName }, "\(agent)")
+        }
+    }
+
+    /// A fresh credential goes out as stored: the renewing resolver only calls
+    /// the network when under a day of access-token life remains.
+    func testRenewingResolverUsesAFreshCodexCredentialOffline() async throws {
+        let c = makeConnection()
+        defer { cleanUpCodex(c) }
+        let credential = CodexOAuthTests.credential(expiresIn: 5 * 24 * 3600)
+        c.setCodexCredential(credential)
+        let e = Dictionary(uniqueKeysWithValues:
+            await c.resolvedSSHEnvironmentRenewingCredentials(for: .codex).map { ($0.name, $0.value) })
+        let json = try XCTUnwrap(e[CodexOAuth.Constants.authJSONEnvName])
+        XCTAssertTrue(json.contains(credential.accessToken))
+    }
 }

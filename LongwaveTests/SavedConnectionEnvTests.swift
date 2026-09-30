@@ -61,6 +61,10 @@ final class SavedConnectionEnvTests: XCTestCase {
         XCTAssertEqual(c.effectiveCommand(for: .copilot), "copilot")
         XCTAssertEqual(c.effectiveEnvName(for: .claude), "CLAUDE_CODE_OAUTH_TOKEN")
         XCTAssertEqual(c.effectiveEnvName(for: .copilot), "COPILOT_GITHUB_TOKEN")
+        XCTAssertEqual(c.effectiveCommand(for: .codex), "codex")
+        XCTAssertEqual(c.effectiveEnvName(for: .codex), "CODEX_ACCESS_TOKEN")
+        XCTAssertTrue(SSHAgent.codex.supportsDeviceFlow)
+        XCTAssertFalse(SSHAgent.codex.supportsWebOAuth)
 
         // Custom falls back to the bare claude binary until overridden — the
         // permission flag is only added to the agent the app launches itself.
@@ -108,6 +112,29 @@ final class SavedConnectionEnvTests: XCTestCase {
         XCTAssertNil(claudeEnv["COPILOT_GITHUB_TOKEN"])
         XCTAssertEqual(copilotEnv["COPILOT_GITHUB_TOKEN"], "copilot-tok")
         XCTAssertNil(copilotEnv["CLAUDE_CODE_OAUTH_TOKEN"])
+    }
+
+    func testCodexPastedTokenIsIsolatedFromOtherAgents() {
+        let c = SavedConnection(hostname: "host", port: 22, connectionType: .ssh)
+        defer {
+            c.setSSHAuthToken(nil, for: .codex)
+            c.setSSHAuthToken(nil, for: .copilot)
+        }
+        c.setSSHAuthToken("at-pat", for: .codex)
+        c.setSSHAuthToken("copilot-tok", for: .copilot)
+
+        XCTAssertTrue(c.hasToken(for: .codex))
+        XCTAssertTrue(c.sshHasCodexToken)
+        let codexEnv = Dictionary(uniqueKeysWithValues:
+            c.resolvedSSHEnvironment(for: .codex).map { ($0.name, $0.value) })
+        XCTAssertEqual(codexEnv["CODEX_ACCESS_TOKEN"], "at-pat")
+        XCTAssertNil(codexEnv["COPILOT_GITHUB_TOKEN"])
+        XCTAssertNil(codexEnv[CodexOAuth.Constants.authJSONEnvName])
+        XCTAssertNil(c.sessionSetup(for: .codex, environment: c.resolvedSSHEnvironment(for: .codex)),
+                     "a PAT needs no auth.json")
+        let copilotEnv = Dictionary(uniqueKeysWithValues:
+            c.resolvedSSHEnvironment(for: .copilot).map { ($0.name, $0.value) })
+        XCTAssertNil(copilotEnv["CODEX_ACCESS_TOKEN"])
     }
 
     func testClearingOneAgentTokenLeavesTheOther() {

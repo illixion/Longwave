@@ -61,6 +61,8 @@ Longwave/
 │   ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
 │   ├── ClaudeOAuth.swift               — Claude Code OAuth PKCE flow → full-scope token (constants extracted from the CLI binary)
 │   ├── ClaudeCredentialStore.swift     — Keychain home for the Claude credential bundle + refresh-before-launch
+│   ├── CodexOAuth.swift                — Codex CLI's ChatGPT device sign-in → session-only auth.json (constants from openai/codex source)
+│   ├── CodexCredentialStore.swift      — Keychain home for the Codex credential (rotating refresh token stays on device)
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask

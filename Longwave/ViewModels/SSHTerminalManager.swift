@@ -488,13 +488,15 @@ final class SSHTerminalManager {
                           folder: String, projectName: String,
                           clientCommand: String = "claude",
                           agentKey: String = "",
-                          environment: [(name: String, value: String)] = []) throws -> SSHSessionID {
+                          environment: [(name: String, value: String)] = [],
+                          setup: AgentSessionSetup? = nil) throws -> SSHSessionID {
         let title = projectName.isEmpty ? Self.folderName(folder) : projectName
         let base = Self.slug(title)
         let slug = agentKey.isEmpty ? base : Self.slug("\(base)-\(agentKey)")
         let launch = Self.agentLaunch(tmuxSession: slug, folder: folder,
                                       clientCommand: clientCommand,
-                                      environment: environment)
+                                      environment: environment,
+                                      setup: setup)
         return try startSession(slug: slug, title: title, host: host, port: port,
                                 username: username, command: launch.attach, kind: .claude, cwd: folder,
                                 prelaunch: SSHSession.Prelaunch(command: launch.create, stdin: launch.payload))
@@ -713,12 +715,21 @@ final class SSHTerminalManager {
     /// retrying a launch that can never work.
     static let agentNoTmuxMarker = "LONGWAVE-NO-TMUX"
 
+    /// `setup` (see `AgentSessionSetup`) runs after the environment is exported;
+    /// the names it consumes cross stdin but are kept out of tmux, and the names
+    /// it exports are registered with tmux alongside the rest.
     static func agentLaunch(tmuxSession: String, folder: String,
                             clientCommand: String = "claude",
-                            environment: [(name: String, value: String)] = []) -> AgentLaunch {
+                            environment: [(name: String, value: String)] = [],
+                            setup: AgentSessionSetup? = nil) -> AgentLaunch {
         let vars = environment.filter { SavedConnection.isValidEnvName($0.name) }
+        var names = vars.map(\.name).filter { !(setup?.consumedNames.contains($0) ?? false) }
+        for name in setup?.exportedNames ?? [] where SavedConnection.isValidEnvName(name) && !names.contains(name) {
+            names.append(name)
+        }
         let inner = agentCreateScript(tmuxSession: tmuxSession, folder: folder,
-                                      clientCommand: clientCommand, names: vars.map(\.name))
+                                      clientCommand: clientCommand, names: names,
+                                      setupScript: setup?.script ?? "")
         // The reader runs in a plain POSIX `sh` *before* the login shell, so an
         // rc file can't swallow stdin, and whatever shell sshd hands us (bash,
         // zsh, fish) only has to exec `/bin/sh`. The exported values reach
@@ -732,9 +743,11 @@ final class SSHTerminalManager {
     /// tmux (their values are already exported by `envStdinReader`), creates
     /// and tags the session, and reports the outcome on stdout.
     static func agentCreateScript(tmuxSession: String, folder: String,
-                                  clientCommand: String, names: [String]) -> String {
+                                  clientCommand: String, names: [String],
+                                  setupScript: String = "") -> String {
         let client = clientCommand.isEmpty ? "claude" : clientCommand
         var script = "command -v tmux >/dev/null 2>&1 || { echo \(agentNoTmuxMarker); exit 1; }; "
+        script += setupScript
         script += tmuxCreateLine(tmuxSession: tmuxSession, folder: folder, client: client,
                                  environment: names.map { (name: $0, value: "") },
                                  inlineValues: false)

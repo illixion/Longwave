@@ -181,11 +181,19 @@ struct ProjectsView: View {
                 } else {
                     LabeledContent("Command", value: host.effectiveCommand(for: agent))
                         .font(.system(.body, design: .monospaced))
-                    LabeledContent("Token", value: host.effectiveEnvName(for: agent))
-                        .font(.system(.body, design: .monospaced))
-                    Text("\(agent.displayName) launches with this command; its token is injected as that env var. Set it under \(agent.displayName) Login above.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if agent == .codex && host.hasCodexCredential {
+                        LabeledContent("Login", value: "~/\(CodexOAuth.Constants.sessionHomeDirectory)/auth.json")
+                            .font(.system(.body, design: .monospaced))
+                        Text("Signed in with ChatGPT: each launch writes a fresh auth.json (no refresh token) into that folder and points CODEX_HOME at it; your config.toml, AGENTS.md and skills from ~/.codex are linked in.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Token", value: host.effectiveEnvName(for: agent))
+                            .font(.system(.body, design: .monospaced))
+                        Text("\(agent.displayName) launches with this command; its token is injected as that env var. Set it under \(agent.displayName) Login above.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if agent == .claude {
                         Text("Sessions still start in Claude's normal permission mode — the flag only makes “bypass permissions” selectable in the Shift+Tab cycle, so you can skip prompts from the headset without every session starting unguarded.")
                             .font(.caption)
@@ -383,9 +391,9 @@ struct ProjectsView: View {
         guard let host = selectedHost, !folder.isEmpty else { return }
         let agent = host.sshAgent
         // Renewing the credential is a network round-trip, so the launch is async
-        // now. It only actually calls out when an in-app Claude credential is
-        // stored and near expiry; every other agent resolves from the keychain and
-        // falls straight through.
+        // now. It only actually calls out when an in-app Claude or Codex
+        // credential is stored and near expiry; every other agent resolves from
+        // the keychain and falls straight through.
         Task {
             let environment = await host.resolvedSSHEnvironmentRenewingCredentials(for: agent)
             do {
@@ -394,7 +402,8 @@ struct ProjectsView: View {
                     folder: folder, projectName: "",
                     clientCommand: host.effectiveCommand(for: agent),
                     agentKey: agent.sessionKey,
-                    environment: environment
+                    environment: environment,
+                    setup: host.sessionSetup(for: agent, environment: environment)
                 )
                 addRecent(host: host.hostname, folder: folder)
                 openWindow(id: "ssh-terminal", value: id)
@@ -435,8 +444,9 @@ struct ProjectsView: View {
 /// locked outside the desktop session, so each agent instead gets a long-lived
 /// token that Longwave injects into every session as its env var (see
 /// `SavedConnection.resolvedSSHEnvironment(for:)`) — stored only on this device,
-/// never written to the Mac. Claude/Custom paste a token; Copilot can mint one
-/// in-app via GitHub's device-authorization flow (`GitHubDeviceFlow`).
+/// never written to the Mac. Claude signs in through the in-app browser
+/// (`ClaudeOAuth`), Copilot and Codex through device-code flows
+/// (`AgentDeviceSignIn`), and any of them can paste a token instead.
 private struct AgentSetupSheet: View {
     @Bindable var host: SavedConnection
     let agent: SSHAgent
@@ -444,8 +454,8 @@ private struct AgentSetupSheet: View {
     @Environment(\.openURL) private var openURL
     @State private var token = ""
 
-    // Device-flow state (Copilot).
-    @State private var deviceCode: GitHubDeviceFlow.DeviceCode?
+    // Device-flow state (Copilot, Codex).
+    @State private var deviceCode: DeviceSignInPrompt?
     @State private var flowTask: Task<Void, Never>?
     @State private var flowError: String?
     @State private var signingIn = false
@@ -457,6 +467,8 @@ private struct AgentSetupSheet: View {
     /// observation would fire when it changes, so sign-in/out refresh it by hand.
     @State private var claudeCredential: ClaudeOAuth.Credential?
     @State private var claudeCredentialSummary: String?
+    /// Same, for a Codex ChatGPT credential.
+    @State private var codexCredentialSummary: String?
 
     private var envName: String { host.effectiveEnvName(for: agent) }
 
@@ -524,7 +536,7 @@ private struct AgentSetupSheet: View {
                 Button("Done") { dismiss() }
             }
         }
-        .onAppear { reloadClaudeCredential() }
+        .onAppear { reloadClaudeCredential(); reloadCodexCredential() }
         .onDisappear { flowTask?.cancel() }
         .sheet(isPresented: $showingWebLogin) {
             ClaudeLoginSheet { credential in
@@ -595,9 +607,34 @@ private struct AgentSetupSheet: View {
         claudeCredentialSummary = ClaudeCredentialStore.summary(connectionID: host.id)
     }
 
+    private var deviceSignIn: AgentDeviceSignIn? {
+        switch agent {
+        case .copilot: CopilotDeviceSignIn()
+        case .codex: CodexDeviceSignIn()
+        case .claude, .custom: nil
+        }
+    }
+
+    private func reloadCodexCredential() {
+        codexCredentialSummary = CodexCredentialStore.summary(connectionID: host.id)
+    }
+
     @ViewBuilder
     private var deviceFlowSection: some View {
-        Section("Sign in with GitHub") {
+        let provider = deviceSignIn?.providerName ?? ""
+        Section("Sign in with \(provider)") {
+            if agent == .codex, let summary = codexCredentialSummary {
+                Label(summary, systemImage: "checkmark.seal.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                Button("Sign Out of ChatGPT", role: .destructive) {
+                    Task {
+                        await host.clearCodexCredential()
+                        try? host.modelContext?.save()
+                        reloadCodexCredential()
+                    }
+                }
+            }
             if let code = deviceCode {
                 Text("Open the link and enter this code:")
                     .font(.caption).foregroundStyle(.secondary)
@@ -625,7 +662,9 @@ private struct AgentSetupSheet: View {
                     startDeviceFlow()
                 } label: {
                     HStack {
-                        Label("Sign in with GitHub", systemImage: "person.crop.circle.badge.checkmark")
+                        Label(agent == .codex && codexCredentialSummary != nil
+                              ? "Sign In Again" : "Sign in with \(provider)",
+                              systemImage: "person.crop.circle.badge.checkmark")
                         if signingIn { Spacer(); ProgressView() }
                     }
                 }
@@ -638,15 +677,14 @@ private struct AgentSetupSheet: View {
     }
 
     private func startDeviceFlow() {
+        guard let signIn = deviceSignIn else { return }
         flowError = nil
         signingIn = true
         flowTask?.cancel()
         flowTask = Task {
             do {
-                let code = try await GitHubDeviceFlow.requestCode()
-                deviceCode = code
-                let minted = try await GitHubDeviceFlow.pollForToken(code)
-                host.setSSHAuthToken(minted, for: agent)
+                deviceCode = try await signIn.requestCode()
+                try await signIn.awaitAuthorization(storingInto: host, agent: agent)
                 try? host.modelContext?.save()
                 dismiss()
             } catch is CancellationError {
@@ -657,5 +695,63 @@ private struct AgentSetupSheet: View {
             }
             signingIn = false
         }
+    }
+}
+
+// MARK: - Device-code sign-in
+
+/// What the user acts on during a device-code sign-in.
+struct DeviceSignInPrompt: Sendable, Equatable {
+    let userCode: String
+    let verificationURI: String
+}
+
+/// One provider's device-code flow, as the setup sheet drives it: show a code,
+/// wait for approval, store the result on the host. Stateful (the code issued by
+/// `requestCode` is what `awaitAuthorization` polls), so each sign-in attempt
+/// gets a fresh instance.
+@MainActor
+protocol AgentDeviceSignIn: AnyObject {
+    var providerName: String { get }
+    func requestCode() async throws -> DeviceSignInPrompt
+    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws
+}
+
+/// Copilot: GitHub's RFC 8628 flow; the minted token goes in the agent's
+/// pasted-token slot (Copilot reads it from `COPILOT_GITHUB_TOKEN`).
+@MainActor
+private final class CopilotDeviceSignIn: AgentDeviceSignIn {
+    private var code: GitHubDeviceFlow.DeviceCode?
+    let providerName = "GitHub"
+
+    func requestCode() async throws -> DeviceSignInPrompt {
+        let code = try await GitHubDeviceFlow.requestCode()
+        self.code = code
+        return DeviceSignInPrompt(userCode: code.userCode, verificationURI: code.verificationURI)
+    }
+
+    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws {
+        guard let code else { return }
+        let minted = try await GitHubDeviceFlow.pollForToken(code)
+        host.setSSHAuthToken(minted, for: agent)
+    }
+}
+
+/// Codex: OpenAI's device flow; the whole credential goes to
+/// `CodexCredentialStore` so this device keeps the refresh token.
+@MainActor
+private final class CodexDeviceSignIn: AgentDeviceSignIn {
+    private var code: CodexOAuth.DeviceCode?
+    let providerName = "ChatGPT"
+
+    func requestCode() async throws -> DeviceSignInPrompt {
+        let code = try await CodexOAuth.requestCode()
+        self.code = code
+        return DeviceSignInPrompt(userCode: code.userCode, verificationURI: code.verificationURL)
+    }
+
+    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws {
+        guard let code else { return }
+        host.setCodexCredential(try await CodexOAuth.pollForCredential(code))
     }
 }

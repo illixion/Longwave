@@ -146,9 +146,10 @@ enum FoveatedImmersionStyle: String, CaseIterable, Codable {
 // MARK: - Managed-session agent
 
 /// A CLI coding agent the Projects tab can launch on a host over SSH. Each agent
-/// authenticates headlessly via a long-lived token injected inline as an
-/// environment variable (the macOS Keychain is unreachable over SSH). A host
-/// stores a token per agent and remembers which one to launch by default.
+/// authenticates headlessly from credentials this device injects per session
+/// (the macOS Keychain is unreachable over SSH) — an environment variable for
+/// most, an `auth.json` for Codex's ChatGPT sign-in. A host stores a token per
+/// agent and remembers which one to launch by default.
 enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     /// Claude Code — authenticates off `CLAUDE_CODE_OAUTH_TOKEN`, minted in-app
     /// by `ClaudeOAuth`'s PKCE flow (full session scopes, refreshed per launch).
@@ -156,6 +157,10 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     /// GitHub Copilot CLI (`@github/copilot`) — auths off `COPILOT_GITHUB_TOKEN`
     /// (preferred over `GH_TOKEN`/`GITHUB_TOKEN` so it can't clobber other tools).
     case copilot
+    /// OpenAI Codex CLI — signed in with ChatGPT through the CLI's own device
+    /// flow (`CodexOAuth`), delivered as a session-only `auth.json`; a pasted
+    /// personal access token rides as `CODEX_ACCESS_TOKEN` instead.
+    case codex
     /// Any other CLI: free-form command + token env-var name, set per host.
     case custom
 
@@ -165,6 +170,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "Claude"
         case .copilot: "Copilot"
+        case .codex: "Codex"
         case .custom: "Custom"
         }
     }
@@ -174,6 +180,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "sparkles"
         case .copilot: "chevron.left.forwardslash.chevron.right"
+        case .codex: "curlybraces"
         case .custom: "terminal"
         }
     }
@@ -183,6 +190,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "claude"
         case .copilot: "copilot"
+        case .codex: "codex"
         case .custom: ""
         }
     }
@@ -204,7 +212,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     var defaultFlags: [String] {
         switch self {
         case .claude: ["--allow-dangerously-skip-permissions"]
-        case .copilot, .custom: []
+        case .copilot, .codex, .custom: []
         }
     }
 
@@ -220,6 +228,9 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "CLAUDE_CODE_OAUTH_TOKEN"
         case .copilot: "COPILOT_GITHUB_TOKEN"
+        // The paste path only: a personal access token (`at-…`). A ChatGPT
+        // sign-in can't use this variable — see `CodexOAuth`.
+        case .codex: "CODEX_ACCESS_TOKEN"
         case .custom: ""
         }
     }
@@ -229,13 +240,15 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "Set up Claude"
         case .copilot: "Set up Copilot"
+        case .codex: "Set up Codex"
         case .custom: "Set up Token"
         }
     }
 
-    /// Whether this agent supports the in-app GitHub OAuth device flow to mint
-    /// its token (Copilot is a public GitHub App client). Others paste a token.
-    var supportsDeviceFlow: Bool { self == .copilot }
+    /// Whether this agent signs in through an in-app device-code flow: GitHub's
+    /// for Copilot (a public GitHub App client), OpenAI's for Codex (the CLI's
+    /// public ChatGPT client). Others paste a token.
+    var supportsDeviceFlow: Bool { self == .copilot || self == .codex }
 
     /// Whether this agent can be signed in through the in-app browser
     /// (authorization code + PKCE, see `ClaudeOAuth`). Claude Code's OAuth client
@@ -254,6 +267,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: ""
         case .copilot: "copilot"
+        case .codex: "codex"
         case .custom: "custom"
         }
     }
@@ -269,6 +283,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         // step.
         case .claude: ""
         case .copilot: ""
+        case .codex: ""
         case .custom: ""
         }
     }
@@ -280,10 +295,26 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
             "Sign in below — Longwave opens Claude's consent page in-app, captures the credential on this headset, and injects it into each session as \(envName). It requests the full session scopes (including user:profile, so the agent can see which models your plan covers) and renews the token before each launch. The Mac's keychain is never touched."
         case .copilot:
             "Sign in with GitHub below — Longwave runs the device-authorization flow on this headset, captures the token, and injects it into each session as \(envName). The Mac's keychain is never touched. (Prefer a token? Paste a fine-grained PAT with the “Copilot Requests” permission instead — classic ghp_ tokens aren't supported.)"
+        case .codex:
+            "Sign in with ChatGPT below — Longwave runs Codex's device sign-in on this headset and keeps the credential here. Each session gets its own auth.json (in ~/\(CodexOAuth.Constants.sessionHomeDirectory) on the host, so your own Codex login there is untouched) without the refresh token, which never leaves this device; the token is renewed before a launch when under a day remains. (Prefer a token? Paste a ChatGPT personal access token, injected as \(envName).)"
         case .custom:
             "Paste the credential your CLI reads from \(envName). It's stored only on this device and injected into each session as that environment variable."
         }
     }
+}
+
+/// Extra work a managed session's create step does after its environment has
+/// been exported and before tmux starts — the hook for credentials a CLI only
+/// reads from a file (Codex's `auth.json`, see `CodexOAuth.sessionSetup`).
+///
+/// `consumedNames` are variables the script reads and unsets: they travel over
+/// the stdin channel like any token but are never registered with tmux, so the
+/// agent never sees them. `exportedNames` are variables the script sets that
+/// tmux must import into the session.
+struct AgentSessionSetup: Sendable, Equatable {
+    var script: String
+    var exportedNames: [String] = []
+    var consumedNames: Set<String> = []
 }
 
 // MARK: - VNC Quality
@@ -541,7 +572,7 @@ final class SavedConnection {
     /// connection. The token *value* lives in `KeychainStore` (keyed by `id`),
     /// never in SwiftData; this is only a UI flag. Kept under its original name
     /// (no rename) so existing stores migrate without touching the column.
-    /// Per-agent siblings below cover Copilot/Custom. Default false.
+    /// Per-agent siblings below cover Copilot/Codex/Custom. Default false.
     var sshHasAuthToken: Bool = false
 
     /// UI flag: a **Copilot** token is stored in the Keychain. Default false.
@@ -549,6 +580,11 @@ final class SavedConnection {
 
     /// UI flag: a **Custom**-agent token is stored in the Keychain. Default false.
     var sshHasCustomToken: Bool = false
+
+    /// UI flag: **Codex** is set up — a pasted token in its keychain slot or a
+    /// ChatGPT credential in `CodexCredentialStore`. Default false, so the new
+    /// column migrates lightweight.
+    var sshHasCodexToken: Bool = false
 
     /// Which managed agent the Projects tab launches by default for this host.
     /// Empty → `.claude`. Remembered across launches; flippable before launch.
@@ -597,7 +633,7 @@ final class SavedConnection {
     /// `claude` binary, since flags belong to the agent the app knows it launched.
     func effectiveCommand(for agent: SSHAgent) -> String {
         switch agent {
-        case .claude, .copilot:
+        case .claude, .copilot, .codex:
             return agent.defaultLaunchCommand
         case .custom:
             return sshClientCommand.isEmpty ? SSHAgent.claude.defaultCommand : sshClientCommand
@@ -608,7 +644,7 @@ final class SavedConnection {
     /// name; `.custom` uses the free-form `sshAuthEnvName` field.
     func effectiveEnvName(for agent: SSHAgent) -> String {
         switch agent {
-        case .claude, .copilot:
+        case .claude, .copilot, .codex:
             return agent.defaultEnvName
         case .custom:
             return sshAuthEnvName.isEmpty ? SSHAgent.claude.defaultEnvName : sshAuthEnvName
@@ -643,6 +679,7 @@ final class SavedConnection {
         switch agent {
         case .claude: sshHasAuthToken
         case .copilot: sshHasCopilotToken
+        case .codex: sshHasCodexToken
         case .custom: sshHasCustomToken
         }
     }
@@ -651,6 +688,7 @@ final class SavedConnection {
         switch agent {
         case .claude: sshHasAuthToken = present
         case .copilot: sshHasCopilotToken = present
+        case .codex: sshHasCodexToken = present
         case .custom: sshHasCustomToken = present
         }
     }
@@ -665,10 +703,11 @@ final class SavedConnection {
     func setSSHAuthToken(_ value: String?, for agent: SSHAgent) {
         let v = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         KeychainStore.set(service: Self.sshAuthTokenService, account: tokenAccount(agent), value: v)
-        // Clearing the pasted token doesn't mean Claude is unconfigured — an
-        // in-app credential is a separate, sufficient way to be set up.
+        // Clearing the pasted token doesn't mean Claude/Codex is unconfigured —
+        // an in-app credential is a separate, sufficient way to be set up.
         let stillConfigured = !v.isEmpty
             || (agent == .claude && ClaudeCredentialStore.load(connectionID: id) != nil)
+            || (agent == .codex && CodexCredentialStore.load(connectionID: id) != nil)
         setHasToken(stillConfigured, for: agent)
     }
 
@@ -724,9 +763,33 @@ final class SavedConnection {
         setHasToken(!pasted.isEmpty, for: .claude)
     }
 
+    // MARK: In-app Codex credential (ChatGPT device sign-in)
+
+    var hasCodexCredential: Bool {
+        CodexCredentialStore.load(connectionID: id) != nil
+    }
+
+    var codexCredential: CodexOAuth.Credential? {
+        CodexCredentialStore.load(connectionID: id)
+    }
+
+    func setCodexCredential(_ credential: CodexOAuth.Credential) {
+        CodexCredentialStore.save(credential, connectionID: id)
+        setHasToken(true, for: .codex)
+    }
+
+    /// Remove the credential and revoke it upstream; the flag stays lit if a
+    /// pasted token is still present.
+    func clearCodexCredential() async {
+        await CodexCredentialStore.revokeAndDelete(connectionID: id)
+        let pasted = sshAuthToken(for: .codex) ?? ""
+        setHasToken(!pasted.isEmpty, for: .codex)
+    }
+
     /// The token to inject for `agent`, without touching the network. Claude
     /// prefers an in-app credential over a pasted one; everything else reads its
-    /// single keychain slot as before.
+    /// single keychain slot as before. (A Codex credential isn't a token in this
+    /// sense — it's delivered as `auth.json`, see `resolvedSSHEnvironment`.)
     private func storedToken(for agent: SSHAgent) -> String? {
         if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
             return credential.accessToken
@@ -770,6 +833,13 @@ final class SavedConnection {
                 includeRefreshToken: sshInjectClaudeRefreshToken))
             return env
         }
+        // A ChatGPT credential wins over a pasted PAT, and replaces it rather
+        // than joining it: the CLI prefers `CODEX_ACCESS_TOKEN` over `auth.json`,
+        // so injecting both would silently run the session on the PAT.
+        if agent == .codex, let credential = CodexCredentialStore.load(connectionID: id) {
+            Self.merge(&env, credential.sessionEnvironment())
+            return env
+        }
         guard let token = storedToken(for: agent), !token.isEmpty else { return env }
         Self.merge(&env, [(name: effectiveEnvName(for: agent), value: token)])
         return env
@@ -788,6 +858,13 @@ final class SavedConnection {
     /// pre-launch refresh stops being load-bearing — it's still done, since
     /// starting from a fresh token costs nothing.
     func resolvedSSHEnvironmentRenewingCredentials(for agent: SSHAgent) async -> [(name: String, value: String)] {
+        if agent == .codex, hasCodexCredential {
+            var env = sshEnvironmentVariables()
+            if let credential = await CodexCredentialStore.validCredential(connectionID: id) {
+                Self.merge(&env, credential.sessionEnvironment())
+            }
+            return env
+        }
         guard agent == .claude, hasClaudeCredential else {
             return resolvedSSHEnvironment(for: agent)
         }
@@ -798,6 +875,14 @@ final class SavedConnection {
         Self.merge(&env, credential.sessionEnvironment(
             includeRefreshToken: sshInjectClaudeRefreshToken))
         return env
+    }
+
+    /// The create-step setup a session running `agent` with `environment`
+    /// needs, if any — today only a Codex ChatGPT credential, which must be
+    /// written to `auth.json` because the CLI reads it from no variable.
+    func sessionSetup(for agent: SSHAgent,
+                      environment: [(name: String, value: String)]) -> AgentSessionSetup? {
+        agent == .codex ? CodexOAuth.sessionSetup(for: environment) : nil
     }
 
     /// Back-compat: the Claude session environment.

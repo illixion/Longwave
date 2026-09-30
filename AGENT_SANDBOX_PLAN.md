@@ -85,8 +85,16 @@ Known gaps this roadmap closes:
    with a login-only RFB client in the Companion (~200 lines: RFB 3.889
    greeting, ARD security type 30 Diffie-Hellman, AES-128 credential block,
    ClientInit, wait for the session, disconnect), using CryptoKit and
-   CommonCrypto. Spike first: confirm the session is created without
-   requesting framebuffer updates. Fallback: link RoyalVNCKit headless.
+   CommonCrypto. Decided: our own client, provided the spike confirms the
+   session is created without requesting framebuffer updates (fallback:
+   RoyalVNCKit headless). It reports distinct failures the UI can act on:
+   Screen Sharing off (connection refused on 5900), agent not allowed to use
+   Screen Sharing (ARD auth rejected, with the server's reason string), wrong
+   password, and session never appeared. The helper's `status` adds
+   `screenSharing` and `remoteLogin` state plus the agent's
+   `access_screensharing` / `access_ssh` membership, so the Companion can
+   show what's missing before any login is tried; fixes are a helper verb
+   where macOS allows it, otherwise a deep link to Sharing settings.
 3. **Setup without onboarding.** After install, the keeper logs the agent in
    and the golden snapshot is taken automatically once the session is up.
    `provision-golden.sh` pre-sets the per-user Setup Assistant "seen" flags so
@@ -111,21 +119,29 @@ carrying length-prefixed JSON frames: requests with IDs, responses, and pushed
 events. Advertised over Bonjour next to the native stream service; works over
 Tailscale unchanged.
 
-**Device identity.** The token only encrypts. After the handshake the client
-signs a server challenge, bound to the TLS session through the exporter
-secret, with its Secure Enclave key (the one the headset already uses for SSH).
-The first time a device connects the Mac asks "Allow <device> to manage sandbox
-projects?"; approved devices are listed in the Companion with per-device
-revoke. Later this can move to the TLS 1.3 pinned-identity transport planned in
-`MacNativeStreamCrypto`.
+**Two separate grants.** Pairing for screen/audio native streams (the
+Companion token, AirDrop link) stays exactly as it is and grants nothing in
+Projects. Projects is its own enrollment:
 
-**Permissions per device:**
+1. The user turns on Projects for the Mac in the client. The client connects
+   to the Projects listener (the token is still required, so only a paired
+   device can even ask), and sends an enrollment request: device name and its
+   Secure Enclave public key (the one the headset already uses for SSH).
+2. The Companion posts a macOS notification, "<device> wants to use
+   Projects", with quick actions **Approve**, **Deny** and **Block**. Deny
+   lets the device ask again later (rate-limited); Block remembers the key and
+   refuses it silently from then on. Unanswered requests expire after a few
+   minutes.
+3. Every later connection proves the device by signing a server challenge,
+   bound to the TLS session through the exporter secret, with that key.
 
-- *Use*: list projects and tasks, start sessions, get attach details.
-- *Manage*: stop, reset, schedules, task discard, desktop credentials.
-- *Host*: add projects from host folders, refresh from host, sync back,
-  approve memory changes. The only permission that touches the user's files.
-- Mac-only: installing, saving a golden home, approved-folder list.
+An approved device gets the whole Projects feature, including the Host
+actions that touch the user's files (adding projects, refresh from host, sync
+back, accepting memory changes). Mac-only: installing, saving a golden home,
+the approved-folder list. The Companion lists enrolled and blocked devices
+with revoke/unblock. LongwaveMac on the same Mac enrolls automatically through
+the shared keychain access group. Later this can move to the TLS 1.3
+pinned-identity transport planned in `MacNativeStreamCrypto`.
 
 **Requests:**
 
@@ -263,12 +279,13 @@ dir go away after migration.
   Agent commits are authored "Longwave Agent" and unsigned.
 - Task lifecycle: running → idle (checkpointed) → fetched → merged (detected
   with `merge-base --is-ancestor` against the host branch) → archived
-  (worktree removed, branch kept for a retention period).
+  (worktree removed, branch and checkpoints kept until the user deletes the
+  task in the UI; nothing expires on its own).
 
 ### Review
 
-The review screen (Companion, LongwaveMac, headset) shows commits, files and a
-diff summary, and flags changes that execute or instruct:
+Repo changes are reviewed in the in-app diff viewer (see "Review UI"), which
+flags changes that execute or instruct:
 
 - Executes: shell scripts, `Package.swift` and SPM plugins, Xcode build
   phases in `project.pbxproj`, `.envrc`, `Makefile`, CI workflows,
@@ -308,15 +325,43 @@ itself a git repo) and which subfolders (scopes) the sandbox may see.
 - **Back to the user — reviewed, never automatic.** Memory is loaded into the
   user's agents' context in every session, which makes it the most valuable
   target for a jailbroken sandbox agent (persistent prompt injection). After a
-  session the Companion fetches `sandbox`, and each added or changed entry
-  appears in a review queue (Companion, LongwaveMac, headset) with a diff and
-  flags for imperative or tool-directing text. Accepted entries are written
-  into the folder by the Companion as plain file writes and committed to the
-  shadow repo; rejected ones are reverted on the sandbox branch at next sync.
-  Optional mode: accepted entries land in an `_inbox/` scope that the user's
-  indexes don't list until moved.
+  session the Companion fetches `sandbox`, and each added, changed or deleted
+  file (entries and index files alike) appears in the diff viewer with flags
+  for imperative or tool-directing text. The user accepts or rejects per file,
+  or per hunk for index files the agent edited alongside the user's own
+  changes. Accepted changes are written into the folder by the Companion as
+  plain file writes and committed to the shadow repo; rejected ones are
+  reverted on the sandbox branch at the next sync. No staging scope: index
+  files are LLM-managed, so the reviewed diff is the only gate.
 - Per-project mapping: a task in project X gets scope X plus the shared global
   scopes the user allowed.
+
+## Review UI (macOS and visionOS)
+
+One diff viewer, shared SwiftUI in both the Mac (Companion, LongwaveMac) and
+headset targets, used for repo tasks and memory alike.
+
+- **Data:** the Companion produces diffs and sends a structured model over the
+  Projects protocol (files → hunks → lines, with intraline word ranges), never
+  raw patch text for the client to parse. Repo diffs run in the user's repo
+  against the fetched `sandbox/*` refs with `--no-ext-diff --no-textconv`, so
+  no diff driver runs; memory diffs come from the shadow repo. Large files and
+  binaries are summarised (size, type) and paged per file.
+- **Views:** a file list with change counts and flags, unified and
+  side-by-side modes (side-by-side as the default on the headset's wide
+  windows), word-level highlights, collapsed unchanged context, commit list
+  and git-notes run details for tasks, rendered Markdown preview toggle for
+  memory entries (preview only; the diff stays authoritative).
+- **Untrusted content:** every line is rendered as verbatim text
+  (`Text(verbatim:)`, no link detection, no Markdown in the diff itself), and
+  control/bidi characters are made visible.
+- **Flags** on files that execute or instruct (the lists under Phase D Review,
+  plus imperative, tool-directing text in memory entries), pinned to the top
+  of the file list.
+- **Actions:** memory — accept/reject per file or hunk, then apply. Repo tasks
+  — mark reviewed, copy the merge command, open the host repo in the user's
+  terminal at the task branch, archive or delete the task. Merging itself
+  stays in the user's own tools.
 
 ## Phase F — schedules on tasks
 
@@ -340,20 +385,25 @@ itself a git repo) and which subfolders (scopes) the sandbox may see.
    kill a session mid-edit and find the work in `sandbox-wip/*`, reset and
    find worktrees intact, fetch into the host repo, merge. Security checks:
    agent-written `config`/hooks in `repo.git` never execute as the user on
-   fetch; seeded repo carries no hooks or credential config.
+   fetch; seeded repo carries no hooks or credential config. The review UI
+   lands here (Mac first, then headset once B exists) and E reuses it.
 4. **B.** Protocol unit tests (framing, request validation, permission
-   gates, challenge binding); headset lists projects, starts a task, attaches
-   over SSH; unpaired and revoked devices refused.
+   gates, challenge binding); stream-only devices get nothing from Projects;
+   enrollment notification Approve / Deny / Block each behave as specified;
+   headset lists projects, starts a task, attaches over SSH, reviews a diff;
+   revoked and blocked devices refused.
 5. **E.** Verify unselected scopes absent from `memory/repo.git` objects;
    a sandbox-written entry appears only in the review queue until accepted.
 6. **F.** Continue and Fresh schedules end to end with notifications.
 
 Commit per phase on `main`, unsigned.
 
-## Open questions
+## Decisions
 
-- Login-only RFB client vs RoyalVNCKit headless (decided by the Phase A spike).
-- Retention for archived task branches and old checkpoints.
-- Whether *Host* permission is ever granted to non-Mac devices by default, or
-  stays opt-in per device.
-- Memory `_inbox/` mode on or off by default.
+- Own login-only RFB client, if the spike confirms a login alone starts the
+  session.
+- Archived tasks keep their branches and checkpoints until deleted in the UI.
+- Native stream pairing and Projects are separate grants; Projects enrollment
+  is approved from a macOS notification (Approve / Deny / Block).
+- No memory staging scope; memory and repo changes are reviewed in the in-app
+  diff viewer on macOS and visionOS.

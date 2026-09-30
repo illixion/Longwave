@@ -129,12 +129,29 @@ cmd_stop() {
     launchctl bootout "gui/$AGENT_UID" >/dev/null 2>&1 || true
     pkill -9 -u "$AGENT_UID" >/dev/null 2>&1 || true
     local i=0
-    while pgrep -u "$AGENT_UID" >/dev/null 2>&1 && [ $i -lt 20 ]; do
+    while [ -n "$(foreign_agent_processes)" ] && [ $i -lt 20 ]; do
         sleep 0.25; pkill -9 -u "$AGENT_UID" >/dev/null 2>&1 || true; i=$((i + 1))
     done
-    if pgrep -u "$AGENT_UID" >/dev/null 2>&1; then
-        die "agent processes survived stop"
-    fi
+    local left
+    left=$(foreign_agent_processes)
+    [ -z "$left" ] || die "agent processes survived stop: $(printf '%s' "$left" | tr '\n' ' ')"
+}
+
+# Agent-owned processes other than Apple per-user daemons that launchd itself
+# restarts on demand. distnoted and containermanagerd came straight back (ppid 1)
+# seconds after a bootout + pkill on macOS 27, whenever anything touched the
+# account, so "no processes at all" can never hold. Those are system binaries
+# the agent can't replace; anything else — its own code, a shell, a tmux
+# server, an app from its home — still fails the stop.
+foreign_agent_processes() {
+    # ps exits 1 when the user has no processes at all (the normal case after a
+    # stop); under pipefail that would silently abort the caller.
+    { ps -U "$AGENT_UID" -o pid=,ppid=,comm= 2>/dev/null || true; } | while read -r pid ppid comm; do
+        if [ "$ppid" = 1 ]; then
+            case "$comm" in /usr/libexec/*|/usr/sbin/*|/System/Library/*) continue ;; esac
+        fi
+        printf '%s:%s\n' "$pid" "$comm"
+    done
 }
 
 apply_keys_overlay() {
@@ -146,11 +163,56 @@ apply_keys_overlay() {
     fi
 }
 
+readonly TRASH=/Library/Longwave/trash
+
+# Some files an Apple process writes into the agent's home can't be read or
+# deleted even by root: app-data-protected group containers (seen:
+# Library/Group Containers/group.com.apple.CoreSpeech/Caches/…) and data vaults
+# ("Operation not permitted", macOS 27). They're Apple-owned caches the agent
+# can't write either, so skipping them is safe; any other copy error is fatal.
+tolerable_copy_errors_only() {
+    # stdin: cp's stderr. Succeeds when every line is a tolerated EPERM.
+    local line bad=0
+    while IFS= read -r line; do
+        case "$line" in
+            *": Operation not permitted")
+                case "$line" in
+                    *"/Library/Group Containers/"*|*"/Library/Containers/"*|*"/Library/Caches/"*|*".dv/"*|*".dv:"*) continue ;;
+                esac ;;
+        esac
+        echo "longwave-sandbox: copy error: $line" >&2
+        bad=1
+    done
+    return $bad
+}
+
+# cp -cpR (clonefile) of $1 to the new path $2, tolerating only the protected
+# Apple caches above.
+clone_tree() {
+    local errs
+    install -d -m 700 "$STATE_DIR"
+    errs=$(mktemp "$STATE_DIR/cperr.XXXXXX")
+    if cp -cpR "$1" "$2" 2>"$errs"; then rm -f "$errs"; return 0; fi
+    if tolerable_copy_errors_only < "$errs"; then rm -f "$errs"; return 0; fi
+    rm -f "$errs"; return 1
+}
+
+# Move a tree into the root-only trash (a rename on the same volume, which
+# works however protected its contents are), then delete what can be deleted.
+# Leftovers stay in a place the agent can't reach and are retried next time.
+trash_tree() {
+    [ -e "$1" ] || return 0
+    install -d -o root -g wheel -m 700 "$TRASH"
+    mv "$1" "$TRASH/$(basename "$1").$(date +%s).$$"
+    rm -rf "${TRASH:?}"/* 2>/dev/null || true
+}
+
 safe_rm_home() {
     # Belt and braces against a bad AGENT_USER ever turning this into rm -rf /Users.
     case "$AGENT_HOME" in /Users/?*) ;; *) die "refusing to delete $AGENT_HOME" ;; esac
     [ "$AGENT_HOME" != "/Users/$OWNER_USER" ] || die "refusing to delete the owner's home"
-    rm -rf "$AGENT_HOME"
+    trash_tree "$AGENT_HOME"
+    [ ! -e "$AGENT_HOME" ] || die "could not move $AGENT_HOME aside"
 }
 
 cmd_reset() {
@@ -161,7 +223,7 @@ cmd_reset() {
     safe_rm_home
     if [ -d "$GOLDEN/Library" ]; then
         # clonefile copy: seconds, and no extra space until files change.
-        cp -cpR "$GOLDEN" "$AGENT_HOME"
+        clone_tree "$GOLDEN" "$AGENT_HOME" || die "restoring the golden copy failed"
     else
         createhomedir -c -u "$AGENT_USER" >/dev/null 2>&1 || true
         [ -d "$AGENT_HOME" ] || die "createhomedir failed"
@@ -203,9 +265,16 @@ cmd_snapshot_golden() {
     agent_exists || die "agent user missing"
     [ -d "$AGENT_HOME/Library" ] || die "agent home looks empty; nothing to snapshot"
     cmd_stop
-    install -d -o root -g wheel -m 700 "$(dirname "$GOLDEN")"
-    rm -rf "$GOLDEN"
-    cp -cpR "$AGENT_HOME" "$GOLDEN"
+    # Build the new copy beside the old one and swap, so a failed copy never
+    # leaves the sandbox without a golden home. /Library/Longwave itself stays
+    # 755: the exchange dir inside it must be reachable by the owner and agent.
+    install -d -o root -g wheel -m 755 "$(dirname "$GOLDEN")"
+    local staging="$GOLDEN.new"
+    rm -rf "$staging" 2>/dev/null || trash_tree "$staging"
+    clone_tree "$AGENT_HOME" "$staging" || { trash_tree "$staging"; die "copying the home failed"; }
+    chown root:wheel "$staging"; chmod 700 "$staging"
+    trash_tree "$GOLDEN"
+    mv "$staging" "$GOLDEN"
     # Keys come from the overlay on every reset, never from the snapshot.
     rm -f "$GOLDEN/.ssh/authorized_keys"
     # The copy's top dir came from the agent's home and is agent-owned; make it

@@ -77,7 +77,8 @@ shared through `AgentSessionCommands`), and attach in Terminal.app. `SandboxSess
 GUI session for the agent by logging it in over loopback Screen Sharing — visionOS simulators need
 one. Projects move through `/Library/Longwave/exchange` (import = push, return = fetch only). The
 sandbox's credentials sit on an unpersisted fixed-UUID `SavedConnection`, so it never appears in
-the connection list or backups. See the sandbox bullets in [[KNOWN_CONSTRAINTS.md]].
+the connection list or backups. See the sandbox bullets in [[KNOWN_CONSTRAINTS.md]]; the move to the
+Companion, task worktrees, sync back and shared memory are planned in [[AGENT_SANDBOX_PLAN.md]].
 **Schedules** (`LocalScheduler`, `MacSchedulesView`) fire recurring headless runs into a sandbox
 project — `claude -p` / `codex exec` / `copilot -p`, or a plain shell command — **only while
 LongwaveMac runs** (optional "Open at login"; no daemon). Runs never overlap, obey a daily cap and a

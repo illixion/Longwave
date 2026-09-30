@@ -96,7 +96,7 @@ final class SessionReaperTests: XCTestCase {
     /// app connecting, so nothing collected sessions while the headset was off.
     /// Every launch and re-attach must now (re)start the watchdog.
     func testLaunchAndReattachBothStartTheWatchdog() {
-        let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
+        let launched = SSHTerminalManager.agentLaunch(tmuxSession: "proj", folder: "/p").attach
         let reattached = SSHTerminalManager.attachCommand(tmuxSession: "proj")
         for command in [launched, reattached] {
             XCTAssertTrue(command.contains(SSHTerminalManager.reaperSessionName),

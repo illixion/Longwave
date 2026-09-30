@@ -79,8 +79,19 @@ final class SSHSession: Identifiable {
     private var lastCols = 80
     private var lastRows = 24
 
+    /// A non-PTY step run before every PTY connect — the create half of an
+    /// `SSHTerminalManager.AgentLaunch`, with its env payload for stdin.
+    struct Prelaunch: Sendable {
+        let command: String
+        let stdin: Data
+    }
+
     // Retained so `restart()` can rebuild the connection with the same launch.
     private var config: SSHConnection.Config?
+    private var prelaunch: Prelaunch?
+    /// Bumped on every connect so a create step that finishes after a newer
+    /// connect (or a terminate) can't open a stale PTY.
+    private var connectGeneration = 0
     private var privateKey: NIOSSHPrivateKey?
     private var group: NIOTSEventLoopGroup?
 
@@ -112,10 +123,12 @@ final class SSHSession: Identifiable {
         self.cwd = cwd
     }
 
-    func start(config: SSHConnection.Config, privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup) {
+    func start(config: SSHConnection.Config, privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup,
+               prelaunch: Prelaunch? = nil) {
         self.config = config
         self.privateKey = privateKey
         self.group = group
+        self.prelaunch = prelaunch
         connect()
     }
 
@@ -132,9 +145,9 @@ final class SSHSession: Identifiable {
     }
 
     /// Reconnect after a drop or a wedged launch (manual button or auto-retry).
-    /// Re-runs the original launch command: tmux `new -A` re-attaches a
-    /// surviving remote session, or creates a fresh one if the program exited
-    /// (e.g. claude after Ctrl+C).
+    /// Re-runs the original launch: the create step (if any) is a no-op for a
+    /// surviving remote session and recreates it if the program exited (e.g.
+    /// claude after Ctrl+C), then the PTY re-attaches.
     func restart() {
         userTerminated = false
         retryTask?.cancel()
@@ -211,8 +224,42 @@ final class SSHSession: Identifiable {
     }
 
     private func connect() {
-        guard var config, let privateKey, let group else { return }
+        guard let privateKey, let group, config != nil else { return }
         state = .connecting
+        connectGeneration += 1
+        guard let prelaunch else {
+            openTerminal()
+            return
+        }
+        let generation = connectGeneration
+        connection = nil
+        SSHCommandRunner.run(host: host, port: port, username: username, command: prelaunch.command,
+                             stdin: prelaunch.stdin, privateKey: privateKey, group: group) { result in
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.connectGeneration, !self.userTerminated else { return }
+                self.finishPrelaunch(result)
+            }
+        }
+    }
+
+    private func finishPrelaunch(_ result: Result<String, Error>) {
+        switch result {
+        case .success(let output) where output.contains(SSHTerminalManager.agentCreatedMarker):
+            openTerminal()
+        case .success(let output) where output.contains(SSHTerminalManager.agentNoTmuxMarker):
+            // Retrying can't install tmux, so don't schedule one.
+            state = .failed("tmux isn't installed on this host (or isn't on the login shell's PATH).")
+        case .success:
+            state = .failed("The session couldn't be created on the host.")
+            scheduleRetry()
+        case .failure(let error):
+            state = .failed(error.localizedDescription)
+            scheduleRetry()
+        }
+    }
+
+    private func openTerminal() {
+        guard var config, let privateKey, let group else { return }
         config.cols = lastCols
         config.rows = lastRows
         let conn = SSHConnection(config: config, privateKey: privateKey, group: group)
@@ -425,15 +472,17 @@ final class SSHTerminalManager {
     }
 
     /// Open or re-attach a managed Claude session in `folder`, tmux-backed so it
-    /// survives disconnects (`-A` = attach-or-create) under a login+interactive
-    /// shell (brew/nvm/bun PATHs resolve).
+    /// survives disconnects (created if absent, then attached) under a
+    /// login+interactive shell (brew/nvm/bun PATHs resolve). Creation and attach
+    /// are separate channels so the token never reaches an argv — see
+    /// `AgentLaunch`.
     ///
     /// `agentKey` distinguishes agents launched in the same folder: it's folded
     /// into both the tmux session name and the `SSHSessionID`, so switching from
     /// (say) Claude to Copilot starts a separate tmux session instead of
-    /// re-attaching the one still running the previous agent (`tmux new -A`
-    /// would otherwise ignore the new command/token). Empty for the default
-    /// agent so pre-existing sessions keep their bare slug.
+    /// re-attaching the one still running the previous agent (an existing
+    /// session would otherwise ignore the new command/token). Empty for the
+    /// default agent so pre-existing sessions keep their bare slug.
     @discardableResult
     func newClaudeSession(host: String, port: Int, username: String,
                           folder: String, projectName: String,
@@ -443,16 +492,18 @@ final class SSHTerminalManager {
         let title = projectName.isEmpty ? Self.folderName(folder) : projectName
         let base = Self.slug(title)
         let slug = agentKey.isEmpty ? base : Self.slug("\(base)-\(agentKey)")
-        let command = Self.claudeCommand(tmuxSession: slug, folder: folder,
-                                         clientCommand: clientCommand,
-                                         environment: environment)
+        let launch = Self.agentLaunch(tmuxSession: slug, folder: folder,
+                                      clientCommand: clientCommand,
+                                      environment: environment)
         return try startSession(slug: slug, title: title, host: host, port: port,
-                                username: username, command: command, kind: .claude, cwd: folder)
+                                username: username, command: launch.attach, kind: .claude, cwd: folder,
+                                prelaunch: SSHSession.Prelaunch(command: launch.create, stdin: launch.payload))
     }
 
     private func startSession(slug: String, title: String, host: String, port: Int,
                               username: String, command: String,
-                              kind: SSHSession.Kind, cwd: String?) throws -> SSHSessionID {
+                              kind: SSHSession.Kind, cwd: String?,
+                              prelaunch: SSHSession.Prelaunch? = nil) throws -> SSHSessionID {
         let id = SSHSessionID(raw: slug)
         if let existing = session(id) { return existing.id }
 
@@ -463,7 +514,7 @@ final class SSHTerminalManager {
         )
         let session = SSHSession(id: id, title: title, host: host, port: port, username: username, kind: kind, cwd: cwd)
         sessions.append(session)
-        session.start(config: config, privateKey: key.nioPrivateKey, group: group)
+        session.start(config: config, privateKey: key.nioPrivateKey, group: group, prelaunch: prelaunch)
         log.info("Opened SSH session \(slug, privacy: .private(mask: .hash)) to \(host, privacy: .private(mask: .hash))")
         return id
     }
@@ -568,11 +619,31 @@ final class SSHTerminalManager {
         "zsh -lic \(shellSingleQuote(inner))"
     }
 
-    /// The tmux create-or-attach line shared by managed Claude sessions and
-    /// persistent shell sessions. Empty `client` → tmux runs its default shell.
+    /// The tmux create-or-attach line for persistent shell sessions. Empty
+    /// `client` → tmux runs its default shell. Managed agent sessions don't use
+    /// this: their environment carries tokens, so they split creation onto its
+    /// own channel (`agentLaunch`) instead of inlining values here.
     private static func tmuxLaunchLine(tmuxSession: String, folder: String,
                                        client: String,
                                        environment: [(name: String, value: String)]) -> String {
+        var line = tmuxCreateLine(tmuxSession: tmuxSession, folder: folder, client: client,
+                                  environment: environment, inlineValues: true)
+        line += sessionOptions(tmuxSession: tmuxSession)
+        // `attach -d` detaches stale clients left behind by dropped connections
+        // (tracking loss) so they can't pin the tmux window at the old size —
+        // it also displaces any other legitimately attached client, accepted
+        // for this app's one-window-per-session model.
+        line += "exec tmux attach -d -t \(target(tmuxSession))"
+        return line
+    }
+
+    /// Registers the env names with tmux, creates the session if absent and tags
+    /// it. With `inlineValues` the values ride as `NAME='value'` assignments on
+    /// `tmux new` (shell sessions, whose environment is non-secret by contract);
+    /// without, the caller must already have exported them into this shell.
+    private static func tmuxCreateLine(tmuxSession: String, folder: String, client: String,
+                                       environment: [(name: String, value: String)],
+                                       inlineValues: Bool) -> String {
         let vars = environment.filter { !$0.name.isEmpty }
         var line = ""
         // A tmux server started before these vars existed snapshots an env
@@ -597,11 +668,10 @@ final class SSHTerminalManager {
         // lets abandoned shell sessions close themselves without interrupting
         // a command or agent that is still running.
         line += "TMOUT=\(promptIdleTimeoutSeconds) "
-        // Inline assignments scope the secret to the short-lived `tmux new`
-        // child's environment — never written to disk, and macOS redacts a
-        // process's env from other (non-root) processes.
-        for v in vars {
-            line += "\(v.name)=\(shellSingleQuote(v.value)) "
+        if inlineValues {
+            for v in vars {
+                line += "\(v.name)=\(shellSingleQuote(v.value)) "
+            }
         }
         line += "tmux new -d -s \(tmuxSession)"
         if !folder.isEmpty { line += " -c \(shellSingleQuote(folder))" }
@@ -611,25 +681,94 @@ final class SSHTerminalManager {
         // an app restart can tell them apart from the user's own stray tmux
         // sessions (which it must never list or offer to kill).
         line += "tmux set-option -t \(optionTarget(tmuxSession)) @longwave 1 >/dev/null 2>&1; "
-        line += sessionOptions(tmuxSession: tmuxSession)
-        // `exec` replaces this shell with the attach client, so the token-
-        // bearing argv of `tmux new` is shed within milliseconds of launch.
-        // `attach -d` detaches stale clients left behind by dropped connections
-        // (tracking loss) so they can't pin the tmux window at the old size —
-        // it also displaces any other legitimately attached client, accepted
-        // for this app's one-window-per-session model.
-        line += "exec tmux attach -d -t \(target(tmuxSession))"
         return line
     }
 
-    static func claudeCommand(tmuxSession: String, folder: String,
-                              clientCommand: String = "claude",
-                              environment: [(name: String, value: String)] = []) -> String {
-        let client = clientCommand.isEmpty ? "claude" : clientCommand
-        let inner = tmuxLaunchLine(tmuxSession: tmuxSession, folder: folder,
-                                   client: client, environment: environment)
-        return loginShellCommand(inner)
+    /// A managed agent launch, split in two so no secret is ever in an argv.
+    ///
+    /// Everything on a process's command line is readable by every local user
+    /// through `ps` — macOS redacts another user's *environment*, not its argv.
+    /// Inlining `TOKEN='…'` into the exec'd `zsh -lic '<line>'` therefore
+    /// published the token for as long as that zsh lived, which includes the
+    /// whole of its rc-file startup. On a single-user Mac that was moot; with a
+    /// second local account (the agent sandbox) it isn't.
+    ///
+    /// So `create` runs first on its own non-PTY exec channel and reads the
+    /// environment from **stdin** (`payload`, one `NAME=<base64>` line per
+    /// variable), exports it inside the shell — never on a command line — and
+    /// creates the tmux session. `attach` then goes down the PTY channel and
+    /// carries no env at all; it is the same command rediscovered sessions use.
+    struct AgentLaunch: Sendable {
+        /// Exec'd on a non-PTY channel with `payload` on stdin.
+        let create: String
+        /// `NAME=<base64(value)>\n` per variable. Send it, then EOF.
+        let payload: Data
+        /// Exec'd under the PTY once `create` has succeeded.
+        let attach: String
     }
+
+    /// Printed by a successful create step; its absence means the create failed.
+    static let agentCreatedMarker = "LONGWAVE-SESSION-READY"
+    /// Printed when the host has no tmux, so the UI can say so instead of
+    /// retrying a launch that can never work.
+    static let agentNoTmuxMarker = "LONGWAVE-NO-TMUX"
+
+    static func agentLaunch(tmuxSession: String, folder: String,
+                            clientCommand: String = "claude",
+                            environment: [(name: String, value: String)] = []) -> AgentLaunch {
+        let vars = environment.filter { SavedConnection.isValidEnvName($0.name) }
+        let inner = agentCreateScript(tmuxSession: tmuxSession, folder: folder,
+                                      clientCommand: clientCommand, names: vars.map(\.name))
+        // The reader runs in a plain POSIX `sh` *before* the login shell, so an
+        // rc file can't swallow stdin, and whatever shell sshd hands us (bash,
+        // zsh, fish) only has to exec `/bin/sh`. The exported values reach
+        // `zsh -lic` — and from it `tmux new` — through the environment.
+        let create = "/bin/sh -c " + shellSingleQuote(envStdinReader + "exec " + loginShellCommand(inner))
+        return AgentLaunch(create: create, payload: envPayload(vars),
+                           attach: attachCommand(tmuxSession: tmuxSession))
+    }
+
+    /// The login-shell half of `AgentLaunch.create`: registers `names` with
+    /// tmux (their values are already exported by `envStdinReader`), creates
+    /// and tags the session, and reports the outcome on stdout.
+    static func agentCreateScript(tmuxSession: String, folder: String,
+                                  clientCommand: String, names: [String]) -> String {
+        let client = clientCommand.isEmpty ? "claude" : clientCommand
+        var script = "command -v tmux >/dev/null 2>&1 || { echo \(agentNoTmuxMarker); exit 1; }; "
+        script += tmuxCreateLine(tmuxSession: tmuxSession, folder: folder, client: client,
+                                 environment: names.map { (name: $0, value: "") },
+                                 inlineValues: false)
+        script += "tmux has-session -t \(target(tmuxSession)) 2>/dev/null && echo \(agentCreatedMarker)"
+        return script
+    }
+
+    /// Encodes `environment` for `envStdinReader`: base64 keeps quotes,
+    /// newlines and `$` in values from ever meeting a shell parser.
+    static func envPayload(_ environment: [(name: String, value: String)]) -> Data {
+        var out = ""
+        for v in environment where SavedConnection.isValidEnvName(v.name) {
+            out += "\(v.name)=\(Data(v.value.utf8).base64EncodedString())\n"
+        }
+        return Data(out.utf8)
+    }
+
+    /// POSIX `sh` that exports each `NAME=<base64>` line from stdin.
+    ///
+    /// Every step that touches a value is a builtin (`read`, `printf`, `export`)
+    /// or reads it from a pipe (`base64`), so no value is ever an argument of an
+    /// exec'd process. The name check mirrors `SavedConnection.isValidEnvName`.
+    /// `printf x` / `${v%x}` preserves trailing newlines that command
+    /// substitution would otherwise strip. GNU coreutils decodes with `-d`,
+    /// older macOS `base64` only knew `-D`.
+    static let envStdinReader =
+        "if printf eA== | base64 -d >/dev/null 2>&1; then d=-d; else d=-D; fi; "
+        + "while IFS= read -r l || [ -n \"$l\" ]; do "
+        + "case $l in *=*) ;; *) continue;; esac; "
+        + "n=${l%%=*}; v=${l#*=}; "
+        + "case $n in ''|[0-9]*|*[!A-Za-z0-9_]*) continue;; esac; "
+        + "v=$(printf %s \"$v\" | base64 $d; printf x); v=${v%x}; "
+        + "export \"$n=$v\"; "
+        + "done; "
 
     /// Re-attach an already-running tmux session — no create, no command, no
     /// token (the live session already carries the agent and its env). Used to

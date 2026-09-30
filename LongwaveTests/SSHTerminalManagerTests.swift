@@ -7,29 +7,118 @@ import XCTest
 @MainActor
 final class SSHTerminalManagerTests: XCTestCase {
 
-    // MARK: - claudeCommand
+    // MARK: - agentLaunch
 
-    func testClaudeCommandAttachesDetachingStaleClients() {
-        let cmd = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/Users/me/proj")
-        XCTAssertTrue(cmd.hasPrefix("zsh -lic '"))
+    func testAgentCreateScriptCreatesOnlyIfAbsentAndReports() {
+        let script = SSHTerminalManager.agentCreateScript(
+            tmuxSession: "proj", folder: "/Users/me/proj", clientCommand: "claude", names: [])
         // Created only if absent. `tmux new -A -d` cannot be used: `-A` turns an
         // existing session into an attach, and tmux then reads `-d` as
         // attach-session's own flag instead of "stay detached", so the create
         // line took over the terminal.
-        XCTAssertTrue(cmd.contains("tmux has-session -t '\\''=proj'\\'' 2>/dev/null || "))
-        XCTAssertTrue(cmd.contains("tmux new -d -s proj -c '\\''/Users/me/proj'\\'' claude"))
-        // -d detaches stale clients from dropped connections so they can't
-        // pin the tmux window at the old size.
-        XCTAssertTrue(cmd.contains("exec tmux attach -d -t '\\''=proj'\\''"))
+        XCTAssertTrue(script.contains("tmux has-session -t '=proj' 2>/dev/null || "))
+        XCTAssertTrue(script.contains("tmux new -d -s proj -c '/Users/me/proj' claude"))
+        XCTAssertTrue(script.contains("tmux set-option -t 'proj' @longwave 1"))
+        XCTAssertTrue(script.contains("echo \(SSHTerminalManager.agentCreatedMarker)"))
+        XCTAssertTrue(script.contains("echo \(SSHTerminalManager.agentNoTmuxMarker)"))
+        // The create step never attaches — that's the PTY channel's job.
+        XCTAssertFalse(script.contains("attach"))
     }
 
-    func testClaudeCommandInjectsEnvironmentInline() {
-        let cmd = SSHTerminalManager.claudeCommand(
-            tmuxSession: "p", folder: "/p",
-            environment: [(name: "TOK", value: "secret")]
-        )
-        XCTAssertTrue(cmd.contains("tmux set -gqa update-environment '\\''TOK'\\''"))
-        XCTAssertTrue(cmd.contains("TOK='\\''secret'\\'' tmux new"))
+    func testAgentLaunchAttachDetachesStaleClients() {
+        let launch = SSHTerminalManager.agentLaunch(tmuxSession: "proj", folder: "/Users/me/proj")
+        XCTAssertTrue(launch.create.hasPrefix("/bin/sh -c '"))
+        XCTAssertTrue(launch.attach.hasPrefix("zsh -lic '"))
+        // -d detaches stale clients from dropped connections so they can't
+        // pin the tmux window at the old size.
+        XCTAssertTrue(launch.attach.contains("exec tmux attach -d -t '\\''=proj'\\''"))
+        XCTAssertEqual(launch.attach, SSHTerminalManager.attachCommand(tmuxSession: "proj"))
+    }
+
+    /// Distinctive values covering everything a shell could mangle or expand.
+    private let hostileSecrets: [(name: String, value: String)] = [
+        (name: "TOK", value: "s3cr3t-'quoted' \"dq\" $HOME `id` $(id)"),
+        (name: "MULTI", value: "line1\nline2\n"),
+        (name: "SPACE_Y", value: "  padded value  "),
+    ]
+
+    /// The regression this split exists for: anything on a command line is
+    /// readable by every local user via `ps`, so no value may appear in either
+    /// exec'd command — not even base64-encoded.
+    func testNoSecretEverAppearsInAnyCommandLine() {
+        let launch = SSHTerminalManager.agentLaunch(
+            tmuxSession: "p", folder: "/p", environment: hostileSecrets)
+        for (_, value) in hostileSecrets {
+            let encoded = Data(value.utf8).base64EncodedString()
+            for command in [launch.create, launch.attach] {
+                XCTAssertFalse(command.contains(value), "value leaked into: \(command)")
+                XCTAssertFalse(command.contains(encoded), "encoded value leaked into: \(command)")
+            }
+        }
+        for fragment in ["s3cr3t", "line1", "padded value"] {
+            XCTAssertFalse(launch.create.contains(fragment))
+            XCTAssertFalse(launch.attach.contains(fragment))
+        }
+    }
+
+    func testAgentLaunchRegistersNamesButCarriesValuesOnlyInPayload() {
+        let launch = SSHTerminalManager.agentLaunch(
+            tmuxSession: "p", folder: "/p", environment: [(name: "TOK", value: "secret")])
+        // Names are not secret and must still reach update-environment, or a
+        // tmux server started earlier would never pass the token on.
+        XCTAssertTrue(launch.create.contains("update-environment"))
+        XCTAssertTrue(launch.create.contains("TOK"))
+        XCTAssertFalse(launch.create.contains("secret"))
+        XCTAssertEqual(String(decoding: launch.payload, as: UTF8.self),
+                       "TOK=\(Data("secret".utf8).base64EncodedString())\n")
+    }
+
+    func testEnvPayloadRoundTripsHostileValues() throws {
+        let payload = String(decoding: SSHTerminalManager.envPayload(hostileSecrets), as: UTF8.self)
+        let lines = payload.split(separator: "\n", omittingEmptySubsequences: true)
+        XCTAssertEqual(lines.count, hostileSecrets.count, "one line per variable, values can't break lines")
+        for (line, expected) in zip(lines, hostileSecrets) {
+            let eq = try XCTUnwrap(line.firstIndex(of: "="))
+            XCTAssertEqual(String(line[..<eq]), expected.name)
+            let decoded = try XCTUnwrap(Data(base64Encoded: String(line[line.index(after: eq)...])))
+            XCTAssertEqual(String(decoding: decoded, as: UTF8.self), expected.value)
+        }
+    }
+
+    func testEnvPayloadDropsInvalidNames() {
+        let payload = String(decoding: SSHTerminalManager.envPayload([
+            (name: "", value: "a"), (name: "1BAD", value: "b"), (name: "BAD-NAME", value: "c"),
+            (name: "BAD NAME", value: "d"), (name: "GOOD_1", value: "e"),
+        ]), as: UTF8.self)
+        XCTAssertEqual(payload, "GOOD_1=\(Data("e".utf8).base64EncodedString())\n")
+        let launch = SSHTerminalManager.agentLaunch(
+            tmuxSession: "p", folder: "/p", environment: [(name: "BAD-NAME", value: "c")])
+        XCTAssertFalse(launch.create.contains("BAD-NAME"))
+    }
+
+    /// Runs the exact reader the host runs, under the system `/bin/sh`, feeding
+    /// it the payload on stdin — proves the decode (including trailing
+    /// newlines and shell metacharacters) end to end, not just the encoding.
+    func testStdinReaderExportsExactValuesUnderSh() throws {
+        #if os(macOS)
+        let names = hostileSecrets.map(\.name)
+        let dump = names.map { "printf '%s\\0' \"$\($0)\"" }.joined(separator: "; ")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", SSHTerminalManager.envStdinReader + dump]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        try process.run()
+        input.fileHandleForWriting.write(SSHTerminalManager.envPayload(hostileSecrets))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let values = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
+        XCTAssertEqual(values, hostileSecrets.map(\.value))
+        #else
+        throw XCTSkip("Process is macOS-only; the payload encoding is covered above")
+        #endif
     }
 
     /// The managed Claude launch *unlocks* bypass mode rather than entering it:
@@ -39,9 +128,9 @@ final class SSHTerminalManagerTests: XCTestCase {
     /// checks off, so it must never reach the launch line.
     func testManagedClaudeLaunchUnlocksBypassWithoutEnablingIt() {
         let host = SavedConnection(hostname: "h", port: 22, connectionType: .ssh)
-        let cmd = SSHTerminalManager.claudeCommand(
+        let cmd = SSHTerminalManager.agentLaunch(
             tmuxSession: "proj", folder: "/p",
-            clientCommand: host.effectiveCommand(for: .claude))
+            clientCommand: host.effectiveCommand(for: .claude)).create
         XCTAssertTrue(cmd.contains("claude --allow-dangerously-skip-permissions"))
         XCTAssertFalse(cmd.contains(" --dangerously-skip-permissions"))
         // The mode is left to Claude's own default — no override is passed.
@@ -64,7 +153,7 @@ final class SSHTerminalManagerTests: XCTestCase {
     /// is nothing for a drag or a paging button to scroll, and they fall through
     /// to the shell as PageUp/PageDown (which zsh reads as history navigation).
     func testEverySessionTurnsOnTmuxMouseHandling() {
-        let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
+        let launched = SSHTerminalManager.agentLaunch(tmuxSession: "proj", folder: "/p").attach
         XCTAssertTrue(launched.contains("tmux set-option -t '\\''proj'\\'' mouse on"))
 
         // Sessions rediscovered after an app restart were created before this
@@ -80,9 +169,11 @@ final class SSHTerminalManagerTests: XCTestCase {
     }
 
     func testEverySessionInstallsPromptIdleTimeout() {
-        let launched = SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p")
-        XCTAssertTrue(launched.contains("TMOUT=43200 tmux new"))
-        XCTAssertTrue(launched.contains("tmux set-environment -t '\\''=proj'\\'' TMOUT 43200"))
+        let launched = SSHTerminalManager.agentLaunch(tmuxSession: "proj", folder: "/p")
+        XCTAssertTrue(SSHTerminalManager.agentCreateScript(tmuxSession: "proj", folder: "/p",
+                                                           clientCommand: "claude", names: [])
+            .contains("TMOUT=43200 tmux new"))
+        XCTAssertTrue(launched.attach.contains("tmux set-environment -t '\\''=proj'\\'' TMOUT 43200"))
 
         // Existing sessions receive the session environment update on attach,
         // so newly opened panes inherit it after an app upgrade.
@@ -127,7 +218,7 @@ final class SSHTerminalManagerTests: XCTestCase {
     /// never ran. No generated command may use the idiom.
     func testNoGeneratedCommandUsesAttachOrCreate() {
         let commands = [
-            SSHTerminalManager.claudeCommand(tmuxSession: "proj", folder: "/p"),
+            SSHTerminalManager.agentLaunch(tmuxSession: "proj", folder: "/p").create,
             SSHTerminalManager.attachCommand(tmuxSession: "proj"),
             SSHTerminalManager.persistentShellCommand(tmuxSession: "vnc-x", launch: "htop"),
             SSHTerminalManager.reaperWatchdogCommand(ttlSeconds: 60, intervalSeconds: 10),
@@ -145,7 +236,8 @@ final class SSHTerminalManagerTests: XCTestCase {
         // set-option's -t is a pane target and rejects `=` outright ("no such
         // session: =proj"), into a discarded stderr — so it is quoted but bare.
         XCTAssertEqual(SSHTerminalManager.optionTarget("proj"), "'proj'")
-        let cmd = SSHTerminalManager.claudeCommand(tmuxSession: "longwave", folder: "/p")
+        let launch = SSHTerminalManager.agentLaunch(tmuxSession: "longwave", folder: "/p")
+        let cmd = launch.create + launch.attach
         XCTAssertFalse(cmd.contains("-t longwave"), "unanchored target can prefix-match a sibling")
     }
 

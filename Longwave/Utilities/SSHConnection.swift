@@ -30,10 +30,10 @@ final class SSHConnection: @unchecked Sendable {
         var host: String
         var port: Int
         var username: String
-        /// Command to exec under the PTY (e.g. a `tmux new -A …` line). When
-        /// empty, a login shell is requested instead. Any environment the
-        /// session needs is baked into this command by the caller (see
-        /// `SSHTerminalManager.claudeCommand`) rather than sent as SSH `env`
+        /// Command to exec under the PTY (e.g. a `tmux attach` line). When
+        /// empty, a login shell is requested instead. Secrets never go here:
+        /// a managed agent's environment is delivered beforehand on a separate
+        /// channel's stdin (`SSHTerminalManager.AgentLaunch`), not as SSH `env`
         /// requests — that would require a server-side `AcceptEnv` edit.
         var command: String
         var cols: Int
@@ -330,8 +330,10 @@ nonisolated final class SSHShellChannelHandler: ChannelInboundHandler, @unchecke
 // MARK: - One-shot command runner (remote directory listing, etc.)
 
 /// Runs a single non-interactive SSH command (no PTY) and captures its stdout.
-/// Used by the Projects folder browser (`ls`, `pwd`). Retains itself via the
-/// in-flight NIO closures until completion fires exactly once.
+/// Used by the Projects folder browser (`ls`, `pwd`) and, with `stdin`, by the
+/// agent launch's create step, which receives its environment that way so no
+/// value ever appears on a command line. Retains itself via the in-flight NIO
+/// closures until completion fires exactly once.
 nonisolated final class SSHCommandRunner: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var finished = false
@@ -342,15 +344,19 @@ nonisolated final class SSHCommandRunner: @unchecked Sendable {
         self.completion = completion
     }
 
+    /// `stdin`, when given, is written once the exec request is accepted and
+    /// followed by EOF. Without it nothing is written and stdin stays open,
+    /// exactly as before.
     static func run(host: String, port: Int, username: String, command: String,
+                    stdin: Data? = nil,
                     privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup,
                     completion: @escaping @Sendable (Result<String, Error>) -> Void) {
         SSHCommandRunner(completion: completion)
-            .start(host: host, port: port, username: username, command: command,
+            .start(host: host, port: port, username: username, command: command, stdin: stdin,
                    privateKey: privateKey, group: group)
     }
 
-    private func start(host: String, port: Int, username: String, command: String,
+    private func start(host: String, port: Int, username: String, command: String, stdin: Data?,
                        privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup) {
         let auth = SSHKeyAuthDelegate(username: username, privateKey: privateKey)
         let bootstrap = NIOTSConnectionBootstrap(group: group)
@@ -373,12 +379,12 @@ nonisolated final class SSHCommandRunner: @unchecked Sendable {
                 self.finish(.failure(error))
             case .success(let channel):
                 self.rootChannel = channel
-                self.openExec(on: channel, command: command)
+                self.openExec(on: channel, command: command, stdin: stdin)
             }
         }
     }
 
-    private func openExec(on channel: Channel, command: String) {
+    private func openExec(on channel: Channel, command: String, stdin: Data?) {
         channel.pipeline.handler(type: NIOSSHHandler.self).flatMap { sshHandler -> EventLoopFuture<Channel> in
             let promise = channel.eventLoop.makePromise(of: Channel.self)
             sshHandler.createChannel(promise) { child, channelType in
@@ -386,7 +392,7 @@ nonisolated final class SSHCommandRunner: @unchecked Sendable {
                     return channel.eventLoop.makeFailedFuture(SSHConnectionError.invalidChannelType)
                 }
                 return child.eventLoop.makeCompletedFuture {
-                    let handler = SSHExecCaptureHandler(command: command) { result in
+                    let handler = SSHExecCaptureHandler(command: command, stdin: stdin) { result in
                         self.finish(result)
                     }
                     try child.pipeline.syncOperations.addHandler(handler)
@@ -409,18 +415,22 @@ nonisolated final class SSHCommandRunner: @unchecked Sendable {
     }
 }
 
-/// Sends an `exec` request (no PTY), accumulates stdout, and reports it when
-/// the channel closes.
+/// Sends an `exec` request (no PTY), optionally feeds `stdin` then EOF,
+/// accumulates stdout, and reports it when the channel closes.
 nonisolated final class SSHExecCaptureHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = SSHChannelData
 
     private let command: String
+    private let stdin: Data?
     private let onComplete: @Sendable (Result<String, Error>) -> Void
     private nonisolated(unsafe) var stdout = Data()
     private nonisolated(unsafe) var done = false
+    private nonisolated(unsafe) var didSendStdin = false
 
-    init(command: String, onComplete: @escaping @Sendable (Result<String, Error>) -> Void) {
+    init(command: String, stdin: Data? = nil,
+         onComplete: @escaping @Sendable (Result<String, Error>) -> Void) {
         self.command = command
+        self.stdin = stdin
         self.onComplete = onComplete
     }
 
@@ -435,6 +445,22 @@ nonisolated final class SSHExecCaptureHandler: ChannelInboundHandler, @unchecked
         context.triggerUserOutboundEvent(
             SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true), promise: nil)
         context.fireChannelActive()
+    }
+
+    /// The exec request's success reply means the remote command is running
+    /// and reading stdin: only now is it safe to send the payload. Half-closing
+    /// our output afterwards is how SSH signals EOF, which ends the remote
+    /// `read` loop.
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if event is ChannelSuccessEvent, !didSendStdin, let stdin {
+            didSendStdin = true
+            let channel = context.channel
+            var buffer = channel.allocator.buffer(capacity: stdin.count)
+            buffer.writeBytes(stdin)
+            channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(buffer)))
+                .whenComplete { _ in channel.close(mode: .output, promise: nil) }
+        }
+        context.fireUserInboundEventTriggered(event)
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {

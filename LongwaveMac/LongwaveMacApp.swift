@@ -20,12 +20,21 @@ struct LongwaveMacApp: App {
     // Host (companion) side: system-audio streaming + broadcast/OBS provisioning.
     @State private var companionController = AudioStreamerController()
     @State private var broadcastServer = BroadcastServerManager()
-    // Projects: the local agent sandbox (scripts/agent-sandbox).
-    @State private var sandbox = LocalSandboxController()
+    // Projects: the local agent sandbox (scripts/agent-sandbox) and the
+    // scheduler that fires recurring headless runs into it while the app runs.
+    @State private var sandbox: LocalSandboxController
+    @State private var scheduler: LocalScheduler
 
     init() {
         AppLog.configureDebugTrace()
         DebugTraceServer.startIfRequested()
+        let sandbox = LocalSandboxController()
+        let scheduler = LocalScheduler(sandbox: sandbox)
+        _sandbox = State(initialValue: sandbox)
+        _scheduler = State(initialValue: scheduler)
+        // Started here, not from a window's .task: schedules must keep firing
+        // when the main window is closed (the menu-bar extra keeps the app up).
+        scheduler.start()
     }
 
     var body: some Scene {
@@ -38,6 +47,7 @@ struct LongwaveMacApp: App {
                 .environment(audioManager)
                 .environment(macNativeSessions)
                 .environment(sandbox)
+                .environment(scheduler)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)
                 #endif

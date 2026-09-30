@@ -203,7 +203,11 @@ clone_tree() {
 trash_tree() {
     [ -e "$1" ] || return 0
     install -d -o root -g wheel -m 700 "$TRASH"
-    mv "$1" "$TRASH/$(basename "$1").$(date +%s).$$"
+    # macOS protects another user's home from any process whose responsible
+    # app lacks Full Disk Access — root included — so from an app without the
+    # grant this rename fails with EPERM (verified on macOS 27).
+    mv "$1" "$TRASH/$(basename "$1").$(date +%s).$$" \
+        || die "could not move $1 aside (does the app running this helper have Full Disk Access?)"
     rm -rf "${TRASH:?}"/* 2>/dev/null || true
 }
 
@@ -212,7 +216,7 @@ safe_rm_home() {
     case "$AGENT_HOME" in /Users/?*) ;; *) die "refusing to delete $AGENT_HOME" ;; esac
     [ "$AGENT_HOME" != "/Users/$OWNER_USER" ] || die "refusing to delete the owner's home"
     trash_tree "$AGENT_HOME"
-    [ ! -e "$AGENT_HOME" ] || die "could not move $AGENT_HOME aside"
+    [ ! -e "$AGENT_HOME" ] || die "could not move $AGENT_HOME aside (does the app running this helper have Full Disk Access?)"
 }
 
 cmd_reset() {

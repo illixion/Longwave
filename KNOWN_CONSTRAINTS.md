@@ -167,6 +167,26 @@ The Mac Projects tab runs agents as the hidden `longwave-agent` account (`script
   in-sandbox clone script re-adds it because a reset wipes the agent's global config.
 - **Device Hub opens via `open` over SSH as the agent** — LaunchServices routes it into that user's
   Aqua session; no root needed.
+- **Reset / snapshot / configure-desktop need Full Disk Access for LongwaveMac.** macOS protects
+  another user's home from any process whose *responsible app* lacks FDA — root included — and
+  under `sudo -n` from the app, LongwaveMac is that app. Without the grant, moving or even
+  `chmod -N`-ing `/Users/longwave-agent` fails ("Operation not permitted"; a bare root launchd job
+  gets "Permission denied"), while the same verbs work from a terminal that has FDA. The tab probes
+  FDA by opening the system TCC database and shows a banner with a shortcut to the pane;
+  "Reset before run" fails fast with the same hint.
+- **Schedules fire only while LongwaveMac runs.** There is no background daemon; a fire missed
+  while the app was closed runs once on the next tick (no catch-up burst), and a run left
+  "running" across a relaunch is re-attached (still going) or collected (finished meanwhile).
+- **Headless runs bypass the agent's own permission prompts** (`--dangerously-skip-permissions`,
+  `--dangerously-bypass-approvals-and-sandbox`, `--allow-all-tools`) — nobody is there to answer, and
+  the sandbox account is the boundary. The prompt travels as `LONGWAVE_RUN_PROMPT` in the stdin
+  payload and is registered with tmux's `update-environment`, so it's expanded only inside the
+  pane (the agent's own argv), never on the owner's side.
+- **Schedules have their own SwiftData store** (`Schedules.store`), not the `SavedConnection` one, so
+  they never reach backups or the visionOS schema.
+- **SwiftUI's `TextEditor` applies macOS smart quotes/dashes** (`"` → `“`, `--` → `—`), which breaks
+  a shell command or a prompt quoting code; the schedule editor uses `PlainTextEditor` (an
+  `NSTextView` with the substitutions off).
 
 ## Logging
 

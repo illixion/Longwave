@@ -66,6 +66,7 @@ Longwave/
 │   ├── AgentSessionCommands.swift      — tmux create/attach, stdin env payload, reaper, discovery builders (shared with the Mac, which lacks SSHTerminalManager)
 │   ├── LocalSandbox.swift              — Mac agent sandbox: helper argv + status JSON, exchange import/fetch, clone script, Terminal attach (pure, tested)
 │   ├── OpenSSHPrivateKey.swift         — Unencrypted OpenSSH ed25519 key file → NIOSSHPrivateKey (the Mac's sandbox key)
+│   ├── AgentSchedule.swift             — Scheduled runs: cadence/next-fire, overlap + daily cap, runtime cap, headless pane command, progress/transcript parsing (pure, tested)
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
@@ -112,7 +113,10 @@ LongwaveMac/Projects/                   — Mac Projects tab: agents run as the 
 │                                         (scripts/agent-sandbox), attached in Terminal.app
 ├── MacProjectsView.swift               — Sandbox status/actions, onboarding, agent sign-in, projects, sessions, firewall
 ├── LocalSandboxController.swift        — `sudo -n longwave-sandbox …`, keychain password, SSH runner, import/fetch/launch
-└── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session for the agent
+├── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session for the agent
+├── LocalScheduler.swift                — Fires schedules while the app runs: reset, headless run, monitor, transcript, notification
+├── ScheduleModels.swift                — `ScheduledRun` / `RunRecord` SwiftData models in their own Schedules.store
+└── MacSchedulesView.swift              — Schedules section, run history, editor sheet, `PlainTextEditor`
 
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
 ├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLogger (AppLog is app-only)
@@ -161,6 +165,7 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── SavedConnectionNativeTests.swift    — Native Unity persistence defaults
 ├── MacNativeStreamProtocolTests.swift  — Native hello/video framing and partial-frame draining
 ├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
+├── AgentScheduleTests.swift            — Schedule cadence (DST, weekdays), overlap/daily cap, runtime cap, no prompt/token in argv
 └── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)
 
 

@@ -78,6 +78,14 @@ GUI session for the agent by logging it in over loopback Screen Sharing — visi
 one. Projects move through `/Library/Longwave/exchange` (import = push, return = fetch only). The
 sandbox's credentials sit on an unpersisted fixed-UUID `SavedConnection`, so it never appears in
 the connection list or backups. See the sandbox bullets in [[KNOWN_CONSTRAINTS.md]].
+**Schedules** (`LocalScheduler`, `MacSchedulesView`) fire recurring headless runs into a sandbox
+project — `claude -p` / `codex exec` / `copilot -p`, or a plain shell command — **only while
+LongwaveMac runs** (optional "Open at login"; no daemon). Runs never overlap, obey a daily cap and a
+runtime cap (the run's tmux session is killed), can reset the sandbox first, stay attachable while
+running, and land as a transcript under `~/Library/Application Support/Longwave/runs/` plus a
+notification. The prompt rides the create channel's stdin like the tokens. The agent can't schedule
+itself (cron/at denied, Claude's self-scheduling tools denied — the tab warns if that deny list is
+missing). Pure rules in `AgentSchedule` (tested); schedules live in their own SwiftData store.
 
 **The scene graph is what does not port.** visionOS puts the desktop, every
 terminal, every keyboard and the audio player in their own window; iPhone has

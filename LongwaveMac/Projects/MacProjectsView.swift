@@ -18,11 +18,13 @@ struct MacProjectsView: View {
         Form {
             switch sandbox.availability {
             case .ready:
+                if !sandbox.hasFullDiskAccess { fullDiskAccessSection }
                 statusSection
                 if !sandbox.setupComplete { onboardingSection }
                 agentsSection
                 projectsSection
                 sessionsSection
+                SchedulesSection()
                 advancedSection
             case .unknown:
                 Section { ProgressView("Checking the sandbox…") }
@@ -75,6 +77,22 @@ struct MacProjectsView: View {
                 Button("Copy") { Pasteboard.copy(LocalSandbox.installCommand) }
             }
             Button("Check again") { Task { await sandbox.refresh() } }
+        }
+    }
+
+    private var fullDiskAccessSection: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Give Longwave Full Disk Access").font(.headline)
+                    Text("Reset, Setup complete and golden snapshots work inside the sandbox account's home, which macOS protects even from the root helper unless the app calling it has Full Disk Access. Sessions and schedules without \"Reset before run\" work without it.")
+                        .foregroundStyle(.secondary)
+                }
+            } icon: { Image(systemName: "lock.shield").foregroundStyle(.orange) }
+            HStack {
+                Button("Open Privacy Settings") { sandbox.openFullDiskAccessSettings() }
+                Button("Check again") { Task { await sandbox.refresh() } }
+            }
         }
     }
 

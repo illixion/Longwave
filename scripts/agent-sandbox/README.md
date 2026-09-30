@@ -135,6 +135,17 @@ Run it from your own admin account; it uses `SUDO_USER` as the owner. It does th
 
 It needs Screen Sharing turned on (System Settings › General › Sharing) for the GUI session.
 
+## Full Disk Access for the calling app
+
+macOS protects another user's home folder from any process whose *responsible app* lacks Full
+Disk Access — **root included**. The helper runs under `sudo -n`, so the app that calls it is the
+responsible one: from a terminal that has the grant, `reset`, `snapshot-golden` and
+`configure-desktop` work; from LongwaveMac without it they fail inside `/Users/longwave-agent`
+with "Operation not permitted" (verified on macOS 27; a bare root launchd job is refused too).
+Give **LongwaveMac** Full Disk Access in System Settings → Privacy & Security → Full Disk Access;
+the Projects tab shows a banner with a shortcut until it has it. `status`, `stop`, sessions and
+schedules without "Reset before run" don't need it.
+
 ## Uninstall
 
 ```sh

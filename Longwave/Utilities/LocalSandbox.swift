@@ -24,6 +24,16 @@ enum LocalSandbox {
     /// What the user runs to install (or repair) the sandbox.
     static let installCommand = "sudo scripts/agent-sandbox/install.sh"
 
+    /// macOS protects another user's home folder from any process whose
+    /// *responsible app* lacks Full Disk Access — root included. The helper runs
+    /// under `sudo -n` from LongwaveMac, so LongwaveMac is the responsible app,
+    /// and without the grant `reset` / `snapshot-golden` / `configure-desktop`
+    /// fail inside `/Users/<agent>` ("Operation not permitted"; verified on
+    /// macOS 27 — the same verbs work from a terminal that has the grant). The
+    /// system TCC database is a file only FDA can open, which makes it the probe.
+    static let fullDiskAccessProbePath = "/Library/Application Support/com.apple.TCC/TCC.db"
+    static let fullDiskAccessSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+
     /// `NSHomeDirectory()` is the real home: LongwaveMac isn't app-sandboxed.
     static func keyURL(home: URL = URL(fileURLWithPath: NSHomeDirectory())) -> URL {
         home.appendingPathComponent(".ssh").appendingPathComponent(keyFileName)

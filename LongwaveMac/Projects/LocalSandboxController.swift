@@ -79,6 +79,21 @@ final class LocalSandboxController {
 
     var agentUser: String { status?.agentUser ?? LocalSandbox.defaultAgentUser }
 
+    /// Whether this app can reach the sandbox account's home through the helper
+    /// (see `LocalSandbox.fullDiskAccessProbePath`). Re-read on every refresh,
+    /// since the user grants it in System Settings while the app runs.
+    private(set) var hasFullDiskAccess = LocalSandboxController.probeFullDiskAccess()
+
+    nonisolated static func probeFullDiskAccess() -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: LocalSandbox.fullDiskAccessProbePath) else { return false }
+        try? handle.close()
+        return true
+    }
+
+    func openFullDiskAccessSettings() {
+        NSWorkspace.shared.open(LocalSandbox.fullDiskAccessSettingsURL)
+    }
+
     // MARK: - Onboarding
 
     /// Set once the user has completed macOS first-run setup in the sandbox
@@ -123,6 +138,7 @@ final class LocalSandboxController {
     // MARK: - Status and helper verbs
 
     func refresh() async {
+        hasFullDiskAccess = Self.probeFullDiskAccess()
         guard FileManager.default.isExecutableFile(atPath: LocalSandbox.helperPath) else {
             availability = .notInstalled
             status = nil
@@ -370,7 +386,7 @@ final class LocalSandboxController {
     }
 
     /// Clones the project inside the sandbox if needed and returns its path there.
-    private func sandboxClone(_ bareName: String) async throws -> String {
+    func sandboxClone(_ bareName: String) async throws -> String {
         let out = try await ssh(AgentSessionCommands.loginShellCommand(LocalSandbox.sandboxCloneScript(bareRepo: bareName)))
         // rc files may print banners; `pwd` is the last line.
         guard let path = out.split(separator: "\n").last.map(String.init), path.hasPrefix("/") else {
@@ -421,6 +437,38 @@ final class LocalSandboxController {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Starts a scheduled, non-interactive run: a tagged tmux session (so it
+    /// can be attached live) whose pane runs the agent headless, tees its output
+    /// to `~/.longwave-runs/<runID>.log` and records the exit status. Tokens and
+    /// the prompt both travel on the create channel's stdin. Returns the tmux
+    /// session name.
+    func startHeadlessRun(project bareName: String, agent: SSHAgent, runID: String,
+                          prompt: String) async throws -> String {
+        let folder = try await sandboxClone(bareName)
+        let credentials = await connection.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+        let environment = AgentSchedule.environment(credentials: credentials, prompt: prompt)
+        let launch = AgentSessionCommands.agentLaunch(
+            tmuxSession: runID, folder: folder,
+            clientCommand: AgentSchedule.paneCommand(agent: agent, runID: runID),
+            environment: environment,
+            setup: connection.sessionSetup(for: agent, environment: credentials))
+        let out = try await ssh(launch.create, stdin: launch.payload)
+        if out.contains(AgentSessionCommands.agentNoTmuxMarker) {
+            throw SandboxError.message("tmux isn't on the sandbox's login PATH.")
+        }
+        // A trivial run can finish before the create step checks for the
+        // session, so a missing marker is only fatal if the run left no trace.
+        if !out.contains(AgentSessionCommands.agentCreatedMarker) {
+            let probe = try? await ssh(AgentSessionCommands.loginShellCommand(
+                AgentSchedule.progressCommand(runID: runID, tmuxSession: runID)))
+            if case .exited = AgentSchedule.parseProgress(probe ?? "") {} else {
+                throw SandboxError.message("The run's session couldn't be created in the sandbox.")
+            }
+        }
+        await refreshSessions()
+        return runID
     }
 
     func refreshSessions() async {
@@ -479,7 +527,7 @@ final class LocalSandboxController {
     }
 
     /// One command in the sandbox over SSH (non-PTY exec), optionally with stdin.
-    private func ssh(_ command: String, stdin: Data? = nil) async throws -> String {
+    func ssh(_ command: String, stdin: Data? = nil) async throws -> String {
         let key = try key()
         let group = self.group
         let user = agentUser

@@ -63,6 +63,9 @@ Longwave/
 │   ├── ClaudeCredentialStore.swift     — Keychain home for the Claude credential bundle + refresh-before-launch
 │   ├── CodexOAuth.swift                — Codex CLI's ChatGPT device sign-in → session-only auth.json (constants from openai/codex source)
 │   ├── CodexCredentialStore.swift      — Keychain home for the Codex credential (rotating refresh token stays on device)
+│   ├── AgentSessionCommands.swift      — tmux create/attach, stdin env payload, reaper, discovery builders (shared with the Mac, which lacks SSHTerminalManager)
+│   ├── LocalSandbox.swift              — Mac agent sandbox: helper argv + status JSON, exchange import/fetch, clone script, Terminal attach (pure, tested)
+│   ├── OpenSSHPrivateKey.swift         — Unencrypted OpenSSH ed25519 key file → NIOSSHPrivateKey (the Mac's sandbox key)
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
@@ -104,6 +107,12 @@ LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS targ
 ├── MobileAudioView.swift               — Audio tab: shared player panel minus the window-only chrome
 ├── Assets.xcassets/                    — iOS AppIcon (appiconset; the visionOS icon is layered) + accent
 └── Info.plist                          — Single-scene, landscape allowed, background audio
+
+LongwaveMac/Projects/                   — Mac Projects tab: agents run as the local sandbox account
+│                                         (scripts/agent-sandbox), attached in Terminal.app
+├── MacProjectsView.swift               — Sandbox status/actions, onboarding, agent sign-in, projects, sessions, firewall
+├── LocalSandboxController.swift        — `sudo -n longwave-sandbox …`, keychain password, SSH runner, import/fetch/launch
+└── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session for the agent
 
 BroadcastCore/                          — compiled into BOTH the app and the broadcast extension
 ├── BroadcastShared.swift               — app-group config/keychain bridge + broadcastLogger (AppLog is app-only)

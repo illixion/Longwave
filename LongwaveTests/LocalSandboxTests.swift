@@ -13,6 +13,8 @@ final class LocalSandboxTests: XCTestCase {
     func testHelperArgvIsFixedAndNonInteractive() {
         XCTAssertEqual(LocalSandbox.sudoArguments(.status), ["-n", "/usr/local/libexec/longwave-sandbox", "status"])
         XCTAssertEqual(LocalSandbox.sudoArguments(.snapshotGolden).last, "snapshot-golden")
+        // The password goes on stdin; the verb takes no arguments.
+        XCTAssertEqual(LocalSandbox.sudoArguments(.configureDesktop), ["-n", "/usr/local/libexec/longwave-sandbox", "configure-desktop"])
         XCTAssertEqual(LocalSandbox.sudoArguments(.firewall(on: false)).suffix(2), ["firewall", "off"])
         // The key travels as one argv element — never through a shell.
         let line = "ssh-ed25519 AAAA key; rm -rf /"
@@ -49,7 +51,9 @@ final class LocalSandboxTests: XCTestCase {
         XCTAssertEqual(cmds.count, 2)
         XCTAssertEqual(cmds[0], ["init", "--bare", "--shared=group", "--initial-branch=main",
                                  "/Library/Longwave/exchange/My-App.git"])
-        XCTAssertEqual(cmds[1], ["-C", "/Users/me/Projects/My App", "push",
+        // --no-verify: a global pre-push hook meant for remotes must not block a
+        // copy into a local directory.
+        XCTAssertEqual(cmds[1], ["-C", "/Users/me/Projects/My App", "push", "--no-verify",
                                  "/Library/Longwave/exchange/My-App.git", "HEAD:refs/heads/main"])
     }
 

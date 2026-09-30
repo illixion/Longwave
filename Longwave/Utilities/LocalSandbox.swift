@@ -33,6 +33,9 @@ enum LocalSandbox {
     /// this just keeps the app from composing anything else.
     enum Verb: Equatable {
         case status, stop, reset, snapshotGolden
+        /// Screen lock off, no screen saver, black wallpaper — needs the
+        /// agent's GUI session and its password on **stdin** (never argv).
+        case configureDesktop
         case firewall(on: Bool)
         case authorizeKey(String)
 
@@ -42,6 +45,7 @@ enum LocalSandbox {
             case .stop: ["stop"]
             case .reset: ["reset"]
             case .snapshotGolden: ["snapshot-golden"]
+            case .configureDesktop: ["configure-desktop"]
             case .firewall(let on): ["firewall", on ? "on" : "off"]
             case .authorizeKey(let line): ["authorize-key", line]
             }
@@ -111,11 +115,16 @@ enum LocalSandbox {
     /// `branch` of `repo` into a new shared bare repo in the exchange dir.
     /// `--shared=group` keeps objects group-writable so the agent (a member of
     /// the exchange group, whose setgid dir fixes the group) can push back.
+    ///
+    /// `--no-verify` skips pre-push hooks: this push copies work to a local
+    /// directory on the same Mac, not to a remote, and a global pre-push hook
+    /// that guards remotes (e.g. one refusing unsigned commits) otherwise
+    /// blocks every import — verified on the dev Mac.
     static func importCommands(repo: URL, branch: String) -> [[String]] {
         let bare = bareRepoPath(named: bareRepoName(forRepoAt: repo))
         return [
             ["init", "--bare", "--shared=group", "--initial-branch=\(branch)", bare],
-            ["-C", repo.path, "push", bare, "HEAD:refs/heads/\(branch)"],
+            ["-C", repo.path, "push", "--no-verify", bare, "HEAD:refs/heads/\(branch)"],
         ]
     }
 

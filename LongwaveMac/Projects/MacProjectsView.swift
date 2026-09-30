@@ -88,7 +88,7 @@ struct MacProjectsView: View {
             }
             HStack {
                 Button("Sandbox Desktop") {
-                    if sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") }
+                    Task { if await sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") } }
                 }
                 Button("Open Device Hub") { Task { await sandbox.openDeviceHub() } }
                 Spacer()
@@ -128,7 +128,7 @@ struct MacProjectsView: View {
             } icon: { Image(systemName: "person.crop.circle.badge.exclamationmark") }
             HStack {
                 Button("Sandbox Desktop") {
-                    if sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") }
+                    Task { if await sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") } }
                 }
                 Button("Setup complete") { Task { await sandbox.completeSetup() } }
                     .buttonStyle(.borderedProminent)

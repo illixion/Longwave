@@ -56,7 +56,7 @@ shared code knowing they exist.
 | target | platform | scene model | excluded |
 |---|---|---|---|
 | `Longwave` | visionOS 26.2+ | window per surface (`openWindow`) | — |
-| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | SSH (a real terminal is a Cmd-Tab away), Broadcast, Unity per-window scenes |
+| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | the in-app SSH terminal (Projects attaches in Terminal.app instead), Broadcast, Unity per-window scenes |
 | `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | PCVR, Broadcast, Unity per-window scenes |
 
 Moonlight and the Native desktop stream (with audio and remote input) are on
@@ -68,6 +68,16 @@ neutral; only the views differ: `NativeStreamView` on visionOS,
 `MacNativeStreamWindowView` on macOS (NSEvents, kVK keycodes verbatim, the
 HID inverse for Windows hosts), `MobileNativeStreamView` on iOS (touch, zoom
 and pan via `MobileViewport`, shared with the VNC view).
+
+**Projects on the Mac runs agents as a separate local account.** `MacProjectsView` drives the
+agent sandbox from `scripts/agent-sandbox/` (hidden `longwave-agent` user, fixed-verb root helper
+run via `sudo -n`, golden-home resets): agents launch over SSH to `127.0.0.1` with install.sh's
+ed25519 file key, tokens on the create channel's stdin exactly as on the headset (the builders are
+shared through `AgentSessionCommands`), and attach in Terminal.app. `SandboxSessionKeeper` keeps a
+GUI session for the agent by logging it in over loopback Screen Sharing — visionOS simulators need
+one. Projects move through `/Library/Longwave/exchange` (import = push, return = fetch only). The
+sandbox's credentials sit on an unpersisted fixed-UUID `SavedConnection`, so it never appears in
+the connection list or backups. See the sandbox bullets in [[KNOWN_CONSTRAINTS.md]].
 
 **The scene graph is what does not port.** visionOS puts the desktop, every
 terminal, every keyboard and the audio player in their own window; iPhone has

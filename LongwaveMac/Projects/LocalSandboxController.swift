@@ -99,9 +99,22 @@ final class LocalSandboxController {
         }
     }
 
-    /// "Setup complete": snapshot the set-up home as the golden copy (which logs
-    /// the agent out), then log it back in.
+    /// "Setup complete": configure the agent's desktop (screen lock off, no
+    /// screen saver, black wallpaper — a locked virtual session would stall
+    /// anything waiting on the GUI), snapshot the set-up home as the golden copy
+    /// (which logs the agent out), then log it back in.
     func completeSetup() async {
+        await ensureDesktopSession(force: true)
+        guard status?.guiSession == true else {
+            lastError = "The sandbox needs a desktop session to finish setup."
+            return
+        }
+        guard let password = await agentPassword() else {
+            lastError = "The sandbox password isn't in your login keychain."
+            return
+        }
+        guard await perform(.configureDesktop, label: "Configuring the sandbox desktop…",
+                            stdin: Data((password + "\n").utf8)) else { return }
         guard await perform(.snapshotGolden, label: "Saving the set-up home…") else { return }
         setupComplete = true
         await ensureDesktopSession(force: true)
@@ -145,10 +158,10 @@ final class LocalSandboxController {
 
     /// Runs one helper verb, reporting failures in `lastError`. Returns success.
     @discardableResult
-    func perform(_ verb: LocalSandbox.Verb, label: String) async -> Bool {
+    func perform(_ verb: LocalSandbox.Verb, label: String, stdin: Data? = nil) async -> Bool {
         busy = label
         defer { busy = nil }
-        let result = await Self.run(LocalSandbox.sudoPath, LocalSandbox.sudoArguments(verb))
+        let result = await Self.run(LocalSandbox.sudoPath, LocalSandbox.sudoArguments(verb), stdin: stdin)
         if result.status != 0 {
             lastError = Self.firstLine(result.err) ?? "\(verb.arguments.first ?? "helper") failed"
             await refresh()
@@ -195,11 +208,12 @@ final class LocalSandboxController {
         if isAuthFailed && !force { return }
         await refresh()
         guard availability == .ready, let status, !status.guiSession else { return }
-        guard let password = agentPassword() else {
-            desktop = .failed("The sandbox password isn't in your login keychain (\(LocalSandbox.keychainService)).")
+        // Shown while macOS may be asking to let this app read the password.
+        desktop = .loggingIn
+        guard let password = await agentPassword() else {
+            desktop = .failed("The sandbox password isn't in your login keychain (\(LocalSandbox.keychainService)), or access was denied.")
             return
         }
-        desktop = .loggingIn
         let outcome = await keeper.logIn(host: LocalSandbox.host, port: LocalSandbox.vncPort,
                                          username: status.agentUser, password: password)
         switch outcome {
@@ -227,13 +241,20 @@ final class LocalSandboxController {
     }
 
     /// The agent's password, from the item install.sh wrote to the owner's login
-    /// keychain. The first read from this app shows macOS's keychain access
-    /// prompt ("Always Allow" makes it silent afterwards).
-    func agentPassword() -> String? {
+    /// keychain. The first read from this app can show macOS's keychain access
+    /// prompt ("Always Allow" makes it silent afterwards), and SecItemCopyMatching
+    /// blocks its thread for as long as that prompt is up — so it runs off the
+    /// main actor.
+    func agentPassword() async -> String? {
+        let account = agentUser
+        return await Task.detached { Self.readKeychainPassword(service: LocalSandbox.keychainService, account: account) }.value
+    }
+
+    nonisolated private static func readKeychainPassword(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: LocalSandbox.keychainService,
-            kSecAttrAccount as String: agentUser,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -245,8 +266,8 @@ final class LocalSandboxController {
 
     /// Opens the agent's desktop in the shared VNC window. Ephemeral: the
     /// password goes straight to the connection and is never saved.
-    func openDesktop(using vnc: VNCConnectionManager) -> Bool {
-        guard let password = agentPassword() else {
+    func openDesktop(using vnc: VNCConnectionManager) async -> Bool {
+        guard let password = await agentPassword() else {
             lastError = "The sandbox password isn't in your login keychain."
             return false
         }
@@ -304,7 +325,10 @@ final class LocalSandboxController {
         for args in LocalSandbox.importCommands(repo: repo, branch: branch) {
             let r = await Self.run("/usr/bin/git", args)
             guard r.status == 0 else {
-                lastError = "git \(args.first ?? "") failed: \(Self.firstLine(r.err) ?? "")"
+                lastError = "git \(args.first == "-C" ? args[2] : args[0]) failed: \(Self.firstLine(r.err) ?? "")"
+                // Don't strand a half-made bare repo that blocks the retry; this
+                // call created it (the exists check above ran first).
+                try? FileManager.default.removeItem(atPath: LocalSandbox.bareRepoPath(named: bareName))
                 return
             }
         }
@@ -474,8 +498,10 @@ final class LocalSandboxController {
     }
 
     /// Runs an executable with a fixed argv (never through a shell), off the
-    /// main actor.
-    nonisolated static func run(_ executable: String, _ arguments: [String]) async -> ProcessResult {
+    /// main actor. `stdin` (e.g. a password) is written to a pipe, so it never
+    /// appears in any process's argv.
+    nonisolated static func run(_ executable: String, _ arguments: [String],
+                                stdin: Data? = nil) async -> ProcessResult {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -483,11 +509,16 @@ final class LocalSandboxController {
             let outPipe = Pipe(), errPipe = Pipe()
             process.standardOutput = outPipe
             process.standardError = errPipe
-            process.standardInput = FileHandle.nullDevice
+            let inPipe = stdin.map { _ in Pipe() }
+            process.standardInput = inPipe ?? FileHandle.nullDevice
             do {
                 try process.run()
             } catch {
                 return ProcessResult(status: -1, out: "", err: error.localizedDescription)
+            }
+            if let inPipe, let stdin {
+                inPipe.fileHandleForWriting.write(stdin)
+                try? inPipe.fileHandleForWriting.close()
             }
             let out = outPipe.fileHandleForReading.readDataToEndOfFile()
             let err = errPipe.fileHandleForReading.readDataToEndOfFile()

@@ -127,6 +127,47 @@
 - `SavedConnection.linkedCompanionConnectionID` (renamed from `linkedAudioConnectionID`, `@Attribute(originalName:)`) links a VNC connection to a companion (audio) connection.
 - SSH sessions persist via tmux (created if absent with `has-session || new -d`, then attached); a closed/wedged session is revived with `SSHSession.restart()` (Reconnect button).
 
+## Local agent sandbox (Mac Projects)
+
+The Mac Projects tab runs agents as the hidden `longwave-agent` account (`scripts/agent-sandbox/`,
+`LongwaveMac/Projects/`). Verified on macOS 27 / Xcode 27, 2026-09-30:
+
+- **iOS simulators work with no GUI session; visionOS simulators don't.** Over key-auth SSH alone an
+  iPhone sim boots, renders and runs `xcodebuild test`. A visionOS sim first needs a device identity
+  — a Secure Enclave key in the user's data-protection keychain, locked until a `loginwindow` login —
+  and loops on `errSecInteractionNotAllowed` otherwise (a *password* SSH login doesn't unlock it
+  either). Hence `SandboxSessionKeeper`.
+- **Loopback Screen Sharing creates that session.** screensharingd answers on `127.0.0.1:5900`
+  (only Screen Sharing.app refuses localhost). An ARD (username + password) login as a non-console
+  user gets a separate *virtual* session with no selection prompt, and it survives the disconnect —
+  connect, wait for the first framebuffer, disconnect. The account must be in
+  `com.apple.access_screensharing` (admins only by default).
+- **visionOS sims are one-macOS-user-per-host without help.** The in-sim compositor `wakeboardd`
+  opens the host-global named semaphore `wakeboardd.first-boot`; whoever boots visionOS first owns
+  it and macOS refuses cross-user opens **regardless of mode** (even root-created `0666`), so the
+  other user's compositor aborts ("can't open first boot semaphore") and boot sticks at "Waiting on
+  Data Migration". The sandbox daemon `sem_unlink`s the name every ~2 s; running sims keep their
+  handle and launchd_sim restarts a crashed wakeboardd.
+- **pf filtering and iCloud Private Relay are mutually exclusive.** Any rule in a custom pf anchor
+  (even one inbound block) makes `networkserviceproxy` report "System Incompatible" and Private
+  Relay switches itself off until the anchor is flushed — so the sandbox firewall is opt-in and its
+  toggle says so.
+- **`reset` can't delete the per-user `/private/var/folders` dir** or its data vaults
+  (`0/com.apple.LaunchServices.dv`, `T/com.apple.trustd`), even as root; it empties them instead.
+  App-data-protected group containers in the home can't be read or deleted by root either, which is
+  why snapshot/reset move whole trees rather than copying into place.
+- **Keychain prompt on first desktop login.** The agent password lives in the owner's login keychain
+  (written by `security`, so that's the only app on its ACL); LongwaveMac's first read shows macOS's
+  access prompt. The read runs off the main actor because `SecItemCopyMatching` blocks while the
+  prompt is up.
+- **Imports push with `--no-verify`.** A global pre-push hook that guards remotes (here: one refusing
+  unsigned commits) otherwise rejects the copy into the local exchange dir. Fetching back is
+  fetch-only, so no agent-authored hook or checkout ever runs as the owner.
+- **The agent's git needs the exchange marked `safe.directory`** (the bare repos are owner-owned); the
+  in-sandbox clone script re-adds it because a reset wipes the agent's global config.
+- **Device Hub opens via `open` over SSH as the agent** — LaunchServices routes it into that user's
+  Aqua session; no root needed.
+
 ## Logging
 
 - Every Swift target logs through DebugTrace's `DebugLogger` (`AppLog`, one category per component; feature loggers under `pro.longwave`, the Mac companion code under `pro.longwave.companion`, the broadcast core under `broadcastLogger`). Lines go to DebugTrace's in-memory ring, which the Console tab (RAVEConsole) tails and debug traces export, and to the unified log with non-public values withheld. Privacy is per interpolation, os_log's default: numbers and bools public, everything else private. Mark code-defined values (states, codecs, reasons the app wrote) `.public`; leave hosts, names, paths, server text and `error.localizedDescription` private (`.private(mask: .hash)` for a host or id worth matching across lines); never log a credential, or mark it `.sensitive`. Cloud models and App Store support read the exports.

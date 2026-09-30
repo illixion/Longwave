@@ -33,7 +33,7 @@ final class SSHConnection: @unchecked Sendable {
         /// Command to exec under the PTY (e.g. a `tmux attach` line). When
         /// empty, a login shell is requested instead. Secrets never go here:
         /// a managed agent's environment is delivered beforehand on a separate
-        /// channel's stdin (`SSHTerminalManager.AgentLaunch`), not as SSH `env`
+        /// channel's stdin (`AgentLaunch`), not as SSH `env`
         /// requests — that would require a server-side `AcceptEnv` edit.
         var command: String
         var cols: Int

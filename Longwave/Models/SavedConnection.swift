@@ -711,6 +711,20 @@ final class SavedConnection {
         setHasToken(stillConfigured, for: agent)
     }
 
+    /// Re-derive every agent's "configured" flag from the keychain. A
+    /// connection that isn't persisted in SwiftData — the Mac's local agent
+    /// sandbox, a fixed-UUID instance rebuilt each launch — would otherwise
+    /// start with all flags false while its tokens are still in the keychain,
+    /// and `storedToken(for:)` ignores a pasted token whose flag is off.
+    func refreshTokenFlagsFromKeychain() {
+        for agent in SSHAgent.allCases {
+            let present = hasPastedToken(for: agent)
+                || (agent == .claude && ClaudeCredentialStore.load(connectionID: id) != nil)
+                || (agent == .codex && CodexCredentialStore.load(connectionID: id) != nil)
+            setHasToken(present, for: agent)
+        }
+    }
+
     /// Back-compat alias for the Claude token (used by older call sites/tests).
     var sshAuthToken: String? {
         get { sshAuthToken(for: .claude) }

@@ -4,9 +4,10 @@ import SwiftData
 import DebugTraceServer
 import AppKit
 
-/// macOS app entry. The Mac already ships an SSH client, so this target keeps
-/// the shared VNC, Moonlight, Native desktop stream, audio, console, and
-/// soft-keyboard scenes without compiling the visionOS SSH/SwiftTerm feature set.
+/// macOS app entry. The Mac already ships a terminal, so this target keeps the
+/// shared VNC, Moonlight, Native desktop stream, audio, console, and
+/// soft-keyboard scenes without the visionOS SwiftTerm terminal; its Projects
+/// tab drives agents in the local sandbox account and attaches in Terminal.app.
 @main
 struct LongwaveMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
@@ -19,6 +20,8 @@ struct LongwaveMacApp: App {
     // Host (companion) side: system-audio streaming + broadcast/OBS provisioning.
     @State private var companionController = AudioStreamerController()
     @State private var broadcastServer = BroadcastServerManager()
+    // Projects: the local agent sandbox (scripts/agent-sandbox).
+    @State private var sandbox = LocalSandboxController()
 
     init() {
         AppLog.configureDebugTrace()
@@ -34,11 +37,15 @@ struct LongwaveMacApp: App {
                 .environment(connectionManager)
                 .environment(audioManager)
                 .environment(macNativeSessions)
+                .environment(sandbox)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)
                 #endif
                 .frame(minWidth: 720, minHeight: 480)
                 .task { connectionManager.audioManager = audioManager }
+                // Keep the sandbox agent's desktop session alive (visionOS
+                // simulators need one). A no-op when the sandbox isn't installed.
+                .task { await sandbox.ensureDesktopSession() }
         } defaultValue: {
             .shared
         }

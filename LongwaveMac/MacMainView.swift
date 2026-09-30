@@ -2,12 +2,14 @@ import RAVEConsole
 import SwiftUI
 
 /// Root of the macOS main window: a sidebar (`NavigationSplitView`) replacing
-/// the visionOS bottom ornament tab bar. Broadcast and SSH/Projects are omitted:
-/// the Mac has neither Vision Pro cameras nor a need for an embedded SSH client.
+/// the visionOS bottom ornament tab bar. Broadcast is omitted (no Vision Pro
+/// cameras), and so is the embedded SSH terminal: Projects runs agents in the
+/// local sandbox account and attaches them in Terminal.app.
 struct MacMainView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case connections = "Connections"
         case sessions = "Sessions"
+        case projects = "Projects"
         case console = "Console"
 
         var id: String { rawValue }
@@ -15,6 +17,7 @@ struct MacMainView: View {
             switch self {
             case .connections: "rectangle.connected.to.line.below"
             case .sessions: "macwindow.on.rectangle"
+            case .projects: "sparkles"
             case .console: "terminal"
             }
         }
@@ -34,6 +37,7 @@ struct MacMainView: View {
             switch selectedTab ?? .connections {
             case .connections: ConnectionListView()
             case .sessions:    SessionsView()
+            case .projects:    MacProjectsView()
             case .console:     RAVEConsoleScreen()
             }
         }

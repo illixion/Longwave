@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE20AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000010 /* NIOSSH */; };
+		EE20AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000011 /* NIOCore */; };
+		EE20AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000012 /* NIOTransportServices */; };
+		EE20AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000013 /* Crypto */; };
 		113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = FEC92747F5953D917428BFA0 /* RoyalVNCKit */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
 		1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B42F7FCBFA00C67700 /* Opus */; };
@@ -180,16 +184,13 @@
 				Info.plist,
 				LongwaveApp.swift,
 				Utilities/ClosureComponent.swift,
-				Utilities/GitHubDeviceFlow.swift,
 				Utilities/SecureEnclaveSSHKey.swift,
-				Utilities/SSHConnection.swift,
 				Utilities/SSHVirtualKeyboardSink.swift,
 				Utilities/TerminalKeyboardFocusState.swift,
 				Utilities/TerminalKeyEncoder.swift,
 				Utilities/TerminalScrolling.swift,
 				ViewModels/SSHTerminalManager.swift,
 				Views/BroadcastView.swift,
-				Views/ClaudeLoginWebView.swift,
 				Views/HardwareKeyboardView.swift,
 				Views/HomeOrnamentModifier.swift,
 				Views/MainTabBar.swift,
@@ -357,6 +358,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EE20AD100000000000000020 /* NIOSSH in Frameworks */,
+				EE20AD100000000000000021 /* NIOCore in Frameworks */,
+				EE20AD100000000000000022 /* NIOTransportServices in Frameworks */,
+				EE20AD100000000000000023 /* Crypto in Frameworks */,
 				AA0D00000000000000000013 /* DebugTrace in Frameworks */,
 				E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */,
 				5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */,
@@ -535,6 +540,10 @@
 			);
 			name = LongwaveMac;
 			packageProductDependencies = (
+				EE20AD100000000000000010 /* NIOSSH */,
+				EE20AD100000000000000011 /* NIOCore */,
+				EE20AD100000000000000012 /* NIOTransportServices */,
+				EE20AD100000000000000013 /* Crypto */,
 				AA0D00000000000000000012 /* DebugTrace */,
 				F2152CE5902DF25125171222 /* DebugTraceServer */,
 				FEC92747F5953D917428BFA0 /* RoyalVNCKit */,
@@ -1615,6 +1624,26 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		EE20AD100000000000000010 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		EE20AD100000000000000011 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		EE20AD100000000000000012 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
+		};
+		EE20AD100000000000000013 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
 		1D8097B12F7FCBED00C67700 /* MoonlightCommonC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;

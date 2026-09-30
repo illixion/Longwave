@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 import WebKit
 
 /// Where the sign-in browser keeps its cookies.
@@ -97,7 +101,7 @@ final class ClaudeLoginController {
 /// Cookie storage comes from `ClaudeLoginSession` — non-persistent by default, so
 /// the claude.ai session established to approve this grant is discarded with the
 /// sheet and the keychain credential is the only thing that outlives it.
-private struct ClaudeOAuthWebView: UIViewRepresentable {
+private struct ClaudeOAuthWebView {
     let url: URL
     let controller: ClaudeLoginController
     /// Called once, on the main actor, with the intercepted code and state.
@@ -112,7 +116,7 @@ private struct ClaudeOAuthWebView: UIViewRepresentable {
                     isLoading: $isLoading, currentHost: $currentHost)
     }
 
-    func makeUIView(context: Context) -> WKWebView {
+    func makeWebView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         // Read once, at construction: the store can't be swapped under a live web
         // view, so toggling persistence takes effect on the next sign-in.
@@ -130,7 +134,6 @@ private struct ClaudeOAuthWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         private let onCode: (String, String?) -> Void
@@ -221,6 +224,18 @@ private enum ClipboardOffer: Equatable {
     }
 }
 
+#if canImport(UIKit)
+extension ClaudeOAuthWebView: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView { makeWebView(context: context) }
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+}
+#else
+extension ClaudeOAuthWebView: NSViewRepresentable {
+    func makeNSView(context: Context) -> WKWebView { makeWebView(context: context) }
+    func updateNSView(_ webView: WKWebView, context: Context) {}
+}
+#endif
+
 /// The sheet wrapper: chrome around the embedded browser, plus the exchange.
 ///
 /// Shows the live origin next to a lock, because this is a window asking for
@@ -255,7 +270,7 @@ struct ClaudeLoginSheet: View {
 
     // Clipboard assist.
     @State private var offer: ClipboardOffer?
-    @State private var lastChangeCount = UIPasteboard.general.changeCount
+    @State private var lastChangeCount = Self.pasteboardChangeCount
 
     var body: some View {
         VStack(spacing: 0) {
@@ -350,16 +365,32 @@ struct ClaudeLoginSheet: View {
     private func watchClipboard() async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1))
-            let pasteboard = UIPasteboard.general
-            let count = pasteboard.changeCount
+            let count = Self.pasteboardChangeCount
             guard count != lastChangeCount else { continue }
             lastChangeCount = count
-            offer = await classifyClipboard(pasteboard)
+            offer = await classifyClipboard()
         }
     }
 
-    private func classifyClipboard(_ pasteboard: UIPasteboard) async -> ClipboardOffer {
-        let patterns = await Self.detectedPatterns(pasteboard)
+    private static var pasteboardChangeCount: Int {
+        #if canImport(UIKit)
+        UIPasteboard.general.changeCount
+        #else
+        NSPasteboard.general.changeCount
+        #endif
+    }
+
+    private static var pasteboardString: String? {
+        #if canImport(UIKit)
+        UIPasteboard.general.string
+        #else
+        NSPasteboard.general.string(forType: .string)
+        #endif
+    }
+
+    #if canImport(UIKit)
+    private func classifyClipboard() async -> ClipboardOffer {
+        let patterns = await Self.detectedPatterns(UIPasteboard.general)
         if patterns.contains(.probableWebURL) { return .link }
         if patterns.contains(.number) { return .code }
         // Detection can come back empty for short opaque strings; still offer it,
@@ -382,11 +413,16 @@ struct ClaudeLoginSheet: View {
             }
         }
     }
+    #else
+    /// macOS: offer the clipboard on any change without reading it — the
+    /// content is only read when the user clicks, like on visionOS.
+    private func classifyClipboard() async -> ClipboardOffer { .unknown }
+    #endif
 
     /// Reads the clipboard (user-initiated) and routes it: a Claude URL is loaded
     /// in this web view, anything else is typed into the form as a code.
     private func useClipboard() {
-        guard let raw = UIPasteboard.general.string?
+        guard let raw = Self.pasteboardString?
             .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             offer = nil
             return

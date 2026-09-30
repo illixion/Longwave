@@ -1,0 +1,330 @@
+#!/bin/bash
+# longwave-sandbox — root-side control for the Longwave agent sandbox account.
+#
+# Installed by install.sh to /usr/local/libexec/longwave-sandbox (root:wheel 755)
+# and reachable without a password only by the owning user, via
+# /etc/sudoers.d/longwave-sandbox. Everything the app is allowed to ask root
+# for lives in this file, so it takes fixed verbs and validates every argument:
+# it is the whole privileged surface of the feature.
+#
+#   status [--size]          JSON snapshot of the sandbox
+#   stop                     log the agent out and kill everything it runs
+#   reset                    stop, then restore the home from the golden copy
+#   snapshot-golden          stop, then save the current home as the golden copy
+#   authorize-key <line>     allow one more SSH public key into the agent account
+#   firewall on|off|status   the pf anchor that keeps the agent off LAN/tailnet/loopback
+#   daemon                   LaunchDaemon entry point (restores firewall, runs semd)
+#
+# Must stay compatible with macOS /bin/bash 3.2.
+
+set -euo pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+umask 022
+
+readonly CONF=/Library/Longwave/sandbox.conf
+readonly STATE_DIR=/Library/Longwave/state
+readonly GOLDEN=/Library/Longwave/agent-golden
+readonly KEYS_OVERLAY=/Library/Longwave/authorized_keys
+readonly PF_ANCHOR=com.apple/longwave-sandbox
+readonly PF_RULES=/Library/Longwave/pf-longwave-sandbox.conf
+readonly SEMD=/usr/local/libexec/longwave-sandbox-semd
+readonly DAEMON_LABEL=pro.longwave.sandbox
+
+die() { echo "longwave-sandbox: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root (sudo -n $0 ...)"
+[ -f "$CONF" ] || die "not installed ($CONF missing)"
+
+# The config is written by install.sh and root-owned, but it is still parsed
+# rather than sourced: only known keys, only conservative values.
+AGENT_USER="" AGENT_UID="" OWNER_USER="" AGENT_PORTS=""
+while IFS='=' read -r key value; do
+    case "$key" in
+        AGENT_USER|OWNER_USER)
+            case "$value" in *[!a-z0-9._-]*|"") die "bad $key in $CONF" ;; esac ;;
+        AGENT_UID)
+            case "$value" in *[!0-9]*|"") die "bad $key in $CONF" ;; esac ;;
+        AGENT_PORTS)
+            case "$value" in *[!0-9:]*|"") die "bad $key in $CONF" ;; esac ;;
+        ""|\#*) continue ;;
+        *) continue ;;
+    esac
+    eval "$key=\$value"
+done < "$CONF"
+[ -n "$AGENT_USER" ] && [ -n "$AGENT_UID" ] && [ -n "$OWNER_USER" ] || die "incomplete $CONF"
+[ -n "$AGENT_PORTS" ] || AGENT_PORTS=40000:40999
+# A misconfigured UID must never make stop/reset aim at a real person.
+[ "$AGENT_UID" -ge 550 ] || die "refusing agent uid $AGENT_UID (< 550)"
+[ "$(id -u "$OWNER_USER" 2>/dev/null || echo x)" != "$AGENT_UID" ] || die "agent uid equals owner uid"
+
+readonly AGENT_HOME="/Users/$AGENT_USER"
+
+agent_exists() { dscl . -read "/Users/$AGENT_USER" UniqueID >/dev/null 2>&1; }
+has_gui_session() { launchctl print "gui/$AGENT_UID" >/dev/null 2>&1; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+json_bool() { if "$@"; then echo true; else echo false; fi; }
+json_str() {
+    # Values here are timestamps, paths and names we produced ourselves; still
+    # escape the two characters that could break the document.
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    printf '"%s"' "$s"
+}
+read_state() { [ -f "$STATE_DIR/$1" ] && head -n 1 "$STATE_DIR/$1" || true; }
+write_state() { install -d -m 700 "$STATE_DIR"; printf '%s\n' "$2" > "$STATE_DIR/$1"; }
+
+anchor_loaded() { [ -n "$(pfctl -a "$PF_ANCHOR" -s rules 2>/dev/null)" ]; }
+pf_enabled() { pfctl -s info 2>/dev/null | /usr/bin/grep -q 'Status: Enabled'; }
+daemon_loaded() { launchctl print "system/$DAEMON_LABEL" >/dev/null 2>&1; }
+
+cmd_status() {
+    local want_size=${1:-}
+    local exists gui tmux_count size_kb golden_ts
+    exists=$(json_bool agent_exists)
+    gui=$(json_bool has_gui_session)
+    tmux_count=0
+    if [ -x /opt/homebrew/bin/tmux ] && [ -d "/private/tmp/tmux-$AGENT_UID" ]; then
+        # No server running is the common case, and makes tmux ls fail.
+        tmux_count=$( { sudo -n -u "$AGENT_USER" /opt/homebrew/bin/tmux ls 2>/dev/null || true; } | wc -l | tr -d ' ')
+    fi
+    size_kb=null
+    if [ "$want_size" = "--size" ] && [ -d "$AGENT_HOME" ]; then
+        size_kb=$( { du -skx "$AGENT_HOME" 2>/dev/null || true; } | awk '{print $1}')
+        [ -n "$size_kb" ] || size_kb=null
+    fi
+    golden_ts=$(read_state golden-snapshot)
+    printf '{'
+    printf '"agentUser":%s,' "$(json_str "$AGENT_USER")"
+    printf '"agentUID":%s,' "$AGENT_UID"
+    printf '"ownerUser":%s,' "$(json_str "$OWNER_USER")"
+    printf '"userExists":%s,' "$exists"
+    printf '"guiSession":%s,' "$gui"
+    printf '"tmuxSessions":%s,' "$tmux_count"
+    printf '"homeSizeKB":%s,' "$size_kb"
+    printf '"goldenPresent":%s,' "$(json_bool test -d "$GOLDEN/Library")"
+    printf '"goldenSnapshotAt":%s,' "$( [ -n "$golden_ts" ] && json_str "$golden_ts" || echo null )"
+    printf '"lastResetAt":%s,' "$( r=$(read_state last-reset); [ -n "$r" ] && json_str "$r" || echo null )"
+    printf '"firewallWanted":%s,' "$( [ "$(read_state firewall)" = "off" ] && echo false || echo true )"
+    printf '"firewallAnchorLoaded":%s,' "$(json_bool anchor_loaded)"
+    printf '"pfEnabled":%s,' "$(json_bool pf_enabled)"
+    printf '"daemonLoaded":%s' "$(json_bool daemon_loaded)"
+    printf '}\n'
+}
+
+# Per-user temp/cache dirs live outside the home at /private/var/folders/xx/<id>/
+# (DARWIN_USER_DIR's parent). They're found by owner, at their fixed depth, so a
+# stray path never widens the delete.
+agent_var_folders() {
+    find /private/var/folders -mindepth 2 -maxdepth 2 -type d -user "$AGENT_UID" 2>/dev/null || true
+}
+
+cmd_stop() {
+    # bootout of the user domain tears down the whole login session — GUI
+    # (the loopback-VNC virtual session) and SSH alike. Verified on macOS 27.
+    launchctl bootout "user/$AGENT_UID" >/dev/null 2>&1 || true
+    launchctl bootout "gui/$AGENT_UID" >/dev/null 2>&1 || true
+    pkill -9 -u "$AGENT_UID" >/dev/null 2>&1 || true
+    local i=0
+    while pgrep -u "$AGENT_UID" >/dev/null 2>&1 && [ $i -lt 20 ]; do
+        sleep 0.25; pkill -9 -u "$AGENT_UID" >/dev/null 2>&1 || true; i=$((i + 1))
+    done
+    if pgrep -u "$AGENT_UID" >/dev/null 2>&1; then
+        die "agent processes survived stop"
+    fi
+}
+
+apply_keys_overlay() {
+    install -d -o "$AGENT_USER" -g staff -m 700 "$AGENT_HOME/.ssh"
+    if [ -f "$KEYS_OVERLAY" ]; then
+        install -o "$AGENT_USER" -g staff -m 600 "$KEYS_OVERLAY" "$AGENT_HOME/.ssh/authorized_keys"
+    else
+        rm -f "$AGENT_HOME/.ssh/authorized_keys"
+    fi
+}
+
+safe_rm_home() {
+    # Belt and braces against a bad AGENT_USER ever turning this into rm -rf /Users.
+    case "$AGENT_HOME" in /Users/?*) ;; *) die "refusing to delete $AGENT_HOME" ;; esac
+    [ "$AGENT_HOME" != "/Users/$OWNER_USER" ] || die "refusing to delete the owner's home"
+    rm -rf "$AGENT_HOME"
+}
+
+cmd_reset() {
+    agent_exists || die "agent user missing"
+    local folders
+    folders=$(agent_var_folders)
+    cmd_stop
+    safe_rm_home
+    if [ -d "$GOLDEN/Library" ]; then
+        # clonefile copy: seconds, and no extra space until files change.
+        cp -cpR "$GOLDEN" "$AGENT_HOME"
+    else
+        createhomedir -c -u "$AGENT_USER" >/dev/null 2>&1 || true
+        [ -d "$AGENT_HOME" ] || die "createhomedir failed"
+    fi
+    chown "$AGENT_USER:staff" "$AGENT_HOME"
+    chmod 750 "$AGENT_HOME"
+    apply_keys_overlay
+    local d
+    for d in $folders $(agent_var_folders); do
+        case "$d" in /private/var/folders/??/?*) rm -rf "$d" ;; esac
+    done
+    # World-writable places a standard user can still leave things in.
+    find /private/tmp /Users/Shared -xdev -mindepth 1 -user "$AGENT_UID" -prune \
+        -exec rm -rf {} + 2>/dev/null || true
+    crontab -r -u "$AGENT_USER" >/dev/null 2>&1 || true
+    rm -f "/usr/lib/cron/tabs/$AGENT_USER"
+    local job
+    for job in $( { atq 2>/dev/null || true; } | awk -v u="$AGENT_USER" '$0 ~ u {print $1}'); do
+        atrm "$job" >/dev/null 2>&1 || true
+    done
+    rm -f "/private/var/db/com.apple.xpc.launchd/disabled.$AGENT_UID.plist"
+    write_state last-reset "$(now)"
+    echo "reset OK"
+}
+
+cmd_snapshot_golden() {
+    agent_exists || die "agent user missing"
+    [ -d "$AGENT_HOME/Library" ] || die "agent home looks empty; nothing to snapshot"
+    cmd_stop
+    install -d -o root -g wheel -m 700 "$(dirname "$GOLDEN")"
+    rm -rf "$GOLDEN"
+    cp -cpR "$AGENT_HOME" "$GOLDEN"
+    # Keys come from the overlay on every reset, never from the snapshot.
+    rm -f "$GOLDEN/.ssh/authorized_keys"
+    # The copy's top dir came from the agent's home and is agent-owned; make it
+    # root's so the agent can't walk in and tamper with its own future resets.
+    chown root:wheel "$GOLDEN"
+    chmod 700 "$GOLDEN"
+    write_state golden-snapshot "$(now)"
+    echo "snapshot OK"
+}
+
+cmd_authorize_key() {
+    [ $# -eq 1 ] || die "authorize-key takes exactly one quoted public-key line"
+    local line=$1
+    case "$line" in
+        *$'\n'*|*$'\r'*) die "key must be a single line" ;;
+    esac
+    case "$line" in
+        "ssh-ed25519 "*|"ecdsa-sha2-nistp256 "*) ;;
+        *) die "only ssh-ed25519 and ecdsa-sha2-nistp256 keys are accepted" ;;
+    esac
+    # Only type, base64 blob and an optional plain comment — no options prefix
+    # (command=, from=, …) can sneak in because the line must start with the type.
+    case "$line" in *[!A-Za-z0-9+/=@._\ -]*) die "unexpected characters in key" ;; esac
+    local tmp
+    tmp=$(mktemp /tmp/lwkey.XXXXXX)
+    printf '%s\n' "$line" > "$tmp"
+    if ! ssh-keygen -l -f "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"; die "ssh-keygen rejected the key"
+    fi
+    rm -f "$tmp"
+    touch "$KEYS_OVERLAY"; chown root:wheel "$KEYS_OVERLAY"; chmod 600 "$KEYS_OVERLAY"
+    local blob
+    blob=$(printf '%s\n' "$line" | awk '{print $2}' || true)
+    if ! awk -v b="$blob" '$2 == b {found=1} END {exit !found}' "$KEYS_OVERLAY"; then
+        printf '%s\n' "$line" >> "$KEYS_OVERLAY"
+    fi
+    if agent_exists && [ -d "$AGENT_HOME" ]; then apply_keys_overlay; fi
+    echo "authorize-key OK"
+}
+
+render_pf_rules() {
+    # pf matches `user` on the socket owner, TCP/UDP only. The agent may still
+    # reach the internet and DNS; it may not reach this Mac's LAN, the tailnet,
+    # multicast/link-local, or anything on loopback outside its own port range
+    # (so the owner's localhost dev servers, debug/MCP endpoints, Screen
+    # Sharing, SMB and SSH are all off-limits).
+    cat > "$PF_RULES" <<EOF
+# Generated by longwave-sandbox — loaded into anchor $PF_ANCHOR. Do not edit.
+table <lw_blocked> const { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, \\
+    169.254.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255/32, \\
+    fc00::/7, fe80::/10, ff00::/8 }
+# Resolver traffic, including a LAN router or Tailscale's 100.100.100.100.
+pass out quick proto { tcp udp } from any to any port 53 user $AGENT_UID keep state
+# The agent's own loopback services talking to each other (dev servers, a
+# simulator app hitting a server the agent started).
+pass out quick on lo0 proto { tcp udp } from any to any port $AGENT_PORTS user $AGENT_UID keep state
+pass out quick on lo0 proto { tcp udp } from any port $AGENT_PORTS to any user $AGENT_UID keep state
+block drop out quick on lo0 proto { tcp udp } from any to any user $AGENT_UID
+block drop out quick proto { tcp udp } from any to <lw_blocked> user $AGENT_UID
+EOF
+    chmod 644 "$PF_RULES"
+}
+
+pf_token_valid() {
+    local t
+    t=$(read_state pf-token)
+    [ -n "$t" ] && pfctl -s References 2>/dev/null | /usr/bin/grep -qw "$t"
+}
+
+firewall_on() {
+    agent_exists || die "agent user missing"
+    render_pf_rules
+    pfctl -a "$PF_ANCHOR" -n -f "$PF_RULES" >/dev/null 2>&1 || die "pf rejected the generated rules ($PF_RULES)"
+    pfctl -a "$PF_ANCHOR" -f "$PF_RULES" >/dev/null 2>&1 || die "loading the pf anchor failed"
+    # Take our own enable reference (-E) rather than a bare -e, so other pf
+    # users (and the system) keep their references and nobody's -X turns
+    # filtering off under us. The token is only valid until reboot; the daemon
+    # re-takes it at boot.
+    if ! pf_token_valid; then
+        local out token
+        out=$(pfctl -E 2>&1 || true)
+        token=$(printf '%s\n' "$out" | awk '/[Tt]oken/ {print $NF}' | tail -n 1 || true)
+        case "$token" in ""|*[!0-9]*) die "pfctl -E returned no token" ;; esac
+        write_state pf-token "$token"
+    fi
+    write_state firewall on
+    anchor_loaded || die "anchor did not load"
+    echo "firewall on"
+}
+
+firewall_off() {
+    pfctl -a "$PF_ANCHOR" -F all >/dev/null 2>&1 || true
+    if pf_token_valid; then
+        pfctl -X "$(read_state pf-token)" >/dev/null 2>&1 || true
+    fi
+    rm -f "$STATE_DIR/pf-token"
+    write_state firewall off
+    echo "firewall off"
+}
+
+cmd_firewall() {
+    case "${1:-}" in
+        on) firewall_on ;;
+        off) firewall_off ;;
+        status)
+            printf '{"wanted":%s,"anchorLoaded":%s,"pfEnabled":%s}\n' \
+                "$( [ "$(read_state firewall)" = "off" ] && echo false || echo true )" \
+                "$(json_bool anchor_loaded)" "$(json_bool pf_enabled)" ;;
+        restore)
+            # Boot path: stale token from before the reboot is meaningless.
+            rm -f "$STATE_DIR/pf-token"
+            if [ "$(read_state firewall)" != "off" ]; then firewall_on; fi ;;
+        *) die "usage: firewall on|off|status" ;;
+    esac
+}
+
+cmd_daemon() {
+    cmd_firewall restore || echo "longwave-sandbox: firewall restore failed" >&2
+    [ -x "$SEMD" ] || die "$SEMD missing"
+    exec "$SEMD" wakeboardd.first-boot 2
+}
+
+verb=${1:-}
+[ $# -gt 0 ] && shift
+case "$verb" in
+    status)
+        case "${1:-}" in ""|--size) cmd_status "${1:-}" ;; *) die "usage: status [--size]" ;; esac ;;
+    stop) [ $# -eq 0 ] || die "stop takes no arguments"; cmd_stop; echo "stop OK" ;;
+    reset) [ $# -eq 0 ] || die "reset takes no arguments"; cmd_reset ;;
+    snapshot-golden) [ $# -eq 0 ] || die "snapshot-golden takes no arguments"; cmd_snapshot_golden ;;
+    authorize-key) cmd_authorize_key "$@" ;;
+    firewall) [ $# -eq 1 ] || die "usage: firewall on|off|status"; cmd_firewall "$1" ;;
+    daemon) [ $# -eq 0 ] || die "daemon takes no arguments"; cmd_daemon ;;
+    *) die "usage: status [--size] | stop | reset | snapshot-golden | authorize-key '<pubkey>' | firewall on|off|status" ;;
+esac

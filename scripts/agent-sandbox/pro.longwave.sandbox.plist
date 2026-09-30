@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Longwave agent sandbox, root side. At boot it re-applies the pf anchor (pf
+  enable tokens don't survive a reboot), then becomes longwave-sandbox-semd,
+  which keeps the host-global "wakeboardd.first-boot" semaphore unlinked so the
+  owner and the agent account can both boot visionOS simulators. Installed by
+  scripts/agent-sandbox/install.sh to /Library/LaunchDaemons.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>pro.longwave.sandbox</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/longwave-sandbox</string>
+        <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Library/Longwave/state/daemon.log</string>
+</dict>
+</plist>

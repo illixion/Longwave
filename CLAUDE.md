@@ -72,7 +72,9 @@ and pan via `MobileViewport`, shared with the VNC view).
 **LongwaveMac is a client only; the host side is the Companion's.** LongwaveMac compiles
 `Longwave/` + `Shared/` + `LongwaveMac/` and nothing from `CompanionMac/`, so the two run as
 separate processes and never both bind the streaming ports. Install both with
-`scripts/install-companion.sh` (Companion) and `scripts/install-companion.sh full` (LongwaveMac).
+`scripts/install-companion.sh` (Companion) and `scripts/install-companion.sh full` (LongwaveMac). On first launch the Companion copies host settings it doesn't have yet (pairing token, broadcast/OBS
+passwords, sandbox projects) from LongwaveMac's defaults domain (`LongwaveMacSettingsMigration`),
+so a Mac that used LongwaveMac as its host keeps its paired headsets.
 
 **Projects on the Mac runs agents as a separate local account, from the Companion.**
 `MacProjectsView` (Companion → Projects…) drives the agent sandbox from `scripts/agent-sandbox/`

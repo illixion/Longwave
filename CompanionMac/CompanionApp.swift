@@ -11,14 +11,18 @@ import AppKit
 /// Display — audio played by the visionOS app honors the per-app setting.
 @main
 struct CompanionApp: App {
-    @State private var controller = AudioStreamerController()
-    @State private var broadcastServer = BroadcastServerManager()
+    @State private var controller: AudioStreamerController
+    @State private var broadcastServer: BroadcastServerManager
     // Projects: the local agent sandbox (scripts/agent-sandbox) and the
     // scheduler that fires recurring headless runs into it while the app runs.
     @State private var sandbox: LocalSandboxController
     @State private var scheduler: LocalScheduler
 
     init() {
+        // Before any controller reads its settings (see the type's comment).
+        LongwaveMacSettingsMigration.runOnce()
+        _controller = State(initialValue: AudioStreamerController())
+        _broadcastServer = State(initialValue: BroadcastServerManager())
         let sandbox = LocalSandboxController()
         let scheduler = LocalScheduler(sandbox: sandbox)
         _sandbox = State(initialValue: sandbox)

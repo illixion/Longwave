@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE30AD100000000000000024 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000014 /* RoyalVNCKit */; };
 		EE30AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000010 /* NIOSSH */; };
 		EE30AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000011 /* NIOCore */; };
 		EE30AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000012 /* NIOTransportServices */; };
@@ -130,14 +131,6 @@
 			);
 			target = 1DC83C262F74524200BF0482 /* Longwave */;
 		};
-		98D80EF04956D1B38B397658 /* Exceptions for "CompanionMac" folder in "LongwaveMac" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				CompanionApp.swift,
-				Info.plist,
-			);
-			target = 228F25EB1D6A2BB4D767CB5C /* LongwaveMac */;
-		};
 		AA10AD100000000000000003 /* Exceptions for "CompanionMac" folder in "LongwaveCompanion" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -231,7 +224,6 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				AA10AD100000000000000003 /* Exceptions for "CompanionMac" folder in "LongwaveCompanion" target */,
-				98D80EF04956D1B38B397658 /* Exceptions for "CompanionMac" folder in "LongwaveMac" target */,
 			);
 			path = CompanionMac;
 			sourceTree = "<group>";
@@ -320,6 +312,7 @@
 				EE30AD100000000000000021 /* NIOCore in Frameworks */,
 				EE30AD100000000000000022 /* NIOTransportServices in Frameworks */,
 				EE30AD100000000000000023 /* Crypto in Frameworks */,
+				EE30AD100000000000000024 /* RoyalVNCKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -534,7 +527,6 @@
 				589D9C822F2D180B311E2285 /* Sources */,
 				F3582F8517BABECC627C9924 /* Frameworks */,
 				8D1AAAAD70328F40F785B5B1 /* Resources */,
-				AA10AD100000000000000F01 /* Build MediaRemote Helper */,
 			);
 			buildRules = (
 			);
@@ -542,7 +534,6 @@
 			);
 			fileSystemSynchronizedGroups = (
 				1DC83C292F74524200BF0482 /* Longwave */,
-				AA10AD100000000000000002 /* CompanionMac */,
 				AA10AD100000000000000004 /* Shared */,
 				B7EF0442D34BCA5FCA56413D /* LongwaveMac */,
 			);
@@ -595,6 +586,7 @@
 				EE30AD100000000000000011 /* NIOCore */,
 				EE30AD100000000000000012 /* NIOTransportServices */,
 				EE30AD100000000000000013 /* Crypto */,
+				EE30AD100000000000000014 /* RoyalVNCKit */,
 			);
 			productName = LongwaveCompanion;
 			productReference = AA10AD100000000000000001 /* LongwaveCompanion.app */;
@@ -823,27 +815,6 @@
 			shellScript = "cp \"${SRCROOT}/THIRD_PARTY_NOTICES.md\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/\"\n";
 		};
 		AA10AD100000000000000F00 /* Build MediaRemote Helper */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/MediaRemoteHelper/longwave-mediaremote.m",
-				"$(SRCROOT)/scripts/build-mediaremote-helper.sh",
-			);
-			name = "Build MediaRemote Helper";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/longwave-mediaremote.dylib",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${SRCROOT}/scripts/build-mediaremote-helper.sh\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/longwave-mediaremote.dylib\"\n";
-		};
-		AA10AD100000000000000F01 /* Build MediaRemote Helper */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1636,6 +1607,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		EE30AD100000000000000014 /* RoyalVNCKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RoyalVNCKit;
+		};
 		EE30AD100000000000000010 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;

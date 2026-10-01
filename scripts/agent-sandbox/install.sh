@@ -99,11 +99,14 @@ if [ "$created_user" -eq 1 ] || ! sudo -u "$OWNER" -H security find-generic-pass
     fi
     # security -i also takes commands on stdin, so the value never shows in ps.
     # -U updates an existing item; the hex password needs no quoting.
-    # -T pre-authorizes LongwaveMac (its session keeper reads this for the
-    # loopback VNC login) so the first desktop login doesn't raise a keychain
-    # prompt; the ACL follows the app's code signature, not the path.
+    # -T pre-authorizes the apps that read it — Longwave Companion (its session
+    # keeper does the loopback VNC login) and LongwaveMac (shows the sandbox
+    # desktop) — so neither raises a keychain prompt; the ACL follows each
+    # app's code signature, not the path.
     trusted=""
-    [ -d /Applications/LongwaveMac.app ] && trusted='-T /Applications/LongwaveMac.app'
+    for app in /Applications/LongwaveCompanion.app /Applications/LongwaveMac.app; do
+        [ -d "$app" ] && trusted="$trusted -T $app"
+    done
     printf 'add-generic-password -U -s %s -a %s -l "Longwave agent sandbox" -D "application password" %s -w %s\n' \
         "$KEYCHAIN_SERVICE" "$AGENT_USER" "$trusted" "$AGENT_PW" \
         | sudo -u "$OWNER" -H security -i >/dev/null 2>&1 || true
@@ -250,9 +253,11 @@ fi
 cat <<EOF
 
 Installed. Next steps:
-  1. In LongwaveMac, open Projects > Sandbox desktop and complete macOS first-run
-     setup for "$AGENT_REALNAME" yourself, then press "Setup complete" (this runs
-     'longwave-sandbox configure-desktop' — no screen lock, no screen saver, black
-     wallpaper — then 'snapshot-golden', so every reset restores a set-up home).
+  1. In Longwave Companion's menu, open Projects. It logs the agent in (no
+     clicking needed — simulators only need the session), then press
+     "Setup complete" (this runs 'longwave-sandbox configure-desktop' — no screen
+     lock, no screen saver, black wallpaper — then 'snapshot-golden', so every
+     reset restores that home). Sandbox Desktop shows the agent's screen in
+     LongwaveMac if you want to look.
   2. Check status any time:  sudo -n $LIBEXEC/longwave-sandbox status
 EOF

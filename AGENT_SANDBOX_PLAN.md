@@ -76,6 +76,16 @@ Known gaps this roadmap closes:
 
 ## Phase A — the Companion takes over the sandbox
 
+Progress (2026-10-01): agent code shared from `Shared/Agents/` behind
+`AgentCredentialHost`; Projects, keeper and scheduler run in the Companion
+(Projects… in its menu); LongwaveMac compiles no `CompanionMac/` code and its
+Projects entry points at the Companion until the Phase B client exists;
+Sandbox Desktop hands off to LongwaveMac over `longwave://sandbox-desktop`;
+keeper makes one attempt (180 s, no retries); `install.sh` trusts both apps on
+the password item. Still open: orphaned-`loginwindow` detection, automatic
+golden after the first login, Setup Assistant flags, install from the
+Companion, the 4K device type, the is-running semaphore.
+
 1. Move `LocalSandboxController`, `SandboxSessionKeeper`, `LocalScheduler`,
    schedule models and the sign-in sheets into shared code built into
    CompanionMac. LongwaveMac keeps a Projects tab that talks to the Companion

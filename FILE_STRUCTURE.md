@@ -118,11 +118,12 @@ LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS targ
 ├── Assets.xcassets/                    — iOS AppIcon (appiconset; the visionOS icon is layered) + accent
 └── Info.plist                          — Single-scene, landscape allowed, background audio
 
-LongwaveMac/Projects/                   — Mac Projects tab: agents run as the local sandbox account
-│                                         (scripts/agent-sandbox), attached in Terminal.app
+CompanionMac/Projects/                  — The Companion's Projects window: agents run as the local
+│                                         sandbox account (scripts/agent-sandbox), attached in Terminal.app
 ├── MacProjectsView.swift               — Sandbox status/actions, onboarding, agent sign-in, projects, sessions, firewall
 ├── LocalSandboxController.swift        — `sudo -n longwave-sandbox …`, keychain password, SSH runner, import/fetch/launch
-├── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session for the agent
+├── SandboxAgentAccount.swift           — The sandbox's AgentCredentialHost (keychain tokens, UserDefaults settings, no SwiftData)
+├── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session (one attempt, never abandoned)
 ├── LocalScheduler.swift                — Fires schedules while the app runs: reset, headless run, monitor, transcript, notification
 ├── ScheduleModels.swift                — `ScheduledRun` / `RunRecord` SwiftData models in their own Schedules.store
 └── MacSchedulesView.swift              — Schedules section, run history, editor sheet, `PlainTextEditor`

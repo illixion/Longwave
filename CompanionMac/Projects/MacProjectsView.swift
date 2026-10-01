@@ -1,14 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// The Mac Projects tab: agents run as the local sandbox account
+/// The Companion's Projects window: agents run as the local sandbox account
 /// (`scripts/agent-sandbox/`), not as you. Sessions are tmux-backed in the
 /// sandbox and attach in Terminal.app — the Mac has a real terminal, so there's
-/// no in-app one.
+/// no in-app one, and the sandbox desktop opens in Longwave for Mac's viewer.
 struct MacProjectsView: View {
     @Environment(LocalSandboxController.self) private var sandbox
-    @Environment(VNCConnectionManager.self) private var vnc
-    @Environment(\.openWindow) private var openWindow
 
     @State private var setupAgent: SSHAgent?
     @State private var keyLine = ""
@@ -31,7 +29,7 @@ struct MacProjectsView: View {
             case .notInstalled:
                 installSection(reason: "The agent sandbox isn't installed on this Mac.")
             case .sudoNotConfigured(let detail):
-                installSection(reason: "Longwave can't run the sandbox helper without a password (\(detail)).")
+                installSection(reason: "Longwave Companion can't run the sandbox helper without a password (\(detail)).")
             case .failed(let message):
                 installSection(reason: message)
             }
@@ -54,7 +52,7 @@ struct MacProjectsView: View {
         }
         .task { await sandbox.ensureDesktopSession() }
         .sheet(item: $setupAgent) { agent in
-            AgentSetupSheet(host: sandbox.connection, agent: agent)
+            AgentSetupSheet(host: sandbox.account, agent: agent)
                 .frame(minWidth: 520, minHeight: 420)
         }
         .confirmationDialog("Reset the sandbox?", isPresented: $confirmReset) {
@@ -84,16 +82,16 @@ struct MacProjectsView: View {
         Section {
             Label {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Give Longwave Full Disk Access").font(.headline)
+                    Text("Give Longwave Companion Full Disk Access").font(.headline)
                     Text("Reset, Setup complete and golden snapshots work inside the sandbox account's home, which macOS protects even from the root helper unless the app calling it has Full Disk Access. Sessions and schedules without \"Reset before run\" work without it.")
                         .foregroundStyle(.secondary)
-                    Text("macOS never asks for this permission. Open Privacy Settings, drag Longwave from the Finder window that opens into the Full Disk Access list and switch it on, then relaunch.")
+                    Text("macOS never asks for this permission. Open Privacy Settings, drag Longwave Companion from the Finder window that opens into the Full Disk Access list and switch it on, then relaunch.")
                         .foregroundStyle(.secondary)
                 }
             } icon: { Image(systemName: "lock.shield").foregroundStyle(.orange) }
             HStack {
                 Button("Open Privacy Settings") { sandbox.openFullDiskAccessSettings() }
-                Button("Relaunch Longwave") { sandbox.relaunch() }
+                Button("Relaunch Companion") { sandbox.relaunch() }
                 Button("Check again") { Task { await sandbox.refresh() } }
             }
         }
@@ -109,7 +107,7 @@ struct MacProjectsView: View {
             }
             HStack {
                 Button("Sandbox Desktop") {
-                    Task { if await sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") } }
+                    sandbox.openDesktop()
                 }
                 Button("Open Device Hub") { Task { await sandbox.openDeviceHub() } }
                 Spacer()
@@ -149,7 +147,7 @@ struct MacProjectsView: View {
             } icon: { Image(systemName: "person.crop.circle.badge.exclamationmark") }
             HStack {
                 Button("Sandbox Desktop") {
-                    Task { if await sandbox.openDesktop(using: vnc) { openWindow(id: "remote-desktop") } }
+                    sandbox.openDesktop()
                 }
                 Button("Setup complete") { Task { await sandbox.completeSetup() } }
                     .buttonStyle(.borderedProminent)
@@ -165,9 +163,9 @@ struct MacProjectsView: View {
                 HStack {
                     Label(agent.displayName, systemImage: agent.systemImage)
                     Spacer()
-                    Text(sandbox.connection.hasToken(for: agent) ? "Signed in" : "Not signed in")
-                        .foregroundStyle(sandbox.connection.hasToken(for: agent) ? .green : .secondary)
-                    Button(sandbox.connection.hasToken(for: agent) ? "Manage…" : "Sign In…") { setupAgent = agent }
+                    Text(sandbox.account.hasToken(for: agent) ? "Signed in" : "Not signed in")
+                        .foregroundStyle(sandbox.account.hasToken(for: agent) ? .green : .secondary)
+                    Button(sandbox.account.hasToken(for: agent) ? "Manage…" : "Sign In…") { setupAgent = agent }
                 }
             }
         } header: {

@@ -31,10 +31,14 @@ final class SandboxSessionKeeper: NSObject, VNCConnectionDelegate {
     private var sawFramebuffer = false
 
     /// Resolves once the session is up (first framebuffer received, then the
-    /// connection is closed) or the attempt failed. `timeout` bounds the whole
-    /// attempt; a virtual session's first frame normally arrives in 1–3 s.
+    /// connection is closed) or the attempt failed. A virtual session's first
+    /// frame normally arrives in 1–3 s, but an account's *first* login builds its
+    /// whole session and took ~70 s on macOS 27. `timeout` is deliberately far
+    /// beyond that: walking away from a login half-way leaves macOS with an
+    /// orphaned root `loginwindow` for a half-created session, which has frozen
+    /// the owner's menu bar (see `AGENT_SANDBOX_PLAN.md`, Phase A).
     func logIn(host: String, port: UInt16, username: String, password: String,
-               timeout: Duration = .seconds(45)) async -> Outcome {
+               timeout: Duration = .seconds(180)) async -> Outcome {
         guard continuation == nil else { return .failed("A login is already in progress") }
         self.username = username
         self.password = password

@@ -122,7 +122,7 @@
   - Delivery verified live 2026-09-30 (hidden test account over key-auth SSH to localhost, argv of every process polled ~10×/s during launch: zero hits): a fresh tmux server takes the vars into its global env; an already-running server gets them session-scoped via `update-environment` and its global env stays clean. Either way the pane sees the exact value (quotes, `$()`, backticks and trailing newlines survive — the reader is exercised under sh/bash/zsh/dash).
   - Plain terminal sessions (`persistentShellCommand` / `shellCommand`) still inline their user-defined env: it is non-secret by contract, and the no-tmux fallback runs inside the PTY where there is no separate stdin to use.
 - **Managed Claude sessions launch with `--allow-dangerously-skip-permissions`, never `--dangerously-skip-permissions`.** The two are one word apart and do different things: the `--allow-` form only makes bypass-permissions *selectable* in the Shift+Tab cycle and leaves the session in Claude's normal default mode, while the bare form starts it in bypass. Approving prompts through a floating headset terminal is the worst part of driving an agent from Vision Pro, so bypass is one keystroke away — but no session starts unguarded on the user's behalf. The flag lives in `SSHAgent.defaultFlags` and is composed by `defaultLaunchCommand`, so it applies to the built-in Claude agent only; `.custom` is a command line the user owns and is passed through verbatim. `SSHTerminalManagerTests` asserts the bare form and any `--permission-mode` override never reach the launch line. It is a CLI flag, so it's an upstream-movable surface like the rest of `ClaudeOAuth` — a host with a `claude` older than ~2.1.14x predates it and would exit on the unknown option.
-- **The macOS agent sandbox is the one place sessions start with every CLI's own safeguards off.** LongwaveMac's local Projects launch built-in agents with `SSHAgent.sandboxLaunchCommand`: `claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox` (Codex's Seatbelt sandbox would also break xcodebuild and the simulators), `copilot --allow-all` (tools + paths + URLs). Scheduled runs use the same flags in `AgentSchedule.agentInvocation`. This is safe only because the hidden, resettable `longwave-agent` account is the boundary (`scripts/agent-sandbox/README.md`); SSH hosts are the user's real accounts and keep `defaultFlags` — `SavedConnectionEnvTests` asserts no bypass flag ever reaches `effectiveCommand(for:)`.
+- **The macOS agent sandbox is the one place sessions start with every CLI's own safeguards off.** The Companion's Projects launch built-in agents with `SSHAgent.sandboxLaunchCommand`: `claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox` (Codex's Seatbelt sandbox would also break xcodebuild and the simulators), `copilot --allow-all` (tools + paths + URLs). Scheduled runs use the same flags in `AgentSchedule.agentInvocation`. This is safe only because the hidden, resettable `longwave-agent` account is the boundary (`scripts/agent-sandbox/README.md`); SSH hosts are the user's real accounts and keep `defaultFlags` — `SavedConnectionEnvTests` asserts no bypass flag ever reaches `effectiveCommand(for:)`.
 - **Secure Enclave key**: `SecureEnclaveSSHKey` (P-256, `ecdsa-sha2-nistp256`); falls back to a software P-256 key in the Keychain on the simulator. Host keys are accepted TOFU (pinning is a TODO).
 - **Companion text injection is text-only by design**: `Shared/CompanionInjectProtocol.swift` can express only `injectText` (UTF-8) and `injectBackspace` (count) — never key codes or modifiers — so a compromised channel can't synthesize Cmd+Space/Run-dialog payloads. The channel is TLS-1.2-PSK on port 4856 via `CompanionInjectCrypto` (same companion token as audio, **domain-separated** HKDF).
 - `SavedConnection.linkedCompanionConnectionID` (renamed from `linkedAudioConnectionID`, `@Attribute(originalName:)`) links a VNC connection to a companion (audio) connection.
@@ -130,8 +130,8 @@
 
 ## Local agent sandbox (Mac Projects)
 
-The Mac Projects tab runs agents as the hidden `longwave-agent` account (`scripts/agent-sandbox/`,
-`LongwaveMac/Projects/`). Verified on macOS 27 / Xcode 27, 2026-09-30:
+Longwave Companion's Projects window runs agents as the hidden `longwave-agent` account
+(`scripts/agent-sandbox/`, `CompanionMac/Projects/`). Verified on macOS 27 / Xcode 27, 2026-09-30:
 
 - **iOS simulators work with no GUI session; visionOS simulators don't.** Over key-auth SSH alone an
   iPhone sim boots, renders and runs `xcodebuild test`. A visionOS sim first needs a device identity
@@ -157,10 +157,18 @@ The Mac Projects tab runs agents as the hidden `longwave-agent` account (`script
   (`0/com.apple.LaunchServices.dv`, `T/com.apple.trustd`), even as root; it empties them instead.
   App-data-protected group containers in the home can't be read or deleted by root either, which is
   why snapshot/reset move whole trees rather than copying into place.
-- **Keychain prompt on first desktop login.** The agent password lives in the owner's login keychain
-  (written by `security`, so that's the only app on its ACL); LongwaveMac's first read shows macOS's
-  access prompt. The read runs off the main actor because `SecItemCopyMatching` blocks while the
-  prompt is up.
+- **Keychain prompt on first desktop login.** The agent password lives in the owner's login keychain.
+  `install.sh` puts Longwave Companion and LongwaveMac on its ACL when they're installed at the time;
+  otherwise (or for an item written by an older install) each app's first read shows macOS's access
+  prompt. The read runs off the main actor because `SecItemCopyMatching` blocks while the prompt is up.
+- **A login only starts a session if it runs to the first framebuffer.** Disconnecting right after ARD
+  auth starts nothing; completing `ClientInit` without pixel format / encodings / update requests got a
+  0×0 `ServerInit` after ~70 s and no session (2026-09-30). Abandoned attempts left an orphaned root
+  `loginwindow` for a half-created session, restarted `screensharingd` and froze the owner's Control
+  Center and Dock until a reboot. So the keeper waits up to 180 s (first logins take ~70 s), makes one
+  attempt per launch or Retry, and keeps extra signed-in accounts to the one agent.
+- **The Companion has no VNC viewer.** Sandbox Desktop opens `longwave://sandbox-desktop`; LongwaveMac
+  reads the password itself and shows the desktop in its viewer.
 - **Imports push with `--no-verify`.** A global pre-push hook that guards remotes (here: one refusing
   unsigned commits) otherwise rejects the copy into the local exchange dir. Fetching back is
   fetch-only, so no agent-authored hook or checkout ever runs as the owner.
@@ -168,14 +176,14 @@ The Mac Projects tab runs agents as the hidden `longwave-agent` account (`script
   in-sandbox clone script re-adds it because a reset wipes the agent's global config.
 - **Device Hub opens via `open` over SSH as the agent** — LaunchServices routes it into that user's
   Aqua session; no root needed.
-- **Reset / snapshot / configure-desktop need Full Disk Access for LongwaveMac.** macOS protects
+- **Reset / snapshot / configure-desktop need Full Disk Access for Longwave Companion.** macOS protects
   another user's home from any process whose *responsible app* lacks FDA — root included — and
-  under `sudo -n` from the app, LongwaveMac is that app. Without the grant, moving or even
+  under `sudo -n` from the app, the Companion is that app. Without the grant, moving or even
   `chmod -N`-ing `/Users/longwave-agent` fails ("Operation not permitted"; a bare root launchd job
   gets "Permission denied"), while the same verbs work from a terminal that has FDA. The tab probes
   FDA by opening the system TCC database and shows a banner with a shortcut to the pane;
   "Reset before run" fails fast with the same hint.
-- **Schedules fire only while LongwaveMac runs.** There is no background daemon; a fire missed
+- **Schedules fire only while the Companion runs.** There is no background daemon; a fire missed
   while the app was closed runs once on the next tick (no catch-up burst), and a run left
   "running" across a relaunch is re-attached (still going) or collected (finished meanwhile).
 - **Headless runs bypass the agent's own permission prompts** (`--dangerously-skip-permissions`,

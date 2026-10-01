@@ -12,7 +12,10 @@ struct CompanionMenuView: View {
     /// window instead of the companion/settings window. The small menu-bar
     /// companion leaves this nil and opens its Settings window.
     var openMainAction: (() -> Void)? = nil
+    /// Whether this app hosts the agent sandbox's Projects window.
+    var showsProjects = false
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -58,6 +61,14 @@ struct CompanionMenuView: View {
                 }
                 .help("Open the main Longwave window.")
             } else {
+                if showsProjects {
+                    Button("Projects…") {
+                        openWindow(id: "projects")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    .help("The agent sandbox: projects, agent sessions and schedules.")
+                }
+
                 Button("Open Companion Window…") {
                     openSettings()
                     NSApp.activate(ignoringOtherApps: true)

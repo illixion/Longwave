@@ -5,7 +5,7 @@ import ServiceManagement
 import SwiftData
 import UserNotifications
 
-/// Fires `ScheduledRun`s into the local sandbox **while LongwaveMac is
+/// Fires `ScheduledRun`s into the local sandbox **while the Companion is
 /// running** — there's no background daemon; "Open at login" keeps it running.
 ///
 /// One run per schedule at a time (a fire during a run is recorded as skipped),
@@ -176,7 +176,7 @@ final class LocalScheduler {
             if schedule.resetBeforeRun {
                 guard LocalSandboxController.probeFullDiskAccess() else {
                     throw LocalSandboxController.SandboxError.message(
-                        "Reset before run needs Full Disk Access for LongwaveMac (System Settings → Privacy & Security).")
+                        "Reset before run needs Full Disk Access for Longwave Companion (System Settings → Privacy & Security).")
                 }
                 await sandbox.reset()
                 if let error = sandbox.lastError { throw LocalSandboxController.SandboxError.message("Reset failed: \(error)") }
@@ -187,7 +187,7 @@ final class LocalScheduler {
                 throw LocalSandboxController.SandboxError.message("The sandbox isn't ready.")
             }
             record.firewallOn = sandbox.status?.firewallAnchorLoaded ?? false
-            if schedule.agent != .custom, !sandbox.connection.hasToken(for: schedule.agent) {
+            if schedule.agent != .custom, !sandbox.account.hasToken(for: schedule.agent) {
                 throw LocalSandboxController.SandboxError.message("\(schedule.agent.displayName) isn't signed in on this Mac.")
             }
             record.tmuxSession = try await sandbox.startHeadlessRun(
@@ -278,7 +278,7 @@ final class LocalScheduler {
             guard let schedule = schedules.first(where: { $0.id == record.scheduleID }),
                   !record.tmuxSession.isEmpty else {
                 record.status = .failed
-                record.note = "LongwaveMac quit before the run started."
+                record.note = "Longwave Companion quit before the run started."
                 record.endedAt = record.endedAt ?? Date()
                 continue
             }

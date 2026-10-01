@@ -13,8 +13,23 @@ import AppKit
 struct CompanionApp: App {
     @State private var controller = AudioStreamerController()
     @State private var broadcastServer = BroadcastServerManager()
+    // Projects: the local agent sandbox (scripts/agent-sandbox) and the
+    // scheduler that fires recurring headless runs into it while the app runs.
+    @State private var sandbox: LocalSandboxController
+    @State private var scheduler: LocalScheduler
 
     init() {
+        let sandbox = LocalSandboxController()
+        let scheduler = LocalScheduler(sandbox: sandbox)
+        _sandbox = State(initialValue: sandbox)
+        _scheduler = State(initialValue: scheduler)
+        // Here rather than in a window's task: the Companion runs windowless
+        // in the menu bar, and schedules and the agent's desktop session must
+        // work without any window open. One login attempt at launch (a no-op
+        // when the sandbox isn't installed or already has a session).
+        scheduler.start()
+        Task { await sandbox.ensureDesktopSession() }
+
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
             .compactMap { $0 }
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }))
@@ -29,7 +44,7 @@ struct CompanionApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            CompanionMenuView(controller: controller, broadcastServer: broadcastServer)
+            CompanionMenuView(controller: controller, broadcastServer: broadcastServer, showsProjects: true)
         } label: {
             // Priority: injecting > now-playing track > audio idle/active.
             if controller.isInjecting {
@@ -53,13 +68,43 @@ struct CompanionApp: App {
         // .accessory on close, so there's no permanent dock presence.
         Settings {
             CompanionWindowView(controller: controller, broadcastServer: broadcastServer)
-                .onAppear {
-                    NSApp.setActivationPolicy(.regular)
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                .onDisappear {
-                    NSApp.setActivationPolicy(.accessory)
-                }
+                .companionWindowActivation()
         }
+
+        // The agent sandbox: projects, sessions, sign-ins and schedules.
+        Window("Projects", id: "projects") {
+            NavigationStack {
+                MacProjectsView()
+            }
+            .environment(sandbox)
+            .environment(scheduler)
+            .frame(minWidth: 620, minHeight: 520)
+            .companionWindowActivation()
+        }
+        .defaultSize(width: 720, height: 760)
     }
+}
+
+/// While any Companion window is open the app is a regular app (Dock icon,
+/// Cmd-Tab, normal focus); with none open it goes back to menu-bar only. Counted
+/// so closing one window doesn't hide the app while another is still open.
+private struct CompanionWindowActivation: ViewModifier {
+    @MainActor private static var openCount = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                Self.openCount += 1
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .onDisappear {
+                Self.openCount = max(0, Self.openCount - 1)
+                if Self.openCount == 0 { NSApp.setActivationPolicy(.accessory) }
+            }
+    }
+}
+
+extension View {
+    func companionWindowActivation() -> some View { modifier(CompanionWindowActivation()) }
 }

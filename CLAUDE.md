@@ -15,7 +15,7 @@ Longwave is a remote desktop and game streaming app for **visionOS** built in Sw
 
 **KVM dongle** (`Firmware/kvm-dongle/`, ESP-IDF + NimBLE, classic ESP32 over a CH340 UART bridge): a BLE HID keyboard + mouse + consumer-control device the Vision Pro pairs with like any Bluetooth keyboard, fed HID reports from the Mac over USB serial (`PROTOCOL.md`, 460800 baud — the CH340 cannot do 921600). It exists because visionOS has no input-injection API for apps; this is the only route for Mac → headset keyboard/pointer. `tools/kvmctl.py` drives it from the shell, and the macOS Companion's **KVM** tab (`CompanionMac/KVM*.swift`) is the real client: a CGEventTap swallows this Mac's keyboard, pointer and media keys and relays them as HID reports, with ⌃⌥⌘K toggling capture from either side. Three things bite. The report descriptor is frozen once shipped — visionOS caches it at pairing time. The headset subscribes to the report characteristics on its own schedule, so "connected and encrypted" does not mean input arrives: the subscription bits do, and they do not all arrive together. And ordering is the whole game on a keyboard, which is why the link is a serial `DispatchQueue` rather than an actor (an actor's reentrancy would let a release frame overtake its press) and why key reports queue whole while pointer motion coalesces.
 
-**Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys; **Longwave Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
+**Companions** (host side): **macOS Companion** (`LongwaveCompanion`, `CompanionMac/`) — audio / now-playing / keyboard injection / SSH keys / the agent sandbox (Projects, schedules); **Longwave Companion** (`CompanionWindows/`, PoC) — Hotspot NAT for the headset and the CloudXR foveated streaming host.
 
 ## Editions
 
@@ -56,7 +56,7 @@ shared code knowing they exist.
 | target | platform | scene model | excluded |
 |---|---|---|---|
 | `Longwave` | visionOS 26.2+ | window per surface (`openWindow`) | — |
-| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | the in-app SSH terminal (Projects attaches in Terminal.app instead), Broadcast, Unity per-window scenes |
+| `LongwaveMac` | macOS 14.2+ | `MacMainView` + AppKit input | the in-app SSH terminal, Broadcast, Unity per-window scenes, and every host feature (those are the Companion's) |
 | `LongwaveiOS` | iOS/iPadOS 26+ | one window; `MobileRootView` tab shell | PCVR, Broadcast, Unity per-window scenes |
 
 Moonlight and the Native desktop stream (with audio and remote input) are on
@@ -69,19 +69,29 @@ neutral; only the views differ: `NativeStreamView` on visionOS,
 HID inverse for Windows hosts), `MobileNativeStreamView` on iOS (touch, zoom
 and pan via `MobileViewport`, shared with the VNC view).
 
-**Projects on the Mac runs agents as a separate local account.** `MacProjectsView` drives the
-agent sandbox from `scripts/agent-sandbox/` (hidden `longwave-agent` user, fixed-verb root helper
-run via `sudo -n`, golden-home resets): agents launch over SSH to `127.0.0.1` with install.sh's
-ed25519 file key, tokens on the create channel's stdin exactly as on the headset (the builders are
-shared through `AgentSessionCommands`), and attach in Terminal.app. `SandboxSessionKeeper` keeps a
-GUI session for the agent by logging it in over loopback Screen Sharing — visionOS simulators need
-one. Projects move through `/Library/Longwave/exchange` (import = push, return = fetch only). The
-sandbox's credentials sit on an unpersisted fixed-UUID `SavedConnection`, so it never appears in
-the connection list or backups. See the sandbox bullets in [[KNOWN_CONSTRAINTS.md]]; the move to the
-Companion, task worktrees, sync back and shared memory are planned in [[AGENT_SANDBOX_PLAN.md]].
+**LongwaveMac is a client only; the host side is the Companion's.** LongwaveMac compiles
+`Longwave/` + `Shared/` + `LongwaveMac/` and nothing from `CompanionMac/`, so the two run as
+separate processes and never both bind the streaming ports. Install both with
+`scripts/install-companion.sh` (Companion) and `scripts/install-companion.sh full` (LongwaveMac).
+
+**Projects on the Mac runs agents as a separate local account, from the Companion.**
+`MacProjectsView` (Companion → Projects…) drives the agent sandbox from `scripts/agent-sandbox/`
+(hidden `longwave-agent` user, fixed-verb root helper run via `sudo -n`, golden-home resets):
+agents launch over SSH to `127.0.0.1` with install.sh's ed25519 file key, tokens on the create
+channel's stdin exactly as on the headset (the builders are shared through `AgentSessionCommands`
+in `Shared/Agents/`), and attach in Terminal.app. Credentials sit on `SandboxAgentAccount`, an
+`AgentCredentialHost` like `SavedConnection` but without SwiftData, so it never appears in a
+connection list or backup. `SandboxSessionKeeper` logs the agent into a GUI session over loopback
+Screen Sharing (visionOS simulators need one) — one attempt, no automatic retries, and never
+abandoned before the first frame, since a half-finished login leaves an orphaned `loginwindow`
+that has frozen the owner's menu bar. The Companion has no VNC viewer: Sandbox Desktop opens
+`longwave://sandbox-desktop`, which LongwaveMac handles. Projects move through
+`/Library/Longwave/exchange` (import = push, return = fetch only). See the sandbox bullets in
+[[KNOWN_CONSTRAINTS.md]]; task worktrees, sync back, the Projects protocol and shared memory are
+planned in [[AGENT_SANDBOX_PLAN.md]].
 **Schedules** (`LocalScheduler`, `MacSchedulesView`) fire recurring headless runs into a sandbox
-project — `claude -p` / `codex exec` / `copilot -p`, or a plain shell command — **only while
-LongwaveMac runs** (optional "Open at login"; no daemon). Runs never overlap, obey a daily cap and a
+project — `claude -p` / `codex exec` / `copilot -p`, or a plain shell command — **only while the
+Companion runs** (optional "Open at login"; no daemon). Runs never overlap, obey a daily cap and a
 runtime cap (the run's tmux session is killed), can reset the sandbox first, stay attachable while
 running, and land as a transcript under `~/Library/Application Support/Longwave/runs/` plus a
 notification. The prompt rides the create channel's stdin like the tokens. The agent can't schedule

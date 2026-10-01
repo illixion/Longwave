@@ -33,7 +33,7 @@ struct SchedulesSection: View {
                 Button("New Schedule…") { editing = ScheduleDraft(project: sandbox.projects.first?.bareName ?? "") }
                     .disabled(sandbox.projects.isEmpty)
                 Spacer()
-                Toggle("Open LongwaveMac at login", isOn: Binding(
+                Toggle("Open Longwave Companion at login", isOn: Binding(
                     get: { scheduler.openAtLogin }, set: { scheduler.openAtLogin = $0 }))
                     .toggleStyle(.checkbox)
             }
@@ -43,7 +43,7 @@ struct SchedulesSection: View {
         } header: {
             Text("Schedules")
         } footer: {
-            Text("Schedules fire only while LongwaveMac is running. Runs never overlap, bypass the agent's own permission prompts (the sandbox account is the boundary), and \"Reset before run\" also ends any interactive sessions.")
+            Text("Schedules fire only while Longwave Companion is running. Runs never overlap, bypass the agent's own permission prompts (the sandbox account is the boundary), and \"Reset before run\" also ends any interactive sessions.")
         }
         .task { await scheduler.checkSelfSchedulingGuard() }
         .sheet(item: $editing) { draft in

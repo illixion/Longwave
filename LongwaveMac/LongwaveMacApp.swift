@@ -4,37 +4,23 @@ import SwiftData
 import DebugTraceServer
 import AppKit
 
-/// macOS app entry. The Mac already ships a terminal, so this target keeps the
-/// shared VNC, Moonlight, Native desktop stream, audio, console, and
-/// soft-keyboard scenes without the visionOS SwiftTerm terminal; its Projects
-/// tab drives agents in the local sandbox account and attaches in Terminal.app.
+/// macOS app entry: the client half only — VNC, Moonlight, Native desktop
+/// stream, audio, console and soft-keyboard scenes, without the visionOS
+/// SwiftTerm terminal (the Mac already ships one). Everything host-side —
+/// streaming this Mac, the agent sandbox, schedules — is Longwave Companion's,
+/// a separate process; this app only shows the sandbox desktop when asked.
 @main
 struct LongwaveMacApp: App {
-    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
     @State private var macNativeSessions = MacNativeSessionStore()
     #if MOONLIGHT_ENABLED
     @State private var moonlightSessions = MoonlightSessionStore()
     #endif
-    // Host (companion) side: system-audio streaming + broadcast/OBS provisioning.
-    @State private var companionController = AudioStreamerController()
-    @State private var broadcastServer = BroadcastServerManager()
-    // Projects: the local agent sandbox (scripts/agent-sandbox) and the
-    // scheduler that fires recurring headless runs into it while the app runs.
-    @State private var sandbox: LocalSandboxController
-    @State private var scheduler: LocalScheduler
 
     init() {
         AppLog.configureDebugTrace()
         DebugTraceServer.startIfRequested()
-        let sandbox = LocalSandboxController()
-        let scheduler = LocalScheduler(sandbox: sandbox)
-        _sandbox = State(initialValue: sandbox)
-        _scheduler = State(initialValue: scheduler)
-        // Started here, not from a window's .task: schedules must keep firing
-        // when the main window is closed (the menu-bar extra keeps the app up).
-        scheduler.start()
     }
 
     var body: some Scene {
@@ -46,47 +32,23 @@ struct LongwaveMacApp: App {
                 .environment(connectionManager)
                 .environment(audioManager)
                 .environment(macNativeSessions)
-                .environment(sandbox)
-                .environment(scheduler)
                 #if MOONLIGHT_ENABLED
                 .environment(moonlightSessions)
                 #endif
                 .frame(minWidth: 720, minHeight: 480)
                 .task { connectionManager.audioManager = audioManager }
-                // Keep the sandbox agent's desktop session alive (visionOS
-                // simulators need one). A no-op when the sandbox isn't installed.
-                .task { await sandbox.ensureDesktopSession() }
         } defaultValue: {
             .shared
         }
         .modelContainer(for: SavedConnection.self)
 
-        // Menu-bar quick controls (stream toggle + now-playing title), reusing
-        // the companion's popover. Always alive, so it also hosts the
-        // "summon main window on reopen" bridge from MacAppDelegate.
-        MenuBarExtra {
-            MenuBarHostContent(controller: companionController, broadcastServer: broadcastServer)
-        } label: {
-            if companionController.isInjecting {
-                Image(systemName: "keyboard.fill")
-            } else if let track = companionController.menuBarTrackText {
-                // Already carries the ♪ and is pre-trimmed to the room the menu
-                // bar has — the label can't constrain its own width, so the
-                // string is what has to be the right length.
-                Text(track)
-            } else {
-                Image(systemName: companionController.isRunning ? "speaker.wave.2.fill" : "speaker.slash")
-            }
-        }
-        .menuBarExtraStyle(.window)
-
-        // Single Settings window (Cmd-,): client defaults + all host config.
-        // Needs its own `.modelContainer` — `SettingsView`'s Backup section
-        // reads `modelContext`, and a Scene's container doesn't span other
-        // Scenes, only the one it's attached to (see the "main" WindowGroup
-        // above). Same underlying SwiftData store either way.
+        // Cmd-, : the client's new-connection defaults. Needs its own
+        // `.modelContainer` — `SettingsView`'s Backup section reads
+        // `modelContext`, and a Scene's container doesn't span other Scenes.
         Settings {
-            MacSettingsView(controller: companionController, broadcastServer: broadcastServer)
+            SettingsView()
+                .formStyle(.grouped)
+                .frame(width: 560, height: 520)
         }
         .modelContainer(for: SavedConnection.self)
 
@@ -166,27 +128,5 @@ struct LongwaveMacApp: App {
         }
         .defaultSize(width: 800, height: 440)
         #endif
-    }
-}
-
-/// MenuBarExtra content: the companion's quick-controls popover plus the bridge
-/// that turns `MacAppDelegate.summonMainWindow` into an `openWindow("main")`.
-/// This view is always instantiated (the status item is permanent), so it works
-/// even when the app is running headless with no other windows.
-private struct MenuBarHostContent: View {
-    @Bindable var controller: AudioStreamerController
-    @Bindable var broadcastServer: BroadcastServerManager
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        CompanionMenuView(
-            controller: controller,
-            broadcastServer: broadcastServer,
-            openMainAction: { openWindow(id: "main", value: MainWindowID.shared) }
-        )
-        .onReceive(NotificationCenter.default.publisher(for: MacAppDelegate.summonMainWindow)) { _ in
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "main", value: MainWindowID.shared)
-        }
     }
 }

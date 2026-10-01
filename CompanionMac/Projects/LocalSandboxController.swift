@@ -51,11 +51,10 @@ final class LocalSandboxController {
     var lastError: String?
     var lastMessage: String?
 
-    /// The credentials store for sandbox sessions. Not persisted in SwiftData
-    /// (it must never appear in the connection list or in backups): a
-    /// fixed-UUID instance whose tokens live in the keychain under that UUID,
-    /// exactly as a saved connection's do, with its flags re-derived each launch.
-    let connection: SavedConnection
+    /// The credentials for sandbox sessions: a fixed-UUID account whose tokens
+    /// live in this app's keychain under that UUID, exactly as a saved
+    /// connection's do, with its flags re-derived each launch.
+    let account: SandboxAgentAccount
 
     private static let connectionID = UUID(uuidString: "5A0D7E5B-0C4A-4B1E-9C3E-5A7D1B0C0001")!
     private static let setupCompleteKey = "localSandbox.setupCompleteAt"
@@ -65,16 +64,11 @@ final class LocalSandboxController {
     private let log = DebugLogger(subsystem: "pro.longwave", category: "LocalSandbox")
     private let group = NIOTSEventLoopGroup()
     private let keeper = SandboxSessionKeeper()
-    private var keeperBackoff: Duration = .seconds(5)
     private var privateKey: NIOSSHPrivateKey?
 
     init() {
-        let conn = SavedConnection(hostname: LocalSandbox.host, port: LocalSandbox.sshPort,
-                                   label: "Local sandbox", connectionType: .ssh)
-        conn.id = Self.connectionID
-        conn.sshUsername = LocalSandbox.defaultAgentUser
-        conn.refreshTokenFlagsFromKeychain()
-        connection = conn
+        account = SandboxAgentAccount(id: Self.connectionID)
+        account.refreshTokenFlagsFromKeychain()
     }
 
     var agentUser: String { status?.agentUser ?? LocalSandbox.defaultAgentUser }
@@ -172,8 +166,11 @@ final class LocalSandboxController {
             let decoded = try LocalSandbox.decodeStatus(Data(result.out.utf8))
             status = decoded
             availability = decoded.userExists ? .ready : .failed("The sandbox account is missing — re-run the installer.")
-            if desktop != .loggingIn, !isAuthFailed {
-                desktop = decoded.guiSession ? .running : .absent
+            // A failure stays on screen (and blocks automatic attempts) until a
+            // session shows up or the user presses Retry.
+            if desktop != .loggingIn {
+                if decoded.guiSession { desktop = .running }
+                else if !isAuthFailed, !isFailed { desktop = .absent }
             }
         } catch {
             availability = .failed("Unreadable status from the helper: \(error.localizedDescription)")
@@ -184,6 +181,11 @@ final class LocalSandboxController {
 
     private var isAuthFailed: Bool {
         if case .authFailed = desktop { return true }
+        return false
+    }
+
+    private var isFailed: Bool {
+        if case .failed = desktop { return true }
         return false
     }
 
@@ -232,11 +234,12 @@ final class LocalSandboxController {
     // MARK: - GUI session keeper
 
     /// Makes sure the agent has a GUI session (needed by visionOS simulators and
-    /// Xcode), logging it in headlessly over loopback VNC if not. Backs off
-    /// between failed attempts and never retries an authentication failure
-    /// unless `force` (an explicit user action).
+    /// Xcode), logging it in headlessly over loopback VNC if not. One attempt per
+    /// call and no automatic retries: every attempt makes macOS start building a
+    /// session, and repeated half-finished ones destabilise the window server for
+    /// everyone. After a failure only an explicit Retry (`force`) tries again.
     func ensureDesktopSession(force: Bool = false) async {
-        if isAuthFailed && !force { return }
+        if !force, isAuthFailed || isFailed { return }
         await refresh()
         guard availability == .ready, let status, !status.guiSession else { return }
         // Shown while macOS may be asking to let this app read the password.
@@ -249,7 +252,6 @@ final class LocalSandboxController {
                                          username: status.agentUser, password: password)
         switch outcome {
         case .loggedIn:
-            keeperBackoff = .seconds(5)
             // The session registers with launchd a moment after the first frame.
             for _ in 0..<10 {
                 try? await Task.sleep(for: .seconds(1))
@@ -262,12 +264,6 @@ final class LocalSandboxController {
             desktop = .authFailed(message)
         case .failed(let message):
             desktop = .failed(message)
-            let wait = keeperBackoff
-            keeperBackoff = min(keeperBackoff * 2, .seconds(300))
-            Task { [weak self] in
-                try? await Task.sleep(for: wait)
-                await self?.ensureDesktopSession()
-            }
         }
     }
 
@@ -278,33 +274,19 @@ final class LocalSandboxController {
     /// main actor.
     func agentPassword() async -> String? {
         let account = agentUser
-        return await Task.detached { Self.readKeychainPassword(service: LocalSandbox.keychainService, account: account) }.value
+        return await Task.detached { LocalSandbox.readAgentPassword(account: account) }.value
     }
 
-    nonisolated private static func readKeychainPassword(service: String, account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    /// Opens the agent's desktop in the shared VNC window. Ephemeral: the
-    /// password goes straight to the connection and is never saved.
-    func openDesktop(using vnc: VNCConnectionManager) async -> Bool {
-        guard let password = await agentPassword() else {
-            lastError = "The sandbox password isn't in your login keychain."
-            return false
+    /// Shows the agent's desktop. The Companion has no VNC viewer of its own
+    /// (process separation: it only ever logs the session in), so the desktop
+    /// opens in Longwave for Mac, which reads the password itself.
+    func openDesktop() {
+        guard let url = URL(string: LocalSandbox.desktopURL),
+              NSWorkspace.shared.urlForApplication(toOpen: url) != nil else {
+            lastError = "Install Longwave for Mac to view the sandbox desktop here, or connect any VNC client to this Mac as \(agentUser)."
+            return
         }
-        vnc.connect(hostname: LocalSandbox.host, port: LocalSandbox.vncPort,
-                    username: agentUser, password: password, title: "Sandbox Desktop")
-        return true
+        NSWorkspace.shared.open(url)
     }
 
     func openDeviceHub() async {
@@ -431,17 +413,17 @@ final class LocalSandboxController {
         defer { busy = nil }
         do {
             let folder = try await sandboxClone(project.bareName)
-            let environment = await connection.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+            let environment = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
             let base = AgentSessionCommands.slug(project.displayName)
             let slug = agent.sessionKey.isEmpty ? base : AgentSessionCommands.slug("\(base)-\(agent.sessionKey)")
             let launch = AgentSessionCommands.agentLaunch(
                 tmuxSession: slug, folder: folder,
                 // The sandbox account is the boundary, so built-in agents start
                 // with their own permission prompts off; custom stays verbatim.
-                clientCommand: agent == .custom ? connection.effectiveCommand(for: agent)
+                clientCommand: agent == .custom ? account.effectiveCommand(for: agent)
                                                 : agent.sandboxLaunchCommand,
                 environment: environment,
-                setup: connection.sessionSetup(for: agent, environment: environment))
+                setup: account.sessionSetup(for: agent, environment: environment))
             let out = try await ssh(launch.create, stdin: launch.payload)
             if out.contains(AgentSessionCommands.agentNoTmuxMarker) {
                 throw SandboxError.message("tmux isn't on the sandbox's login PATH.")
@@ -465,13 +447,13 @@ final class LocalSandboxController {
     func startHeadlessRun(project bareName: String, agent: SSHAgent, runID: String,
                           prompt: String) async throws -> String {
         let folder = try await sandboxClone(bareName)
-        let credentials = await connection.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+        let credentials = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
         let environment = AgentSchedule.environment(credentials: credentials, prompt: prompt)
         let launch = AgentSessionCommands.agentLaunch(
             tmuxSession: runID, folder: folder,
             clientCommand: AgentSchedule.paneCommand(agent: agent, runID: runID),
             environment: environment,
-            setup: connection.sessionSetup(for: agent, environment: credentials))
+            setup: account.sessionSetup(for: agent, environment: credentials))
         let out = try await ssh(launch.create, stdin: launch.payload)
         if out.contains(AgentSessionCommands.agentNoTmuxMarker) {
             throw SandboxError.message("tmux isn't on the sandbox's login PATH.")

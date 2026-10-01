@@ -8,12 +8,14 @@ set -euo pipefail
 # /Applications, not with Xcode's DerivedData build, so running the installed
 # copy is what you actually test.
 #
-# Builds the small menu-bar **companion** by default, or the **full** macOS app
-# (LongwaveMac — full client + companion host features) when passed "full".
+# Builds the menu-bar **companion** by default (host side: streaming this Mac,
+# the agent sandbox, schedules), or the **full** macOS client (LongwaveMac —
+# VNC/Moonlight/Native/audio client, no host features) when passed "full".
+# The two are separate apps; install both to have both halves.
 #
 # Usage:   scripts/install-companion.sh [companion|full]   (default: companion)
-#   companion  the lightweight menu-bar host app (MIT)
-#   full       the full LongwaveMac client+host app (links Moonlight → GPLv3;
+#   companion  the menu-bar host app (MIT)
+#   full       the LongwaveMac client app (links Moonlight → GPLv3;
 #              runs scripts/setup-deps.sh first to fetch the real dependencies)
 #
 # Why signing matters here: macOS ties TCC privacy grants (Accessibility,
@@ -39,9 +41,9 @@ set -euo pipefail
 # rename from "Audio Sender" (a different bundle id), macOS treats this as a new
 # app — re-grant permissions on first launch and re-pair the token.
 
-# Which app to build/install: the small menu-bar "companion" (default), or the
-# "full" macOS app (LongwaveMac — the VNC/Moonlight/Audio/SSH client *plus* the
-# companion host features in one app). The full app links Moonlight (GPLv3), so
+# Which app to build/install: the menu-bar "companion" (default, the host side),
+# or the "full" macOS client (LongwaveMac — VNC/Moonlight/Native/audio client;
+# host features live only in the companion). The full app links Moonlight (GPLv3), so
 # it needs the real dependencies cloned/patched into repos/ first (setup-deps.sh).
 KIND="${1:-companion}"
 case "$KIND" in

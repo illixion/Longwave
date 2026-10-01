@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// The pure half of the Mac Projects tab's local agent sandbox: the root
 /// helper's argv and status JSON, and the git / ssh commands that move work in
@@ -179,5 +180,30 @@ enum LocalSandbox {
     /// agent is routed by LaunchServices to that user's Aqua session.
     static var openDeviceHubCommand: String {
         "/usr/bin/open -a " + AgentSessionCommands.shellSingleQuote(deviceHubPath)
+    }
+}
+
+// MARK: - Agent desktop
+
+extension LocalSandbox {
+    /// Opened by the Companion's "Sandbox Desktop"; Longwave for Mac handles it
+    /// by showing the agent's desktop in its VNC viewer. Carries nothing secret.
+    static let desktopURL = "longwave://sandbox-desktop"
+
+    /// The agent's password, from the item install.sh wrote to the owner's login
+    /// keychain (its ACL lists both Mac apps). Blocks while macOS shows a
+    /// keychain access prompt, so call it off the main actor.
+    nonisolated static func readAgentPassword(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

@@ -179,9 +179,9 @@ extension AgentSessionCommandBuilding {
                             clientCommand: String = "claude",
                             environment: [(name: String, value: String)] = [],
                             setup: AgentSessionSetup? = nil) -> AgentLaunch {
-        let vars = environment.filter { SavedConnection.isValidEnvName($0.name) }
+        let vars = environment.filter { AgentEnvironment.isValidEnvName($0.name) }
         var names = vars.map(\.name).filter { !(setup?.consumedNames.contains($0) ?? false) }
-        for name in setup?.exportedNames ?? [] where SavedConnection.isValidEnvName(name) && !names.contains(name) {
+        for name in setup?.exportedNames ?? [] where AgentEnvironment.isValidEnvName(name) && !names.contains(name) {
             names.append(name)
         }
         let inner = agentCreateScript(tmuxSession: tmuxSession, folder: folder,
@@ -216,7 +216,7 @@ extension AgentSessionCommandBuilding {
     /// newlines and `$` in values from ever meeting a shell parser.
     static func envPayload(_ environment: [(name: String, value: String)]) -> Data {
         var out = ""
-        for v in environment where SavedConnection.isValidEnvName(v.name) {
+        for v in environment where AgentEnvironment.isValidEnvName(v.name) {
             out += "\(v.name)=\(Data(v.value.utf8).base64EncodedString())\n"
         }
         return Data(out.utf8)
@@ -226,7 +226,7 @@ extension AgentSessionCommandBuilding {
     ///
     /// Every step that touches a value is a builtin (`read`, `printf`, `export`)
     /// or reads it from a pipe (`base64`), so no value is ever an argument of an
-    /// exec'd process. The name check mirrors `SavedConnection.isValidEnvName`.
+    /// exec'd process. The name check mirrors `AgentEnvironment.isValidEnvName`.
     /// `printf x` / `${v%x}` preserves trailing newlines that command
     /// substitution would otherwise strip. GNU coreutils decodes with `-d`,
     /// older macOS `base64` only knew `-D`.

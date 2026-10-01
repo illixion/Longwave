@@ -58,15 +58,6 @@ Longwave/
 ├── Utilities/
 │   ├── AppLog.swift                    — DebugLogger per category + DebugTrace.configure at launch
 │   ├── ConnectionDefaults.swift        — UserDefaults keys/getters for new-connection defaults
-│   ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
-│   ├── ClaudeOAuth.swift               — Claude Code OAuth PKCE flow → full-scope token (constants extracted from the CLI binary)
-│   ├── ClaudeCredentialStore.swift     — Keychain home for the Claude credential bundle + refresh-before-launch
-│   ├── CodexOAuth.swift                — Codex CLI's ChatGPT device sign-in → session-only auth.json (constants from openai/codex source)
-│   ├── CodexCredentialStore.swift      — Keychain home for the Codex credential (rotating refresh token stays on device)
-│   ├── AgentSessionCommands.swift      — tmux create/attach, stdin env payload, reaper, discovery builders (shared with the Mac, which lacks SSHTerminalManager)
-│   ├── LocalSandbox.swift              — Mac agent sandbox: helper argv + status JSON, exchange import/fetch, clone script, Terminal attach (pure, tested)
-│   ├── OpenSSHPrivateKey.swift         — Unencrypted OpenSSH ed25519 key file → NIOSSHPrivateKey (the Mac's sandbox key)
-│   ├── AgentSchedule.swift             — Scheduled runs: cadence/next-fire, overlap + daily cap, runtime cap, headless pane command, progress/transcript parsing (pure, tested)
 │   ├── VirtualKeyboard.swift           — On-screen keyboard model: keys, US layout, modifier latches
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
@@ -78,12 +69,30 @@ Longwave/
 ├── Assets.xcassets/                    — App icon (solidimagestack, 1024x1024 @2x)
 └── Info.plist                          — NSLocalNetworkUsageDescription, multi-scene
 
-Shared/                                 — compiled into BOTH targets (visionOS app + macOS companion)
+Shared/                                 — compiled into every app target (visionOS, iOS, LongwaveMac, Companion)
 ├── AudioStreamProtocol.swift           — Wire protocol v6 (int24 PCM via PCM24), NowPlayingInfo, MediaCommand
 ├── MacNativeStreamProtocol.swift       — Native stream framing: v2 capabilities, window inventory, multiplexed streams, input
 ├── MacNativeVideoCapability.swift      — Hardware HEVC 4:2:2 decode probe (drives the desktop stream's chroma)
 ├── MacNativeStreamCrypto.swift         — Domain-separated native-stream TLS-PSK parameters
-└── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
+├── BroadcastSetupURL.swift             — longwave://…/setBroadcastServer pairing payload (host/creds/cert fingerprint)
+├── PlatformGlass.swift                 — platformGlassBackground(): visionOS/iOS glass, no-op on macOS
+└── Agents/                             — CLI agents and the Mac sandbox, platform-neutral (the Companion compiles these too)
+    ├── SSHAgent.swift                  — Claude / Copilot / Codex / Custom: commands, default and sandbox flags, env names, setup copy
+    ├── AgentCredentialHost.swift       — Per-agent tokens + Claude/Codex credentials → session environment (SavedConnection and the Companion's sandbox account conform)
+    ├── AgentSetupSheet.swift           — Per-agent sign-in sheet (in-app Claude OAuth, device flows, paste), generic over the host
+    ├── ClaudeLoginWebView.swift        — Embedded Claude consent page + clipboard watch for the emailed code
+    ├── GitHubDeviceFlow.swift          — GitHub OAuth device flow → Copilot token (in-app, no Mac involvement)
+    ├── ClaudeOAuth.swift               — Claude Code OAuth PKCE flow → full-scope token (constants extracted from the CLI binary)
+    ├── ClaudeCredentialStore.swift     — Keychain home for the Claude credential bundle + refresh-before-launch
+    ├── CodexOAuth.swift                — Codex CLI's ChatGPT device sign-in → session-only auth.json (constants from openai/codex source)
+    ├── CodexCredentialStore.swift      — Keychain home for the Codex credential (rotating refresh token stays on device)
+    ├── AgentSessionCommands.swift      — tmux create/attach, stdin env payload, reaper, discovery builders (shared with the Mac, which lacks SSHTerminalManager)
+    ├── LocalSandbox.swift              — Mac agent sandbox: helper argv + status JSON, exchange import/fetch, clone script, Terminal attach (pure, tested)
+    ├── OpenSSHPrivateKey.swift         — Unencrypted OpenSSH ed25519 key file → NIOSSHPrivateKey (the Mac's sandbox key)
+    ├── AgentSchedule.swift             — Scheduled runs: cadence/next-fire, overlap + daily cap, runtime cap, headless pane command, progress/transcript parsing (pure, tested)
+    ├── SSHConnection.swift             — swift-nio-ssh PTY session + one-shot command runner (stdin + EOF for the create channel)
+    ├── KeychainStore.swift             — Generic-password keychain helper for small secrets
+    └── Pasteboard.swift                — UIPasteboard / NSPasteboard text copy
 
 LongwaveiOS/                            — iPhone/iPad client (LongwaveiOS target); reuses Longwave/ +
 │                                         Shared/ via a membership exception set. Moonlight included

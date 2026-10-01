@@ -1,15 +1,14 @@
-import SwiftData
 import SwiftUI
 
 /// Gives a host a per-agent login that works over SSH. The macOS Keychain is
 /// locked outside the desktop session, so each agent instead gets a long-lived
 /// token that Longwave injects into every session as its env var (see
-/// `SavedConnection.resolvedSSHEnvironment(for:)`) — stored only on this device,
+/// `AgentCredentialHost.resolvedSSHEnvironment(for:)`) — stored only on this device,
 /// never written to the Mac. Claude signs in through the in-app browser
 /// (`ClaudeOAuth`), Copilot and Codex through device-code flows
 /// (`AgentDeviceSignIn`), and any of them can paste a token instead.
-struct AgentSetupSheet: View {
-    @Bindable var host: SavedConnection
+struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
+    @Bindable var host: Host
     let agent: SSHAgent
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -79,7 +78,7 @@ struct AgentSetupSheet: View {
                         .foregroundStyle(.green)
                     Button("Remove Pasted Token", role: .destructive) {
                         host.setSSHAuthToken(nil, for: agent)
-                        try? host.modelContext?.save()
+                        host.persistCredentialChanges()
                         token = ""
                     }
                 }
@@ -90,7 +89,7 @@ struct AgentSetupSheet: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     host.setSSHAuthToken(token, for: agent)
-                    try? host.modelContext?.save()
+                    host.persistCredentialChanges()
                     dismiss()
                 }
                 .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -104,7 +103,7 @@ struct AgentSetupSheet: View {
         .sheet(isPresented: $showingWebLogin) {
             ClaudeLoginSheet { credential in
                 host.setClaudeCredential(credential)
-                try? host.modelContext?.save()
+                host.persistCredentialChanges()
                 reloadClaudeCredential()
             }
         }
@@ -137,7 +136,7 @@ struct AgentSetupSheet: View {
 
                 Toggle(isOn: Binding(
                     get: { host.sshInjectClaudeRefreshToken },
-                    set: { host.sshInjectClaudeRefreshToken = $0; try? host.modelContext?.save() }
+                    set: { host.sshInjectClaudeRefreshToken = $0; host.persistCredentialChanges() }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Let sessions renew their own token")
@@ -157,7 +156,7 @@ struct AgentSetupSheet: View {
                         // cookied would mean "sign out" still left a way straight
                         // back in.
                         await ClaudeLoginSession.clearPersistedSession()
-                        try? host.modelContext?.save()
+                        host.persistCredentialChanges()
                         reloadClaudeCredential()
                     }
                 }
@@ -193,7 +192,7 @@ struct AgentSetupSheet: View {
                 Button("Sign Out of ChatGPT", role: .destructive) {
                     Task {
                         await host.clearCodexCredential()
-                        try? host.modelContext?.save()
+                        host.persistCredentialChanges()
                         reloadCodexCredential()
                     }
                 }
@@ -248,7 +247,7 @@ struct AgentSetupSheet: View {
             do {
                 deviceCode = try await signIn.requestCode()
                 try await signIn.awaitAuthorization(storingInto: host, agent: agent)
-                try? host.modelContext?.save()
+                host.persistCredentialChanges()
                 dismiss()
             } catch is CancellationError {
                 // sheet dismissed; nothing to do
@@ -277,7 +276,7 @@ struct DeviceSignInPrompt: Sendable, Equatable {
 protocol AgentDeviceSignIn: AnyObject {
     var providerName: String { get }
     func requestCode() async throws -> DeviceSignInPrompt
-    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws
+    func awaitAuthorization(storingInto host: any AgentCredentialHost, agent: SSHAgent) async throws
 }
 
 /// Copilot: GitHub's RFC 8628 flow; the minted token goes in the agent's
@@ -293,7 +292,7 @@ private final class CopilotDeviceSignIn: AgentDeviceSignIn {
         return DeviceSignInPrompt(userCode: code.userCode, verificationURI: code.verificationURI)
     }
 
-    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws {
+    func awaitAuthorization(storingInto host: any AgentCredentialHost, agent: SSHAgent) async throws {
         guard let code else { return }
         let minted = try await GitHubDeviceFlow.pollForToken(code)
         host.setSSHAuthToken(minted, for: agent)
@@ -313,7 +312,7 @@ private final class CodexDeviceSignIn: AgentDeviceSignIn {
         return DeviceSignInPrompt(userCode: code.userCode, verificationURI: code.verificationURL)
     }
 
-    func awaitAuthorization(storingInto host: SavedConnection, agent: SSHAgent) async throws {
+    func awaitAuthorization(storingInto host: any AgentCredentialHost, agent: SSHAgent) async throws {
         guard let code else { return }
         host.setCodexCredential(try await CodexOAuth.pollForCredential(code))
     }

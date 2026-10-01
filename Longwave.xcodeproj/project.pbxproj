@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE30AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000010 /* NIOSSH */; };
+		EE30AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000011 /* NIOCore */; };
+		EE30AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000012 /* NIOTransportServices */; };
+		EE30AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000013 /* Crypto */; };
 		EE20AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000010 /* NIOSSH */; };
 		EE20AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000011 /* NIOCore */; };
 		EE20AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000012 /* NIOTransportServices */; };
@@ -312,6 +316,10 @@
 				AA0D00000000000000000015 /* DebugTrace in Frameworks */,
 				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,
 				AA0E00000000000000000001 /* RAVEConsole in Frameworks */,
+				EE30AD100000000000000020 /* NIOSSH in Frameworks */,
+				EE30AD100000000000000021 /* NIOCore in Frameworks */,
+				EE30AD100000000000000022 /* NIOTransportServices in Frameworks */,
+				EE30AD100000000000000023 /* Crypto in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -583,6 +591,10 @@
 				AA0D00000000000000000014 /* DebugTrace */,
 				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,
 				AA0E00000000000000000002 /* RAVEConsole */,
+				EE30AD100000000000000010 /* NIOSSH */,
+				EE30AD100000000000000011 /* NIOCore */,
+				EE30AD100000000000000012 /* NIOTransportServices */,
+				EE30AD100000000000000013 /* Crypto */,
 			);
 			productName = LongwaveCompanion;
 			productReference = AA10AD100000000000000001 /* LongwaveCompanion.app */;
@@ -1624,6 +1636,26 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		EE30AD100000000000000010 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		EE30AD100000000000000011 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		EE30AD100000000000000012 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
+		};
+		EE30AD100000000000000013 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
 		EE20AD100000000000000010 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;

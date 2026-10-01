@@ -122,6 +122,7 @@ CompanionMac/Projects/                  — The Companion's Projects window: age
 │                                         sandbox account (scripts/agent-sandbox), attached in Terminal.app
 ├── MacProjectsView.swift               — Sandbox status/actions, onboarding, agent sign-in, projects, sessions, firewall
 ├── LocalSandboxController.swift        — `sudo -n longwave-sandbox …`, keychain password, SSH runner, import/fetch/launch
+├── FullDiskAccessAssistant.swift       — Opens the FDA pane with a floating panel of the app icon to drag into the list
 ├── SandboxAgentAccount.swift           — The sandbox's AgentCredentialHost (keychain tokens, UserDefaults settings, no SwiftData)
 ├── SandboxSessionKeeper.swift          — Headless loopback ARD VNC login → persistent GUI session (one attempt, never abandoned)
 ├── LocalScheduler.swift                — Fires schedules while the app runs: reset, headless run, monitor, transcript, notification

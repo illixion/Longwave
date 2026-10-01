@@ -48,7 +48,10 @@ struct CompanionApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            CompanionMenuView(controller: controller, broadcastServer: broadcastServer, showsProjects: true)
+            CompanionMenuView(
+                controller: controller, broadcastServer: broadcastServer, showsProjects: true,
+                grantFullDiskAccess: sandbox.availability == .ready && !sandbox.hasFullDiskAccess
+                    ? { sandbox.openFullDiskAccessSettings() } : nil)
         } label: {
             // Priority: injecting > now-playing track > audio idle/active.
             if controller.isInjecting {
@@ -76,6 +79,9 @@ struct CompanionApp: App {
         }
 
         // The agent sandbox: projects, sessions, sign-ins and schedules.
+        // Also opened by longwave-companion://projects (LongwaveMac's Projects
+        // entry): SwiftUI routes a URL to the scene whose matching set the URL
+        // contains, so the x-callback-url form works too.
         Window("Projects", id: "projects") {
             NavigationStack {
                 MacProjectsView()
@@ -86,6 +92,7 @@ struct CompanionApp: App {
             .companionWindowActivation()
         }
         .defaultSize(width: 720, height: 760)
+        .handlesExternalEvents(matching: ["projects"])
     }
 }
 

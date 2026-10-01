@@ -87,7 +87,9 @@ connection list or backup. `SandboxSessionKeeper` logs the agent into a GUI sess
 Screen Sharing (visionOS simulators need one) — one attempt, no automatic retries, and never
 abandoned before the first frame, since a half-finished login leaves an orphaned `loginwindow`
 that has frozen the owner's menu bar. The Companion has no VNC viewer: Sandbox Desktop opens
-`longwave://sandbox-desktop`, which LongwaveMac handles. Projects move through
+`longwave://sandbox-desktop`, which LongwaveMac handles; the other way, LongwaveMac's Projects entry
+opens `longwave-companion://projects`, which launches the Companion if needed and brings its Projects
+window forward (`handlesExternalEvents` on that scene). Projects move through
 `/Library/Longwave/exchange` (import = push, return = fetch only). See the sandbox bullets in
 [[KNOWN_CONSTRAINTS.md]]; task worktrees, sync back, the Projects protocol and shared memory are
 planned in [[AGENT_SANDBOX_PLAN.md]].

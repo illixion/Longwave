@@ -180,9 +180,12 @@ Longwave Companion's Projects window runs agents as the hidden `longwave-agent` 
   another user's home from any process whose *responsible app* lacks FDA — root included — and
   under `sudo -n` from the app, the Companion is that app. Without the grant, moving or even
   `chmod -N`-ing `/Users/longwave-agent` fails ("Operation not permitted"; a bare root launchd job
-  gets "Permission denied"), while the same verbs work from a terminal that has FDA. The tab probes
-  FDA by opening the system TCC database and shows a banner with a shortcut to the pane;
-  "Reset before run" fails fast with the same hint.
+  gets "Permission denied"), while the same verbs work from a terminal that has FDA. The window probes
+  FDA by opening the system TCC database and shows a banner (and the menu a "Grant Full Disk
+  Access…" item); both open the pane with `FullDiskAccessAssistant`, a floating panel holding the
+  app's icon to drag into the list, since macOS has no API or prompt for this grant. Keka's "file
+  access" flow is a different mechanism (a security-scoped bookmark for a sandboxed app) and can't
+  lift this protection. "Reset before run" fails fast with the same hint.
 - **Schedules fire only while the Companion runs.** There is no background daemon; a fire missed
   while the app was closed runs once on the next tick (no catch-up burst), and a run left
   "running" across a relaunch is re-attached (still going) or collected (finished meanwhile).

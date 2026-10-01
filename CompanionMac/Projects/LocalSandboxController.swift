@@ -85,17 +85,18 @@ final class LocalSandboxController {
     }
 
     /// Full Disk Access has no request API and no prompt: the app never shows
-    /// up in that list until the user adds it. So open the pane *and* reveal
-    /// the app bundle in Finder, ready to drag into the list.
+    /// up in that list until the user adds it. `FullDiskAccessAssistant` opens
+    /// the pane with a floating panel holding the app's icon to drag into it.
     func openFullDiskAccessSettings() {
-        NSWorkspace.shared.open(LocalSandbox.fullDiskAccessSettingsURL)
-        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        FullDiskAccessAssistant.shared.show()
     }
+
+    func relaunch() { Self.relaunchApp() }
 
     /// A Full Disk Access grant only applies to processes started after it, so
     /// the probe keeps failing until the app is relaunched. Detached `open`
     /// outlives this process and brings the same bundle back up.
-    func relaunch() {
+    static func relaunchApp() {
         let reopen = Process()
         reopen.executableURL = URL(fileURLWithPath: "/bin/sh")
         reopen.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundleURL.path]

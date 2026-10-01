@@ -85,12 +85,13 @@ struct MacProjectsView: View {
                     Text("Give Longwave Companion Full Disk Access").font(.headline)
                     Text("Reset, Setup complete and golden snapshots work inside the sandbox account's home, which macOS protects even from the root helper unless the app calling it has Full Disk Access. Sessions and schedules without \"Reset before run\" work without it.")
                         .foregroundStyle(.secondary)
-                    Text("macOS never asks for this permission. Open Privacy Settings, drag Longwave Companion from the Finder window that opens into the Full Disk Access list and switch it on, then relaunch.")
+                    Text("macOS never asks for this permission. Grant Access opens the Full Disk Access list with a small window beside it: drag the Companion's icon from it into the list, switch it on, then relaunch.")
                         .foregroundStyle(.secondary)
                 }
             } icon: { Image(systemName: "lock.shield").foregroundStyle(.orange) }
             HStack {
-                Button("Open Privacy Settings") { sandbox.openFullDiskAccessSettings() }
+                Button("Grant Access…") { sandbox.openFullDiskAccessSettings() }
+                    .buttonStyle(.borderedProminent)
                 Button("Relaunch Companion") { sandbox.relaunch() }
                 Button("Check again") { Task { await sandbox.refresh() } }
             }

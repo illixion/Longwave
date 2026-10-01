@@ -14,6 +14,8 @@ struct CompanionMenuView: View {
     var openMainAction: (() -> Void)? = nil
     /// Whether this app hosts the agent sandbox's Projects window.
     var showsProjects = false
+    /// Set while the sandbox is installed but this app lacks Full Disk Access.
+    var grantFullDiskAccess: (() -> Void)? = nil
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
@@ -67,6 +69,10 @@ struct CompanionMenuView: View {
                         NSApp.activate(ignoringOtherApps: true)
                     }
                     .help("The agent sandbox: projects, agent sessions and schedules.")
+                }
+                if let grantFullDiskAccess {
+                    Button("Grant Full Disk Access…", action: grantFullDiskAccess)
+                        .help("Reset and golden snapshots of the agent sandbox need it. Opens the list with the Companion's icon ready to drag in.")
                 }
 
                 Button("Open Companion Window…") {

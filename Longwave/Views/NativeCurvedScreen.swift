@@ -72,6 +72,25 @@ struct NativeScreenCurve: Equatable {
         )
     }
 
+    /// Where a flat-equivalent view point actually sits on the curve: its
+    /// position over the window plane and its depth in front of it, in
+    /// points. The inverse of `texturePoint(forViewPoint:)`, for drawing
+    /// something on the screen surface itself (the trackpad cursor) rather
+    /// than on the plane behind it, so it lines up from any viewing position.
+    func surfacePoint(forTexturePoint point: CGPoint) -> (point: CGPoint, depth: Double) {
+        guard isCurved else { return (point, 0) }
+        let u = (point.x - contentRect.minX) / contentRect.width
+        let v = (point.y - contentRect.minY) / contentRect.height
+        let theta = (u - 0.5) * 2 * halfAngle
+        return (
+            CGPoint(
+                x: contentRect.midX + radius * sin(theta),
+                y: contentRect.midY + (v - 0.5) * curvedHeight
+            ),
+            radius * (1 - cos(theta))
+        )
+    }
+
     /// The curve as a mesh, in metres, centred on the origin with its centre
     /// line at z = 0 and the edges toward +z.
     func mesh(metersPerPoint: Double) throws -> MeshResource {

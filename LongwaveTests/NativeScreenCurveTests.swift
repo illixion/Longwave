@@ -55,3 +55,26 @@ final class NativeScreenCurveTests: XCTestCase {
         XCTAssertEqual(fitted.midY, 500, accuracy: 1e-6)
     }
 }
+
+extension NativeScreenCurveTests {
+    func testSurfacePointInvertsTheTapRemap() {
+        let curve = NativeScreenCurve(halfAngle: 0.4, contentRect: rect)
+        for plane in [CGPoint(x: 200, y: 300), CGPoint(x: 800, y: 450), CGPoint(x: 1450, y: 700)] {
+            let texture = curve.texturePoint(forViewPoint: plane)
+            let surface = curve.surfacePoint(forTexturePoint: texture)
+            // The surface point lies on the ray from the axis through the
+            // plane point: same direction, scaled by the depth it sits at.
+            let r = curve.radius
+            let scale = (r - surface.depth) / r
+            XCTAssertEqual(surface.point.x - rect.midX, (plane.x - rect.midX) * scale, accuracy: 1e-6)
+            XCTAssertEqual(surface.point.y - rect.midY, (plane.y - rect.midY) * scale, accuracy: 1e-6)
+        }
+    }
+
+    func testSurfacePointIsFlatWhenFlat() {
+        let curve = NativeScreenCurve(halfAngle: 0, contentRect: rect)
+        let result = curve.surfacePoint(forTexturePoint: CGPoint(x: 10, y: 20))
+        XCTAssertEqual(result.point, CGPoint(x: 10, y: 20))
+        XCTAssertEqual(result.depth, 0)
+    }
+}

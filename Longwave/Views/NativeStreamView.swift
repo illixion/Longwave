@@ -743,16 +743,21 @@ struct NativeStreamView: View {
 
     /// Local pointer dot drawn at the virtual cursor, for trackpad mode.
     private var cursorOverlay: some View {
-        let point = translator?.framebufferToView(
+        let flat = translator?.framebufferToView(
             x: screenManager.virtualCursorX,
             y: screenManager.virtualCursorY
         ) ?? .zero
+        // On a curved desktop the dot sits on the curve itself, depth and
+        // all, rather than on the window plane behind it.
+        let surface: (point: CGPoint, depth: Double) =
+            activeCurve?.surfacePoint(forTexturePoint: flat) ?? (point: flat, depth: 0)
 
         return Circle()
             .fill(.white.opacity(0.7))
             .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
             .frame(width: 12, height: 12)
-            .position(point)
+            .position(surface.point)
+            .offset(z: CGFloat(surface.depth) + 1)
             .allowsHitTesting(false)
     }
 

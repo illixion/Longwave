@@ -133,6 +133,10 @@ struct NativePane: View {
                     if let virtualDisplay = controller.macNativeStreaming.virtualDisplaySummary {
                         LabeledContent("Virtual display", value: virtualDisplay)
                     }
+                    if let latency = controller.macNativeStreaming.latencySummary {
+                        LabeledContent("Latency", value: latency)
+                            .help("Display refresh to capture, then encode, then send until the headset acknowledges the frame (transmission plus the round trip). Decoding and display on the headset add roughly one more refresh on top.")
+                    }
                     if let video = controller.macNativeStreaming.desktopVideoSummary {
                         LabeledContent("Desktop video", value: video)
                             .help("Chroma is 4:2:2 only when the connected viewer proved it can decode that profile in hardware; otherwise 4:2:0.")

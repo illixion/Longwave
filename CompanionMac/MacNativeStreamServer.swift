@@ -50,6 +50,12 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// A viewer's link fell behind and a frame of this stream was dropped —
     /// the encoder should spend fewer bits until it stops happening.
     nonisolated(unsafe) var onCongestion: (@Sendable (UInt32) -> Void)?
+    /// The desktop stream's pipe to every acking viewer has room again — a
+    /// frame the capture held back can be encoded now.
+    nonisolated(unsafe) var onDesktopPipeClear: (@Sendable () -> Void)?
+    /// Smoothed send→ack time of the slowest acking viewer, in ms, at most
+    /// twice a second. Transmission of the frame plus the network round trip.
+    nonisolated(unsafe) var onLinkLatency: (@Sendable (Double) -> Void)?
     nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
     /// A viewer picked a desktop from `displayList` (a `DisplayInfo.id`).
     nonisolated(unsafe) var onSelectDisplay: (@Sendable (String) -> Void)?
@@ -67,6 +73,19 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// couple of frames and anything beyond is dropped — 12 MB of backlog was
     /// seconds of video at these bitrates before the first drop.
     private nonisolated static let maxInFlightFrames = 3
+    /// Desktop frames sent to an acking viewer and not yet acknowledged.
+    /// Past this the capture holds the newest frame back instead of encoding
+    /// it — nothing queues, and nothing has to be dropped (which would cost a
+    /// key frame). Two keeps the link busy across one round trip.
+    private nonisolated static let maxUnackedFrames = 2
+    /// An unacknowledged frame older than this is presumed lost, so a stalled
+    /// viewer cannot hold the gate shut forever.
+    private nonisolated static let unackedTimeoutNanos: UInt64 = 300_000_000
+
+    /// Read from the capture's output queue, written on `queue`.
+    private let gateLock = NSLock()
+    private nonisolated(unsafe) var desktopGateOpenStorage = true
+    private nonisolated(unsafe) var lastLinkReport: UInt64 = 0
 
     private nonisolated final class Client: @unchecked Sendable {
         let connection: NWConnection
@@ -75,6 +94,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
         var protocolVersion = 1
         var pendingBytes = 0
         var inFlightFrames = 0
+        var acksFrames = false
+        /// Desktop sequence → send time (uptime ns), for acking viewers.
+        var unackedDesktop: [UInt64: UInt64] = [:]
+        var linkLatencyMs: Double = 0
         /// Streams this viewer dropped a frame of, for which a key frame has
         /// been asked of the encoder already.
         var keyFrameRequested: Set<UInt32> = []
@@ -246,6 +269,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
             }
             guard !leaving.isEmpty else { return }
             clients.removeAll { client in leaving.contains { $0 === client } }
+            updateDesktopGate()
             for client in leaving {
                 client.isActive = false
                 sendError(message, to: client)
@@ -325,6 +349,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     frame,
                     streamID: MacNativeStreamProtocol.desktopStreamID,
                     isKeyFrame: isKeyFrame,
+                    sequence: sequence,
                     to: client
                 )
             }
@@ -393,7 +418,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         )
         queue.async { [self] in
             for client in clients {
-                deliver(frame, streamID: windowID, isKeyFrame: isKeyFrame, to: client)
+                deliver(frame, streamID: windowID, isKeyFrame: isKeyFrame, sequence: sequence, to: client)
             }
         }
     }
@@ -419,6 +444,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         _ frame: Data,
         streamID: UInt32,
         isKeyFrame: Bool,
+        sequence: UInt64,
         to client: Client
     ) {
         guard client.wantsStream(streamID) else { return }
@@ -445,6 +471,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
         client.pendingBytes += frame.count
         client.inFlightFrames += 1
+        if client.acksFrames, streamID == MacNativeStreamProtocol.desktopStreamID {
+            client.unackedDesktop[sequence] = DispatchTime.now().uptimeNanoseconds
+            updateDesktopGate()
+        }
         client.connection.send(content: frame, completion: .contentProcessed {
             [weak self, weak client] error in
             self?.queue.async {
@@ -510,7 +540,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     deviceName: hello.deviceName,
                     protocolVersion: hello.protocolVersion ?? 1,
                     wantsScreen: hello.wantsScreen ?? true,
-                    decodesHEVC422: hello.decodesHEVC422 ?? false
+                    decodesHEVC422: hello.decodesHEVC422 ?? false,
+                    acksFrames: hello.acksFrames ?? false
                 )
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
@@ -563,6 +594,11 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 if subscriberCount(windowID) == 0 {
                     onWindowStreamStop?(windowID)
                 }
+            case MacNativeStreamProtocol.FrameType.frameAck.rawValue:
+                guard client.isActive, client.acksFrames,
+                      let ack = MacNativeStreamProtocol.decodeFrameAck(frame.payload),
+                      ack.windowID == MacNativeStreamProtocol.desktopStreamID else { break }
+                handleDesktopAck(ack.sequence, from: client)
             case MacNativeStreamProtocol.FrameType.requestKeyFrame.rawValue:
                 guard client.isActive, client.isV2,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload),
@@ -627,7 +663,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         deviceName: String,
         protocolVersion: Int,
         wantsScreen: Bool,
-        decodesHEVC422: Bool
+        decodesHEVC422: Bool,
+        acksFrames: Bool
     ) {
         guard !client.isActive,
               let pendingIndex = pendingClients.firstIndex(where: { $0 === client }) else { return }
@@ -635,6 +672,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         client.deviceName = deviceName
         client.protocolVersion = min(protocolVersion, MacNativeStreamProtocol.protocolVersion)
         client.decodesHEVC422 = decodesHEVC422
+        // Only a v2 viewer gets sequenced desktop frames it could ack.
+        client.acksFrames = acksFrames && client.isV2
         client.wantsDesktopV1 = wantsScreen
         client.awaitingKeyFrame = [MacNativeStreamProtocol.desktopStreamID: true]
         client.subscriptions = []
@@ -702,6 +741,63 @@ final class MacNativeStreamServer: @unchecked Sendable {
         })
     }
 
+    // MARK: - Ack pacing
+
+    /// Whether the capture may encode another desktop frame right now: every
+    /// acking viewer has fewer than `maxUnackedFrames` outstanding. Viewers
+    /// that don't ack are paced by the drop path in `deliver` instead.
+    nonisolated func desktopCanAcceptFrame() -> Bool {
+        gateLock.lock()
+        defer { gateLock.unlock() }
+        return desktopGateOpenStorage
+    }
+
+    private nonisolated func handleDesktopAck(_ sequence: UInt64, from client: Client) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if let sentAt = client.unackedDesktop[sequence] {
+            let sample = Double(now &- sentAt) / 1_000_000
+            client.linkLatencyMs = client.linkLatencyMs == 0
+                ? sample
+                : client.linkLatencyMs * 0.85 + sample * 0.15
+        }
+        // Cumulative: anything older than the acked frame arrived too, or
+        // never will.
+        client.unackedDesktop = client.unackedDesktop.filter { $0.key > sequence }
+        let wasOpen = desktopCanAcceptFrame()
+        updateDesktopGate()
+        if !wasOpen, desktopCanAcceptFrame() { onDesktopPipeClear?() }
+        if now &- lastLinkReport > 500_000_000 {
+            lastLinkReport = now
+            let slowest = clients.filter(\.acksFrames).map(\.linkLatencyMs).max() ?? 0
+            onLinkLatency?(slowest)
+        }
+    }
+
+    /// Recomputes the gate on `queue`, expiring frames presumed lost. While
+    /// it is shut, re-checks after the loss timeout so a viewer that stopped
+    /// acking cannot stall the stream.
+    private nonisolated func updateDesktopGate() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        var open = true
+        for client in clients where client.acksFrames
+            && client.wantsStream(MacNativeStreamProtocol.desktopStreamID) {
+            client.unackedDesktop = client.unackedDesktop.filter {
+                now &- $0.value < Self.unackedTimeoutNanos
+            }
+            if client.unackedDesktop.count >= Self.maxUnackedFrames { open = false }
+        }
+        gateLock.lock()
+        desktopGateOpenStorage = open
+        gateLock.unlock()
+        if !open {
+            queue.asyncAfter(deadline: .now() + .nanoseconds(Int(Self.unackedTimeoutNanos))) { [self] in
+                guard !desktopCanAcceptFrame() else { return }
+                updateDesktopGate()
+                if desktopCanAcceptFrame() { onDesktopPipeClear?() }
+            }
+        }
+    }
+
     private nonisolated func remove(_ client: Client) {
         queue.async { [self] in
             pendingClients.removeAll { $0 === client }
@@ -715,6 +811,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
             clients.remove(at: index)
             client.isActive = false
             client.connection.cancel()
+            updateDesktopGate()
+            if desktopCanAcceptFrame() { onDesktopPipeClear?() }
             // Stop only what no other viewer still wants.
             for streamID in streams where subscriberCount(streamID) == 0 {
                 onWindowStreamStop?(streamID)

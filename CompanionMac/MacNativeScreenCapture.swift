@@ -62,11 +62,27 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// companion's virtual display, which may not have been promoted to main
     /// yet when capture starts. `nil` follows `CGMainDisplayID()`.
     private let preferredDisplayID: CGDirectDisplayID?
-    /// Capture and encode rate. Starts at what the display refreshes at, up
-    /// to the headset's 120 Hz, and steps down to 60 if the encoder can't
-    /// keep each frame inside its interval (see `checkEncoderKeepsUp`).
-    private var frameRate = 60
-    private var slowEncoderChecks = 0
+    /// Capture and encode rate, at most. Latency first: the desktop is mostly
+    /// still, and ScreenCaptureKit only delivers a frame when something
+    /// changed, so a change after a still moment goes out at once whatever
+    /// this is — it only caps how many frames continuous motion costs. The
+    /// virtual display refreshes at 120 Hz so that first change waits at most
+    /// 8 ms for a refresh; 60 here keeps scrolling from doubling the encode
+    /// and network load that every frame then has to wait behind.
+    private let frameRate = 60
+
+    /// Paces encoding by the viewers' acknowledgements (see
+    /// `MacNativeStreamServer.desktopCanAcceptFrame`). While it says no, the
+    /// newest captured frame waits in `heldFrame` — replaced by any newer one
+    /// — and is encoded the moment the pipe clears, so nothing queues and the
+    /// last change of a burst is never lost. Both only touched on
+    /// `outputQueue`.
+    nonisolated(unsafe) var canEncode: (@Sendable () -> Bool)?
+    private nonisolated(unsafe) var heldFrame: CMSampleBuffer?
+    /// Smoothed time from the frame's display refresh to ScreenCaptureKit
+    /// handing it over, in ms.
+    private(set) nonisolated(unsafe) var averageCaptureMilliseconds: Double = 0
+    nonisolated var averageEncodeMilliseconds: Double { encoder?.averageEncodeMilliseconds ?? 0 }
     private var lastSessionSize: (width: Int, height: Int)?
 
     /// The bitrate this display and frame rate deserve on a good link — or
@@ -77,10 +93,6 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private var targetBitrate = 0
     private var currentBitrate = 0
     private var lastCongestion: ContinuousClock.Instant?
-
-    /// Frames slower than this to encode, sustained, mean 120 fps is costing
-    /// latency instead of saving it: 8.3 ms is the whole interval.
-    private nonisolated static let encodeBudgetAt120 = 7.0
 
     nonisolated init(
         chroma: MacHEVCEncoder.Chroma = .yuv420,
@@ -106,21 +118,40 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// The link dropped frames: back off by 30%, at most twice a second, never
     /// below a quarter of the target.
     func linkCongested() {
+        lowerBitrate(by: 0.7, notMoreOftenThan: .milliseconds(500))
+    }
+
+    /// Latency first: a frame taking longer than `slowLinkMs` from send to
+    /// ack is too big for the link right now — each one holds the next back —
+    /// so spend fewer bits per frame, whatever the target says.
+    func linkLatency(_ milliseconds: Double) {
+        lastLinkMilliseconds = milliseconds
+        if milliseconds > Self.slowLinkMs {
+            lowerBitrate(by: 0.8, notMoreOftenThan: .seconds(1))
+        }
+    }
+
+    private nonisolated static let slowLinkMs = 14.0
+    private nonisolated static let fastLinkMs = 7.0
+    private var lastLinkMilliseconds: Double?
+
+    private func lowerBitrate(by factor: Double, notMoreOftenThan interval: Duration) {
         guard encoder != nil, targetBitrate > 0 else { return }
         let now = ContinuousClock.now
-        if let lastCongestion, now - lastCongestion < .milliseconds(500) { return }
+        if let lastCongestion, now - lastCongestion < interval { return }
         lastCongestion = now
-        let lowered = max(targetBitrate / 4, currentBitrate * 7 / 10)
+        let lowered = max(targetBitrate / 4, Int(Double(currentBitrate) * factor))
         guard lowered < currentBitrate else { return }
         currentBitrate = lowered
         applyBitrate()
     }
 
     /// Climbs 20% back toward the target every check once the link has gone
-    /// five seconds without dropping anything.
+    /// five seconds without trouble and frames are getting across quickly.
     private func recoverBitrate() {
         guard encoder != nil, currentBitrate < targetBitrate else { return }
         if let lastCongestion, ContinuousClock.now - lastCongestion < .seconds(5) { return }
+        if let lastLinkMilliseconds, lastLinkMilliseconds > Self.fastLinkMs { return }
         currentBitrate = min(targetBitrate, currentBitrate * 6 / 5)
         applyBitrate()
     }
@@ -146,8 +177,6 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let display = try await Self.captureDisplay(preferring: preferredDisplayID)
         guard myGeneration == generation else { return }
 
-        frameRate = Self.frameRate(for: display.displayID)
-        slowEncoderChecks = 0
         let filter = Self.makeFilter(display: display)
         let (configuration, pixelScale) = Self.makeConfiguration(
             display: display, filter: filter, frameRate: frameRate
@@ -204,6 +233,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     }
 
     func stop() async {
+        outputQueue.async { [self] in heldFrame = nil }
         generation += 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -226,43 +256,6 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 + "\(currentBitrate / 1_000_000) of \(targetBitrate / 1_000_000) Mbps, "
                 + "\(engine) encode\(rateControl)"
         )
-    }
-
-    /// The display's own refresh rate, capped at the headset's 120 Hz. A
-    /// virtual display is created at 120; a 60 Hz monitor can't produce more
-    /// than 60 frames however fast it is captured, and telling the encoder to
-    /// expect 120 would only halve its per-frame bit budget.
-    private nonisolated static func frameRate(for displayID: CGDirectDisplayID) -> Int {
-        let refresh = CGDisplayCopyDisplayMode(displayID)?.refreshRate ?? 0
-        // Built-in panels report 0 (variable refresh); ProMotion ones go to 120.
-        let rate = refresh > 0 ? refresh : (CGDisplayIsBuiltin(displayID) != 0 ? 120 : 60)
-        return rate >= 100 ? 120 : 60
-    }
-
-    /// At 120 fps every frame has 8.3 ms to get through the encoder. If it
-    /// keeps taking longer, frames back up inside VideoToolbox and the stream
-    /// lags further behind the faster it runs — so step down to 60, which is
-    /// slower but current. Two checks in a row, so one heavy key frame or a
-    /// burst of redraw doesn't trip it.
-    private func checkEncoderKeepsUp() async {
-        guard frameRate > 60, let stream, let display, let encoder else { return }
-        guard encoder.averageEncodeMilliseconds > Self.encodeBudgetAt120 else {
-            slowEncoderChecks = 0
-            return
-        }
-        slowEncoderChecks += 1
-        guard slowEncoderChecks >= 2 else { return }
-        let filter = Self.makeFilter(display: display)
-        let (configuration, _) = Self.makeConfiguration(display: display, filter: filter, frameRate: 60)
-        do {
-            try await stream.updateConfiguration(configuration)
-            frameRate = 60
-            retarget(for: configuration)
-            encoder.setFrameRate(60, bitrate: currentBitrate)
-            publishSummary(encoder)
-        } catch {
-            onError?("Could not lower the capture rate: \(error.localizedDescription)")
-        }
     }
 
     /// Everything on the display, nothing excluded — including the companion's
@@ -352,7 +345,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return (configuration, scale)
     }
 
-    /// Scales with the encoded pixel area (≈12 bit/px/s at 60 fps, about 0.2
+    /// Scales with the encoded pixel area (≈10 bit/px/s at 60 fps, about 0.17
     /// bits per pixel per frame) so going Retina buys sharper pixels instead
     /// of the same bitrate spread over four times as many. The stream is
     /// mostly text, and scrolling or dragging a window is where a starved
@@ -360,10 +353,10 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// weak link from paying for that in queueing delay.
     private nonisolated static func bitrate(for configuration: SCStreamConfiguration, frameRate: Int) -> Int {
         let pixelArea = Double(configuration.width * configuration.height)
-        let at60 = max(30_000_000, min(100_000_000, pixelArea * 12))
+        let at60 = max(30_000_000, min(80_000_000, pixelArea * 10))
         // Twice the frames, each predicted from a picture half as old: deltas
         // shrink, so half again the bitrate keeps per-frame quality.
-        return Int(frameRate > 60 ? min(150_000_000, at60 * 1.5) : at60)
+        return Int(frameRate > 60 ? min(120_000_000, at60 * 1.5) : at60)
     }
 
     /// The filter is the whole display and never needs rebuilding for a window
@@ -378,7 +371,6 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
                 await self.refreshDisplay()
-                await self.checkEncoderKeepsUp()
                 await self.recoverBitrate()
             }
         }
@@ -447,7 +439,40 @@ extension MacNativeScreenCapture: SCStreamOutput {
               SCFrameStatus(rawValue: statusRaw) == .complete else {
             return
         }
+        if let displayTime = attachments[.displayTime] as? UInt64 {
+            let elapsed = Self.milliseconds(sinceMachTime: displayTime)
+            averageCaptureMilliseconds = averageCaptureMilliseconds == 0
+                ? elapsed
+                : averageCaptureMilliseconds * 0.95 + elapsed * 0.05
+        }
+        guard canEncode?() ?? true else {
+            heldFrame = sampleBuffer
+            return
+        }
+        heldFrame = nil
         encoder?.encode(sampleBuffer)
+    }
+
+    /// The viewers caught up: encode the frame held back while they hadn't.
+    nonisolated func pipeCleared() {
+        outputQueue.async { [self] in
+            guard let held = heldFrame, canEncode?() ?? true else { return }
+            heldFrame = nil
+            encoder?.encode(held)
+        }
+    }
+
+    private nonisolated static let timebase: mach_timebase_info_data_t = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return info
+    }()
+
+    private nonisolated static func milliseconds(sinceMachTime then: UInt64) -> Double {
+        let now = mach_absolute_time()
+        guard now > then else { return 0 }
+        let nanos = Double(now - then) * Double(timebase.numer) / Double(timebase.denom)
+        return nanos / 1_000_000
     }
 }
 

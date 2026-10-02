@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import DebugTrace
 
 @Observable
 final class MacNativeStreamingController {
@@ -192,6 +193,15 @@ final class MacNativeStreamingController {
     /// chroma format is chosen by the viewer's own hardware probe and there is
     /// otherwise no way to tell 4:2:2 from 4:2:0 by looking at the picture.
     private(set) var desktopVideoSummary: String?
+    /// Where a desktop frame's time goes before it reaches the headset —
+    /// display refresh to capture, encode, and send to acknowledgement — so
+    /// "it feels laggy" can be pinned on one of them.
+    private(set) var latencySummary: String?
+    @ObservationIgnored private var lastLatencyLog = ContinuousClock.now
+    @ObservationIgnored private let log = DebugLogger(
+        subsystem: "pro.longwave.companion",
+        category: "MacNativeStreaming"
+    )
 
     /// Mouse/keyboard remote control for the Screen stream — see
     /// `MacNativeInputService` for why it's a separate opt-in from Screen
@@ -466,6 +476,13 @@ final class MacNativeStreamingController {
                 self.capture?.linkCongested()
             }
         }
+        server.onLinkLatency = { [weak self] milliseconds in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.capture?.linkLatency(milliseconds)
+                self.updateLatencySummary(linkMilliseconds: milliseconds)
+            }
+        }
         server.onKeyFrameNeeded = { [weak self] windowID in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
@@ -611,6 +628,20 @@ final class MacNativeStreamingController {
         startCapture()
     }
 
+    private func updateLatencySummary(linkMilliseconds: Double) {
+        guard let capture else { return }
+        let captureMs = capture.averageCaptureMilliseconds
+        let encodeMs = capture.averageEncodeMilliseconds
+        latencySummary = String(
+            format: "capture %.1f ms · encode %.1f ms · link %.1f ms",
+            captureMs, encodeMs, linkMilliseconds
+        )
+        let now = ContinuousClock.now
+        guard now - lastLatencyLog > .seconds(5) else { return }
+        lastLatencyLog = now
+        log.info("Desktop latency: capture \(captureMs, format: .fixed(precision: 1), privacy: .public) ms, encode \(encodeMs, format: .fixed(precision: 1), privacy: .public) ms, link \(linkMilliseconds, format: .fixed(precision: 1), privacy: .public) ms; \(self.desktopVideoSummary ?? "-", privacy: .public)")
+    }
+
     private func startCapture() {
         captureGeneration += 1
         let generation = captureGeneration
@@ -684,6 +715,8 @@ final class MacNativeStreamingController {
                 self.displayPixelScale = pixelScale > 0 ? pixelScale : 1
             }
         }
+        capture.canEncode = { [weak server] in server?.desktopCanAcceptFrame() ?? true }
+        server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
         self.capture = capture
 
         Task {
@@ -720,6 +753,7 @@ final class MacNativeStreamingController {
         self.capture = nil
         isCapturing = false
         desktopVideoSummary = nil
+        latencySummary = nil
         // Released after the capture is torn down: pulling the display out
         // from under a running SCStream is an error path, not a stop.
         let virtualDisplay = self.virtualDisplay

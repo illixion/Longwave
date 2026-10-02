@@ -244,6 +244,24 @@ final class MacNativeDisplayListProtocolTests: XCTestCase {
         XCTAssertEqual(frame.flatMap { P.decodeSelectDisplay($0.payload) }, "virtual")
     }
 
+    func testFrameAckRoundTrip() {
+        var buffer = P.encodeFrameAck(windowID: 0, sequence: 0x0102_0304_0506_0708)
+        let frame = P.drainFrames(&buffer).first
+        XCTAssertEqual(frame?.type, P.FrameType.frameAck.rawValue)
+        let ack = frame.flatMap { P.decodeFrameAck($0.payload) }
+        XCTAssertEqual(ack?.windowID, 0)
+        XCTAssertEqual(ack?.sequence, 0x0102_0304_0506_0708)
+        XCTAssertNil(P.decodeFrameAck(Data([1, 2, 3])))
+    }
+
+    func testHelloCarriesAcksFrames() {
+        var buffer = P.encodeHello(deviceName: "AVP", acksFrames: true)
+        let hello = P.drainFrames(&buffer).first.flatMap { P.decodeHello($0.payload) }
+        XCTAssertEqual(hello?.acksFrames, true)
+        // An older viewer's hello has no such key.
+        XCTAssertNil(P.decodeHello(Data(#"{"deviceName":"Old"}"#.utf8))?.acksFrames)
+    }
+
     func testRequestKeyFrameCarriesStreamID() {
         var buffer = P.encodeWindowID(.requestKeyFrame, windowID: 42)
         let frame = P.drainFrames(&buffer).first

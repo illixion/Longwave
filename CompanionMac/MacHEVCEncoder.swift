@@ -174,11 +174,26 @@ final class MacHEVCEncoder: @unchecked Sendable {
         VTSessionSetProperty(
             session,
             key: kVTCompressionPropertyKey_DataRateLimits,
-            value: [NSNumber(value: bitrate * 3 / 2 / 8), NSNumber(value: 1)] as CFArray
+            value: Self.dataRateLimits(bitrate: bitrate)
         )
     }
 
     nonisolated var expectedFrameRate: Int { frameRate }
+
+    /// Two windows, as VideoToolbox takes them (bytes, seconds pairs): a
+    /// second at half again the average, so a big redraw can't burst far
+    /// above it; and a thirtieth of a second at three times the average, so
+    /// no single frame grows so large that sending it holds the link — and
+    /// every frame after it — for long. A key frame or a full-screen change
+    /// then arrives a little soft and sharpens over the next frames, which
+    /// on a desktop is a better trade than arriving late.
+    private nonisolated static func dataRateLimits(bitrate: Int) -> CFArray {
+        let bytesPerSecond = bitrate / 8
+        return [
+            NSNumber(value: bytesPerSecond * 3 / 2), NSNumber(value: 1),
+            NSNumber(value: bytesPerSecond * 3 / 30), NSNumber(value: 1.0 / 30),
+        ] as CFArray
+    }
 
     nonisolated func invalidate() {
         if let session {
@@ -256,11 +271,11 @@ final class MacHEVCEncoder: @unchecked Sendable {
         )
         // Average bitrate alone lets a big redraw (a window opening, a page
         // scrolling) burst far above it, and on Wi-Fi a burst is queueing
-        // delay. Cap any one second at half again the average.
+        // delay. Capped per second and per frame — see `dataRateLimits`.
         VTSessionSetProperty(
             newSession,
             key: kVTCompressionPropertyKey_DataRateLimits,
-            value: [NSNumber(value: bitrate * 3 / 2 / 8), NSNumber(value: 1)] as CFArray
+            value: Self.dataRateLimits(bitrate: bitrate)
         )
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)

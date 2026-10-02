@@ -90,6 +90,12 @@ nonisolated enum MacNativeStreamProtocol {
         /// stream soon (the viewer moved it to a new decoder). Hosts that
         /// predate it ignore it, and the viewer waits for a scheduled one.
         case requestKeyFrame = 0x57
+        /// Client → server: UInt32 stream ID, UInt64 sequence — that frame
+        /// arrived. Sent only by a viewer whose hello set `acksFrames`. It is
+        /// what lets the host pace the desktop stream by frames the headset
+        /// actually has, rather than by what the Mac's socket buffer accepted
+        /// (which can hold a second of video), and measure the link's latency.
+        case frameAck = 0x58
 
         /// Client → server: UInt32 stream ID + the v1 `mouseMove` payload,
         /// with (x, y) in that stream's own pixel space.
@@ -120,17 +126,22 @@ nonisolated enum MacNativeStreamProtocol {
         /// 4:2:0, because a chroma format the viewer has to decode in software
         /// costs far more than the fringing it fixes.
         var decodesHEVC422: Bool?
+        /// Whether this viewer sends `frameAck` for every desktop frame.
+        /// Absent ⇒ no, and the host paces it by socket backpressure alone.
+        var acksFrames: Bool?
 
         init(
             deviceName: String,
             protocolVersion: Int? = nil,
             wantsScreen: Bool? = nil,
-            decodesHEVC422: Bool? = nil
+            decodesHEVC422: Bool? = nil,
+            acksFrames: Bool? = nil
         ) {
             self.deviceName = deviceName
             self.protocolVersion = protocolVersion
             self.wantsScreen = wantsScreen
             self.decodesHEVC422 = decodesHEVC422
+            self.acksFrames = acksFrames
         }
     }
 
@@ -263,14 +274,16 @@ nonisolated enum MacNativeStreamProtocol {
         deviceName: String,
         protocolVersion: Int = protocolVersion,
         wantsScreen: Bool? = nil,
-        decodesHEVC422: Bool? = nil
+        decodesHEVC422: Bool? = nil,
+        acksFrames: Bool? = nil
     ) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hello = Hello(
             deviceName: name.isEmpty ? "Vision Pro" : name,
             protocolVersion: protocolVersion,
             wantsScreen: wantsScreen,
-            decodesHEVC422: decodesHEVC422
+            decodesHEVC422: decodesHEVC422,
+            acksFrames: acksFrames
         )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)
@@ -297,6 +310,23 @@ nonisolated enum MacNativeStreamProtocol {
 
     static func decodeWindowInventory(_ payload: Data) -> [WindowInfo]? {
         (try? JSONDecoder().decode(WindowInventory.self, from: payload))?.windows
+    }
+
+    static func encodeFrameAck(windowID: UInt32, sequence: UInt64) -> Data {
+        var payload = Data(capacity: 12)
+        payload.appendLittleEndian(windowID)
+        payload.appendLittleEndian(sequence)
+        return encodeFrame(.frameAck, payload)
+    }
+
+    static func decodeFrameAck(_ payload: Data) -> (windowID: UInt32, sequence: UInt64)? {
+        guard payload.count >= 12 else { return nil }
+        let bytes = [UInt8](payload.prefix(12))
+        var windowID: UInt32 = 0
+        var sequence: UInt64 = 0
+        for index in 0..<4 { windowID |= UInt32(bytes[index]) << (8 * index) }
+        for index in 0..<8 { sequence |= UInt64(bytes[4 + index]) << (8 * index) }
+        return (windowID, sequence)
     }
 
     static func encodeDisplayList(_ list: DisplayList) -> Data {

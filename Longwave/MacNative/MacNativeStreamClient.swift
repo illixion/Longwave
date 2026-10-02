@@ -97,7 +97,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
                     wantsScreen: self.config.wantsScreen,
                     // Measured, not assumed — a host only sends 4:2:2 to a
                     // headset whose own hardware decoder claimed the profile.
-                    decodesHEVC422: MacNativeVideoCapability.decodesHEVC422InHardware
+                    decodesHEVC422: MacNativeVideoCapability.decodesHEVC422InHardware,
+                    acksFrames: true
                 ))
                 self.receiveLoop()
             case .failed(let error):
@@ -256,9 +257,16 @@ final class MacNativeStreamClient: @unchecked Sendable {
                     target.setFormatDescription(format.data, kind: format.kind)
                 }
             case MacNativeStreamProtocol.FrameType.windowVideoFrame.rawValue:
-                if let decoded = MacNativeStreamProtocol.decodeWindowVideoFrame(frame.payload),
-                   let target = renderer(for: decoded.windowID) {
-                    target.enqueue(decoded.frame)
+                if let decoded = MacNativeStreamProtocol.decodeWindowVideoFrame(frame.payload) {
+                    // Acknowledged on arrival, before decoding, so the host
+                    // measures the link and paces the stream by it.
+                    if decoded.windowID == MacNativeStreamProtocol.desktopStreamID {
+                        send(MacNativeStreamProtocol.encodeFrameAck(
+                            windowID: decoded.windowID,
+                            sequence: decoded.frame.sequence
+                        ))
+                    }
+                    renderer(for: decoded.windowID)?.enqueue(decoded.frame)
                 }
             case MacNativeStreamProtocol.FrameType.windowList.rawValue:
                 if let windows = MacNativeStreamProtocol.decodeWindowInventory(frame.payload) {

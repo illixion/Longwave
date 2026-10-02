@@ -1,6 +1,8 @@
 #if os(visionOS)
 import SwiftUI
-import UIKit
+import RealityKit
+import Metal
+import CoreVideo
 
 /// How strongly a Native desktop wraps around the viewer, Mac Virtual
 /// Display style. Each is a fixed radius rather than an angle, so curvature
@@ -36,7 +38,7 @@ enum NativeScreenCurvature: String, CaseIterable, Identifiable {
 /// A desktop of `contentRect.width` points of arc on a circle of `radius`
 /// points, its centre touching the window plane and its edges toward the
 /// viewer. The picture keeps its full size — the arc is as long as the flat
-/// picture is wide — so the window outline is a little wider than the curve.
+/// picture is wide.
 struct NativeScreenCurve: Equatable {
     /// The aspect-fitted video rect inside the view, in view points.
     let contentRect: CGRect
@@ -48,64 +50,31 @@ struct NativeScreenCurve: Equatable {
     /// How far the edges come toward the viewer, in points.
     var sagitta: Double { radius * (1 - cos(halfAngle)) }
 
-    /// About 1.5° per strip: fine enough that the facets don't show on text,
-    /// few enough to stay cheap. A nearly flat window gets very few.
-    var stripCount: Int {
-        min(96, max(1, Int((2 * halfAngle * 180 / .pi / 1.5).rounded(.up))))
-    }
-
-    struct Strip: Identifiable {
-        let id: Int
-        /// The strip's centre over the view, and its depth in front of it.
-        let center: CGPoint
-        let depth: Double
-        /// Rotation about the vertical axis, so the strip faces the circle's
-        /// centre.
-        let angle: Double
-        let size: CGSize
-        /// The slice of the picture it shows, as a fraction of its width —
-        /// including the overlap with its neighbours, so it can run slightly
-        /// below 0 or above 1 at the ends, where Core Animation repeats the
-        /// edge pixels for those few points.
-        let u: ClosedRange<Double>
-    }
-
-    /// How far each strip reaches past its slice on either side, in points.
-    /// A strip's anti-aliased edge is partly transparent, so strips that only
-    /// met edge to edge left a hairline of the room showing between them.
-    /// Overlapping by this much — showing the same pixels, since the slice is
-    /// widened to match — hides it.
-    static let stripOverlap: Double = 2
-
-    var strips: [Strip] {
-        let count = stripCount
-        let width = contentRect.width / Double(count)
-        let padU = Self.stripOverlap / contentRect.width
-        return (0..<count).map { index in
-            let u0 = Double(index) / Double(count)
-            let u1 = Double(index + 1) / Double(count)
-            let theta = ((u0 + u1) / 2 - 0.5) * 2 * halfAngle
-            return Strip(
-                id: index,
-                center: CGPoint(x: contentRect.midX + radius * sin(theta), y: contentRect.midY),
-                depth: radius * (1 - cos(theta)),
-                angle: theta,
-                size: CGSize(width: width + 2 * Self.stripOverlap, height: contentRect.height),
-                u: (u0 - padU)...(u1 + padU)
-            )
-        }
-    }
-
-    /// A point in a strip's own (untransformed) coordinates to the point the
-    /// flat picture would have had there — what the input path maps to a
-    /// stream pixel. The system has already done the 3D hit-test through the
-    /// strip's transform, so this holds from any viewing position.
-    func flatPoint(inStrip strip: Strip, local: CGPoint) -> CGPoint {
-        let fraction = local.x / strip.size.width
-        let u = strip.u.lowerBound + fraction * (strip.u.upperBound - strip.u.lowerBound)
+    /// A hit on the mesh, in the screen entity's own space (metres, origin at
+    /// the picture's centre, +y up, the circle's centre at +z), to the point
+    /// the flat picture would have had there.
+    func flatPoint(meshLocal point: SIMD3<Float>, metersPerPoint: Double) -> CGPoint {
+        let r = radius * metersPerPoint
+        let theta = atan2(Double(point.x), r - Double(point.z))
+        let u = 0.5 + theta / (2 * halfAngle)
+        let v = 0.5 - Double(point.y) / (contentRect.height * metersPerPoint)
         return CGPoint(
-            x: contentRect.minX + u * contentRect.width,
-            y: contentRect.minY + local.y
+            x: contentRect.minX + min(max(u, 0), 1) * contentRect.width,
+            y: contentRect.minY + min(max(v, 0), 1) * contentRect.height
+        )
+    }
+
+    /// For a pointer hovering the window plane (a mouse; the system reports
+    /// no gaze position): the point on the curve along the ray from the
+    /// circle's centre, which is where a viewer sitting there sees it. The
+    /// outermost edges sit beyond the window's reach and clamp to it.
+    func flatPoint(forPlanePoint point: CGPoint) -> CGPoint {
+        let theta = atan((point.x - contentRect.midX) / radius)
+        let u = 0.5 + theta / (2 * halfAngle)
+        let v = 0.5 + (point.y - contentRect.midY) * cos(theta) / contentRect.height
+        return CGPoint(
+            x: contentRect.minX + min(max(u, 0), 1) * contentRect.width,
+            y: contentRect.minY + min(max(v, 0), 1) * contentRect.height
         )
     }
 
@@ -119,6 +88,39 @@ struct NativeScreenCurve: Equatable {
             CGPoint(x: contentRect.midX + radius * sin(theta), y: point.y),
             radius * (1 - cos(theta))
         )
+    }
+
+    /// The curve as a mesh, in metres, centred on the origin with its centre
+    /// line at z = 0 and the edges toward +z.
+    func mesh(metersPerPoint: Double) throws -> MeshResource {
+        let columns = max(2, min(128, Int((2 * halfAngle * 180 / .pi).rounded(.up))))
+        let r = radius * metersPerPoint
+        let halfHeight = Float(contentRect.height * metersPerPoint / 2)
+        var positions: [SIMD3<Float>] = []
+        var normals: [SIMD3<Float>] = []
+        var uvs: [SIMD2<Float>] = []
+        for column in 0...columns {
+            let fraction = Double(column) / Double(columns)
+            let theta = -halfAngle + 2 * halfAngle * fraction
+            let x = Float(r * sin(theta))
+            let z = Float(r * (1 - cos(theta)))
+            let normal = SIMD3<Float>(Float(-sin(theta)), 0, Float(cos(theta)))
+            positions += [[x, -halfHeight, z], [x, halfHeight, z]]
+            normals += [normal, normal]
+            uvs += [[Float(fraction), 0], [Float(fraction), 1]]
+        }
+        var indices: [UInt32] = []
+        for column in 0..<UInt32(columns) {
+            let bottomLeft = column * 2, topLeft = bottomLeft + 1
+            let bottomRight = bottomLeft + 2, topRight = bottomLeft + 3
+            indices += [bottomLeft, bottomRight, topRight, bottomLeft, topRight, topLeft]
+        }
+        var descriptor = MeshDescriptor(name: "NativeCurvedScreen")
+        descriptor.positions = MeshBuffers.Positions(positions)
+        descriptor.normals = MeshBuffers.Normals(normals)
+        descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
+        descriptor.primitives = .triangles(indices)
+        return try MeshResource.generate(from: [descriptor])
     }
 
     static func fittedRect(stream: CGSize, in view: CGSize) -> CGRect {
@@ -136,50 +138,197 @@ struct NativeScreenCurve: Equatable {
     }
 }
 
-/// One strip of the curved desktop: a plain layer showing its slice of the
-/// shared decoded frame. Ordinary window content, so the system renders it
-/// like the flat desktop — not as 3D material, which it foveates.
-struct MacNativeSurfaceStripView: UIViewRepresentable {
+/// The curved desktop's texture: each decoded frame copied into a RealityKit
+/// `LowLevelTexture` and its mip chain rebuilt on the GPU.
+///
+/// The mips are the point. A video material samples a single full-size
+/// image, so where the desktop is drawn small — at a distance, or outside the
+/// gaze where the system renders at lower resolution — each screen pixel
+/// lands on a few scattered texels of fine text, and which ones changes as
+/// the head moves: shimmer. With mips the sampler reads a pre-filtered,
+/// smaller copy matched to the size it is drawn at.
+@MainActor
+final class MacNativeCurvedTexture {
+    private(set) var resource: TextureResource?
+    private var texture: LowLevelTexture?
+    private var size: (width: Int, height: Int) = (0, 0)
+    private let device = MTLCreateSystemDefaultDevice()
+    private lazy var queue = device?.makeCommandQueue()
+    private var cache: CVMetalTextureCache?
+
+    init() {
+        if let device {
+            CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
+        }
+    }
+
+    /// Draws `pixelBuffer` (BGRA, IOSurface-backed). Returns true when the
+    /// texture had to be rebuilt for a new size, so the material needs the
+    /// new resource.
+    @discardableResult
+    func update(_ pixelBuffer: CVPixelBuffer) -> Bool {
+        guard let cache, let queue else { return false }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        var rebuilt = false
+        if texture == nil || size != (width, height) {
+            guard rebuild(width: width, height: height) else { return false }
+            rebuilt = true
+        }
+        guard let texture else { return rebuilt }
+
+        var cvTexture: CVMetalTexture?
+        CVMetalTextureCacheCreateTextureFromImage(
+            nil, cache, pixelBuffer, nil, .bgra8Unorm_srgb, width, height, 0, &cvTexture
+        )
+        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture),
+              let commandBuffer = queue.makeCommandBuffer() else { return rebuilt }
+        let destination = texture.replace(using: commandBuffer)
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.copy(
+                from: source, sourceSlice: 0, sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(width: width, height: height, depth: 1),
+                to: destination, destinationSlice: 0, destinationLevel: 0,
+                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+            )
+            blit.generateMipmaps(for: destination)
+            blit.endEncoding()
+        }
+        // Keeps the decoder's surface alive until the GPU has copied it.
+        commandBuffer.addCompletedHandler { _ in _ = cvTexture }
+        commandBuffer.commit()
+        return rebuilt
+    }
+
+    private func rebuild(width: Int, height: Int) -> Bool {
+        let levels = Int(log2(Double(max(width, height)))) + 1
+        let descriptor = LowLevelTexture.Descriptor(
+            textureType: .type2D,
+            pixelFormat: .bgra8Unorm_srgb,
+            width: width,
+            height: height,
+            mipmapLevelCount: levels,
+            textureUsage: [.shaderRead, .shaderWrite, .renderTarget]
+        )
+        guard let texture = try? LowLevelTexture(descriptor: descriptor),
+              let resource = try? TextureResource(from: texture) else { return false }
+        self.texture = texture
+        self.resource = resource
+        size = (width, height)
+        return true
+    }
+}
+
+/// The desktop drawn on the curve, with its pointer input taken on the mesh
+/// itself: a tap or drag arrives as a 3D hit on the surface, which maps to
+/// the picture exactly, from wherever the viewer is.
+struct NativeCurvedScreenView: View {
     let surface: MacNativeFrameSurface
-    let u: ClosedRange<Double>
+    let curve: NativeScreenCurve
+    let onTap: (CGPoint) -> Void
+    let onLongPress: () -> Void
+    let onDragChanged: (_ point: CGPoint, _ translation: CGSize) -> Void
+    let onDragEnded: (CGPoint) -> Void
 
-    func makeUIView(context: Context) -> StripView {
-        let view = StripView()
-        view.layer.contentsRect = Self.rect(u)
-        surface.attach(view.layer)
-        view.detach = { [weak surface, weak view] in
-            if let view { surface?.detach(view.layer) }
+    @Environment(\.physicalMetrics) private var physicalMetrics
+    @State private var screen = Entity()
+    @State private var texture = MacNativeCurvedTexture()
+    @State private var builtCurve: NativeScreenCurve?
+    @State private var dragStart: CGPoint?
+
+    private var metersPerPoint: Double {
+        Double(physicalMetrics.convert(1, to: .meters))
+    }
+
+    var body: some View {
+        RealityView { content in
+            screen.components.set(InputTargetComponent())
+            content.add(screen)
+        } update: { content in
+            // The picture's centre on the window plane, in the content's
+            // space — RealityView's origin is not documented to sit there.
+            let center = content.convert(
+                Point3D(x: curve.contentRect.midX, y: curve.contentRect.midY, z: 0),
+                from: .local,
+                to: .scene
+            )
+            screen.position = SIMD3<Float>(center)
+            guard builtCurve != curve else { return }
+            rebuildMesh()
         }
-        return view
-    }
-
-    func updateUIView(_ view: StripView, context: Context) {
-        view.layer.contentsRect = Self.rect(u)
-    }
-
-    static func dismantleUIView(_ view: StripView, coordinator: ()) {
-        view.detach?()
-    }
-
-    private static func rect(_ u: ClosedRange<Double>) -> CGRect {
-        CGRect(x: u.lowerBound, y: 0, width: u.upperBound - u.lowerBound, height: 1)
-    }
-
-    final class StripView: UIView {
-        var detach: (() -> Void)?
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            isOpaque = true
-            backgroundColor = .black
-            layer.contentsGravity = .resize
-            layer.minificationFilter = .trilinear
-            layer.magnificationFilter = .linear
+        .gesture(
+            SpatialTapGesture()
+                .targetedToEntity(screen)
+                .onEnded { value in
+                    onTap(flatPoint(value.convert(value.location3D, from: .local, to: screen)))
+                }
+        )
+        .gesture(
+            LongPressGesture(minimumDuration: 0.55)
+                .targetedToEntity(screen)
+                .onEnded { _ in onLongPress() }
+        )
+        .gesture(
+            DragGesture(minimumDistance: 4)
+                .targetedToEntity(screen)
+                .onChanged { value in
+                    let point = flatPoint(value.convert(value.location3D, from: .local, to: screen))
+                    let start = dragStart ?? point
+                    dragStart = start
+                    onDragChanged(point, CGSize(width: point.x - start.x, height: point.y - start.y))
+                }
+                .onEnded { value in
+                    onDragEnded(flatPoint(value.convert(value.location3D, from: .local, to: screen)))
+                    dragStart = nil
+                }
+        )
+        // The edges come forward out of the window plane; without a front
+        // margin the system clips them off.
+        .preferredWindowClippingMargins(.front, curve.sagitta + 8)
+        .onAppear {
+            surface.onFrame = { frame in
+                if texture.update(frame) { applyMaterial() }
+            }
         }
-
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
+        .onDisappear {
+            surface.onFrame = nil
         }
+    }
+
+    private func flatPoint(_ local: SIMD3<Float>) -> CGPoint {
+        curve.flatPoint(meshLocal: local, metersPerPoint: metersPerPoint)
+    }
+
+    private func rebuildMesh() {
+        guard let mesh = try? curve.mesh(metersPerPoint: metersPerPoint) else { return }
+        if screen.components[ModelComponent.self] == nil {
+            screen.components.set(ModelComponent(mesh: mesh, materials: []))
+            applyMaterial()
+        } else {
+            screen.components[ModelComponent.self]?.mesh = mesh
+        }
+        let built = curve
+        Task { @MainActor in
+            builtCurve = built
+            // The collision shape is what targeted gestures hit-test against,
+            // so it follows the mesh — exact, not a box around it.
+            if let shape = try? await ShapeResource.generateStaticMesh(from: mesh), builtCurve == built {
+                screen.components.set(CollisionComponent(shapes: [shape]))
+            }
+        }
+    }
+
+    private func applyMaterial() {
+        guard let resource = texture.resource else { return }
+        let sampler = MTLSamplerDescriptor()
+        sampler.minFilter = .linear
+        sampler.magFilter = .linear
+        sampler.mipFilter = .linear
+        sampler.maxAnisotropy = 8
+        var material = UnlitMaterial()
+        material.color = .init(tint: .white, texture: .init(resource, sampler: .init(sampler)))
+        screen.components[ModelComponent.self]?.materials = [material]
     }
 }
 #endif

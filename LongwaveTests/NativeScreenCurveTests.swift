@@ -1,60 +1,51 @@
 import XCTest
 @testable import Longwave
 
-/// The curved Native desktop's geometry: strips that tile the picture, lie
-/// on the circle, and map a point in a strip back to the flat picture.
+/// The curved Native desktop's geometry: curvature that grows with width at a
+/// fixed radius, and mapping a hit on the mesh back to the flat picture.
 final class NativeScreenCurveTests: XCTestCase {
     private let rect = CGRect(x: 100, y: 50, width: 1600, height: 900)
+    private let metersPerPoint = 0.001
 
     func testCurvatureGrowsWithWidthAtAFixedRadius() {
         let narrow = NativeScreenCurve(contentRect: CGRect(x: 0, y: 0, width: 800, height: 450), radius: 2000)
         let wide = NativeScreenCurve(contentRect: CGRect(x: 0, y: 0, width: 2400, height: 1350), radius: 2000)
         XCTAssertLessThan(narrow.halfAngle, wide.halfAngle)
-        XCTAssertLessThan(narrow.stripCount, wide.stripCount)
+        XCTAssertLessThan(narrow.sagitta, wide.sagitta)
     }
 
-    func testStripsTileThePictureAndLieOnTheCircle() {
+    /// A point on the curve at a known angle and height, in the mesh's space.
+    private func meshPoint(_ curve: NativeScreenCurve, u: Double, v: Double) -> SIMD3<Float> {
+        let r = curve.radius * metersPerPoint
+        let theta = (u - 0.5) * 2 * curve.halfAngle
+        let y = (0.5 - v) * rect.height * metersPerPoint
+        return [Float(r * sin(theta)), Float(y), Float(r * (1 - cos(theta)))]
+    }
+
+    func testMeshHitsMapToTheFlatPicture() {
         let curve = NativeScreenCurve(contentRect: rect, radius: 1200)
-        let strips = curve.strips
-        XCTAssertEqual(strips.count, curve.stripCount)
-        let pad = NativeScreenCurve.stripOverlap / rect.width
-        XCTAssertEqual(strips.first?.u.lowerBound ?? -1, -pad, accuracy: 1e-9)
-        XCTAssertEqual(strips.last?.u.upperBound ?? -1, 1 + pad, accuracy: 1e-9)
-        for (left, right) in zip(strips, strips.dropFirst()) {
-            // Neighbours overlap by the pad on each side, showing the same pixels.
-            XCTAssertEqual(left.u.upperBound - right.u.lowerBound, 2 * pad, accuracy: 1e-9)
+        for (u, v) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.2, 0.8), (0.9, 0.1)] {
+            let flat = curve.flatPoint(meshLocal: meshPoint(curve, u: u, v: v), metersPerPoint: metersPerPoint)
+            XCTAssertEqual(flat.x, rect.minX + u * rect.width, accuracy: 0.05)
+            XCTAssertEqual(flat.y, rect.minY + v * rect.height, accuracy: 0.05)
         }
-        for strip in strips {
-            // Distance from the circle's centre, which sits `radius` in front
-            // of the picture's centre line.
-            let dx = strip.center.x - rect.midX
-            let dz = curve.radius - strip.depth
+    }
+
+    func testSurfacePointLiesOnTheCurve() {
+        let curve = NativeScreenCurve(contentRect: rect, radius: 1200)
+        for u in stride(from: 0.0, through: 1.0, by: 0.25) {
+            let surface = curve.surfacePoint(forFlatPoint: CGPoint(x: rect.minX + u * rect.width, y: 300))
+            let dx = surface.point.x - rect.midX
+            let dz = curve.radius - surface.depth
             XCTAssertEqual((dx * dx + dz * dz).squareRoot(), curve.radius, accuracy: 1e-6)
         }
-        // Symmetric: the middle faces straight ahead.
-        XCTAssertEqual(strips.first!.angle, -strips.last!.angle, accuracy: 1e-9)
     }
 
-    func testFlatPointInAStripMapsBackToItsSlice() {
+    func testPlaneHoverAtTheCentreIsTheCentre() {
         let curve = NativeScreenCurve(contentRect: rect, radius: 1200)
-        let strip = curve.strips[3]
-        let start = curve.flatPoint(inStrip: strip, local: CGPoint(x: 0, y: 0))
-        let end = curve.flatPoint(inStrip: strip, local: CGPoint(x: strip.size.width, y: 900))
-        XCTAssertEqual(start.x, rect.minX + strip.u.lowerBound * rect.width, accuracy: 1e-9)
-        XCTAssertEqual(end.x, rect.minX + strip.u.upperBound * rect.width, accuracy: 1e-9)
-        XCTAssertEqual(start.y, rect.minY, accuracy: 1e-9)
-        XCTAssertEqual(end.y, rect.maxY, accuracy: 1e-9)
-    }
-
-    func testSurfacePointFollowsTheStrips() {
-        let curve = NativeScreenCurve(contentRect: rect, radius: 1200)
-        for strip in curve.strips {
-            let flat = CGPoint(x: rect.minX + (strip.u.lowerBound + strip.u.upperBound) / 2 * rect.width, y: 300)
-            // (the slice's midpoint is unchanged by the symmetric overlap)
-            let surface = curve.surfacePoint(forFlatPoint: flat)
-            XCTAssertEqual(surface.point.x, strip.center.x, accuracy: 1e-6)
-            XCTAssertEqual(surface.depth, strip.depth, accuracy: 1e-6)
-        }
+        let flat = curve.flatPoint(forPlanePoint: CGPoint(x: rect.midX, y: rect.midY))
+        XCTAssertEqual(flat.x, rect.midX, accuracy: 1e-9)
+        XCTAssertEqual(flat.y, rect.midY, accuracy: 1e-9)
     }
 
     func testFittedRectLetterboxes() {

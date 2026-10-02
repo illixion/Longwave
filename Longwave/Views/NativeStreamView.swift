@@ -64,7 +64,7 @@ struct NativeStreamView: View {
     @State private var showEQ = false
     /// Mac Virtual Display-style curving for a wide desktop; off keeps it flat
     /// at every size.
-    @AppStorage("nativeScreenCurvature.v2") private var curvatureSetting = NativeScreenCurvature.off.rawValue
+    @AppStorage("nativeScreenCurvature.v3") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
     @Environment(\.physicalMetrics) private var physicalMetrics
 
     // Pinned to the exact ideal size for one layout pass right after Screen
@@ -484,8 +484,8 @@ struct NativeStreamView: View {
                 .contentShape(Rectangle())
                 // Press and hold = begin click+drag lock; single tap = left click
                 // (or release a drag lock). Right click is the toolbar button.
-                // On the curved desktop each strip carries these itself, in
-                // its own coordinates — see `curvedDesktop`.
+                // On the curved desktop the mesh takes these itself, as hits
+                // on its surface — see `curvedDesktop`.
                 .gesture(dragLockGesture, including: flatInputMask)
                 .gesture(tapGesture(), including: flatInputMask)
                 .gesture(dragGesture(), including: flatInputMask)
@@ -497,8 +497,13 @@ struct NativeStreamView: View {
                     onSecondaryClick: rightClickAtCursor
                 )
                 .onContinuousHover { phase in
-                    guard curvature == .off else { return }
-                    hover(phase)
+                    // A mouse hovering the window plane; on the curve it
+                    // follows the ray from the circle's centre.
+                    if let curve = activeCurve {
+                        hover(phase, curve.flatPoint(forPlanePoint:))
+                    } else {
+                        hover(phase)
+                    }
                 }
                 .onAppear {
                     viewSize = geometry.size
@@ -573,38 +578,22 @@ struct NativeStreamView: View {
     }
 
     /// The window-wide pointer gestures run only on the flat desktop; on the
-    /// curved one they stand aside for the strips' own.
+    /// curved one they stand aside for the mesh's own.
     private var flatInputMask: GestureMask {
         curvature == .off ? .all : .subviews
     }
 
-    /// The desktop as angled strips of one decoded frame, bent onto
-    /// `curve`. SwiftUI does the 3D: each strip is rotated to face the
-    /// circle's centre and pushed forward to lie on it, and because each one
-    /// carries its own pointer gestures, a pinch or hover lands in that
-    /// strip's own coordinates — exact from wherever the viewer stands.
+    /// The desktop on a curved mesh, with tap, press-and-hold and drag
+    /// taken as hits on the mesh itself — see `NativeCurvedScreenView`.
     private func curvedDesktop(_ curve: NativeScreenCurve) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(curve.strips) { strip in
-                let toFlat: (CGPoint) -> CGPoint = { curve.flatPoint(inStrip: strip, local: $0) }
-                MacNativeSurfaceStripView(surface: screenManager.frameSurface, u: strip.u)
-                    .frame(width: strip.size.width, height: strip.size.height)
-                    .contentShape(Rectangle())
-                    .gesture(dragLockGesture)
-                    .gesture(tapGesture(toFlat))
-                    .gesture(dragGesture(toFlat))
-                    .onContinuousHover { hover($0, toFlat) }
-                    .rotation3DEffect(.radians(-strip.angle), axis: (x: 0, y: 1, z: 0))
-                    // A point in front of the plane, so the strips sit ahead
-                    // of the scroll surface at the centre too.
-                    .offset(z: strip.depth + 1)
-                    .position(strip.center)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // The edges come forward out of the window plane; without a front
-        // margin the system clips them off.
-        .preferredWindowClippingMargins(.front, curve.sagitta + 8)
+        NativeCurvedScreenView(
+            surface: screenManager.frameSurface,
+            curve: curve,
+            onTap: handleTap(at:),
+            onLongPress: beginDragLockAtCursor,
+            onDragChanged: handleDragChanged(at:translation:),
+            onDragEnded: handleDragEnded(at:)
+        )
     }
 
     /// Bluetooth-mouse / gaze pointer motion without a button held — a
@@ -630,21 +619,24 @@ struct NativeStreamView: View {
 
     /// Single tap = left click (absolute) or click at the virtual cursor
     /// (trackpad), or release an active drag lock.
-    private func tapGesture(_ toFlat: @escaping (CGPoint) -> CGPoint = { $0 }) -> some Gesture {
+    private func tapGesture() -> some Gesture {
         SpatialTapGesture()
-            .onEnded { value in
-                guard !twoHandEngaged else { return }
-                let location = toFlat(value.location)
-                if dragLocked {
-                    // Lifting off the press-and-hold that *started* the lock
-                    // can arrive here as a tap; that would release it instantly.
-                    if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
-                    releaseLeft(at: location)
-                    dragLocked = false
-                } else {
-                    leftClick(at: location)
-                }
-            }
+            .onEnded { value in handleTap(at: value.location) }
+    }
+
+    /// `location` is on the flat picture, in view points — from the flat
+    /// gesture surface directly, or mapped off the curved mesh.
+    private func handleTap(at location: CGPoint) {
+        guard !twoHandEngaged else { return }
+        if dragLocked {
+            // Lifting off the press-and-hold that *started* the lock
+            // can arrive here as a tap; that would release it instantly.
+            if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
+            releaseLeft(at: location)
+            dragLocked = false
+        } else {
+            leftClick(at: location)
+        }
     }
 
     /// Press and hold = grab: holds the left button down so the next drag
@@ -656,42 +648,44 @@ struct NativeStreamView: View {
     }
 
     /// Drag moves the cursor; the left button stays down for the duration
-    /// (or, while a drag lock is held, for as long as the lock lasts). On the
-    /// curved desktop the drag stays in the coordinates of the strip it began
-    /// on, extended flat past its edges — close for the short drags pointer
-    /// work is made of, drifting a little on a long one across the curve.
-    private func dragGesture(_ toFlat: @escaping (CGPoint) -> CGPoint = { $0 }) -> some Gesture {
+    /// (or, while a drag lock is held, for as long as the lock lasts).
+    private func dragGesture() -> some Gesture {
         DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                guard !twoHandEngaged else { return }
-                if screenManager.touchMode == .absolute {
-                    guard let point = framebufferPoint(toFlat(value.location)) else { return }
-                    if dragLocked {
-                        screenManager.sendMouseMove(x: point.x, y: point.y)
-                    } else if !isDragging {
-                        isDragging = true
-                        screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-                    } else {
-                        screenManager.sendMouseMove(x: point.x, y: point.y)
-                    }
-                } else {
-                    let dx = value.translation.width - previousDragTranslation.width
-                    let dy = value.translation.height - previousDragTranslation.height
-                    previousDragTranslation = value.translation
-                    if let delta = translator?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
-                        screenManager.moveVirtualCursor(dx: delta.dx, dy: delta.dy)
-                    }
-                }
+            .onChanged { value in handleDragChanged(at: value.location, translation: value.translation) }
+            .onEnded { value in handleDragEnded(at: value.location) }
+    }
+
+    /// Points on the flat picture, in view points, like `handleTap`.
+    private func handleDragChanged(at location: CGPoint, translation: CGSize) {
+        guard !twoHandEngaged else { return }
+        if screenManager.touchMode == .absolute {
+            guard let point = framebufferPoint(location) else { return }
+            if dragLocked {
+                screenManager.sendMouseMove(x: point.x, y: point.y)
+            } else if !isDragging {
+                isDragging = true
+                screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
+            } else {
+                screenManager.sendMouseMove(x: point.x, y: point.y)
             }
-            .onEnded { value in
-                guard !twoHandEngaged else { return }
-                if screenManager.touchMode == .absolute, isDragging, !dragLocked,
-                   let point = framebufferPoint(toFlat(value.location)) {
-                    screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-                }
-                isDragging = false
-                previousDragTranslation = .zero
+        } else {
+            let dx = translation.width - previousDragTranslation.width
+            let dy = translation.height - previousDragTranslation.height
+            previousDragTranslation = translation
+            if let delta = translator?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
+                screenManager.moveVirtualCursor(dx: delta.dx, dy: delta.dy)
             }
+        }
+    }
+
+    private func handleDragEnded(at location: CGPoint) {
+        guard !twoHandEngaged else { return }
+        if screenManager.touchMode == .absolute, isDragging, !dragLocked,
+           let point = framebufferPoint(location) {
+            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
+        }
+        isDragging = false
+        previousDragTranslation = .zero
     }
 
     /// A second hand arriving turns whatever the first one was doing into a
@@ -803,7 +797,7 @@ struct NativeStreamView: View {
             .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
             .frame(width: 12, height: 12)
             .position(surface.point)
-            .offset(z: CGFloat(surface.depth) + 2)
+            .offset(z: CGFloat(surface.depth) + 1)
             .allowsHitTesting(false)
     }
 

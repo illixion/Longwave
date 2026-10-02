@@ -1,12 +1,11 @@
 import Foundation
 import CoreMedia
 import CoreVideo
-import QuartzCore
 import VideoToolbox
 
 /// Decodes the desktop stream to BGRA IOSurfaces itself, for presentations
-/// an `AVSampleBufferDisplayLayer` can't do — the curved desktop, which shows
-/// one decoded frame across many angled strips (`NativeCurvedScreenView`).
+/// an `AVSampleBufferDisplayLayer` can't do — the curved desktop, which draws
+/// each frame into its own mipmapped texture (`MacNativeCurvedTexture`).
 ///
 /// Decoding is synchronous on the stream client's receive queue, so a frame
 /// is on its way to the screen the moment it has arrived.
@@ -82,30 +81,21 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
     }
 }
 
-/// The newest decoded desktop frame, shown by every layer attached to it —
-/// one per strip of the curved desktop, each cropped to its slice with
-/// `contentsRect`. They share the one IOSurface, so a strip costs a layer,
-/// not a copy.
+/// Hands the newest decoded desktop frame to the curved desktop's texture on
+/// the main thread (where RealityKit takes texture updates).
 ///
 /// A frame lands from the decoder's thread; the hop to the main thread is
-/// coalesced, so a backlog of frames never builds up behind it — only the
-/// newest is ever shown.
+/// coalesced, so a backlog never builds up behind it — only the newest is
+/// ever drawn, and a frame that arrives while one is waiting replaces it.
 final class MacNativeFrameSurface {
     private let lock = NSLock()
     private nonisolated(unsafe) var pending: CVPixelBuffer?
     private nonisolated(unsafe) var presentScheduled = false
-    /// Kept so a strip attached mid-stream shows the current frame at once,
-    /// and so the surface it shows stays alive while it is on screen.
-    private var current: CVPixelBuffer?
-    private let layers = NSHashTable<CALayer>.weakObjects()
-
-    func attach(_ layer: CALayer) {
-        layers.add(layer)
-        if let current { show(current, on: layer) }
-    }
-
-    func detach(_ layer: CALayer) {
-        layers.remove(layer)
+    /// The last frame shown, so a consumer attached mid-stream draws at once.
+    private(set) var current: CVPixelBuffer?
+    /// Main thread only.
+    var onFrame: ((CVPixelBuffer) -> Void)? {
+        didSet { if let current { onFrame?(current) } }
     }
 
     nonisolated func present(_ pixelBuffer: CVPixelBuffer) {
@@ -123,30 +113,11 @@ final class MacNativeFrameSurface {
             lock.unlock()
             guard let frame else { return }
             current = frame
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            for layer in layers.allObjects {
-                show(frame, on: layer)
-            }
-            CATransaction.commit()
+            onFrame?(frame)
         }
     }
 
     func clear() {
         current = nil
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for layer in layers.allObjects {
-            layer.contents = nil
-        }
-        CATransaction.commit()
-    }
-
-    private func show(_ frame: CVPixelBuffer, on layer: CALayer) {
-        // An IOSurface is a valid layer contents object, and the decoder's
-        // pool hands out a different one for every frame still in use, so
-        // each assignment is a real change Core Animation will redraw.
-        guard let surface = CVPixelBufferGetIOSurface(frame)?.takeUnretainedValue() else { return }
-        layer.contents = surface
     }
 }

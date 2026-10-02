@@ -1164,6 +1164,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private nonisolated(unsafe) var depthAverage: Double = 0
     /// True while shedding a backlog (see the ceiling check in `schedule`).
     private nonisolated(unsafe) var trimming = false
+    /// TCP only: playing ~2% fast to shed a post-stall backlog instead of
+    /// skipping it (see `catchUpRatio`).
+    private nonisolated(unsafe) var catchingUp = false
+    /// Audio shed by catching up this session, in sample frames.
+    private nonisolated(unsafe) var caughtUpFrames = 0
     private nonisolated(unsafe) var underrunCount = 0
     /// `underrunCount` as of the last health tick, so a clean stretch can be
     /// recognised and the grown target relaxed again.
@@ -2079,8 +2084,25 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// stall lands, so it threw away the very audio that refills the cushion
     /// — 298 ms of it in one episode, followed by six underruns.
     private nonisolated var ceilingFrames: Int {
-        max(Int(0.500 * wireSampleRate), targetFrames + Int(0.250 * wireSampleRate))
+        if !lowLatency {
+            // TCP catches up instead (below); the skip is kept only for a
+            // backlog no sane amount of catching up should be asked to shed.
+            return targetFrames + Int(Self.catchUpCeilingSeconds * wireSampleRate)
+        }
+        return max(Int(0.500 * wireSampleRate), targetFrames + Int(0.250 * wireSampleRate))
     }
+
+    /// TCP is the steady mode, so it never skips a recovered stall: when the
+    /// burst after one leaves the queue `catchUpStartSeconds` over target, it
+    /// plays `catchUpRatio` fast until it is back within `catchUpStopSeconds`.
+    /// Skipping the excess (what UDP does) is an audible jump of a few
+    /// hundred milliseconds; 2% fast sheds 300 ms in 15 s with nothing lost
+    /// — a pitch rise of about a third of a semitone while it lasts. Latency
+    /// still comes back to target, which keeps lip sync where it was.
+    private static let catchUpRatio = 0.02
+    private static let catchUpStartSeconds = 0.060
+    private static let catchUpStopSeconds = 0.010
+    private static let catchUpCeilingSeconds = 1.5
 
     /// Re-enters the prebuffer state after the node has run dry, *without*
     /// cutting it. Runs on `queue`.
@@ -2202,7 +2224,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             holes=\(net.holes) (\(ms(Double(net.holeFrames))) ms) ooo=\(net.late) \
             resumes=\(net.resumes)\(restarts, privacy: .public) · \
             \(transport, privacy: .public)\
-            underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms drift=\(driftCorrections)
+            underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms caughtup=\(ms(Double(caughtUpFrames)))ms drift=\(driftCorrections)
             """)
     }
 
@@ -2304,6 +2326,20 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
         trimming = false
 
+        if !lowLatency, playing {
+            let excess = depth - targetFrames
+            if catchingUp, excess <= Int(Self.catchUpStopSeconds * wireSampleRate) {
+                catchingUp = false
+            } else if !catchingUp, excess > Int(Self.catchUpStartSeconds * wireSampleRate) {
+                catchingUp = true
+                AppLog.audioStream.log(
+                    "Audio queue at \(Int(Double(depth) / wireSampleRate * 1000)) ms — catching up to target"
+                )
+            }
+        } else {
+            catchingUp = false
+        }
+
         // Drift correction. The Mac's capture clock and this device's output
         // clock are independent and differ by tens of ppm, which silently
         // eats (or inflates) the cushion over minutes — the reason a session
@@ -2314,7 +2350,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // *smoothed* depth is what's compared, so ordinary jitter never
         // triggers it.
         var adjust = 0
-        if playing {
+        if catchingUp {
+            adjust = -max(1, Int((Double(wireFrames) * Self.catchUpRatio).rounded()))
+            caughtUpFrames -= adjust
+            depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
+        } else if playing {
             depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
             let target = Double(targetFrames)
             let tolerance = max(target * 0.2, 0.005 * wireSampleRate)

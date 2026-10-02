@@ -47,6 +47,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// A viewer joined a stream that is already running, so the encoder is
     /// mid-GOP and nothing it sends will decode until the next key frame.
     nonisolated(unsafe) var onKeyFrameNeeded: (@Sendable (UInt32) -> Void)?
+    /// A viewer's link fell behind and a frame of this stream was dropped —
+    /// the encoder should spend fewer bits until it stops happening.
+    nonisolated(unsafe) var onCongestion: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
     /// A viewer picked a desktop from `displayList` (a `DisplayInfo.id`).
     nonisolated(unsafe) var onSelectDisplay: (@Sendable (String) -> Void)?
@@ -425,6 +428,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
             // means waiting for a key frame — otherwise the viewer decodes
             // smeared garbage until the next scheduled one.
             client.awaitingKeyFrame[streamID] = true
+            onCongestion?(streamID)
             return
         }
         if client.awaitingKeyFrame[streamID] ?? true {

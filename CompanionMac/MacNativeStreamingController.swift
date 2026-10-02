@@ -32,6 +32,27 @@ final class MacNativeStreamingController {
     private static let selectedDisplayKey = "macNativeSelectedDisplay"
     private static let virtualDisplayPresetKey = "macNativeVirtualDisplayPreset"
     private static let virtualDisplayExclusiveKey = "macNativeVirtualDisplayExclusive"
+    private static let bitrateCeilingKey = "macNativeBitrateMbps"
+
+    /// The desktop stream's bitrate in Mbps, or 0 for automatic (scaled to
+    /// the display's pixel count and frame rate). Either way the stream backs
+    /// off on its own when the link drops frames, and recovers after.
+    var bitrateMbps: Int {
+        get {
+            access(keyPath: \.bitrateMbps)
+            return UserDefaults.standard.integer(forKey: Self.bitrateCeilingKey)
+        }
+        set {
+            withMutation(keyPath: \.bitrateMbps) {
+                UserDefaults.standard.set(newValue, forKey: Self.bitrateCeilingKey)
+            }
+            capture?.setBitrateCeiling(bitrateCeiling)
+        }
+    }
+
+    private var bitrateCeiling: Int? {
+        bitrateMbps > 0 ? bitrateMbps * 1_000_000 : nil
+    }
 
     /// Which desktop the stream shows: `MacNativeStreamProtocol.virtualDisplayID`
     /// for a display the Mac renders just for the headset (the Mac Virtual
@@ -438,6 +459,13 @@ final class MacNativeStreamingController {
                 }
             }
         }
+        server.onCongestion = { [weak self] windowID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation,
+                      windowID == MacNativeStreamProtocol.desktopStreamID else { return }
+                self.capture?.linkCongested()
+            }
+        }
         server.onKeyFrameNeeded = { [weak self] windowID in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
@@ -621,7 +649,8 @@ final class MacNativeStreamingController {
             : MacNativeDisplayCatalog.displayID(forUUID: selectedDisplayID)
         let capture = MacNativeScreenCapture(
             chroma: chroma,
-            displayID: virtualDisplay?.displayID ?? physicalTarget
+            displayID: virtualDisplay?.displayID ?? physicalTarget,
+            bitrateCeiling: bitrateCeiling
         )
         capture.onVideoSummary = { [weak self] summary in
             Task { @MainActor [weak self] in

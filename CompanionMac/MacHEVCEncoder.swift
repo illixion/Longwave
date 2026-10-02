@@ -157,10 +157,19 @@ final class MacHEVCEncoder: @unchecked Sendable {
     /// budgets bits per frame from it.
     nonisolated func setFrameRate(_ frameRate: Int, bitrate: Int) {
         self.frameRate = frameRate
-        self.bitrate = bitrate
         averageEncodeMilliseconds = 0
+        if let session {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
+        }
+        setLiveBitrate(bitrate)
+    }
+
+    /// Retargets the running session's bitrate (and its burst cap) without a
+    /// new session — what adapting to the link needs, since a new session
+    /// would cost a key frame every step.
+    nonisolated func setLiveBitrate(_ bitrate: Int) {
+        self.bitrate = bitrate
         guard let session else { return }
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
         VTSessionSetProperty(
             session,

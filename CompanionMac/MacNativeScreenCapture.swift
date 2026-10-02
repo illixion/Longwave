@@ -69,14 +69,74 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private var slowEncoderChecks = 0
     private var lastSessionSize: (width: Int, height: Int)?
 
+    /// The bitrate this display and frame rate deserve on a good link — or
+    /// the user's fixed choice — and what the encoder runs at right now,
+    /// which drops when the link starts dropping frames and climbs back once
+    /// it stops (`linkCongested`, `recoverBitrate`).
+    private var bitrateCeiling: Int?
+    private var targetBitrate = 0
+    private var currentBitrate = 0
+    private var lastCongestion: ContinuousClock.Instant?
+
     /// Frames slower than this to encode, sustained, mean 120 fps is costing
     /// latency instead of saving it: 8.3 ms is the whole interval.
     private nonisolated static let encodeBudgetAt120 = 7.0
 
-    nonisolated init(chroma: MacHEVCEncoder.Chroma = .yuv420, displayID: CGDirectDisplayID? = nil) {
+    nonisolated init(
+        chroma: MacHEVCEncoder.Chroma = .yuv420,
+        displayID: CGDirectDisplayID? = nil,
+        bitrateCeiling: Int? = nil
+    ) {
         self.chroma = chroma
         self.preferredDisplayID = displayID
+        self.bitrateCeiling = bitrateCeiling
         super.init()
+    }
+
+    /// A fixed bitrate (bits/s), or nil for the area-based automatic one.
+    /// Applies to the running stream at once.
+    func setBitrateCeiling(_ ceiling: Int?) {
+        bitrateCeiling = ceiling
+        guard let configuration = currentConfiguration else { return }
+        retarget(for: configuration)
+        currentBitrate = targetBitrate
+        applyBitrate()
+    }
+
+    /// The link dropped frames: back off by 30%, at most twice a second, never
+    /// below a quarter of the target.
+    func linkCongested() {
+        guard encoder != nil, targetBitrate > 0 else { return }
+        let now = ContinuousClock.now
+        if let lastCongestion, now - lastCongestion < .milliseconds(500) { return }
+        lastCongestion = now
+        let lowered = max(targetBitrate / 4, currentBitrate * 7 / 10)
+        guard lowered < currentBitrate else { return }
+        currentBitrate = lowered
+        applyBitrate()
+    }
+
+    /// Climbs 20% back toward the target every check once the link has gone
+    /// five seconds without dropping anything.
+    private func recoverBitrate() {
+        guard encoder != nil, currentBitrate < targetBitrate else { return }
+        if let lastCongestion, ContinuousClock.now - lastCongestion < .seconds(5) { return }
+        currentBitrate = min(targetBitrate, currentBitrate * 6 / 5)
+        applyBitrate()
+    }
+
+    private var currentConfiguration: SCStreamConfiguration?
+
+    private func retarget(for configuration: SCStreamConfiguration) {
+        currentConfiguration = configuration
+        targetBitrate = bitrateCeiling ?? Self.bitrate(for: configuration, frameRate: frameRate)
+        currentBitrate = currentBitrate == 0 ? targetBitrate : min(currentBitrate, targetBitrate)
+    }
+
+    private func applyBitrate() {
+        guard let encoder else { return }
+        encoder.setLiveBitrate(currentBitrate)
+        publishSummary(encoder)
     }
 
     func start() async throws {
@@ -92,9 +152,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let (configuration, pixelScale) = Self.makeConfiguration(
             display: display, filter: filter, frameRate: frameRate
         )
+        currentBitrate = 0
+        retarget(for: configuration)
         // Opaque full display: no alpha layer to spend bits or decode cycles on.
         let encoder = MacHEVCEncoder(
-            bitrate: Self.bitrate(for: configuration, frameRate: frameRate),
+            bitrate: currentBitrate,
             frameRate: frameRate,
             preservesAlpha: false,
             chroma: chroma
@@ -161,6 +223,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let rateControl = encoder.lowLatencyRateControl ? ", low-latency" : ""
         onVideoSummary?(
             "\(size.width)×\(size.height) HEVC \(encoder.chromaDescription) at \(encoder.expectedFrameRate) fps, "
+                + "\(currentBitrate / 1_000_000) of \(targetBitrate / 1_000_000) Mbps, "
                 + "\(engine) encode\(rateControl)"
         )
     }
@@ -194,7 +257,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         do {
             try await stream.updateConfiguration(configuration)
             frameRate = 60
-            encoder.setFrameRate(60, bitrate: Self.bitrate(for: configuration, frameRate: 60))
+            retarget(for: configuration)
+            encoder.setFrameRate(60, bitrate: currentBitrate)
             publishSummary(encoder)
         } catch {
             onError?("Could not lower the capture rate: \(error.localizedDescription)")
@@ -288,16 +352,18 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         return (configuration, scale)
     }
 
-    /// Scales with the encoded pixel area (≈6 bit/px/s at 60 fps) so going
-    /// Retina buys sharper pixels instead of the same bitrate spread over four
-    /// times as many of them. Floored at what the old point-sized stream got,
-    /// so no display comes out of this worse than it went in.
+    /// Scales with the encoded pixel area (≈12 bit/px/s at 60 fps, about 0.2
+    /// bits per pixel per frame) so going Retina buys sharper pixels instead
+    /// of the same bitrate spread over four times as many. The stream is
+    /// mostly text, and scrolling or dragging a window is where a starved
+    /// encoder smears it, so this aims high; `linkCongested` is what keeps a
+    /// weak link from paying for that in queueing delay.
     private nonisolated static func bitrate(for configuration: SCStreamConfiguration, frameRate: Int) -> Int {
         let pixelArea = Double(configuration.width * configuration.height)
-        let at60 = max(24_000_000, min(40_000_000, pixelArea * 6))
+        let at60 = max(30_000_000, min(100_000_000, pixelArea * 12))
         // Twice the frames, each predicted from a picture half as old: deltas
         // shrink, so half again the bitrate keeps per-frame quality.
-        return Int(frameRate > 60 ? min(60_000_000, at60 * 1.5) : at60)
+        return Int(frameRate > 60 ? min(150_000_000, at60 * 1.5) : at60)
     }
 
     /// The filter is the whole display and never needs rebuilding for a window
@@ -313,6 +379,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 guard let self, !Task.isCancelled else { return }
                 await self.refreshDisplay()
                 await self.checkEncoderKeepsUp()
+                await self.recoverBitrate()
             }
         }
     }
@@ -339,7 +406,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             try await stream.updateConfiguration(configuration)
             // The new size makes the encoder open a fresh session; give it the
             // bitrate for the new area rather than the one it was built with.
-            encoder?.setBitrate(Self.bitrate(for: configuration, frameRate: frameRate))
+            retarget(for: configuration)
+            encoder?.setBitrate(currentBitrate)
             self.display = refreshed
             self.pixelScale = scale
             onDisplayGeometry?(refreshed.frame, scale)

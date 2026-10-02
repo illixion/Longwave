@@ -111,6 +111,18 @@ struct NativePane: View {
                     Text("The size and display switch apply only while the virtual display is the one streaming, so both can be set before it ever connects. The virtual display uses the same mechanism as Mac Virtual Display, and the Mac's own keyboard and trackpad keep working on it. Changing these while a viewer is connected restarts the stream.")
                 }
 
+                Section {
+                    Picker("Bitrate", selection: $controller.macNativeStreaming.bitrateMbps) {
+                        Text("Automatic").tag(0)
+                        ForEach([50, 100, 150, 200, 300], id: \.self) { mbps in
+                            Text("\(mbps) Mbps").tag(mbps)
+                        }
+                    }
+                    .help("How many bits the desktop stream may spend. Automatic scales with the display's size and frame rate, up to 150 Mbps at 120 fps.")
+                } footer: {
+                    Text("Higher keeps text sharp while scrolling and dragging windows. Whatever is set, the stream lowers its bitrate when Wi-Fi can't keep up and climbs back once it can, so a high setting costs sharpness rather than lag on a weak link. The status below shows the rate in use.")
+                }
+
                 Section("Screen Status") {
                     LabeledContent("Stream", value: controller.macNativeStreaming.statusText)
                     LabeledContent("Port", value: String(controller.macNativeStreaming.port))

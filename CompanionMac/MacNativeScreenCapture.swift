@@ -82,6 +82,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// `outputQueue`.
     nonisolated(unsafe) var canEncode: (@Sendable () -> Bool)?
     private nonisolated(unsafe) var heldFrame: CMSampleBuffer?
+    /// The last frame encoded, and a counter that cancels pending
+    /// refinements of it — see `encodeAndRefine`. Only touched on
+    /// `outputQueue`.
+    private nonisolated(unsafe) var lastFrame: CMSampleBuffer?
+    private nonisolated(unsafe) var refinementGeneration = 0
     /// Smoothed time from the frame's display refresh to ScreenCaptureKit
     /// handing it over, in ms.
     private(set) nonisolated(unsafe) var averageCaptureMilliseconds: Double = 0
@@ -248,7 +253,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     }
 
     func stop() async {
-        outputQueue.async { [self] in heldFrame = nil }
+        outputQueue.async { [self] in
+            heldFrame = nil
+            lastFrame = nil
+            refinementGeneration &+= 1
+        }
         generation += 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -347,7 +356,9 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         configuration.width = max(2, Int(pointSize.width * scale / 2) * 2)
         configuration.height = max(2, Int(pointSize.height * scale / 2) * 2)
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
-        configuration.queueDepth = 3
+        // Two of these can be held at once (`heldFrame`, `lastFrame`), so
+        // ScreenCaptureKit keeps enough surfaces free to go on capturing.
+        configuration.queueDepth = 5
         // 4:2:0 is captured in the encoder's own format, so no frame is
         // converted on the way in. ScreenCaptureKit has no 4:2:2 output, so
         // that path stays BGRA and the encoder converts — measured at about
@@ -476,7 +487,7 @@ extension MacNativeScreenCapture: SCStreamOutput {
             return
         }
         heldFrame = nil
-        encoder?.encode(sampleBuffer)
+        encodeAndRefine(sampleBuffer)
     }
 
     /// The viewers caught up: encode the frame held back while they hadn't.
@@ -484,7 +495,35 @@ extension MacNativeScreenCapture: SCStreamOutput {
         outputQueue.async { [self] in
             guard let held = heldFrame, canEncode?() ?? true else { return }
             heldFrame = nil
-            encoder?.encode(held)
+            encodeAndRefine(held)
+        }
+    }
+
+    // MARK: Still-desktop refinement
+
+    /// ScreenCaptureKit only delivers a frame when something changed, so the
+    /// last frame of a burst — typing, a scroll stopping — is whatever quality
+    /// the encoder managed for it in real time, and nothing follows to improve
+    /// it: on a still desktop a soft frame stayed soft. Re-encoding that same
+    /// picture a few times once things go quiet lets the encoder spend bits on
+    /// the residual instead (measured: 470–850 KB of refinement per re-encode
+    /// of an unchanged dense frame), so the desktop settles sharp.
+    private nonisolated static let refinementDelays: [Double] = [0.12, 0.4, 1.0]
+
+    private nonisolated func encodeAndRefine(_ sampleBuffer: CMSampleBuffer) {
+        encoder?.encode(sampleBuffer)
+        lastFrame = sampleBuffer
+        refinementGeneration &+= 1
+        let generation = refinementGeneration
+        for delay in Self.refinementDelays {
+            outputQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, generation == self.refinementGeneration,
+                      let frame = self.lastFrame,
+                      // Never ahead of the viewers: a refinement that would
+                      // queue is just skipped; the next one may fit.
+                      self.canEncode?() ?? true else { return }
+                self.encoder?.encode(frame, presentationTime: CMClockGetTime(CMClockGetHostTimeClock()))
+            }
         }
     }
 

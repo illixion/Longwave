@@ -84,7 +84,10 @@ final class MacHEVCEncoder: @unchecked Sendable {
         self.chroma = chroma
     }
 
-    nonisolated func encode(_ sampleBuffer: CMSampleBuffer) {
+    /// `presentationTime` overrides the sample's own — for re-encoding a
+    /// frame already sent (`MacNativeScreenCapture`'s still-desktop
+    /// refinement), whose timestamp has to keep moving forward.
+    nonisolated func encode(_ sampleBuffer: CMSampleBuffer, presentationTime: CMTime? = nil) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -117,7 +120,7 @@ final class MacHEVCEncoder: @unchecked Sendable {
             frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
         }
 
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let pts = presentationTime ?? CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let submitted = DispatchTime.now().uptimeNanoseconds
         let status = VTCompressionSessionEncodeFrame(
             session,
@@ -213,19 +216,17 @@ final class MacHEVCEncoder: @unchecked Sendable {
     /// Without any hint at all it was 19 ms on the M2 Max.
     private nonisolated static let expectedFrameRateHint = 240
 
-    /// Two windows, as VideoToolbox takes them (bytes, seconds pairs): a
-    /// second at half again the average, so a big redraw can't burst far
-    /// above it; and a thirtieth of a second at three times the average, so
-    /// no single frame grows so large that sending it holds the link — and
-    /// every frame after it — for long. A key frame or a full-screen change
-    /// then arrives a little soft and sharpens over the next frames, which
-    /// on a desktop is a better trade than arriving late.
+    /// Any second at half again the average, so a big redraw can't burst far
+    /// above it. There used to be a second, 1/30 s window at three times the
+    /// average, to keep any one frame small; it made every key frame and
+    /// full-screen change arrive soft, and on a still desktop nothing came
+    /// after to sharpen it, so the whole picture visibly dropped in quality
+    /// every few seconds of typing. Measured: it also throttled the encoder's
+    /// refinement of an unchanged frame (follow-up frames of 10–300 KB with
+    /// it, 470–850 KB without), which `MacNativeScreenCapture` now relies on.
     private nonisolated static func dataRateLimits(bitrate: Int) -> CFArray {
         let bytesPerSecond = bitrate / 8
-        return [
-            NSNumber(value: bytesPerSecond * 3 / 2), NSNumber(value: 1),
-            NSNumber(value: bytesPerSecond * 3 / 30), NSNumber(value: 1.0 / 30),
-        ] as CFArray
+        return [NSNumber(value: bytesPerSecond * 3 / 2), NSNumber(value: 1)] as CFArray
     }
 
     nonisolated func invalidate() {
@@ -325,11 +326,15 @@ final class MacHEVCEncoder: @unchecked Sendable {
         VTSessionSetProperty(
             newSession,
             key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-            // Long: a key frame is several times a delta frame's size, so a
-            // frequent one is a frequent stall. Viewers that need one sooner
-            // (joining, or recovering from a dropped frame) ask for it.
-            value: 4.0 as CFNumber
+            // Effectively never on a schedule: a key frame re-codes the whole
+            // screen at once, and a scheduled one every few seconds was a
+            // visible drop in sharpness across the picture while typing.
+            // Everything that needs one asks for it — a joining viewer, a
+            // dropped frame, a decoder swap — and nothing is lost in between
+            // over TCP.
+            value: 3600.0 as CFNumber
         )
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 1_000_000 as CFNumber)
         if preservesAlpha {
             VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PreserveAlphaChannel, value: kCFBooleanTrue)
             VTSessionSetProperty(

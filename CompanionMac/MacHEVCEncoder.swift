@@ -159,7 +159,7 @@ final class MacHEVCEncoder: @unchecked Sendable {
         self.frameRate = frameRate
         averageEncodeMilliseconds = 0
         if let session {
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: Self.expectedFrameRateHint as CFNumber)
         }
         setLiveBitrate(bitrate)
     }
@@ -179,6 +179,14 @@ final class MacHEVCEncoder: @unchecked Sendable {
     }
 
     nonisolated var expectedFrameRate: Int { frameRate }
+
+    /// What VideoToolbox is told to expect, whatever the capture rate. The
+    /// media engine paces itself to the rate it expects, so this is mostly a
+    /// latency knob: measured per 4096×2304 frame, 15.0 → 12.5 ms on an M1 and
+    /// 11.3 → 8.9 ms on an M2 Max going from 60 to 240 (5120×2880: 22.6 → 18.6
+    /// and 16.1 → 13.1 ms), with frames the same size at the same bitrate.
+    /// Without any hint at all it was 19 ms on the M2 Max.
+    private nonisolated static let expectedFrameRateHint = 240
 
     /// Two windows, as VideoToolbox takes them (bytes, seconds pairs): a
     /// second at half again the average, so a big redraw can't burst far
@@ -288,7 +296,7 @@ final class MacHEVCEncoder: @unchecked Sendable {
             value: Self.dataRateLimits(bitrate: bitrate)
         )
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: Self.expectedFrameRateHint as CFNumber)
         VTSessionSetProperty(
             newSession,
             key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,

@@ -64,7 +64,7 @@ struct NativeStreamView: View {
     @State private var showEQ = false
     /// Mac Virtual Display-style curving for a wide desktop; off keeps it flat
     /// at every size.
-    @AppStorage("nativeCurvedScreen") private var curvedScreenEnabled = true
+    @AppStorage("nativeScreenCurvature") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
     @Environment(\.physicalMetrics) private var physicalMetrics
 
     // Pinned to the exact ideal size for one layout pass right after Screen
@@ -444,11 +444,10 @@ struct NativeStreamView: View {
 
             GeometryReader { geometry in
                 ZStack {
-                    if let curve = activeCurve {
-                        NativeCurvedScreenView(
-                            videoRenderer: screenManager.curvedVideoRenderer,
-                            curve: curve
-                        )
+                    if curvature != .off {
+                        if let curve = activeCurve {
+                            curvedDesktop(curve)
+                        }
                     } else if let displayLayer = screenManager.displayLayer {
                         MacNativeVideoView(displayLayer: displayLayer)
                             .ignoresSafeArea()
@@ -485,9 +484,11 @@ struct NativeStreamView: View {
                 .contentShape(Rectangle())
                 // Press and hold = begin click+drag lock; single tap = left click
                 // (or release a drag lock). Right click is the toolbar button.
-                .gesture(dragLockGesture)
-                .gesture(tapGesture)
-                .gesture(dragGesture)
+                // On the curved desktop each strip carries these itself, in
+                // its own coordinates — see `curvedDesktop`.
+                .gesture(dragLockGesture, including: flatInputMask)
+                .gesture(tapGesture(), including: flatInputMask)
+                .gesture(dragGesture(), including: flatInputMask)
                 // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
                 .twoHandPointerGesture(
                     isEngaged: $twoHandEngaged,
@@ -496,22 +497,18 @@ struct NativeStreamView: View {
                     onSecondaryClick: rightClickAtCursor
                 )
                 .onContinuousHover { phase in
-                    // Bluetooth-mouse / gaze pointer motion without a button
-                    // held — a DragGesture only fires while a button is down.
-                    if case .active(let location) = phase, let point = framebufferPoint(location) {
-                        lastPointerPoint = point
-                        screenManager.moveCursorAbsolute(x: point.x, y: point.y)
-                    }
+                    guard curvature == .off else { return }
+                    hover(phase)
                 }
                 .onAppear {
                     viewSize = geometry.size
-                    screenManager.setCurvedSurface(activeCurve != nil)
+                    screenManager.setCurvedSurface(curvature != .off)
                 }
                 .onChange(of: geometry.size) { _, newSize in
                     viewSize = newSize
                 }
-                .onChange(of: activeCurve != nil) { _, curved in
-                    screenManager.setCurvedSurface(curved)
+                .onChange(of: curvatureSetting) {
+                    screenManager.setCurvedSurface(curvature != .off)
                 }
             }
 
@@ -560,23 +557,68 @@ struct NativeStreamView: View {
         return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
     }
 
-    /// The curve the desktop is drawn on right now, or nil while flat.
-    private var activeCurve: NativeScreenCurve? {
-        guard curvedScreenEnabled, screenManager.streamSize.width > 0 else { return nil }
-        let rect = NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize)
-        let widthMeters = physicalMetrics.convert(rect.width, to: .meters)
-        let curve = NativeScreenCurve(
-            halfAngle: NativeScreenCurve.automaticHalfAngle(widthMeters: widthMeters),
-            contentRect: rect
-        )
-        return curve.isCurved ? curve : nil
+    private var curvature: NativeScreenCurvature {
+        NativeScreenCurvature(rawValue: curvatureSetting) ?? .standard
     }
 
-    /// A gesture location on the window plane to a stream pixel, following
-    /// the curve when there is one — see `NativeScreenCurve`.
+    /// The curve the desktop is drawn on — every size once curving is on, so
+    /// it bends continuously with the window — or nil when flat or before the
+    /// stream's size is known.
+    private var activeCurve: NativeScreenCurve? {
+        guard let meters = curvature.radiusMeters, screenManager.streamSize.width > 0 else { return nil }
+        return NativeScreenCurve(
+            contentRect: NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize),
+            radius: Double(physicalMetrics.convert(meters, from: .meters))
+        )
+    }
+
+    /// The window-wide pointer gestures run only on the flat desktop; on the
+    /// curved one they stand aside for the strips' own.
+    private var flatInputMask: GestureMask {
+        curvature == .off ? .all : .subviews
+    }
+
+    /// The desktop as angled strips of one decoded frame, bent onto
+    /// `curve`. SwiftUI does the 3D: each strip is rotated to face the
+    /// circle's centre and pushed forward to lie on it, and because each one
+    /// carries its own pointer gestures, a pinch or hover lands in that
+    /// strip's own coordinates — exact from wherever the viewer stands.
+    private func curvedDesktop(_ curve: NativeScreenCurve) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(curve.strips) { strip in
+                let toFlat: (CGPoint) -> CGPoint = { curve.flatPoint(inStrip: strip, local: $0) }
+                MacNativeSurfaceStripView(surface: screenManager.frameSurface, u: strip.u)
+                    .frame(width: strip.size.width, height: strip.size.height)
+                    .contentShape(Rectangle())
+                    .gesture(dragLockGesture)
+                    .gesture(tapGesture(toFlat))
+                    .gesture(dragGesture(toFlat))
+                    .onContinuousHover { hover($0, toFlat) }
+                    .rotation3DEffect(.radians(-strip.angle), axis: (x: 0, y: 1, z: 0))
+                    // A point in front of the plane, so the strips sit ahead
+                    // of the scroll surface at the centre too.
+                    .offset(z: strip.depth + 1)
+                    .position(strip.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The edges come forward out of the window plane; without a front
+        // margin the system clips them off.
+        .preferredWindowClippingMargins(.front, curve.sagitta + 8)
+    }
+
+    /// Bluetooth-mouse / gaze pointer motion without a button held — a
+    /// DragGesture only fires while a button is down.
+    private func hover(_ phase: HoverPhase, _ toFlat: (CGPoint) -> CGPoint = { $0 }) {
+        if case .active(let location) = phase, let point = framebufferPoint(toFlat(location)) {
+            lastPointerPoint = point
+            screenManager.moveCursorAbsolute(x: point.x, y: point.y)
+        }
+    }
+
+    /// A point on the flat picture (view coordinates) to a stream pixel.
     private func framebufferPoint(_ location: CGPoint) -> (x: UInt16, y: UInt16)? {
-        let flat = activeCurve?.texturePoint(forViewPoint: location) ?? location
-        return translator?.viewToFramebuffer(flat)
+        translator?.viewToFramebuffer(location)
     }
 
     private var desktopStatusText: String {
@@ -588,18 +630,19 @@ struct NativeStreamView: View {
 
     /// Single tap = left click (absolute) or click at the virtual cursor
     /// (trackpad), or release an active drag lock.
-    private var tapGesture: some Gesture {
+    private func tapGesture(_ toFlat: @escaping (CGPoint) -> CGPoint = { $0 }) -> some Gesture {
         SpatialTapGesture()
             .onEnded { value in
                 guard !twoHandEngaged else { return }
+                let location = toFlat(value.location)
                 if dragLocked {
                     // Lifting off the press-and-hold that *started* the lock
                     // can arrive here as a tap; that would release it instantly.
                     if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
-                    releaseLeft(at: value.location)
+                    releaseLeft(at: location)
                     dragLocked = false
                 } else {
-                    leftClick(at: value.location)
+                    leftClick(at: location)
                 }
             }
     }
@@ -613,13 +656,16 @@ struct NativeStreamView: View {
     }
 
     /// Drag moves the cursor; the left button stays down for the duration
-    /// (or, while a drag lock is held, for as long as the lock lasts).
-    private var dragGesture: some Gesture {
+    /// (or, while a drag lock is held, for as long as the lock lasts). On the
+    /// curved desktop the drag stays in the coordinates of the strip it began
+    /// on, extended flat past its edges — close for the short drags pointer
+    /// work is made of, drifting a little on a long one across the curve.
+    private func dragGesture(_ toFlat: @escaping (CGPoint) -> CGPoint = { $0 }) -> some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
                 guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute {
-                    guard let point = framebufferPoint(value.location) else { return }
+                    guard let point = framebufferPoint(toFlat(value.location)) else { return }
                     if dragLocked {
                         screenManager.sendMouseMove(x: point.x, y: point.y)
                     } else if !isDragging {
@@ -640,7 +686,7 @@ struct NativeStreamView: View {
             .onEnded { value in
                 guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute, isDragging, !dragLocked,
-                   let point = framebufferPoint(value.location) {
+                   let point = framebufferPoint(toFlat(value.location)) {
                     screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
                 }
                 isDragging = false
@@ -750,14 +796,14 @@ struct NativeStreamView: View {
         // On a curved desktop the dot sits on the curve itself, depth and
         // all, rather than on the window plane behind it.
         let surface: (point: CGPoint, depth: Double) =
-            activeCurve?.surfacePoint(forTexturePoint: flat) ?? (point: flat, depth: 0)
+            activeCurve?.surfacePoint(forFlatPoint: flat) ?? (point: flat, depth: 0)
 
         return Circle()
             .fill(.white.opacity(0.7))
             .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
             .frame(width: 12, height: 12)
             .position(surface.point)
-            .offset(z: CGFloat(surface.depth) + 1)
+            .offset(z: CGFloat(surface.depth) + 2)
             .allowsHitTesting(false)
     }
 
@@ -1028,13 +1074,16 @@ struct NativeStreamView: View {
                 }
                 .pickerStyle(.inline)
             }
-            Toggle(isOn: $curvedScreenEnabled) {
-                Label("Curve When Large", systemImage: "rectangle.portrait.arrowtriangle.2.outward")
+            Picker("Curve", selection: $curvatureSetting) {
+                ForEach(NativeScreenCurvature.allCases) { curvature in
+                    Text(curvature.title).tag(curvature.rawValue)
+                }
             }
+            .pickerStyle(.menu)
         } label: {
             Label("Display", systemImage: "display.2")
         }
-        .help("Choose which Mac desktop to show, and whether a large window curves")
+        .help("Choose which Mac desktop to show, and how much it curves around you")
     }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio

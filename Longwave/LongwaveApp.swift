@@ -57,6 +57,7 @@ struct LongwaveApp: App {
                 .trackMainWindow()
                 #if DEBUG
                 .unityControlsLayoutDemo(macNativeSessions, audioManager)
+                .nativeDesktopDemo(macNativeSessions)
                 .screenshotDemo()
                 #endif
                 #if FOVEATED_ENABLED
@@ -410,7 +411,39 @@ private struct UnityControlsLayoutDemo: ViewModifier {
     }
 }
 
+/// `-LongwaveNativeDesktopDemo -NativeDemoHost <host> -NativeDemoToken <token>`:
+/// opens a Native desktop window straight to that host at launch, without a
+/// saved connection — so the simulator can stream from the Companion running
+/// on the same Mac (`127.0.0.1`) and the desktop's presentation (the curve,
+/// letterboxing, input mapping) can be checked without a headset. The token
+/// is read from the launch arguments' defaults domain and never logged.
+private struct NativeDesktopDemo: ViewModifier {
+    let macNativeSessions: MacNativeSessionStore
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.task {
+            guard ProcessInfo.processInfo.arguments.contains("-LongwaveNativeDesktopDemo"),
+                  let host = UserDefaults.standard.string(forKey: "NativeDemoHost"),
+                  let token = UserDefaults.standard.string(forKey: "NativeDemoToken") else { return }
+            let connection = SavedConnection(hostname: host, label: "Demo Mac", connectionType: .native)
+            connection.companionToken = token
+            connection.nativeScreenEnabled = true
+            connection.nativeAudioEnabled = false
+            let (sessionID, manager) = macNativeSessions.begin(connection)
+            manager.prepare(for: connection)
+            manager.liveEnabled = true
+            manager.connect(to: connection)
+            openWindow(id: "mac-native-stream", value: sessionID)
+        }
+    }
+}
+
 private extension View {
+    func nativeDesktopDemo(_ sessions: MacNativeSessionStore) -> some View {
+        modifier(NativeDesktopDemo(macNativeSessions: sessions))
+    }
+
     func unityControlsLayoutDemo(
         _ sessions: MacNativeSessionStore,
         _ audioManager: AudioStreamManager

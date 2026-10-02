@@ -63,11 +63,11 @@ final class MacNativeStreamManager {
 
     private(set) var state: State = .disconnected(nil)
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
-    /// Where the desktop is decoded while the window shows it curved — a
-    /// RealityKit `VideoMaterial` draws from it. One for the manager's whole
-    /// life, so a reconnect needn't rebuild the material.
-    let curvedVideoRenderer = AVSampleBufferVideoRenderer()
-    /// Whether decoding goes to `curvedVideoRenderer` rather than the layer.
+    /// The decoded desktop the curved presentation's strips all show. One
+    /// for the manager's whole life, so the strips survive a reconnect.
+    let frameSurface = MacNativeFrameSurface()
+    private let surfaceDecoder = MacNativeSurfaceDecoder()
+    /// Whether decoding goes to `frameSurface` rather than the flat layer.
     private(set) var curvedSurfaceActive = false
     private(set) var streamSize: CGSize = .zero
     private(set) var title = "Native"
@@ -160,6 +160,9 @@ final class MacNativeStreamManager {
 
     init(sessionID: MacNativeSessionID? = nil) {
         self.sessionID = sessionID
+        surfaceDecoder.onFrame = { [frameSurface] pixelBuffer in
+            frameSurface.present(pixelBuffer)
+        }
         let key = sessionID.map { "nativeScreenLiveEnabled.\($0.connectionID.uuidString)" }
             ?? "nativeScreenLiveEnabled"
         self.liveEnabledKey = key
@@ -204,7 +207,7 @@ final class MacNativeStreamManager {
         displayLayer = layer
 
         let renderer = MacNativeVideoRenderer(displayLayer: layer)
-        if curvedSurfaceActive { renderer.setSink(curvedVideoRenderer) }
+        if curvedSurfaceActive { renderer.setSurfaceDecoder(surfaceDecoder) }
         self.renderer = renderer
         let client = MacNativeStreamClient(
             config: .init(
@@ -401,7 +404,8 @@ final class MacNativeStreamManager {
     func setCurvedSurface(_ curved: Bool) {
         guard curved != curvedSurfaceActive else { return }
         curvedSurfaceActive = curved
-        renderer?.setSink(curved ? curvedVideoRenderer : nil)
+        renderer?.setSurfaceDecoder(curved ? surfaceDecoder : nil)
+        if !curved { frameSurface.clear() }
     }
 
     /// Asks the host to stream another of its desktops. The host answers with

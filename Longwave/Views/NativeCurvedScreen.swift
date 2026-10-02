@@ -1,44 +1,124 @@
 #if os(visionOS)
 import SwiftUI
-import RealityKit
-import AVFoundation
+import UIKit
 
-/// How the Native desktop bends, Mac Virtual Display style: a window small
-/// enough to take in at a glance stays flat, and a wide one curves around the
-/// viewer so its edges face them instead of being seen at a grazing angle —
-/// which is what reads as fisheye stretching toward the sides of a big flat
-/// slab on the headset's optics.
-///
-/// The surface is a cylinder segment whose axis is where the viewer is
-/// assumed to sit, the screen's centre touching the window plane and its
-/// edges coming forward. The radius is chosen so a ray from the axis through
-/// the window's edge meets the screen's edge exactly. That is what lets the
-/// window's own flat gesture surface keep working: a tap lands on the window
-/// plane, and `texturePoint(forViewPoint:)` follows the same ray on to the
-/// curve to find the pixel the user was actually looking at.
+/// How strongly a Native desktop wraps around the viewer, Mac Virtual
+/// Display style. Each is a fixed radius rather than an angle, so curvature
+/// follows window size continuously: a small window is a short arc of a big
+/// circle and looks nearly flat, a wide one wraps further. Bending a wide
+/// screen toward the viewer is what keeps its edges facing them instead of
+/// being seen at a grazing angle — the fisheye look of a big flat slab.
+enum NativeScreenCurvature: String, CaseIterable, Identifiable {
+    case off, gentle, standard, wide
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "Flat"
+        case .gentle: "Gentle"
+        case .standard: "Standard"
+        case .wide: "Wide"
+        }
+    }
+
+    /// The circle the screen lies on, in metres. Off has none.
+    var radiusMeters: Double? {
+        switch self {
+        case .off: nil
+        case .gentle: 2.6
+        case .standard: 1.7
+        case .wide: 1.15
+        }
+    }
+}
+
+/// A desktop of `contentRect.width` points of arc on a circle of `radius`
+/// points, its centre touching the window plane and its edges toward the
+/// viewer. The picture keeps its full size — the arc is as long as the flat
+/// picture is wide — so the window outline is a little wider than the curve.
 struct NativeScreenCurve: Equatable {
-    /// Half the angle the screen subtends from the cylinder axis. Zero is flat.
-    let halfAngle: Double
     /// The aspect-fitted video rect inside the view, in view points.
     let contentRect: CGRect
+    let radius: Double
 
-    /// Curved at all, or close enough to flat that the plain layer is better.
-    var isCurved: Bool { halfAngle > 0.02 }
+    /// Half the angle the screen subtends at the circle's centre.
+    var halfAngle: Double { contentRect.width / (2 * radius) }
 
-    /// Cylinder radius in points.
-    var radius: Double { (contentRect.width / 2) / tan(halfAngle) }
-    /// Screen height on the curve. Shorter than the flat rect by cos(halfAngle),
-    /// so the top corners also stay inside the window's gesture surface.
-    var curvedHeight: Double { contentRect.height * cos(halfAngle) }
     /// How far the edges come toward the viewer, in points.
-    var sagitta: Double { isCurved ? radius * (1 - cos(halfAngle)) : 0 }
+    var sagitta: Double { radius * (1 - cos(halfAngle)) }
 
-    /// Mac Virtual Display's behaviour, by eye: flat up to about a metre wide,
-    /// then bending more the wider the window gets.
-    static func automaticHalfAngle(widthMeters: Double) -> Double {
-        let flatUntil = 1.1, fullAt = 3.5, maxHalfAngle = 0.5
-        let t = min(max((widthMeters - flatUntil) / (fullAt - flatUntil), 0), 1)
-        return t * maxHalfAngle
+    /// About 1.5° per strip: fine enough that the facets don't show on text,
+    /// few enough to stay cheap. A nearly flat window gets very few.
+    var stripCount: Int {
+        min(96, max(1, Int((2 * halfAngle * 180 / .pi / 1.5).rounded(.up))))
+    }
+
+    struct Strip: Identifiable {
+        let id: Int
+        /// The strip's centre over the view, and its depth in front of it.
+        let center: CGPoint
+        let depth: Double
+        /// Rotation about the vertical axis, so the strip faces the circle's
+        /// centre.
+        let angle: Double
+        let size: CGSize
+        /// The slice of the picture it shows, as a fraction of its width —
+        /// including the overlap with its neighbours, so it can run slightly
+        /// below 0 or above 1 at the ends, where Core Animation repeats the
+        /// edge pixels for those few points.
+        let u: ClosedRange<Double>
+    }
+
+    /// How far each strip reaches past its slice on either side, in points.
+    /// A strip's anti-aliased edge is partly transparent, so strips that only
+    /// met edge to edge left a hairline of the room showing between them.
+    /// Overlapping by this much — showing the same pixels, since the slice is
+    /// widened to match — hides it.
+    static let stripOverlap: Double = 2
+
+    var strips: [Strip] {
+        let count = stripCount
+        let width = contentRect.width / Double(count)
+        let padU = Self.stripOverlap / contentRect.width
+        return (0..<count).map { index in
+            let u0 = Double(index) / Double(count)
+            let u1 = Double(index + 1) / Double(count)
+            let theta = ((u0 + u1) / 2 - 0.5) * 2 * halfAngle
+            return Strip(
+                id: index,
+                center: CGPoint(x: contentRect.midX + radius * sin(theta), y: contentRect.midY),
+                depth: radius * (1 - cos(theta)),
+                angle: theta,
+                size: CGSize(width: width + 2 * Self.stripOverlap, height: contentRect.height),
+                u: (u0 - padU)...(u1 + padU)
+            )
+        }
+    }
+
+    /// A point in a strip's own (untransformed) coordinates to the point the
+    /// flat picture would have had there — what the input path maps to a
+    /// stream pixel. The system has already done the 3D hit-test through the
+    /// strip's transform, so this holds from any viewing position.
+    func flatPoint(inStrip strip: Strip, local: CGPoint) -> CGPoint {
+        let fraction = local.x / strip.size.width
+        let u = strip.u.lowerBound + fraction * (strip.u.upperBound - strip.u.lowerBound)
+        return CGPoint(
+            x: contentRect.minX + u * contentRect.width,
+            y: contentRect.minY + local.y
+        )
+    }
+
+    /// Where a point of the flat picture sits on the curve: over the view,
+    /// and its depth in front of it — for drawing something on the screen
+    /// surface itself (the trackpad cursor).
+    func surfacePoint(forFlatPoint point: CGPoint) -> (point: CGPoint, depth: Double) {
+        let u = (point.x - contentRect.minX) / contentRect.width
+        let theta = (u - 0.5) * 2 * halfAngle
+        return (
+            CGPoint(x: contentRect.midX + radius * sin(theta), y: point.y),
+            radius * (1 - cos(theta))
+        )
     }
 
     static func fittedRect(stream: CGSize, in view: CGSize) -> CGRect {
@@ -54,120 +134,52 @@ struct NativeScreenCurve: Equatable {
             height: size.height
         )
     }
-
-    /// The flat-equivalent view point for a point on the window plane: where
-    /// the ray from the cylinder axis through `viewPoint` meets the curve,
-    /// expressed in the coordinates the flat layer would have used. Identity
-    /// when the screen is flat.
-    func texturePoint(forViewPoint viewPoint: CGPoint) -> CGPoint {
-        guard isCurved else { return viewPoint }
-        let x = viewPoint.x - contentRect.midX
-        let y = viewPoint.y - contentRect.midY
-        let theta = atan(x / radius)
-        let u = 0.5 + theta / (2 * halfAngle)
-        let v = 0.5 + (y * cos(theta)) / curvedHeight
-        return CGPoint(
-            x: contentRect.minX + min(max(u, 0), 1) * contentRect.width,
-            y: contentRect.minY + min(max(v, 0), 1) * contentRect.height
-        )
-    }
-
-    /// Where a flat-equivalent view point actually sits on the curve: its
-    /// position over the window plane and its depth in front of it, in
-    /// points. The inverse of `texturePoint(forViewPoint:)`, for drawing
-    /// something on the screen surface itself (the trackpad cursor) rather
-    /// than on the plane behind it, so it lines up from any viewing position.
-    func surfacePoint(forTexturePoint point: CGPoint) -> (point: CGPoint, depth: Double) {
-        guard isCurved else { return (point, 0) }
-        let u = (point.x - contentRect.minX) / contentRect.width
-        let v = (point.y - contentRect.minY) / contentRect.height
-        let theta = (u - 0.5) * 2 * halfAngle
-        return (
-            CGPoint(
-                x: contentRect.midX + radius * sin(theta),
-                y: contentRect.midY + (v - 0.5) * curvedHeight
-            ),
-            radius * (1 - cos(theta))
-        )
-    }
-
-    /// The curve as a mesh, in metres, centred on the origin with its centre
-    /// line at z = 0 and the edges toward +z.
-    func mesh(metersPerPoint: Double) throws -> MeshResource {
-        let columns = 96
-        let r = radius * metersPerPoint
-        let halfHeight = Float(curvedHeight * metersPerPoint / 2)
-        var positions: [SIMD3<Float>] = []
-        var normals: [SIMD3<Float>] = []
-        var uvs: [SIMD2<Float>] = []
-        positions.reserveCapacity((columns + 1) * 2)
-        for column in 0...columns {
-            let fraction = Double(column) / Double(columns)
-            let theta = -halfAngle + 2 * halfAngle * fraction
-            let x = Float(r * sin(theta))
-            let z = Float(r * (1 - cos(theta)))
-            // Toward the axis, i.e. the viewer.
-            let normal = SIMD3<Float>(Float(-sin(theta)), 0, Float(cos(theta)))
-            positions.append([x, -halfHeight, z])
-            positions.append([x, halfHeight, z])
-            normals.append(normal)
-            normals.append(normal)
-            uvs.append([Float(fraction), 0])
-            uvs.append([Float(fraction), 1])
-        }
-        var indices: [UInt32] = []
-        indices.reserveCapacity(columns * 6)
-        for column in 0..<UInt32(columns) {
-            let bottomLeft = column * 2, topLeft = bottomLeft + 1
-            let bottomRight = bottomLeft + 2, topRight = bottomLeft + 3
-            indices += [bottomLeft, bottomRight, topRight, bottomLeft, topRight, topLeft]
-        }
-        var descriptor = MeshDescriptor(name: "NativeCurvedScreen")
-        descriptor.positions = MeshBuffers.Positions(positions)
-        descriptor.normals = MeshBuffers.Normals(normals)
-        descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
-        descriptor.primitives = .triangles(indices)
-        return try MeshResource.generate(from: [descriptor])
-    }
 }
 
-/// The desktop stream drawn on the curve. Decoding goes to `videoRenderer`
-/// (see `MacNativeStreamManager.setCurvedSurface`) rather than the flat
-/// display layer, so only one of the two is ever fed.
-struct NativeCurvedScreenView: View {
-    let videoRenderer: AVSampleBufferVideoRenderer
-    let curve: NativeScreenCurve
+/// One strip of the curved desktop: a plain layer showing its slice of the
+/// shared decoded frame. Ordinary window content, so the system renders it
+/// like the flat desktop — not as 3D material, which it foveates.
+struct MacNativeSurfaceStripView: UIViewRepresentable {
+    let surface: MacNativeFrameSurface
+    let u: ClosedRange<Double>
 
-    @Environment(\.physicalMetrics) private var physicalMetrics
-    @State private var screen = Entity()
-    @State private var builtCurve: NativeScreenCurve?
-
-    var body: some View {
-        RealityView { content in
-            screen.components.set(ModelComponent(
-                mesh: .generatePlane(width: 0.01, height: 0.01),
-                materials: [VideoMaterial(videoRenderer: videoRenderer)]
-            ))
-            content.add(screen)
-        } update: { content in
-            // The view's centre on the window plane, in the content's space —
-            // RealityView's origin is not documented to sit there.
-            let center = content.convert(
-                Point3D(x: curve.contentRect.midX, y: curve.contentRect.midY, z: 0),
-                from: .local,
-                to: .scene
-            )
-            screen.position = SIMD3<Float>(center)
-            guard builtCurve != curve else { return }
-            let metersPerPoint = physicalMetrics.convert(1, to: .meters)
-            guard let mesh = try? curve.mesh(metersPerPoint: metersPerPoint) else { return }
-            screen.components[ModelComponent.self]?.mesh = mesh
-            Task { @MainActor in builtCurve = curve }
+    func makeUIView(context: Context) -> StripView {
+        let view = StripView()
+        view.layer.contentsRect = Self.rect(u)
+        surface.attach(view.layer)
+        view.detach = { [weak surface, weak view] in
+            if let view { surface?.detach(view.layer) }
         }
-        // The edges come forward out of the window plane; without a front
-        // margin the system clips them off.
-        .preferredWindowClippingMargins(.front, curve.sagitta + 8)
-        .allowsHitTesting(false)
+        return view
+    }
+
+    func updateUIView(_ view: StripView, context: Context) {
+        view.layer.contentsRect = Self.rect(u)
+    }
+
+    static func dismantleUIView(_ view: StripView, coordinator: ()) {
+        view.detach?()
+    }
+
+    private static func rect(_ u: ClosedRange<Double>) -> CGRect {
+        CGRect(x: u.lowerBound, y: 0, width: u.upperBound - u.lowerBound, height: 1)
+    }
+
+    final class StripView: UIView {
+        var detach: (() -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isOpaque = true
+            backgroundColor = .black
+            layer.contentsGravity = .resize
+            layer.minificationFilter = .trilinear
+            layer.magnificationFilter = .linear
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
     }
 }
 #endif

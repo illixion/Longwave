@@ -3,30 +3,32 @@ import AVFoundation
 import CoreMedia
 
 /// Reconstructs the exact alpha-bearing HEVC format sent by the Mac and feeds
-/// compressed samples to an `AVSampleBufferVideoRenderer` for hardware
-/// decoding — the display layer's own, or a standalone one a RealityKit
-/// `VideoMaterial` draws (the curved desktop surface).
+/// compressed samples to the display layer for hardware decoding — or, for
+/// the curved desktop, to a `MacNativeSurfaceDecoder` whose frames many
+/// angled strips share.
 ///
 /// Fed straight from the stream client's receive queue rather than hopping
 /// to the main thread per frame: the main thread is also running the
 /// pointer's hover and drag handlers, and every frame queued behind them was
 /// up to a display refresh of extra latency. Nothing here touches UI, and the
-/// lock keeps a sink swap (main thread) from interleaving with an enqueue.
+/// lock keeps a decoder swap (main thread) from interleaving with an enqueue.
 nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
     var onFormat: (@Sendable (CGSize) -> Void)?
     var onFirstFrame: (@Sendable () -> Void)?
     var onError: (@Sendable (String) -> Void)?
-    /// The sink changed, so the next frames are useless until a key frame —
+    /// The decoder changed, so the next frames are useless until a key frame —
     /// the owner asks the host for one instead of waiting out the interval.
     var onKeyFrameNeeded: (@Sendable () -> Void)?
 
     let displayLayer: AVSampleBufferDisplayLayer
 
     private let lock = NSLock()
-    private var sink: AVSampleBufferVideoRenderer
+    private let sink: AVSampleBufferVideoRenderer
+    /// When set, frames decode here instead of in the display layer.
+    private var surfaceDecoder: MacNativeSurfaceDecoder?
     private var formatDescription: CMVideoFormatDescription?
     private var hasDisplayedFrame = false
-    /// Set when the sink changes: a fresh decoder can't use delta frames
+    /// Set when the decoder changes: a fresh one can't use delta frames
     /// predicted from pictures it never saw.
     private var awaitingKeyFrame = false
 
@@ -35,20 +37,22 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         self.sink = displayLayer.sampleBufferRenderer
     }
 
-    /// Routes decoding to `renderer`, or back to the display layer with nil.
-    func setSink(_ renderer: AVSampleBufferVideoRenderer?) {
-        let target = renderer ?? displayLayer.sampleBufferRenderer
+    /// Routes decoding to `decoder`, or back to the display layer with nil.
+    func setSurfaceDecoder(_ decoder: MacNativeSurfaceDecoder?) {
         lock.lock()
-        guard target !== sink else {
+        guard decoder !== surfaceDecoder else {
             lock.unlock()
             return
         }
-        let previous = sink
-        sink = target
+        let previous = surfaceDecoder
+        surfaceDecoder = decoder
         awaitingKeyFrame = formatDescription != nil
         let wantsKeyFrame = awaitingKeyFrame
+        previous?.invalidate()
         lock.unlock()
-        previous.flush(removingDisplayedImage: true, completionHandler: nil)
+        if decoder != nil {
+            sink.flush(removingDisplayedImage: true, completionHandler: nil)
+        }
         if wantsKeyFrame { onKeyFrameNeeded?() }
     }
 
@@ -76,6 +80,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         formatDescription = description
         hasDisplayedFrame = false
         awaitingKeyFrame = false
+        surfaceDecoder?.invalidate()
         let sink = sink
         lock.unlock()
         sink.flush()
@@ -185,7 +190,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             awaitingKeyFrame = false
         }
         let sampleBufferRenderer = sink
-        if sampleBufferRenderer.status == .failed {
+        if surfaceDecoder == nil, sampleBufferRenderer.status == .failed {
             let message = sampleBufferRenderer.error?.localizedDescription
                 ?? "unknown display-layer error"
             sampleBufferRenderer.flush()
@@ -262,7 +267,11 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             }
         }
 
-        sampleBufferRenderer.enqueue(sampleBuffer)
+        if let surfaceDecoder {
+            surfaceDecoder.decode(sampleBuffer)
+        } else {
+            sampleBufferRenderer.enqueue(sampleBuffer)
+        }
         if !hasDisplayedFrame {
             hasDisplayedFrame = true
             onFirstFrame?()

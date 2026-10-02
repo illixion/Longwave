@@ -64,7 +64,7 @@ struct NativeStreamView: View {
     @State private var showEQ = false
     /// Mac Virtual Display-style curving for a wide desktop; off keeps it flat
     /// at every size.
-    @AppStorage("nativeScreenCurvature") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
+    @AppStorage("nativeScreenCurvature.v2") private var curvatureSetting = NativeScreenCurvature.off.rawValue
     @Environment(\.physicalMetrics) private var physicalMetrics
 
     // Pinned to the exact ideal size for one layout pass right after Screen

@@ -220,6 +220,12 @@ final class MacHEVCEncoder: @unchecked Sendable {
         // sized to leave the link the moment it is done. Not every encoder
         // offers it for HEVC, and asking where it isn't fails creation
         // outright, hence the plain-hardware step before software.
+        //
+        // And it has to actually be on the media engine: asked for low-latency
+        // HEVC 4:2:2, VideoToolbox hands back a *software* encoder even with
+        // hardware required — measured at 35–50 ms a frame on an M2 Max, most
+        // of the stream's lag. So a low-latency session that isn't hardware is
+        // thrown away, not kept.
         var newSession = Self.makeSession(
             width: width,
             height: height,
@@ -227,6 +233,10 @@ final class MacHEVCEncoder: @unchecked Sendable {
             requireHardware: true,
             lowLatency: !preservesAlpha
         )
+        if let lowLatencySession = newSession, !Self.isHardwareAccelerated(lowLatencySession) {
+            VTCompressionSessionInvalidate(lowLatencySession)
+            newSession = nil
+        }
         lowLatencyRateControl = newSession != nil && !preservesAlpha
         if newSession == nil {
             newSession = Self.makeSession(

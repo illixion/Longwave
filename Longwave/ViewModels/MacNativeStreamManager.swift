@@ -269,13 +269,37 @@ final class MacNativeStreamManager {
     /// back on (in the same Native window) can reconnect without needing
     /// the connection list again.
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         teardown()
+    }
+
+    /// The session dropped without anyone asking it to — the Mac ended it, or
+    /// the link went away. Try again while this window still wants it: after
+    /// 1, 2, 4, then every 8 seconds. Left alone, a dropped session sat on its
+    /// last frame until the window was reopened.
+    @ObservationIgnored private var reconnectTask: Task<Void, Never>?
+    @ObservationIgnored private var reconnectAttempt = 0
+
+    private func scheduleReconnect() {
+        guard reconnectTask == nil, let connection else { return }
+        let delay = min(8, 1 << min(reconnectAttempt, 3))
+        reconnectAttempt += 1
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            guard case .disconnected = self.state, self.liveEnabled || self.unityEnabled else { return }
+            self.connect(to: connection)
+        }
     }
 
     /// Full teardown and forgets the target — called when the Native window
     /// is explicitly closed, so a stale target doesn't leak into the next
     /// session and Screen doesn't try to resume on a later relaunch.
     func forget() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         teardown()
         for session in windowSessions.values {
             session.renderer.reset()
@@ -607,6 +631,7 @@ final class MacNativeStreamManager {
             streamSize = size
         case .firstFrame:
             state = .streaming
+            reconnectAttempt = 0
         case .mouseAvailability(let availability):
             mouseAvailability = Self.mapAvailability(availability)
         case .keyboardAvailability(let availability):
@@ -634,6 +659,7 @@ final class MacNativeStreamManager {
             state = .disconnected(message)
             activeConnectionID = nil
             client = nil
+            scheduleReconnect()
         }
     }
 

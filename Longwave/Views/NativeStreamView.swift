@@ -472,6 +472,9 @@ struct NativeStreamView: View {
                         }
                         .padding(24)
                         .glassBackgroundEffect()
+                        // In front of the curve's forward edges, or a dropped
+                        // session showed only as a frozen frame.
+                        .offset(z: (activeCurve?.sagitta ?? 0) + 8)
                     }
                 }
                 .overlay {
@@ -664,6 +667,11 @@ struct NativeStreamView: View {
     private var desktopStatusText: String {
         if screenManager.state == .connected {
             return "Waiting for the first frame…"
+        }
+        if case .disconnected = screenManager.state, screenManager.liveEnabled {
+            // The manager retries on its own; say so, so the notice doesn't
+            // read as the end of the session.
+            return screenManager.state.statusText + " Reconnecting…"
         }
         return screenManager.state.statusText
     }

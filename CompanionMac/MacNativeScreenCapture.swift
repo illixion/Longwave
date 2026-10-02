@@ -62,6 +62,16 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// companion's virtual display, which may not have been promoted to main
     /// yet when capture starts. `nil` follows `CGMainDisplayID()`.
     private let preferredDisplayID: CGDirectDisplayID?
+    /// Capture and encode rate. Starts at what the display refreshes at, up
+    /// to the headset's 120 Hz, and steps down to 60 if the encoder can't
+    /// keep each frame inside its interval (see `checkEncoderKeepsUp`).
+    private var frameRate = 60
+    private var slowEncoderChecks = 0
+    private var lastSessionSize: (width: Int, height: Int)?
+
+    /// Frames slower than this to encode, sustained, mean 120 fps is costing
+    /// latency instead of saving it: 8.3 ms is the whole interval.
+    private nonisolated static let encodeBudgetAt120 = 7.0
 
     nonisolated init(chroma: MacHEVCEncoder.Chroma = .yuv420, displayID: CGDirectDisplayID? = nil) {
         self.chroma = chroma
@@ -76,11 +86,16 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let display = try await Self.captureDisplay(preferring: preferredDisplayID)
         guard myGeneration == generation else { return }
 
+        frameRate = Self.frameRate(for: display.displayID)
+        slowEncoderChecks = 0
         let filter = Self.makeFilter(display: display)
-        let (configuration, pixelScale) = Self.makeConfiguration(display: display, filter: filter)
+        let (configuration, pixelScale) = Self.makeConfiguration(
+            display: display, filter: filter, frameRate: frameRate
+        )
         // Opaque full display: no alpha layer to spend bits or decode cycles on.
         let encoder = MacHEVCEncoder(
-            bitrate: Self.bitrate(for: configuration),
+            bitrate: Self.bitrate(for: configuration, frameRate: frameRate),
+            frameRate: frameRate,
             preservesAlpha: false,
             chroma: chroma
         )
@@ -94,11 +109,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             self?.onError?(message)
         }
         encoder.onSessionReady = { [weak self, weak encoder] width, height in
-            guard let encoder else { return }
-            let chroma = encoder.chromaDescription
-            let engine = encoder.usingHardwareEncoder ? "hardware" : "software"
-            let rateControl = encoder.lowLatencyRateControl ? ", low-latency" : ""
-            self?.onVideoSummary?("\(width)×\(height) HEVC \(chroma), \(engine) encode\(rateControl)")
+            guard let self, let encoder else { return }
+            Task { @MainActor in
+                self.lastSessionSize = (width, height)
+                self.publishSummary(encoder)
+            }
         }
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
@@ -138,6 +153,52 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         display = nil
         encoder?.invalidate()
         encoder = nil
+    }
+
+    private func publishSummary(_ encoder: MacHEVCEncoder) {
+        guard let size = lastSessionSize else { return }
+        let engine = encoder.usingHardwareEncoder ? "hardware" : "software"
+        let rateControl = encoder.lowLatencyRateControl ? ", low-latency" : ""
+        onVideoSummary?(
+            "\(size.width)×\(size.height) HEVC \(encoder.chromaDescription) at \(encoder.expectedFrameRate) fps, "
+                + "\(engine) encode\(rateControl)"
+        )
+    }
+
+    /// The display's own refresh rate, capped at the headset's 120 Hz. A
+    /// virtual display is created at 120; a 60 Hz monitor can't produce more
+    /// than 60 frames however fast it is captured, and telling the encoder to
+    /// expect 120 would only halve its per-frame bit budget.
+    private nonisolated static func frameRate(for displayID: CGDirectDisplayID) -> Int {
+        let refresh = CGDisplayCopyDisplayMode(displayID)?.refreshRate ?? 0
+        // Built-in panels report 0 (variable refresh); ProMotion ones go to 120.
+        let rate = refresh > 0 ? refresh : (CGDisplayIsBuiltin(displayID) != 0 ? 120 : 60)
+        return rate >= 100 ? 120 : 60
+    }
+
+    /// At 120 fps every frame has 8.3 ms to get through the encoder. If it
+    /// keeps taking longer, frames back up inside VideoToolbox and the stream
+    /// lags further behind the faster it runs — so step down to 60, which is
+    /// slower but current. Two checks in a row, so one heavy key frame or a
+    /// burst of redraw doesn't trip it.
+    private func checkEncoderKeepsUp() async {
+        guard frameRate > 60, let stream, let display, let encoder else { return }
+        guard encoder.averageEncodeMilliseconds > Self.encodeBudgetAt120 else {
+            slowEncoderChecks = 0
+            return
+        }
+        slowEncoderChecks += 1
+        guard slowEncoderChecks >= 2 else { return }
+        let filter = Self.makeFilter(display: display)
+        let (configuration, _) = Self.makeConfiguration(display: display, filter: filter, frameRate: 60)
+        do {
+            try await stream.updateConfiguration(configuration)
+            frameRate = 60
+            encoder.setFrameRate(60, bitrate: Self.bitrate(for: configuration, frameRate: 60))
+            publishSummary(encoder)
+        } catch {
+            onError?("Could not lower the capture rate: \(error.localizedDescription)")
+        }
     }
 
     /// Everything on the display, nothing excluded — including the companion's
@@ -197,7 +258,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// stream never adopted.
     private nonisolated static func makeConfiguration(
         display: SCDisplay,
-        filter: SCContentFilter
+        filter: SCContentFilter,
+        frameRate: Int
     ) -> (configuration: SCStreamConfiguration, pixelScale: CGFloat) {
         let configuration = SCStreamConfiguration()
         let pointSize = CGSize(width: CGFloat(display.width), height: CGFloat(display.height))
@@ -211,7 +273,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         // Even dimensions for the encoder's 4:2:0 chroma.
         configuration.width = max(2, Int(pointSize.width * scale / 2) * 2)
         configuration.height = max(2, Int(pointSize.height * scale / 2) * 2)
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         // The whole display covers every pixel, so there is no background to
@@ -230,9 +292,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// Retina buys sharper pixels instead of the same bitrate spread over four
     /// times as many of them. Floored at what the old point-sized stream got,
     /// so no display comes out of this worse than it went in.
-    private nonisolated static func bitrate(for configuration: SCStreamConfiguration) -> Int {
+    private nonisolated static func bitrate(for configuration: SCStreamConfiguration, frameRate: Int) -> Int {
         let pixelArea = Double(configuration.width * configuration.height)
-        return Int(max(24_000_000, min(40_000_000, pixelArea * 6)))
+        let at60 = max(24_000_000, min(40_000_000, pixelArea * 6))
+        // Twice the frames, each predicted from a picture half as old: deltas
+        // shrink, so half again the bitrate keeps per-frame quality.
+        return Int(frameRate > 60 ? min(60_000_000, at60 * 1.5) : at60)
     }
 
     /// The filter is the whole display and never needs rebuilding for a window
@@ -247,6 +312,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
                 await self.refreshDisplay()
+                await self.checkEncoderKeepsUp()
             }
         }
     }
@@ -266,12 +332,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 return
             }
             let filter = Self.makeFilter(display: refreshed)
-            let (configuration, scale) = Self.makeConfiguration(display: refreshed, filter: filter)
+            let (configuration, scale) = Self.makeConfiguration(
+                display: refreshed, filter: filter, frameRate: frameRate
+            )
             try await stream.updateContentFilter(filter)
             try await stream.updateConfiguration(configuration)
             // The new size makes the encoder open a fresh session; give it the
             // bitrate for the new area rather than the one it was built with.
-            encoder?.setBitrate(Self.bitrate(for: configuration))
+            encoder?.setBitrate(Self.bitrate(for: configuration, frameRate: frameRate))
             self.display = refreshed
             self.pixelScale = scale
             onDisplayGeometry?(refreshed.frame, scale)

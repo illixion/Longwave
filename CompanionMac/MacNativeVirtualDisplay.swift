@@ -25,7 +25,9 @@ final class MacNativeVirtualDisplay {
         /// Desktop size in points. The display is always HiDPI, so the pixel
         /// canvas is twice this; WindowServer adds the 1x variants itself.
         var pointSize: CGSize
-        var refreshRate: Double = 60
+        /// The headset's own top rate. A 60 Hz mode is offered beside it, so
+        /// the display still comes up if WindowServer refuses 120.
+        var refreshRate: Double = 120
         /// Disconnect every physical display while this one exists.
         var exclusive: Bool
     }
@@ -96,7 +98,13 @@ final class MacNativeVirtualDisplay {
 
         let settings = try Self.instance(of: "CGVirtualDisplaySettings")
         settings.setValue(NSNumber(value: 1), forKey: "hiDPI")
-        settings.setValue([try Self.mode(configuration)], forKey: "modes")
+        var modes = [try Self.mode(configuration)]
+        if configuration.refreshRate != 60 {
+            var fallback = configuration
+            fallback.refreshRate = 60
+            modes.append(try Self.mode(fallback))
+        }
+        settings.setValue(modes, forKey: "modes")
         guard Self.apply(settings, to: display) else {
             self.display = nil
             throw Error.settingsRejected

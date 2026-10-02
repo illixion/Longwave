@@ -42,7 +42,12 @@ final class MacHEVCEncoder: @unchecked Sendable {
     nonisolated(unsafe) var onSessionReady: (@Sendable (Int, Int) -> Void)?
 
     private nonisolated(unsafe) var bitrate: Int
-    private let frameRate: Int
+    private nonisolated(unsafe) var frameRate: Int
+    /// Smoothed time from handing a frame to VideoToolbox to getting it back
+    /// encoded. What decides whether a frame rate is sustainable: past the
+    /// frame interval, frames queue inside the encoder and each one is later
+    /// than the last.
+    private(set) nonisolated(unsafe) var averageEncodeMilliseconds: Double = 0
     private let preservesAlpha: Bool
     private let chroma: Chroma
     /// Whether the live session is actually on the media engine. False only
@@ -105,6 +110,7 @@ final class MacHEVCEncoder: @unchecked Sendable {
         }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let submitted = DispatchTime.now().uptimeNanoseconds
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
@@ -114,6 +120,10 @@ final class MacHEVCEncoder: @unchecked Sendable {
             infoFlagsOut: nil
         ) { [weak self] status, _, encodedBuffer in
             guard let self else { return }
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- submitted) / 1_000_000
+            self.averageEncodeMilliseconds = self.averageEncodeMilliseconds == 0
+                ? elapsed
+                : self.averageEncodeMilliseconds * 0.95 + elapsed * 0.05
             guard status == noErr, let encodedBuffer else {
                 self.onError?("HEVC-alpha encode callback failed (\(status))")
                 return
@@ -142,6 +152,24 @@ final class MacHEVCEncoder: @unchecked Sendable {
     nonisolated func setBitrate(_ bitrate: Int) {
         self.bitrate = bitrate
     }
+
+    /// Retunes a live session for a new capture rate — the rate controller
+    /// budgets bits per frame from it.
+    nonisolated func setFrameRate(_ frameRate: Int, bitrate: Int) {
+        self.frameRate = frameRate
+        self.bitrate = bitrate
+        averageEncodeMilliseconds = 0
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_DataRateLimits,
+            value: [NSNumber(value: bitrate * 3 / 2 / 8), NSNumber(value: 1)] as CFArray
+        )
+    }
+
+    nonisolated var expectedFrameRate: Int { frameRate }
 
     nonisolated func invalidate() {
         if let session {

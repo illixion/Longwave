@@ -179,7 +179,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
 
         let filter = Self.makeFilter(display: display)
         let (configuration, pixelScale) = Self.makeConfiguration(
-            display: display, filter: filter, frameRate: frameRate
+            display: display, filter: filter, frameRate: frameRate, chroma: chroma
         )
         currentBitrate = 0
         retarget(for: configuration)
@@ -316,7 +316,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private nonisolated static func makeConfiguration(
         display: SCDisplay,
         filter: SCContentFilter,
-        frameRate: Int
+        frameRate: Int,
+        chroma: MacHEVCEncoder.Chroma
     ) -> (configuration: SCStreamConfiguration, pixelScale: CGFloat) {
         let configuration = SCStreamConfiguration()
         let pointSize = CGSize(width: CGFloat(display.width), height: CGFloat(display.height))
@@ -332,7 +333,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         configuration.height = max(2, Int(pointSize.height * scale / 2) * 2)
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
         configuration.queueDepth = 3
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        // 4:2:0 is captured in the encoder's own format, so no frame is
+        // converted on the way in. ScreenCaptureKit has no 4:2:2 output, so
+        // that path stays BGRA and the encoder converts — measured at about
+        // 20 ms a frame on a 4K-wide desktop, most of the encode time.
+        configuration.pixelFormat = chroma == .yuv420
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            : kCVPixelFormatType_32BGRA
+        configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         // The whole display covers every pixel, so there is no background to
         // show through and no `backgroundColor` to keep alive for the stream's
         // lifetime (ScreenCaptureKit reads that CGColor back later without
@@ -392,7 +400,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             }
             let filter = Self.makeFilter(display: refreshed)
             let (configuration, scale) = Self.makeConfiguration(
-                display: refreshed, filter: filter, frameRate: frameRate
+                display: refreshed, filter: filter, frameRate: frameRate, chroma: chroma
             )
             try await stream.updateContentFilter(filter)
             try await stream.updateConfiguration(configuration)

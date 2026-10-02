@@ -34,6 +34,30 @@ final class MacNativeStreamingController {
     private static let virtualDisplayPresetKey = "macNativeVirtualDisplayPreset"
     private static let virtualDisplayExclusiveKey = "macNativeVirtualDisplayExclusive"
     private static let bitrateCeilingKey = "macNativeBitrateMbps"
+    private static let allow422Key = "macNativeAllow422"
+
+    /// Send 4:2:2 10-bit colour to viewers whose hardware decodes it. Off by
+    /// default: ScreenCaptureKit can't capture 4:2:2, so every frame is
+    /// converted before encoding, which measured ~20 ms a frame on a 4K-wide
+    /// desktop. 4:2:0 is captured in the encoder's own format with no
+    /// conversion; on a high-resolution virtual display the chroma it gives up
+    /// costs little.
+    var allow422: Bool {
+        get {
+            access(keyPath: \.allow422)
+            return UserDefaults.standard.bool(forKey: Self.allow422Key)
+        }
+        set {
+            withMutation(keyPath: \.allow422) {
+                UserDefaults.standard.set(newValue, forKey: Self.allow422Key)
+            }
+            applyDesktopChromaChange()
+        }
+    }
+
+    private var wantedChroma: MacHEVCEncoder.Chroma {
+        allow422 && viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
+    }
 
     /// The desktop stream's bitrate in Mbps, or 0 for automatic (scaled to
     /// the display's pixel count and frame rate). Either way the stream backs
@@ -622,7 +646,7 @@ final class MacNativeStreamingController {
         // the capture down is a separate hop, so restarting here could race it
         // and leave a capture running for nobody.
         guard !connectedDeviceNames.isEmpty else { return }
-        let wanted: MacHEVCEncoder.Chroma = viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
+        let wanted = wantedChroma
         guard capture != nil, wanted != captureChroma else { return }
         stopCapture()
         startCapture()
@@ -645,7 +669,7 @@ final class MacNativeStreamingController {
     private func startCapture() {
         captureGeneration += 1
         let generation = captureGeneration
-        let chroma: MacHEVCEncoder.Chroma = viewersDecodeHEVC422 ? .yuv422_10 : .yuv420
+        let chroma = wantedChroma
         captureChroma = chroma
 
         // The virtual display comes first: it has to exist (and be online)

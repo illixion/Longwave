@@ -118,7 +118,10 @@ struct NativePane: View {
                             Text("\(mbps) Mbps").tag(mbps)
                         }
                     }
-                    .help("How many bits the desktop stream may spend. Automatic scales with the display's size and frame rate, up to 150 Mbps at 120 fps.")
+                    .help("How many bits the desktop stream may spend. Automatic scales with the display's size, 30–80 Mbps.")
+
+                    Toggle("4:2:2 colour", isOn: $controller.macNativeStreaming.allow422)
+                        .help("Sharper coloured text on headsets that decode it in hardware, at the cost of converting every frame before encoding — about 20 ms of extra latency on a 4K-wide desktop. Off streams 4:2:0, captured with no conversion.")
                 } footer: {
                     Text("Higher keeps text sharp while scrolling and dragging windows. Whatever is set, the stream lowers its bitrate when Wi-Fi can't keep up and climbs back once it can, so a high setting costs sharpness rather than lag on a weak link. The status below shows the rate in use.")
                 }

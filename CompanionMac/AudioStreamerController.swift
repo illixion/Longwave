@@ -135,21 +135,62 @@ final class AudioStreamerController {
     /// The last pairing's outcome, for the window.
     private(set) var pairingStatus: String?
 
+    // A pairing request is free to make — the protocol is public, and a tool
+    // that runs it correctly reaches the prompt — so prompts are rationed:
+    // one at a time, `pairingGap` apart, at most `pairingsPerHour`, and a
+    // decline pauses all requests for a while, doubling each time.
+    private static let pairingGap: Duration = .seconds(20)
+    private static let pairingsPerHour = 5
+    private static let firstDeclinePause: Duration = .seconds(120)
+    private static let maxDeclinePause: Duration = .seconds(3600)
+    private var promptTimes: [ContinuousClock.Instant] = []
+    private var lastPairingEnded: ContinuousClock.Instant?
+    private var pausedUntil: ContinuousClock.Instant?
+    private var declinePause = AudioStreamerController.firstDeclinePause
+
     private func answerPairRequest(_ request: CompanionPresence.PairRequest) {
+        let now = ContinuousClock.now
         guard pairing == nil else { return }
+        if let pausedUntil, now < pausedUntil { return }
+        if let lastPairingEnded, now - lastPairingEnded < Self.pairingGap { return }
+        promptTimes.removeAll { now - $0 > .seconds(3600) }
+        guard promptTimes.count < Self.pairingsPerHour else {
+            pairingStatus = "Too many pairing requests; ignoring them for now."
+            return
+        }
         let server = PairingServer(context: .init(
             headsetID: request.headsetID, headsetName: request.name,
             macID: presence.macID, macName: presence.macName, token: token
         ))
-        server.onFinish = { [weak self] paired in
-            self?.pairing = nil
-            self?.pairingStatus = paired ? "Paired “\(request.name)”." : nil
+        server.onFinish = { [weak self] outcome in
+            self?.pairingFinished(outcome, name: request.name)
         }
         do {
             try server.start()
             pairing = server
+            promptTimes.append(now)
         } catch {
             pairingStatus = "Couldn't answer a pairing request: \(error.localizedDescription)"
+        }
+    }
+
+    private func pairingFinished(_ outcome: PairingServer.Outcome, name: String) {
+        pairing = nil
+        let now = ContinuousClock.now
+        lastPairingEnded = now
+        switch outcome {
+        case .paired:
+            pairingStatus = "Paired “\(name)”."
+            declinePause = Self.firstDeclinePause
+        case .declined:
+            pausedUntil = now + declinePause
+            pairingStatus = "Declined; ignoring pairing requests for \(Int(declinePause.components.seconds / 60)) min."
+            declinePause = min(declinePause * 2, Self.maxDeclinePause)
+        case .silenced:
+            pausedUntil = now + Self.maxDeclinePause
+            pairingStatus = "Ignoring pairing requests for an hour."
+        case .abandoned:
+            break
         }
     }
 

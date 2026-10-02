@@ -49,6 +49,8 @@ final class MacHEVCEncoder: @unchecked Sendable {
     /// where no hardware HEVC encoder exists at all (an Intel Mac without
     /// one); everything Apple silicon reports true.
     private(set) nonisolated(unsafe) var usingHardwareEncoder = false
+    /// Whether the live session took low-latency rate control.
+    private(set) nonisolated(unsafe) var lowLatencyRateControl = false
     private nonisolated(unsafe) var session: VTCompressionSession?
     private nonisolated(unsafe) var sessionWidth = 0
     private nonisolated(unsafe) var sessionHeight = 0
@@ -160,12 +162,28 @@ final class MacHEVCEncoder: @unchecked Sendable {
         // difference between a fixed-function block and a hot CPU. The
         // unrequired retry exists only for a Mac with no hardware HEVC encoder
         // to give — better a software stream than no stream.
+        //
+        // Low-latency rate control comes first of all: it is the mode built
+        // for conferencing — no frame held back for lookahead, each frame
+        // sized to leave the link the moment it is done. Not every encoder
+        // offers it for HEVC, and asking where it isn't fails creation
+        // outright, hence the plain-hardware step before software.
         var newSession = Self.makeSession(
             width: width,
             height: height,
             codec: codec,
-            requireHardware: true
+            requireHardware: true,
+            lowLatency: !preservesAlpha
         )
+        lowLatencyRateControl = newSession != nil && !preservesAlpha
+        if newSession == nil {
+            newSession = Self.makeSession(
+                width: width,
+                height: height,
+                codec: codec,
+                requireHardware: true
+            )
+        }
         if newSession == nil {
             newSession = Self.makeSession(
                 width: width,
@@ -191,12 +209,31 @@ final class MacHEVCEncoder: @unchecked Sendable {
 
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        // Every frame out as soon as it is encoded: a remote desktop has no
+        // use for the encoder's freedom to sit on frames for a better guess.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
+        VTSessionSetProperty(
+            newSession,
+            key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+            value: kCFBooleanTrue
+        )
+        // Average bitrate alone lets a big redraw (a window opening, a page
+        // scrolling) burst far above it, and on Wi-Fi a burst is queueing
+        // delay. Cap any one second at half again the average.
+        VTSessionSetProperty(
+            newSession,
+            key: kVTCompressionPropertyKey_DataRateLimits,
+            value: [NSNumber(value: bitrate * 3 / 2 / 8), NSNumber(value: 1)] as CFArray
+        )
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: frameRate as CFNumber)
         VTSessionSetProperty(
             newSession,
             key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-            value: 1.0 as CFNumber
+            // Long: a key frame is several times a delta frame's size, so a
+            // frequent one is a frequent stall. Viewers that need one sooner
+            // (joining, or recovering from a dropped frame) ask for it.
+            value: 4.0 as CFNumber
         )
         if preservesAlpha {
             VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PreserveAlphaChannel, value: kCFBooleanTrue)
@@ -229,11 +266,15 @@ final class MacHEVCEncoder: @unchecked Sendable {
         width: Int,
         height: Int,
         codec: CMVideoCodecType,
-        requireHardware: Bool
+        requireHardware: Bool,
+        lowLatency: Bool = false
     ) -> VTCompressionSession? {
-        let specification: [CFString: Any] = requireHardware
+        var specification: [CFString: Any] = requireHardware
             ? [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true]
             : [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true]
+        if lowLatency {
+            specification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true
+        }
         var session: VTCompressionSession?
         let status = VTCompressionSessionCreate(
             allocator: nil,

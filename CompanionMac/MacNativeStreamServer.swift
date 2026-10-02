@@ -56,6 +56,12 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onWindowScroll: (@Sendable (UInt32, UInt16, UInt16, Int16, Int16) -> Void)?
 
     private nonisolated static let maxPendingBytes = 12 * 1024 * 1024
+    /// Video frames handed to the connection but not yet taken by the network
+    /// stack, across all of a viewer's streams. A remote desktop is only as
+    /// live as the oldest frame still queued for it, so the queue is kept to a
+    /// couple of frames and anything beyond is dropped — 12 MB of backlog was
+    /// seconds of video at these bitrates before the first drop.
+    private nonisolated static let maxInFlightFrames = 3
 
     private nonisolated final class Client: @unchecked Sendable {
         let connection: NWConnection
@@ -63,6 +69,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
         var deviceName: String?
         var protocolVersion = 1
         var pendingBytes = 0
+        var inFlightFrames = 0
+        /// Streams this viewer dropped a frame of, for which a key frame has
+        /// been asked of the encoder already.
+        var keyFrameRequested: Set<UInt32> = []
         /// True once the hello landed and this client joined the viewer set.
         var isActive = false
         /// v1 has no subscriptions: it takes the desktop stream unless its
@@ -389,19 +399,34 @@ final class MacNativeStreamServer: @unchecked Sendable {
         isKeyFrame: Bool,
         to client: Client
     ) {
-        guard client.wantsStream(streamID),
-              client.pendingBytes < Self.maxPendingBytes else {
+        guard client.wantsStream(streamID) else { return }
+        guard client.pendingBytes < Self.maxPendingBytes,
+              client.inFlightFrames < Self.maxInFlightFrames else {
+            // Every frame after this one predicts from it, so dropping it
+            // means waiting for a key frame — otherwise the viewer decodes
+            // smeared garbage until the next scheduled one.
+            client.awaitingKeyFrame[streamID] = true
             return
         }
         if client.awaitingKeyFrame[streamID] ?? true {
-            guard isKeyFrame else { return }
+            guard isKeyFrame else {
+                // Ask once per gap, and only once the queue has room again —
+                // a key frame sent into a full queue would just be dropped.
+                if client.keyFrameRequested.insert(streamID).inserted {
+                    onKeyFrameNeeded?(streamID)
+                }
+                return
+            }
             client.awaitingKeyFrame[streamID] = false
+            client.keyFrameRequested.remove(streamID)
         }
         client.pendingBytes += frame.count
+        client.inFlightFrames += 1
         client.connection.send(content: frame, completion: .contentProcessed {
             [weak self, weak client] error in
             self?.queue.async {
                 client?.pendingBytes = max(0, (client?.pendingBytes ?? 0) - frame.count)
+                client?.inFlightFrames = max(0, (client?.inFlightFrames ?? 0) - 1)
                 if let error {
                     self?.log.error("Video send failed: \(error.localizedDescription)")
                 }

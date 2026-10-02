@@ -97,7 +97,8 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             guard let encoder else { return }
             let chroma = encoder.chromaDescription
             let engine = encoder.usingHardwareEncoder ? "hardware" : "software"
-            self?.onVideoSummary?("\(width)×\(height) HEVC \(chroma), \(engine) encode")
+            let rateControl = encoder.lowLatencyRateControl ? ", low-latency" : ""
+            self?.onVideoSummary?("\(width)×\(height) HEVC \(chroma), \(engine) encode\(rateControl)")
         }
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)

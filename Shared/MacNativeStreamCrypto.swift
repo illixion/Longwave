@@ -41,6 +41,11 @@ nonisolated enum MacNativeStreamCrypto {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.connectionTimeout = 10
-        return NWParameters(tls: tls, tcp: tcp)
+        let parameters = NWParameters(tls: tls, tcp: tcp)
+        // Interactive video on the Wi-Fi link (WMM video access category),
+        // ahead of best-effort traffic — the same reason audio rides the
+        // voice class.
+        parameters.serviceClass = .interactiveVideo
+        return parameters
     }
 }

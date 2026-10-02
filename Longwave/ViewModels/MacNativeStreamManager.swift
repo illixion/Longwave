@@ -63,6 +63,12 @@ final class MacNativeStreamManager {
 
     private(set) var state: State = .disconnected(nil)
     private(set) var displayLayer: AVSampleBufferDisplayLayer?
+    /// Where the desktop is decoded while the window shows it curved — a
+    /// RealityKit `VideoMaterial` draws from it. One for the manager's whole
+    /// life, so a reconnect needn't rebuild the material.
+    let curvedVideoRenderer = AVSampleBufferVideoRenderer()
+    /// Whether decoding goes to `curvedVideoRenderer` rather than the layer.
+    private(set) var curvedSurfaceActive = false
     private(set) var streamSize: CGSize = .zero
     private(set) var title = "Native"
 
@@ -73,6 +79,10 @@ final class MacNativeStreamManager {
     private(set) var serverAck: MacNativeStreamProtocol.HelloAck?
     /// The host's current streamable windows (v2 servers only).
     private(set) var windowInventory: [MacNativeStreamProtocol.WindowInfo] = []
+    /// The desktops this host can put on the desktop stream, and which one it
+    /// shows. Empty for a host with no choice to offer (v1, Windows).
+    private(set) var displays: [MacNativeStreamProtocol.DisplayInfo] = []
+    private(set) var selectedDisplayID: String?
     /// Subscribed per-window streams, keyed by host window ID. Each entry
     /// backs one ornament-free visionOS scene.
     private(set) var windowSessions: [UInt32: MacNativeWindowSession] = [:]
@@ -194,6 +204,7 @@ final class MacNativeStreamManager {
         displayLayer = layer
 
         let renderer = MacNativeVideoRenderer(displayLayer: layer)
+        if curvedSurfaceActive { renderer.setSink(curvedVideoRenderer) }
         self.renderer = renderer
         let client = MacNativeStreamClient(
             config: .init(
@@ -209,6 +220,9 @@ final class MacNativeStreamManager {
             Task { @MainActor [weak self] in
                 self?.handle(event, connectionID: connectionID)
             }
+        }
+        renderer.onKeyFrameNeeded = { [weak client] in
+            client?.sendRequestKeyFrame(windowID: MacNativeStreamProtocol.desktopStreamID)
         }
         self.client = client
         client.start()
@@ -381,6 +395,22 @@ final class MacNativeStreamManager {
         unityAutoShowSuppressedWindowIDs.insert(windowID)
     }
 
+    /// Moves desktop decoding between the flat layer and the curved surface.
+    /// Only one is fed at a time; the switch costs a key frame, which the
+    /// renderer asks the host for.
+    func setCurvedSurface(_ curved: Bool) {
+        guard curved != curvedSurfaceActive else { return }
+        curvedSurfaceActive = curved
+        renderer?.setSink(curved ? curvedVideoRenderer : nil)
+    }
+
+    /// Asks the host to stream another of its desktops. The host answers with
+    /// a new `displayList`, so the selection only moves once it has.
+    func selectDisplay(_ id: String) {
+        guard id != selectedDisplayID else { return }
+        client?.sendSelectDisplay(id: id)
+    }
+
     func sendFocusWindow(windowID: UInt32) {
         client?.sendFocusWindow(windowID: windowID)
     }
@@ -430,6 +460,8 @@ final class MacNativeStreamManager {
         streamSize = .zero
         serverAck = nil
         windowInventory = []
+        displays = []
+        selectedDisplayID = nil
         mouseAvailability = .unknown
         keyboardShortcutsAvailability = .unknown
         textInputAvailable = false
@@ -582,6 +614,9 @@ final class MacNativeStreamManager {
                     session.info = info
                 }
             }
+        case .displays(let list):
+            displays = list.displays
+            selectedDisplayID = list.selectedID
         case .windowClosed(let windowID, let reason):
             windowSessions[windowID]?.closedReason = reason ?? "The window closed on the host."
         case .replaced(let deviceName):

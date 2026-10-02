@@ -195,7 +195,7 @@ final class MacNativeVirtualDisplay {
 
     // MARK: - Identity
 
-    private static let vendorID: UInt32 = 0x4C57  // "LW"
+    static let vendorID: UInt32 = 0x4C57  // "LW"
     private static let productID: UInt32 = 0x0001
 
     private static func serial(for size: CGSize) -> UInt32 {

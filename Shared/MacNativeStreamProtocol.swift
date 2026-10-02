@@ -54,6 +54,14 @@ nonisolated enum MacNativeStreamProtocol {
         /// `CompanionInjectProtocol` (text only, no modifiers) independent of
         /// this — see `MacNativeStreamManager`.
         case keyboardStatus = 0x47
+        /// Server → client: JSON `DisplayList` — the desktops the host can
+        /// put on the desktop stream (its own virtual display, then each
+        /// physical one) and which is streaming. v2 clients only; pushed after
+        /// `helloAck` and whenever either changes. A host that never sends it
+        /// has no choice to offer, and the client shows none.
+        case displayList = 0x48
+        /// Client → server: UTF-8 `DisplayInfo.id` — stream this desktop.
+        case selectDisplay = 0x49
 
         // MARK: v2 — window inventory + multiplexed streams
 
@@ -78,6 +86,10 @@ nonisolated enum MacNativeStreamProtocol {
         /// Client → server: UInt32 stream ID — raise/activate this window on
         /// the host so keyboard input routes to it.
         case focusWindow = 0x56
+        /// Client → server: UInt32 stream ID — send a key frame on this
+        /// stream soon (the viewer moved it to a new decoder). Hosts that
+        /// predate it ignore it, and the viewer waits for a scheduled one.
+        case requestKeyFrame = 0x57
 
         /// Client → server: UInt32 stream ID + the v1 `mouseMove` payload,
         /// with (x, y) in that stream's own pixel space.
@@ -188,6 +200,29 @@ nonisolated enum MacNativeStreamProtocol {
         let windows: [WindowInfo]
     }
 
+    /// One desktop the host can stream, published via `displayList`.
+    struct DisplayInfo: Codable, Sendable, Equatable, Identifiable {
+        /// `virtualDisplayID` for the host's own virtual display; otherwise
+        /// an identifier the host keeps stable across reconnects.
+        let id: String
+        let name: String
+        let isVirtual: Bool
+        /// Size in host points; 0 when not known yet (a virtual display that
+        /// has not been created).
+        let width: Double
+        let height: Double
+    }
+
+    struct DisplayList: Codable, Sendable, Equatable {
+        let displays: [DisplayInfo]
+        /// The `DisplayInfo.id` the desktop stream follows right now.
+        let selectedID: String?
+    }
+
+    /// `DisplayInfo.id` of the host's virtual display — the same whether or
+    /// not it currently exists.
+    static let virtualDisplayID = "virtual"
+
     /// Mirrors the stream's own pixel space — a mouse coordinate is only
     /// meaningful alongside the display's current point-space size, which the
     /// Mac companion knows and the viewer learns from `formatDescription`.
@@ -262,6 +297,23 @@ nonisolated enum MacNativeStreamProtocol {
 
     static func decodeWindowInventory(_ payload: Data) -> [WindowInfo]? {
         (try? JSONDecoder().decode(WindowInventory.self, from: payload))?.windows
+    }
+
+    static func encodeDisplayList(_ list: DisplayList) -> Data {
+        encodeFrame(.displayList, (try? JSONEncoder().encode(list)) ?? Data())
+    }
+
+    static func decodeDisplayList(_ payload: Data) -> DisplayList? {
+        try? JSONDecoder().decode(DisplayList.self, from: payload)
+    }
+
+    static func encodeSelectDisplay(id: String) -> Data {
+        encodeFrame(.selectDisplay, Data(id.utf8))
+    }
+
+    static func decodeSelectDisplay(_ payload: Data) -> String? {
+        guard let id = String(data: payload, encoding: .utf8), !id.isEmpty, id.count <= 128 else { return nil }
+        return id
     }
 
     /// `windowStreamStart` / `windowStreamStop` / `focusWindow` all carry a

@@ -62,6 +62,10 @@ struct NativeStreamView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showEQ = false
+    /// Mac Virtual Display-style curving for a wide desktop; off keeps it flat
+    /// at every size.
+    @AppStorage("nativeCurvedScreen") private var curvedScreenEnabled = true
+    @Environment(\.physicalMetrics) private var physicalMetrics
 
     // Pinned to the exact ideal size for one layout pass right after Screen
     // is turned back on from a small fixed-size panel — see the `onChange`
@@ -440,7 +444,12 @@ struct NativeStreamView: View {
 
             GeometryReader { geometry in
                 ZStack {
-                    if let displayLayer = screenManager.displayLayer {
+                    if let curve = activeCurve {
+                        NativeCurvedScreenView(
+                            videoRenderer: screenManager.curvedVideoRenderer,
+                            curve: curve
+                        )
+                    } else if let displayLayer = screenManager.displayLayer {
                         MacNativeVideoView(displayLayer: displayLayer)
                             .ignoresSafeArea()
                     }
@@ -489,16 +498,20 @@ struct NativeStreamView: View {
                 .onContinuousHover { phase in
                     // Bluetooth-mouse / gaze pointer motion without a button
                     // held — a DragGesture only fires while a button is down.
-                    if case .active(let location) = phase, let point = translator?.viewToFramebuffer(location) {
+                    if case .active(let location) = phase, let point = framebufferPoint(location) {
                         lastPointerPoint = point
                         screenManager.moveCursorAbsolute(x: point.x, y: point.y)
                     }
                 }
                 .onAppear {
                     viewSize = geometry.size
+                    screenManager.setCurvedSurface(activeCurve != nil)
                 }
                 .onChange(of: geometry.size) { _, newSize in
                     viewSize = newSize
+                }
+                .onChange(of: activeCurve != nil) { _, curved in
+                    screenManager.setCurvedSurface(curved)
                 }
             }
 
@@ -547,6 +560,25 @@ struct NativeStreamView: View {
         return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
     }
 
+    /// The curve the desktop is drawn on right now, or nil while flat.
+    private var activeCurve: NativeScreenCurve? {
+        guard curvedScreenEnabled, screenManager.streamSize.width > 0 else { return nil }
+        let rect = NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize)
+        let widthMeters = physicalMetrics.convert(rect.width, to: .meters)
+        let curve = NativeScreenCurve(
+            halfAngle: NativeScreenCurve.automaticHalfAngle(widthMeters: widthMeters),
+            contentRect: rect
+        )
+        return curve.isCurved ? curve : nil
+    }
+
+    /// A gesture location on the window plane to a stream pixel, following
+    /// the curve when there is one — see `NativeScreenCurve`.
+    private func framebufferPoint(_ location: CGPoint) -> (x: UInt16, y: UInt16)? {
+        let flat = activeCurve?.texturePoint(forViewPoint: location) ?? location
+        return translator?.viewToFramebuffer(flat)
+    }
+
     private var desktopStatusText: String {
         if screenManager.state == .connected {
             return "Waiting for the first frame…"
@@ -587,7 +619,7 @@ struct NativeStreamView: View {
             .onChanged { value in
                 guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute {
-                    guard let point = translator?.viewToFramebuffer(value.location) else { return }
+                    guard let point = framebufferPoint(value.location) else { return }
                     if dragLocked {
                         screenManager.sendMouseMove(x: point.x, y: point.y)
                     } else if !isDragging {
@@ -608,7 +640,7 @@ struct NativeStreamView: View {
             .onEnded { value in
                 guard !twoHandEngaged else { return }
                 if screenManager.touchMode == .absolute, isDragging, !dragLocked,
-                   let point = translator?.viewToFramebuffer(value.location) {
+                   let point = framebufferPoint(value.location) {
                     screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
                 }
                 isDragging = false
@@ -656,7 +688,7 @@ struct NativeStreamView: View {
 
     private func leftClick(at location: CGPoint) {
         if screenManager.touchMode == .absolute {
-            guard let raw = translator?.viewToFramebuffer(location) else { return }
+            guard let raw = framebufferPoint(location) else { return }
             // Snap a quick second tap onto the first one's pixel so the host
             // reads the pair as a double-click (see DoubleClickCadence).
             let point = clickCadence.resolve(raw)
@@ -686,7 +718,7 @@ struct NativeStreamView: View {
     /// Release the held left button (ends a drag lock).
     private func releaseLeft(at location: CGPoint) {
         if screenManager.touchMode == .absolute {
-            guard let point = translator?.viewToFramebuffer(location) else { return }
+            guard let point = framebufferPoint(location) else { return }
             screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
         } else {
             screenManager.releaseMouseAtVirtualCursor(button: .left)
@@ -946,6 +978,8 @@ struct NativeStreamView: View {
                     Label("Right-click", systemImage: "cursorarrow.click.2")
                 }
 
+                displayMenu
+
                 Button(action: toggleKeyboardWindow) {
                     Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
                 }
@@ -968,6 +1002,34 @@ struct NativeStreamView: View {
         .buttonStyle(.bordered)
         .padding(12)
         .glassBackgroundEffect()
+    }
+
+    /// Switches the desktop the host streams — its virtual display or one of
+    /// its monitors — without a trip to the Mac's companion window.
+    private var displayMenu: some View {
+        Menu {
+            if screenManager.displays.count > 1 {
+                Picker("Desktop", selection: Binding(
+                    get: { screenManager.selectedDisplayID ?? "" },
+                    set: { screenManager.selectDisplay($0) }
+                )) {
+                    ForEach(screenManager.displays) { display in
+                        Label(
+                            display.name,
+                            systemImage: display.isVirtual ? "rectangle.on.rectangle" : "display"
+                        )
+                        .tag(display.id)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+            Toggle(isOn: $curvedScreenEnabled) {
+                Label("Curve When Large", systemImage: "rectangle.portrait.arrowtriangle.2.outward")
+            }
+        } label: {
+            Label("Display", systemImage: "display.2")
+        }
+        .help("Choose which Mac desktop to show, and whether a large window curves")
     }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio

@@ -48,6 +48,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// mid-GOP and nothing it sends will decode until the next key frame.
     nonisolated(unsafe) var onKeyFrameNeeded: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
+    /// A viewer picked a desktop from `displayList` (a `DisplayInfo.id`).
+    nonisolated(unsafe) var onSelectDisplay: (@Sendable (String) -> Void)?
     nonisolated(unsafe) var onWindowMouseMove: (@Sendable (UInt32, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onWindowMouseDown:
         (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
@@ -131,6 +133,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// The current window inventory, pre-encoded — sent to v2 clients on
     /// promotion and on change.
     private nonisolated(unsafe) var currentInventoryFrame: Data?
+    /// The current display choice, pre-encoded — same lifecycle as the
+    /// inventory frame.
+    private nonisolated(unsafe) var currentDisplayListFrame: Data?
     /// Per-window format blobs, kept for the same reason as the desktop's: a
     /// viewer that subscribes to a stream another viewer already started gets
     /// no fresh format frame from the capture side, so it needs the cached one
@@ -190,6 +195,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
             pendingClients = []
             currentDesktopFormat = nil
             currentInventoryFrame = nil
+            currentDisplayListFrame = nil
             currentWindowFormats = [:]
             queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [self] in
                 guard stopCompletion != nil else { return }
@@ -330,6 +336,19 @@ final class MacNativeStreamServer: @unchecked Sendable {
         let frame = MacNativeStreamProtocol.encodeWindowInventory(windows)
         queue.async { [self] in
             currentInventoryFrame = frame
+            for client in clients where client.isV2 {
+                sendRequired(frame, to: client)
+            }
+        }
+    }
+
+    /// Publishes which desktops the stream can show and which it shows:
+    /// cached for the next promotion and pushed to every live v2 client.
+    nonisolated func broadcastDisplayList(_ list: MacNativeStreamProtocol.DisplayList) {
+        let frame = MacNativeStreamProtocol.encodeDisplayList(list)
+        queue.async { [self] in
+            guard frame != currentDisplayListFrame else { return }
+            currentDisplayListFrame = frame
             for client in clients where client.isV2 {
                 sendRequired(frame, to: client)
             }
@@ -540,6 +559,15 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 if subscriberCount(windowID) == 0 {
                     onWindowStreamStop?(windowID)
                 }
+            case MacNativeStreamProtocol.FrameType.requestKeyFrame.rawValue:
+                guard client.isActive, client.isV2,
+                      let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload),
+                      client.wantsStream(windowID) else { break }
+                onKeyFrameNeeded?(windowID)
+            case MacNativeStreamProtocol.FrameType.selectDisplay.rawValue:
+                guard client.isActive, client.isV2,
+                      let displayID = MacNativeStreamProtocol.decodeSelectDisplay(frame.payload) else { break }
+                onSelectDisplay?(displayID)
             case MacNativeStreamProtocol.FrameType.focusWindow.rawValue:
                 guard client.isActive,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
@@ -624,6 +652,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
             )), to: client)
             if let currentInventoryFrame {
                 sendRequired(currentInventoryFrame, to: client)
+            }
+            if let currentDisplayListFrame {
+                sendRequired(currentDisplayListFrame, to: client)
             }
             // No format frame yet — a v2 client gets stream formats as it
             // subscribes.

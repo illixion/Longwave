@@ -40,6 +40,7 @@ struct CompanionWindowView: View {
             controller.injection.refreshAccessibility()
             controller.macNativeStreaming.input.refreshAccessibility()
             controller.macNativeStreaming.refreshVirtualDisplayConflict()
+            controller.macNativeStreaming.refreshDisplays()
         }
     }
 }
@@ -81,31 +82,33 @@ struct NativePane: View {
 
             if controller.macNativeStreaming.enabled {
                 Section {
-                    Toggle("Stream a virtual display", isOn: $controller.macNativeStreaming.virtualDisplayEnabled)
-                        .help("Renders a display just for the headset instead of streaming whatever monitor is main — any size, whether or not a monitor like it is attached.")
-
-                    if controller.macNativeStreaming.virtualDisplayEnabled {
-                        Picker("Size", selection: $controller.macNativeStreaming.virtualDisplayPreset) {
-                            ForEach(MacNativeVirtualDisplayPreset.allCases) { preset in
-                                Text(preset.title).tag(preset)
-                            }
-                        }
-                        .help("Desktop size in points. The display is HiDPI, so text is drawn at twice this and streamed as sharp as the link allows.")
-
-                        Toggle("Turn off the Mac's displays while streaming", isOn: $controller.macNativeStreaming.virtualDisplayExclusive)
-                            .help("Disconnects the built-in and external displays for as long as the stream runs, exactly as Mac Virtual Display does. They come back when the stream ends or the companion quits.")
-
-                        if let conflict = controller.macNativeStreaming.virtualDisplayConflict {
-                            Label("\(conflict) — the stream will follow its display instead until it disconnects.", systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
+                    Picker("Desktop", selection: $controller.macNativeStreaming.selectedDisplayID) {
+                        Text("Virtual Display").tag(MacNativeStreamProtocol.virtualDisplayID)
+                        ForEach(controller.macNativeStreaming.physicalDisplays) { display in
+                            Text(display.name).tag(display.id)
                         }
                     }
+                    .help("Which desktop the headset sees. The virtual display is rendered just for the headset — any size, whether or not a monitor like it is attached. The headset can switch this too, from the stream's controls.")
+
+                    Picker("Virtual display size", selection: $controller.macNativeStreaming.virtualDisplayPreset) {
+                        ForEach(MacNativeVirtualDisplayPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    .help("Desktop size in points. The display is HiDPI, so text is drawn at twice this and streamed as sharp as the link allows.")
+
+                    Toggle("Turn off the Mac's displays while streaming it", isOn: $controller.macNativeStreaming.virtualDisplayExclusive)
+                        .help("While the virtual display streams, disconnects the built-in and external displays, exactly as Mac Virtual Display does. They come back when the stream ends, another desktop is picked, or the companion quits.")
+
+                    if controller.macNativeStreaming.virtualDisplayEnabled,
+                       let conflict = controller.macNativeStreaming.virtualDisplayConflict {
+                        Label("\(conflict) — the stream will follow its display instead until it disconnects.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                 } header: {
-                    Text("Virtual Display")
+                    Text("Desktop")
                 } footer: {
-                    Text(controller.macNativeStreaming.virtualDisplayEnabled
-                         ? "Uses the same virtual-display mechanism as Mac Virtual Display. The Mac's own keyboard and trackpad keep working on it. Changing these while a viewer is connected restarts the stream."
-                         : "Off: the stream follows the Mac's main display at its own resolution.")
+                    Text("The size and display switch apply only while the virtual display is the one streaming, so both can be set before it ever connects. The virtual display uses the same mechanism as Mac Virtual Display, and the Mac's own keyboard and trackpad keep working on it. Changing these while a viewer is connected restarts the stream.")
                 }
 
                 Section("Screen Status") {

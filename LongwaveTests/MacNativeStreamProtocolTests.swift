@@ -217,3 +217,37 @@ final class MacNativeStreamProtocolTests: XCTestCase {
         XCTAssertEqual(P.decodeVideoFrame(frames[0].payload)?.data.count, 32_000)
     }
 }
+
+final class MacNativeDisplayListProtocolTests: XCTestCase {
+    typealias P = MacNativeStreamProtocol
+
+    func testDisplayListRoundTrip() {
+        let list = P.DisplayList(
+            displays: [
+                .init(id: P.virtualDisplayID, name: "Virtual Display", isVirtual: true, width: 2560, height: 1440),
+                .init(id: "37D8832A-2D66-02CA-B9F7-8F30A301B230", name: "Built-in", isVirtual: false, width: 1512, height: 982),
+            ],
+            selectedID: P.virtualDisplayID
+        )
+        var buffer = P.encodeDisplayList(list)
+        let frames = P.drainFrames(&buffer)
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames.first?.type, P.FrameType.displayList.rawValue)
+        XCTAssertEqual(frames.first.flatMap { P.decodeDisplayList($0.payload) }, list)
+    }
+
+    func testSelectDisplayRejectsEmpty() {
+        XCTAssertNil(P.decodeSelectDisplay(Data()))
+        var buffer = P.encodeSelectDisplay(id: "virtual")
+        let frame = P.drainFrames(&buffer).first
+        XCTAssertEqual(frame?.type, P.FrameType.selectDisplay.rawValue)
+        XCTAssertEqual(frame.flatMap { P.decodeSelectDisplay($0.payload) }, "virtual")
+    }
+
+    func testRequestKeyFrameCarriesStreamID() {
+        var buffer = P.encodeWindowID(.requestKeyFrame, windowID: 42)
+        let frame = P.drainFrames(&buffer).first
+        XCTAssertEqual(frame?.type, P.FrameType.requestKeyFrame.rawValue)
+        XCTAssertEqual(frame.flatMap { P.decodeWindowID($0.payload) }, 42)
+    }
+}

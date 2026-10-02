@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CoreGraphics
 
 @Observable
@@ -26,23 +27,76 @@ final class MacNativeStreamingController {
 
     // MARK: Virtual display
 
+    /// The pre-picker switch. Read once, as the default for `selectedDisplayID`.
     private static let virtualDisplayEnabledKey = "macNativeVirtualDisplayEnabled"
+    private static let selectedDisplayKey = "macNativeSelectedDisplay"
     private static let virtualDisplayPresetKey = "macNativeVirtualDisplayPreset"
     private static let virtualDisplayExclusiveKey = "macNativeVirtualDisplayExclusive"
 
-    /// Stream a display the Mac renders just for the headset instead of
-    /// whatever monitor happens to be main — the Mac Virtual Display model.
-    var virtualDisplayEnabled: Bool {
+    /// Which desktop the stream shows: `MacNativeStreamProtocol.virtualDisplayID`
+    /// for a display the Mac renders just for the headset (the Mac Virtual
+    /// Display model), or a physical display's UUID. Changeable from this
+    /// pane and from the headset (`selectDisplay`). A physical display that
+    /// is not connected falls back to the main one.
+    var selectedDisplayID: String {
         get {
-            access(keyPath: \.virtualDisplayEnabled)
-            return UserDefaults.standard.bool(forKey: Self.virtualDisplayEnabledKey)
+            access(keyPath: \.selectedDisplayID)
+            if let stored = UserDefaults.standard.string(forKey: Self.selectedDisplayKey) {
+                return stored
+            }
+            if UserDefaults.standard.bool(forKey: Self.virtualDisplayEnabledKey) {
+                return MacNativeStreamProtocol.virtualDisplayID
+            }
+            return MacNativeDisplayCatalog.mainDisplayUUID() ?? ""
         }
         set {
-            withMutation(keyPath: \.virtualDisplayEnabled) {
-                UserDefaults.standard.set(newValue, forKey: Self.virtualDisplayEnabledKey)
+            guard newValue != selectedDisplayID else { return }
+            withMutation(keyPath: \.selectedDisplayID) {
+                UserDefaults.standard.set(newValue, forKey: Self.selectedDisplayKey)
             }
             restartCaptureIfRunning()
+            publishDisplayList()
         }
+    }
+
+    var virtualDisplayEnabled: Bool {
+        selectedDisplayID == MacNativeStreamProtocol.virtualDisplayID
+    }
+
+    /// The Mac's physical displays, for the picker here and on the headset.
+    /// Remembered while they are offline, so a display the exclusive virtual
+    /// display switched off can still be picked to bring it back.
+    private(set) var physicalDisplays: [MacNativeStreamProtocol.DisplayInfo] = []
+    @ObservationIgnored private var screenObserver: NSObjectProtocol?
+
+    /// Re-reads the display set and pushes the choice to connected viewers.
+    func refreshDisplays() {
+        let online = MacNativeDisplayCatalog.physicalDisplays()
+        if !online.isEmpty || !(virtualDisplay?.configuration.exclusive ?? false) {
+            physicalDisplays = online
+        }
+        publishDisplayList()
+    }
+
+    private var displayList: MacNativeStreamProtocol.DisplayList {
+        let size = virtualDisplayPreset.pointSize
+        let virtual = MacNativeStreamProtocol.DisplayInfo(
+            id: MacNativeStreamProtocol.virtualDisplayID,
+            name: "Virtual Display",
+            isVirtual: true,
+            width: size.width,
+            height: size.height
+        )
+        let selected = selectedDisplayID
+        let effective = selected == MacNativeStreamProtocol.virtualDisplayID
+            || physicalDisplays.contains(where: { $0.id == selected })
+            ? selected
+            : MacNativeDisplayCatalog.mainDisplayUUID()
+        return .init(displays: [virtual] + physicalDisplays, selectedID: effective)
+    }
+
+    private func publishDisplayList() {
+        server?.broadcastDisplayList(displayList)
     }
 
     var virtualDisplayPreset: MacNativeVirtualDisplayPreset {
@@ -55,7 +109,8 @@ final class MacNativeStreamingController {
             withMutation(keyPath: \.virtualDisplayPreset) {
                 UserDefaults.standard.set(newValue.rawValue, forKey: Self.virtualDisplayPresetKey)
             }
-            restartCaptureIfRunning()
+            if virtualDisplayEnabled { restartCaptureIfRunning() }
+            publishDisplayList()
         }
     }
 
@@ -71,7 +126,9 @@ final class MacNativeStreamingController {
             withMutation(keyPath: \.virtualDisplayExclusive) {
                 UserDefaults.standard.set(newValue, forKey: Self.virtualDisplayExclusiveKey)
             }
-            restartCaptureIfRunning()
+            // Settable ahead of time: it only matters once the virtual
+            // display is the one streaming.
+            if virtualDisplayEnabled { restartCaptureIfRunning() }
         }
     }
 
@@ -221,6 +278,14 @@ final class MacNativeStreamingController {
 
     init() {
         _ = MacNativeStreamNotifications.shared
+        physicalDisplays = MacNativeDisplayCatalog.physicalDisplays()
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshDisplays() }
+        }
     }
 
     func configure(token: String) {
@@ -383,6 +448,14 @@ final class MacNativeStreamingController {
                 }
             }
         }
+        server.onSelectDisplay = { [weak self] displayID in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                guard displayID == MacNativeStreamProtocol.virtualDisplayID
+                        || self.physicalDisplays.contains(where: { $0.id == displayID }) else { return }
+                self.selectedDisplayID = displayID
+            }
+        }
         server.onFocusWindow = { [weak self] windowID in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation,
@@ -462,6 +535,7 @@ final class MacNativeStreamingController {
             try server.start()
             server.setMouseAvailability(input.mouseStatusByte)
             server.setKeyboardAvailability(input.keyboardStatusByte)
+            refreshDisplays()
         } catch {
             self.server = nil
             lastError = error.localizedDescription
@@ -542,7 +616,13 @@ final class MacNativeStreamingController {
             virtualDisplaySummary = "Skipped — \(skippedReason)"
         }
 
-        let capture = MacNativeScreenCapture(chroma: chroma, displayID: virtualDisplay?.displayID)
+        let physicalTarget = virtualDisplayEnabled
+            ? nil
+            : MacNativeDisplayCatalog.displayID(forUUID: selectedDisplayID)
+        let capture = MacNativeScreenCapture(
+            chroma: chroma,
+            displayID: virtualDisplay?.displayID ?? physicalTarget
+        )
         capture.onVideoSummary = { [weak self] summary in
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }

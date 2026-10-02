@@ -152,12 +152,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// else the main one, else the first available. A preferred display is
     /// retried for a moment rather than substituted — a virtual display that
     /// just came online can take ScreenCaptureKit a few hundred milliseconds
-    /// to list, and falling back to the main display would silently stream
-    /// the wrong desktop.
+    /// to list, a physical one coming back from the exclusive virtual
+    /// display's blackout takes seconds, and falling back to the main display
+    /// would silently stream the wrong desktop.
     private nonisolated static func captureDisplay(
         preferring preferredID: CGDirectDisplayID?
     ) async throws -> SCDisplay {
-        for attempt in 0..<20 {
+        let attempts = 40
+        for attempt in 0..<attempts {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: false
@@ -166,7 +168,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
                 if let display = content.displays.first(where: { $0.displayID == preferredID }) {
                     return display
                 }
-                if attempt < 19 {
+                if attempt < attempts - 1 {
                     try await Task.sleep(for: .milliseconds(150))
                     continue
                 }
@@ -287,7 +289,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             case .noDisplay:
                 return "No capturable Mac display is available."
             case .displayNotCapturable(let id):
-                return "The virtual display (\(id)) never became capturable."
+                return "The selected display (\(id)) never became capturable."
             }
         }
     }

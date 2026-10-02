@@ -27,6 +27,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
         case inventory([MacNativeStreamProtocol.WindowInfo])
         /// v2: a subscribed window stream ended on the host side.
         case windowClosed(UInt32, String?)
+        /// v2: which desktops the host can stream, and which it is streaming.
+        case displays(MacNativeStreamProtocol.DisplayList)
         /// The companion's current mouse availability — pushed on connect and
         /// whenever the Mac's toggle or Accessibility grant changes.
         case mouseAvailability(RemoteControlAvailability)
@@ -113,9 +115,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
         queue.async { [self] in
             connection?.cancel()
             connection = nil
-            DispatchQueue.main.async { [renderer] in
-                renderer.reset()
-            }
+            renderer.reset()
         }
     }
 
@@ -165,6 +165,14 @@ final class MacNativeStreamClient: @unchecked Sendable {
 
     func sendWindowStreamStop(windowID: UInt32) {
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStop, windowID: windowID))
+    }
+
+    func sendRequestKeyFrame(windowID: UInt32) {
+        send(MacNativeStreamProtocol.encodeWindowID(.requestKeyFrame, windowID: windowID))
+    }
+
+    func sendSelectDisplay(id: String) {
+        send(MacNativeStreamProtocol.encodeSelectDisplay(id: id))
     }
 
     func sendFocusWindow(windowID: UInt32) {
@@ -234,33 +242,31 @@ final class MacNativeStreamClient: @unchecked Sendable {
             switch frame.type {
             case MacNativeStreamProtocol.FrameType.helloAck.rawValue:
                 onEvent?(.connected(MacNativeStreamProtocol.decodeHelloAck(frame.payload)))
+            // Decoding is fed from this queue directly — see
+            // `MacNativeVideoRenderer` for why not the main thread.
             case MacNativeStreamProtocol.FrameType.formatDescription.rawValue:
-                DispatchQueue.main.async { [renderer, payload = frame.payload] in
-                    renderer.setFormatDescription(payload)
-                }
+                renderer.setFormatDescription(frame.payload)
             case MacNativeStreamProtocol.FrameType.videoFrame.rawValue:
                 if let videoFrame = MacNativeStreamProtocol.decodeVideoFrame(frame.payload) {
-                    DispatchQueue.main.async { [renderer] in
-                        renderer.enqueue(videoFrame)
-                    }
+                    renderer.enqueue(videoFrame)
                 }
             case MacNativeStreamProtocol.FrameType.windowFormatDescription.rawValue:
                 if let format = MacNativeStreamProtocol.decodeWindowFormatDescription(frame.payload),
                    let target = renderer(for: format.windowID) {
-                    DispatchQueue.main.async {
-                        target.setFormatDescription(format.data, kind: format.kind)
-                    }
+                    target.setFormatDescription(format.data, kind: format.kind)
                 }
             case MacNativeStreamProtocol.FrameType.windowVideoFrame.rawValue:
                 if let decoded = MacNativeStreamProtocol.decodeWindowVideoFrame(frame.payload),
                    let target = renderer(for: decoded.windowID) {
-                    DispatchQueue.main.async {
-                        target.enqueue(decoded.frame)
-                    }
+                    target.enqueue(decoded.frame)
                 }
             case MacNativeStreamProtocol.FrameType.windowList.rawValue:
                 if let windows = MacNativeStreamProtocol.decodeWindowInventory(frame.payload) {
                     onEvent?(.inventory(windows))
+                }
+            case MacNativeStreamProtocol.FrameType.displayList.rawValue:
+                if let list = MacNativeStreamProtocol.decodeDisplayList(frame.payload) {
+                    onEvent?(.displays(list))
                 }
             case MacNativeStreamProtocol.FrameType.windowClosed.rawValue:
                 if let closed = MacNativeStreamProtocol.decodeWindowClosed(frame.payload) {
@@ -297,9 +303,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
         closed = true
         connection?.cancel()
         connection = nil
-        DispatchQueue.main.async { [renderer] in
-            renderer.reset()
-        }
+        renderer.reset()
         onEvent?(.closed(message))
     }
 

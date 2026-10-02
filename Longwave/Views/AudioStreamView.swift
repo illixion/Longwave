@@ -14,6 +14,8 @@ struct AudioStreamView: View {
     /// Width of the window content; the album art spans it edge to edge,
     /// iTunes-mini-player style, at the art's own aspect ratio.
     private static let playerWidth: CGFloat = 400
+    /// Its entry in the player's presenter set — see `AudioStreamManager.presenters`.
+    private static let presenterID = "audio-window"
 
     @State private var showEQ = false
 
@@ -44,12 +46,14 @@ struct AudioStreamView: View {
         .onAppear {
             // Resumes the last stream when visionOS restores this window
             // after an app relaunch (snapped-window space restoration).
+            audioManager.presenterAppeared(Self.presenterID)
             audioManager.ensureConnected()
         }
         .onDisappear {
             // Grace-period teardown — transient hides (space restore)
-            // re-trigger onAppear/scenePhase, which cancels it.
-            audioManager.windowDisappeared()
+            // re-trigger onAppear/scenePhase, which cancels it. A Native
+            // window that this was popped out of keeps the player alive.
+            audioManager.windowDisappeared(presenter: Self.presenterID)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {

@@ -172,7 +172,24 @@ struct NativeStreamView: View {
                 controls(screenOn: $screenManager.liveEnabled, audioOn: audioBinding)
             }
         }
+        // The music widget beside the window rather than on top of it: over
+        // the video it hid a corner of the Mac's desktop for nothing.
+        .ornament(
+            visibility: showsAudioOrnament ? .visible : .hidden,
+            attachmentAnchor: .scene(.bottomTrailing),
+            contentAlignment: .bottomLeading
+        ) {
+            Group {
+                if audioPoppedOut {
+                    poppedOutAudioChip
+                } else {
+                    compactAudioPanel
+                }
+            }
+            .padding(.leading, 16)
+        }
         .onAppear {
+            audioManager.presenterAppeared(Self.audioPresenterID)
             resumeIfNeeded()
         }
         .onDisappear {
@@ -181,8 +198,14 @@ struct NativeStreamView: View {
             // from the explicit Disconnect button below.
             if !screenManager.unityEnabled {
                 screenManager.disconnect()
-                audioManager.windowDisappeared()
+                audioManager.windowDisappeared(presenter: Self.audioPresenterID)
             }
+        }
+        .onChange(of: audioPoppedOut) { _, poppedOut in
+            // The pop-out closing (its own close button, or Bring Back) hands
+            // the player back to this window, which should just keep playing.
+            guard !poppedOut, audioLive, !screenManager.unityEnabled else { return }
+            audioManager.ensureConnected()
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
@@ -375,6 +398,14 @@ struct NativeStreamView: View {
         WindowSessionRegistry.shared.isOpen("mac-native-audio", instance: sessionID.registryInstance)
     }
 
+    /// This window's entry in the player's presenter set, so closing the
+    /// pop-out doesn't stop audio the mini player here still shows.
+    private static let audioPresenterID = "native-stream"
+
+    private var showsAudioOrnament: Bool {
+        screenManager.liveEnabled && audioLive && !screenManager.unityEnabled
+    }
+
     private func popOutAudio() {
         openWindow(id: "mac-native-audio", value: sessionID)
     }
@@ -482,17 +513,6 @@ struct NativeStreamView: View {
                 dragLockBadge
             } else if let message = inputWarningMessage {
                 inputWarningBadge(message)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if audioLive {
-                if audioPoppedOut {
-                    poppedOutAudioChip
-                        .padding(24)
-                } else {
-                    compactAudioPanel
-                        .padding(24)
-                }
             }
         }
         // The desktop stream is opaque now, so this scene is a solid slab in

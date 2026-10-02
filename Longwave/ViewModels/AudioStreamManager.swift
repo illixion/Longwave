@@ -578,15 +578,34 @@ final class AudioStreamManager {
         }
     }
 
+    /// Views currently showing this player. One player can be on screen in
+    /// two places — a Native window's mini player and its popped-out window —
+    /// and closing one of them must not stop audio the other still shows.
+    private var presenters: Set<String> = []
+
+    /// Called from a view's onAppear, alongside `ensureConnected()`.
+    func presenterAppeared(_ presenter: String) {
+        presenters.insert(presenter)
+    }
+
     /// Called from the window's onDisappear. visionOS also fires this on
     /// transient hides (space restore, snapping), so tear down only after a
-    /// grace period — `ensureConnected()` cancels it if the window returns.
-    func windowDisappeared() {
+    /// grace period — `ensureConnected()` cancels it if the window returns —
+    /// and only if no other view is still showing the player by then.
+    func windowDisappeared(presenter: String? = nil) {
+        if let presenter { presenters.remove(presenter) }
         pendingCloseTask?.cancel()
         pendingCloseTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
-            self?.disconnect()
+            guard !Task.isCancelled, let self else { return }
+            guard self.presenters.isEmpty else {
+                // Still on screen elsewhere: make sure it is actually playing
+                // there rather than leaving whatever state the hide left.
+                self.pendingCloseTask = nil
+                if self.liveEnabled { self.ensureConnected() }
+                return
+            }
+            self.disconnect()
         }
     }
 

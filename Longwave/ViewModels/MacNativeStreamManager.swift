@@ -211,7 +211,7 @@ final class MacNativeStreamManager {
         self.renderer = renderer
         let client = MacNativeStreamClient(
             config: .init(
-                host: connection.hostname,
+                host: connection.companionHost,
                 port: MacNativeStreamProtocol.defaultPort,
                 token: connection.companionToken,
                 deviceName: DeviceName.current,
@@ -229,7 +229,27 @@ final class MacNativeStreamManager {
         }
         self.client = client
         client.start()
-        startInjectClient(hostname: connection.hostname, token: connection.companionToken)
+        startInjectClient(hostname: connection.companionHost, token: connection.companionToken)
+        keepKnocking(for: connection)
+    }
+
+    /// A paired Mac keeps its ports open only while this headset knocks, so
+    /// the knock is renewed for as long as the session wants the Mac —
+    /// reconnects included — and lapses on its own once it doesn't.
+    @ObservationIgnored private var knockTask: Task<Void, Never>?
+
+    private func keepKnocking(for connection: SavedConnection) {
+        guard let macID = connection.companionMacID, !connection.companionToken.isEmpty else { return }
+        knockTask?.cancel()
+        let token = connection.companionToken
+        knockTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.connection === connection,
+                      self.client != nil || self.reconnectTask != nil else { return }
+                CompanionLocator.shared.renewKnock(macID: macID, token: token)
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
     }
 
     /// Opens the text-only typing fallback channel — same host/token as
@@ -300,6 +320,8 @@ final class MacNativeStreamManager {
     func forget() {
         reconnectTask?.cancel()
         reconnectTask = nil
+        knockTask?.cancel()
+        knockTask = nil
         teardown()
         for session in windowSessions.values {
             session.renderer.reset()

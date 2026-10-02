@@ -309,6 +309,17 @@ final class SavedConnection {
     @Attribute(originalName: "audioToken")
     var companionToken: String = ""
 
+    /// The paired Companion's identity (`CompanionDiscovery`), set when the
+    /// connection was paired rather than typed in. With it, connecting knocks
+    /// for the Mac's ports and prefers its LAN address when it's nearby.
+    var companionMacID: String?
+
+    /// Where this session actually reaches the Companion: the LAN address
+    /// found by knocking, else the saved `hostname`. Not persisted.
+    @Transient var resolvedCompanionHost: String?
+
+    var companionHost: String { resolvedCompanionHost ?? hostname }
+
     /// Backing storage for `nativeScreenEnabled`/`nativeAudioEnabled` — nil
     /// means "not explicitly set", so a legacy pre-merge row (saved as the
     /// old `macNative` or `audio` type) infers its one enabled toggle from

@@ -277,6 +277,23 @@ struct ConnectionListView: View {
     /// other clients have nothing to do with that session, so an audio-only
     /// connection there is audio only.
     private func connectNative(_ connection: SavedConnection) {
+        // A paired connection knocks first, so the Mac opens its ports, and
+        // takes the Mac's LAN address when it's on this network. Not found,
+        // it uses the saved address (Tailscale, a VPN, another network).
+        if let macID = connection.companionMacID, !connection.companionToken.isEmpty {
+            Task {
+                connection.resolvedCompanionHost = await CompanionLocator.shared.locate(
+                    macID: macID, token: connection.companionToken
+                )
+                openNativeSession(connection)
+            }
+        } else {
+            connection.resolvedCompanionHost = nil
+            openNativeSession(connection)
+        }
+    }
+
+    private func openNativeSession(_ connection: SavedConnection) {
         // One session per connection, so a second host streams alongside the
         // first instead of taking its socket and its window.
         let (sessionID, manager) = macNativeSessions.begin(connection)
@@ -303,7 +320,7 @@ struct ConnectionListView: View {
         // `AudioStreamManager` grants to one player and denies to the rest.
         let audioPlayer = macNativeSessions.audioPlayer(for: sessionID)
         audioPlayer.prepareTarget(
-            hostname: connection.hostname,
+            hostname: connection.companionHost,
             port: AudioStreamProtocol.defaultPort,
             token: connection.companionToken,
             title: connection.displayName,
@@ -312,7 +329,7 @@ struct ConnectionListView: View {
         audioPlayer.liveEnabled = connection.nativeAudioEnabled
         if connection.nativeAudioEnabled {
             audioPlayer.connect(
-                hostname: connection.hostname,
+                hostname: connection.companionHost,
                 port: AudioStreamProtocol.defaultPort,
                 token: connection.companionToken,
                 title: connection.displayName,
@@ -376,7 +393,7 @@ struct ConnectionListView: View {
         // a trackpad-only overlay over a Mac Virtual Display.
         let audioCompanion = (connection.quality == .trackpadOnly ? nil : companionConnection).map {
             VNCConnectionManager.AudioCompanion(
-                hostname: $0.hostname,
+                hostname: $0.companionHost,
                 port: AudioStreamProtocol.defaultPort,
                 token: $0.companionToken,
                 title: $0.displayName,
@@ -385,7 +402,7 @@ struct ConnectionListView: View {
         }
         let companionInject = companionConnection.map {
             VNCConnectionManager.CompanionInject(
-                hostname: $0.hostname,
+                hostname: $0.companionHost,
                 port: CompanionInjectProtocol.defaultPort,
                 token: $0.companionToken
             )

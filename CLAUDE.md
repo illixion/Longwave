@@ -248,6 +248,8 @@ any exclusive display is active**, so a release test run while Mac VD is connect
 Hold `kIOPMAssertPreventUserIdleDisplaySleep` for the display's lifetime, as the agent does, or the
 Mac sleeps its only display and capture stops.
 
+**Pairing and the listen gate (`CompanionDiscovery`).** The Companion announces `_longwave-mac._tcp` as a bare `dns_sd` record (no socket behind it) and opens its stream ports only while a paired headset advertises a valid `_longwave-knock._tcp` tag, or "Allow connections by address" is on (default on, for Tailscale/VPN setups). Pairing is numeric comparison over a one-off `_longwave-pair._tcp` listener: X25519 with a commit-then-reveal, a 6-digit code on both screens, and the Companion's token sealed under the agreed key — so no token is ever shown. Two traps: every call on a `DNSServiceRef` must come from the queue it is scheduled on, or mDNSResponder drops it (`kDNSServiceErr_ServiceNotRunning`); and macOS can keep enforcing a stale Local Network denial (`kDNSServiceErr_PolicyDenied`, logged by mDNSResponder as `policy 'denied' for (pro.longwave.companion)`) after the user has allowed it — restarting mDNSResponder and `nesessionmanager` did not clear it, a reboot did (2026-10-02). That denial is also why the old `_longwave-native._tcp` advertisement never appeared; inbound connections are unaffected.
+
 **SwiftData migrations:** New non-optional properties need default values. Renamed columns need `@Attribute(originalName:)`. Missing either causes CoreData error 134110.
 
 See [[KNOWN_CONSTRAINTS.md]] for detailed version of all gotchas (broadcast, Moonlight HDR, Copilot OAuth, etc.).

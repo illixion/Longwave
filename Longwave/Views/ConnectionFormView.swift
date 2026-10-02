@@ -39,6 +39,9 @@ struct ConnectionFormView: View {
 
     // Native (Screen + Audio)
     @State private var companionToken: String = ""
+    /// The paired Companion's identity, set by pairing (see `nearbyMacsSection`).
+    @State private var companionMacID: String?
+    @State private var pairing: CompanionPairingClient?
     @State private var nativeScreenEnabled: Bool = true
     @State private var nativeAudioEnabled: Bool = true
     @State private var nativeUnityEnabled: Bool = false
@@ -208,6 +211,92 @@ struct ConnectionFormView: View {
 
     // MARK: - Native Sections (Screen + Audio)
 
+    /// Companions on this network, to pair with by comparing a code — no token
+    /// to copy. Pairing fills in the token, the Mac's address and its identity,
+    /// which lets the connection find the Mac again on any network it shares.
+    private var nearbyMacsSection: some View {
+        Section {
+            ForEach(CompanionLocator.shared.nearby) { mac in
+                Button {
+                    startPairing(with: mac)
+                } label: {
+                    HStack {
+                        Label(mac.name, systemImage: "laptopcomputer")
+                        Spacer()
+                        Text(mac.macID == companionMacID ? "Paired" : "Pair")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(isPairing)
+            }
+            if CompanionLocator.shared.nearby.isEmpty {
+                Text("Looking for Macs running Longwave Companion…")
+                    .foregroundStyle(.secondary)
+            }
+            pairingStatus
+        } header: {
+            Text("Macs Nearby")
+        } footer: {
+            Text("Pairing asks the Mac to approve this headset and compare a code. Afterwards the Mac opens its stream ports only while this headset is nearby and asks for them.")
+        }
+        .onAppear { CompanionLocator.shared.startBrowsing() }
+        .onDisappear {
+            CompanionLocator.shared.stopBrowsing()
+            pairing?.cancel()
+        }
+        .onChange(of: pairing?.state) { _, state in
+            guard case .paired(let grant) = state else { return }
+            companionToken = grant.token
+            companionMacID = grant.macID
+            if hostname.trimmingCharacters(in: .whitespaces).isEmpty, let address = grant.addresses.first {
+                hostname = address
+            }
+            if label.trimmingCharacters(in: .whitespaces).isEmpty {
+                label = grant.macName
+            }
+        }
+    }
+
+    private var isPairing: Bool {
+        switch pairing?.state {
+        case .waitingForMac, .confirming: true
+        default: false
+        }
+    }
+
+    @ViewBuilder
+    private var pairingStatus: some View {
+        switch pairing?.state {
+        case .waitingForMac:
+            HStack {
+                ProgressView()
+                Text("Asking the Mac…")
+            }
+        case .confirming(let code):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(PairingExchange.display(code))
+                    .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
+                Text("Check that the Mac shows this code, then choose Pair there.")
+                    .foregroundStyle(.secondary)
+            }
+        case .paired(let grant):
+            Label("Paired with \(grant.macName)", systemImage: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+        case .failed(let reason):
+            Text(reason)
+                .foregroundStyle(.red)
+        case .idle, nil:
+            EmptyView()
+        }
+    }
+
+    private func startPairing(with mac: CompanionLocator.NearbyMac) {
+        pairing?.cancel()
+        let client = CompanionPairingClient(mac: mac)
+        pairing = client
+        client.start()
+    }
+
     @ViewBuilder
     private var nativeSections: some View {
         Section("Native") {
@@ -230,13 +319,15 @@ struct ConnectionFormView: View {
             Toggle("Audio", isOn: $nativeAudioEnabled)
         }
 
+        nearbyMacsSection
+
         Section("Companion Token") {
             TextField("Token", text: $companionToken)
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
 
-            Text("Copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
+            Text("Filled in by pairing. To connect by address instead — over Tailscale or a VPN — copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -569,6 +660,7 @@ struct ConnectionFormView: View {
         vncTouchMode = saved.vncTouchMode
         linkedAudioConnectionID = saved.linkedCompanionConnectionID
         companionToken = saved.companionToken
+        companionMacID = saved.companionMacID
         nativeScreenEnabled = saved.nativeScreenEnabled
         nativeAudioEnabled = saved.nativeAudioEnabled
         nativeUnityEnabled = saved.nativeUnityEnabled
@@ -636,6 +728,7 @@ struct ConnectionFormView: View {
 
         case .native:
             connection.companionToken = companionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            connection.companionMacID = companionMacID
             connection.nativeScreenEnabled = nativeScreenEnabled
             connection.nativeAudioEnabled = nativeAudioEnabled
             connection.nativeUnityEnabled = nativeUnityEnabled

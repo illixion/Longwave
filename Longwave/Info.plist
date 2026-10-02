@@ -69,6 +69,9 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_longwave-native._tcp</string>
+		<string>_longwave-mac._tcp</string>
+		<string>_longwave-knock._tcp</string>
+		<string>_longwave-pair._tcp</string>
 		<string>_apple-foveated-streaming._tcp</string>
 		<!-- Advertised while "Quest controllers" is on, so the Quest's Controller
 		     Bridge app finds this headset by name with nothing typed. -->

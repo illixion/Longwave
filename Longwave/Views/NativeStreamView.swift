@@ -109,7 +109,7 @@ struct NativeStreamView: View {
                 }
                 if let connection = screenManager.connection {
                     audioManager.prepareTarget(
-                        hostname: connection.hostname,
+                        hostname: connection.companionHost,
                         port: AudioStreamProtocol.defaultPort,
                         token: connection.companionToken,
                         title: connection.displayName,

@@ -18,6 +18,7 @@ nonisolated enum AppLog {
     static let subsystem = Bundle.main.bundleIdentifier ?? "pro.longwave"
 
     static let audioStream = DebugLogger(subsystem: subsystem, category: "AudioStream")
+    static let companionDiscovery = DebugLogger(subsystem: subsystem, category: "CompanionDiscovery")
     static let broadcast = DebugLogger(subsystem: subsystem, category: "Broadcast")
     static let cryptoManager = DebugLogger(subsystem: subsystem, category: "CryptoManager")
     static let gamepadManager = DebugLogger(subsystem: subsystem, category: "GamepadManager")

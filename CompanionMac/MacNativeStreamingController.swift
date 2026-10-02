@@ -323,7 +323,8 @@ final class MacNativeStreamingController {
         if !connectedDeviceNames.isEmpty {
             return "Streaming to \(connectedDeviceNames.joined(separator: ", "))"
         }
-        return enabled ? "Listening on port \(port)" : "Disabled"
+        guard enabled else { return "Disabled" }
+        return listenGateOpen ? "Listening on port \(port)" : "Waiting for a paired headset nearby"
     }
 
     private var token = ""
@@ -360,7 +361,27 @@ final class MacNativeStreamingController {
         }
     }
 
+    /// Set by the owner: whether the listen gate lets the server listen now.
+    /// Closed, `enabled` still records the user's choice and the server opens
+    /// the moment a paired headset knocks.
+    var listenGateOpen = true {
+        didSet {
+            guard listenGateOpen != oldValue, enabled else { return }
+            if listenGateOpen {
+                startServer()
+            } else {
+                stopServer()
+            }
+        }
+    }
+
+    var hasViewers: Bool { !connectedDeviceNames.isEmpty }
+
     private func startServer() {
+        guard listenGateOpen else {
+            stopServer()
+            return
+        }
         serverGeneration += 1
         let generation = serverGeneration
         let previousServer = server

@@ -218,6 +218,33 @@ struct AccessTokenPane: View {
     var body: some View {
         Form {
             Section {
+                LabeledContent("Pairing") {
+                    Text("In Longwave on the headset, add a Native connection and pick this Mac under Macs Nearby. This Mac then asks you to compare a code.")
+                        .foregroundStyle(.secondary)
+                }
+                if controller.presence.localNetworkDenied {
+                    LabeledContent("Local Network") {
+                        Button("Allow in System Settings…") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+                        }
+                    }
+                    Text("macOS is blocking Longwave Companion from the local network, so headsets can't find this Mac. Turn it on under Privacy & Security → Local Network.")
+                        .foregroundStyle(.red)
+                }
+                if !controller.presence.knockingHeadsets.isEmpty {
+                    LabeledContent("Nearby", value: controller.presence.knockingHeadsets.joined(separator: ", "))
+                }
+                if let status = controller.pairingStatus {
+                    LabeledContent("Last pairing", value: status)
+                }
+                Toggle("Allow connections by address", isOn: $controller.allowConnectionsByAddress)
+            } header: {
+                Text("Headsets Nearby")
+            } footer: {
+                Text("Off, this Mac's stream ports stay closed until a paired headset on the same network asks for them, so a port scan finds nothing. Keep it on to connect over Tailscale, a VPN, or any network where headsets can't see this Mac.")
+            }
+
+            Section {
                 LabeledContent("Token") {
                     Text(controller.token)
                         .font(.system(.body, design: .monospaced))
@@ -255,7 +282,7 @@ struct AccessTokenPane: View {
                     .help("Invalidates the current token — connected devices must re-pair.")
                 }
             } footer: {
-                Text("Enter this token in Longwave as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
+                Text("For connecting by address. Enter this token in Longwave as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
             }
         }
     }

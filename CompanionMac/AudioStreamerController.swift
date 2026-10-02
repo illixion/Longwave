@@ -20,7 +20,17 @@ final class AudioStreamerController {
     private static let autoStartKey = "autoStartStreaming"
 
     init() {
+        macNativeStreaming.listenGateOpen = allowConnectionsByAddress
         macNativeStreaming.configure(token: token)
+        presence.onKnockChange = { [weak self] in self?.applyListenGate() }
+        presence.onPairRequest = { [weak self] request in self?.answerPairRequest(request) }
+        presence.start(token: token)
+        presence.setOpen(listenGateOpen)
+        // Closing waits for the last viewer, which nothing announces to this
+        // object in one place, so the gate is re-checked on a slow tick.
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.applyListenGate() }
+        }
         if UserDefaults.standard.bool(forKey: Self.autoStartKey) {
             // Defer past App init so it runs on the main actor's run loop —
             // starting the tap/server synchronously during init is too early.
@@ -67,6 +77,80 @@ final class AudioStreamerController {
         if isRunning { start() } // restart audio server with the new token
         if injection.injectionEnabled { startInjectServer() } // re-key inject channel
         macNativeStreaming.updateToken(token)
+        presence.updateToken(token)
+    }
+
+    // MARK: - Listening and pairing
+
+    /// Announces this Mac and watches for knocking headsets.
+    let presence = CompanionPresence()
+
+    /// Keep the stream ports listening at all times, so a headset can connect
+    /// by address — over Tailscale, a VPN, or a network mDNS doesn't reach.
+    /// Off, they open only while a paired headset nearby knocks for them,
+    /// and a port scan finds nothing. On by default: connections set up by
+    /// address before pairing existed rely on it.
+    var allowConnectionsByAddress: Bool {
+        get {
+            access(keyPath: \.allowConnectionsByAddress)
+            return UserDefaults.standard.object(forKey: Self.allowByAddressKey) as? Bool ?? true
+        }
+        set {
+            withMutation(keyPath: \.allowConnectionsByAddress) {
+                UserDefaults.standard.set(newValue, forKey: Self.allowByAddressKey)
+            }
+            applyListenGate()
+        }
+    }
+    private static let allowByAddressKey = "allowConnectionsByAddress"
+
+    var listenGateOpen: Bool { allowConnectionsByAddress || presence.knockActive }
+
+    /// Opens or closes the stream listeners to match the gate. Opening is
+    /// immediate; closing waits until no headset is still connected, so a
+    /// session never drops because its knock went quiet.
+    func applyListenGate() {
+        let open = listenGateOpen
+        let anyoneConnected = clientCount > 0 || macNativeStreaming.hasViewers
+        if open || !anyoneConnected {
+            macNativeStreaming.listenGateOpen = open
+            if serverRunning {
+                if open, server == nil {
+                    openAudioServer()
+                } else if !open, server != nil {
+                    closeAudioServer()
+                }
+            }
+            if open, injection.injectionEnabled, injectServer == nil {
+                startInjectServer()
+            } else if !open, injectServer != nil {
+                injectServer?.stop()
+                injectServer = nil
+            }
+        }
+        presence.setOpen(open)
+    }
+
+    private var pairing: PairingServer?
+    /// The last pairing's outcome, for the window.
+    private(set) var pairingStatus: String?
+
+    private func answerPairRequest(_ request: CompanionPresence.PairRequest) {
+        guard pairing == nil else { return }
+        let server = PairingServer(context: .init(
+            headsetID: request.headsetID, headsetName: request.name,
+            macID: presence.macID, macName: presence.macName, token: token
+        ))
+        server.onFinish = { [weak self] paired in
+            self?.pairing = nil
+            self?.pairingStatus = paired ? "Paired “\(request.name)”." : nil
+        }
+        do {
+            try server.start()
+            pairing = server
+        } catch {
+            pairingStatus = "Couldn't answer a pairing request: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - SSH authorized keys (remote control)
@@ -173,6 +257,8 @@ final class AudioStreamerController {
 
     private func startInjectServer() {
         injectServer?.stop()
+        injectServer = nil
+        guard listenGateOpen else { return }
         let server = CompanionInjectServer(port: CompanionInjectProtocol.defaultPort, token: token)
         server.onInjectText = { [weak self] text in
             Task { @MainActor [weak self] in self?.injection.insertText(text) }
@@ -304,6 +390,7 @@ final class AudioStreamerController {
 
     var statusText: String {
         guard isRunning else { return "Not streaming" }
+        if server == nil, !listenGateOpen { return "Waiting for a paired headset nearby" }
         switch clientCount {
         case 0: return "Listening — waiting for Longwave to connect"
         default: return "Streaming to Longwave"
@@ -331,7 +418,15 @@ final class AudioStreamerController {
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
             reason: "Streaming system audio to Longwave"
         )
+        serverRunning = true
+        if listenGateOpen { openAudioServer() }
+    }
 
+    /// The listening half of `start()`: the server, the now-playing bridge and
+    /// the microphone relay. Torn down by `closeAudioServer()` when the listen
+    /// gate shuts, while streaming stays switched on.
+    private func openAudioServer() {
+        closeAudioServer()
         // Bring up the server and Music bridge only — no audio tap yet. The
         // tap is created lazily when a client connects (handleClientCountChange),
         // so an idle companion captures no system audio and shows no
@@ -353,6 +448,7 @@ final class AudioStreamerController {
             try server.start()
         } catch {
             lastError = error.localizedDescription
+            serverRunning = false
             return
         }
 
@@ -372,7 +468,19 @@ final class AudioStreamerController {
 
         self.server = server
         self.musicBridge = bridge
-        serverRunning = true
+    }
+
+    private func closeAudioServer() {
+        pendingStopTapTask?.cancel()
+        pendingStopTapTask = nil
+        stopTap()
+        microphone.stop()
+        musicBridge?.stop()
+        musicBridge = nil
+        server?.stop()
+        server = nil
+        clientCount = 0
+        nowPlaying = nil
     }
 
     private func handleClientCountChange(_ count: Int) {
@@ -458,17 +566,8 @@ final class AudioStreamerController {
             ProcessInfo.processInfo.endActivity(streamingActivity)
             self.streamingActivity = nil
         }
-        pendingStopTapTask?.cancel()
-        pendingStopTapTask = nil
-        stopTap()
-        microphone.stop()
-        musicBridge?.stop()
-        musicBridge = nil
-        server?.stop()
-        server = nil
+        closeAudioServer()
         serverRunning = false
-        clientCount = 0
-        nowPlaying = nil
         updateMenuBarLabelPolling()
     }
 

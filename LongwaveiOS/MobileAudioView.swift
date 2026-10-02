@@ -76,7 +76,7 @@ struct MobileAudioView: View {
     private func connect(_ connection: SavedConnection) {
         audioManager.liveEnabled = true
         audioManager.connect(
-            hostname: connection.hostname,
+            hostname: connection.companionHost,
             port: AudioStreamProtocol.defaultPort,
             token: connection.companionToken,
             title: connection.displayName,

@@ -123,6 +123,45 @@ struct NativeScreenCurve: Equatable {
         return try MeshResource.generate(from: [descriptor])
     }
 
+    /// The largest curve of `radius` whose outline, seen from the circle's
+    /// centre, fits inside `view`. The edges come forward, so seen from the
+    /// viewer's seat they look wider (R·tan α instead of R·α) and taller (by
+    /// 1/cos α) than the picture is; fitting the picture itself to the window
+    /// let the forward corners cover the window's ornaments and resize
+    /// handles. Fitting this outline keeps them clear.
+    static func fitted(stream: CGSize, in view: CGSize, radius: Double) -> NativeScreenCurve {
+        guard stream.width > 0, stream.height > 0, view.width > 0, view.height > 0, radius > 0 else {
+            return NativeScreenCurve(contentRect: CGRect(origin: .zero, size: view), radius: max(radius, 1))
+        }
+        let aspect = stream.width / stream.height
+        func fits(_ halfAngle: Double) -> Bool {
+            let arc = 2 * radius * halfAngle
+            return 2 * radius * tan(halfAngle) <= view.width
+                && (arc / aspect) / cos(halfAngle) <= view.height
+        }
+        var low = 0.0, high = Double.pi / 2 - 0.01
+        for _ in 0..<40 {
+            let mid = (low + high) / 2
+            if fits(mid) { low = mid } else { high = mid }
+        }
+        let width = 2 * radius * low
+        let height = width / aspect
+        return NativeScreenCurve(
+            contentRect: CGRect(
+                x: (view.width - width) / 2,
+                y: (view.height - height) / 2,
+                width: width,
+                height: height
+            ),
+            radius: radius
+        )
+    }
+
+    /// The outline's aspect ratio, for locking the window to it.
+    var outlineAspect: Double {
+        (2 * radius * tan(halfAngle)) / (contentRect.height / cos(halfAngle))
+    }
+
     static func fittedRect(stream: CGSize, in view: CGSize) -> CGRect {
         guard stream.width > 0, stream.height > 0, view.width > 0, view.height > 0 else {
             return CGRect(origin: .zero, size: view)
@@ -329,6 +368,54 @@ struct NativeCurvedScreenView: View {
         var material = UnlitMaterial()
         material.color = .init(tint: .white, texture: .init(resource, sampler: .init(sampler)))
         screen.components[ModelComponent.self]?.materials = [material]
+    }
+}
+#endif
+
+#if os(visionOS)
+/// Hands back the `UIWindowScene` hosting a SwiftUI view, for requests
+/// SwiftUI has no API for — locking a window's aspect ratio.
+struct WindowSceneReader: UIViewRepresentable {
+    let onScene: (UIWindowScene?) -> Void
+
+    func makeUIView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.onScene = onScene
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ view: ReaderView, context: Context) {
+        view.onScene = onScene
+    }
+
+    final class ReaderView: UIView {
+        var onScene: ((UIWindowScene?) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onScene?(window?.windowScene)
+        }
+    }
+}
+
+extension UIWindowScene {
+    /// Keeps user resizes at `aspect` (width / height), resizing to it now at
+    /// the current width; nil hands resizing back to the system.
+    func lockAspect(_ aspect: Double?) {
+        let preferences: UIWindowScene.GeometryPreferences.Vision
+        if let aspect, aspect > 0 {
+            let width = effectiveGeometry.coordinateSpace.bounds.width
+            preferences = .init(
+                size: CGSize(width: width, height: width / aspect),
+                minimumSize: nil,
+                maximumSize: nil,
+                resizingRestrictions: .uniform
+            )
+        } else {
+            preferences = .init(size: nil, minimumSize: nil, maximumSize: nil, resizingRestrictions: .freeform)
+        }
+        requestGeometryUpdate(preferences)
     }
 }
 #endif

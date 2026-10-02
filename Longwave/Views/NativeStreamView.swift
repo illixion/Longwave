@@ -66,6 +66,10 @@ struct NativeStreamView: View {
     /// at every size.
     @AppStorage("nativeScreenCurvature.v3") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
     @Environment(\.physicalMetrics) private var physicalMetrics
+    /// The scene hosting this window, for locking its aspect to the desktop's.
+    @State private var windowScene: UIWindowScene?
+    @State private var aspectLockTask: Task<Void, Never>?
+    @State private var lockedAspect: Double?
 
     // Pinned to the exact ideal size for one layout pass right after Screen
     // is turned back on from a small fixed-size panel — see the `onChange`
@@ -511,10 +515,29 @@ struct NativeStreamView: View {
                 }
                 .onChange(of: geometry.size) { _, newSize in
                     viewSize = newSize
+                    // A curve's outline changes shape slightly as it grows;
+                    // re-fit once the resize settles.
+                    scheduleAspectLock(after: .milliseconds(600))
                 }
                 .onChange(of: curvatureSetting) {
                     screenManager.setCurvedSurface(curvature != .off)
+                    scheduleAspectLock()
                 }
+                .onChange(of: screenManager.streamSize) {
+                    scheduleAspectLock()
+                }
+            }
+
+            WindowSceneReader { scene in
+                windowScene = scene
+                scheduleAspectLock()
+            }
+            .frame(width: 1, height: 1)
+            .onDisappear {
+                // Screen off: the audio and picker panels size themselves.
+                aspectLockTask?.cancel()
+                windowScene?.lockAspect(nil)
+                lockedAspect = nil
             }
 
             // Local pointer dot for trackpad mode — the Mac's own cursor
@@ -571,10 +594,38 @@ struct NativeStreamView: View {
     /// stream's size is known.
     private var activeCurve: NativeScreenCurve? {
         guard let meters = curvature.radiusMeters, screenManager.streamSize.width > 0 else { return nil }
-        return NativeScreenCurve(
-            contentRect: NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize),
+        return NativeScreenCurve.fitted(
+            stream: screenManager.streamSize,
+            in: viewSize,
             radius: Double(physicalMetrics.convert(meters, from: .meters))
         )
+    }
+
+    /// The window's aspect, so it can only be resized into shapes the desktop
+    /// fills: the curve's outline as seen from its centre, or the picture's
+    /// own aspect when flat. A window of any other shape left room for the
+    /// curve's forward corners to run over the ornaments and resize handles.
+    private var desktopAspect: Double? {
+        guard screenManager.streamSize.width > 0, screenManager.streamSize.height > 0 else { return nil }
+        if let curve = activeCurve { return curve.outlineAspect }
+        return screenManager.streamSize.width / screenManager.streamSize.height
+    }
+
+    private func scheduleAspectLock(after delay: Duration = .zero) {
+        aspectLockTask?.cancel()
+        aspectLockTask = Task { @MainActor in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, screenManager.liveEnabled, let aspect = desktopAspect,
+                  viewSize.width > 0, viewSize.height > 0 else { return }
+            // Within 1% of both the lock and the window is close enough;
+            // re-requesting would only jitter.
+            let windowAspect = viewSize.width / viewSize.height
+            if let lockedAspect, abs(lockedAspect - aspect) / aspect < 0.01,
+               abs(windowAspect - aspect) / aspect < 0.01 { return }
+            guard let windowScene else { return }
+            windowScene.lockAspect(aspect)
+            lockedAspect = aspect
+        }
     }
 
     /// The window-wide pointer gestures run only on the flat desktop; on the

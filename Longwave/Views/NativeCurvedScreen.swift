@@ -129,15 +129,22 @@ struct NativeScreenCurve: Equatable {
     /// 1/cos α) than the picture is; fitting the picture itself to the window
     /// let the forward corners cover the window's ornaments and resize
     /// handles. Fitting this outline keeps them clear.
+    /// Window height kept clear below the curve, as a fraction of the
+    /// outline's height. The outline fit is exact only from the circle's
+    /// centre; sitting closer, the forward bottom corners still reached the
+    /// control ornament.
+    static let bottomClearance = 0.08
+
     static func fitted(stream: CGSize, in view: CGSize, radius: Double) -> NativeScreenCurve {
         guard stream.width > 0, stream.height > 0, view.width > 0, view.height > 0, radius > 0 else {
             return NativeScreenCurve(contentRect: CGRect(origin: .zero, size: view), radius: max(radius, 1))
         }
         let aspect = stream.width / stream.height
+        let available = view.height / (1 + bottomClearance)
         func fits(_ halfAngle: Double) -> Bool {
             let arc = 2 * radius * halfAngle
             return 2 * radius * tan(halfAngle) <= view.width
-                && (arc / aspect) / cos(halfAngle) <= view.height
+                && (arc / aspect) / cos(halfAngle) <= available
         }
         var low = 0.0, high = Double.pi / 2 - 0.01
         for _ in 0..<40 {
@@ -149,7 +156,8 @@ struct NativeScreenCurve: Equatable {
         return NativeScreenCurve(
             contentRect: CGRect(
                 x: (view.width - width) / 2,
-                y: (view.height - height) / 2,
+                // Centred in the space above the clearance band.
+                y: (available - height) / 2,
                 width: width,
                 height: height
             ),
@@ -157,9 +165,11 @@ struct NativeScreenCurve: Equatable {
         )
     }
 
-    /// The outline's aspect ratio, for locking the window to it.
+    /// The aspect ratio of the outline plus its clearance band, for locking
+    /// the window to it.
     var outlineAspect: Double {
-        (2 * radius * tan(halfAngle)) / (contentRect.height / cos(halfAngle))
+        (2 * radius * tan(halfAngle))
+            / (contentRect.height / cos(halfAngle) * (1 + Self.bottomClearance))
     }
 
     static func fittedRect(stream: CGSize, in view: CGSize) -> CGRect {

@@ -18,6 +18,9 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
+    /// Something went wrong that the capture recovers from by itself — worth
+    /// logging, not worth ending the stream over.
+    nonisolated(unsafe) var onWarning: (@Sendable (String) -> Void)?
     /// One line describing what the capture actually settled on — size, chroma,
     /// and whether the encoder landed on the media engine. Fired once the first
     /// compression session exists, since "asked for hardware" and "got it" are
@@ -115,24 +118,33 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         applyBitrate()
     }
 
-    /// The link dropped frames: back off by 30%, at most twice a second, never
-    /// below a quarter of the target.
+    /// The link dropped frames: back off by 30%, at most twice a second.
     func linkCongested() {
         lowerBitrate(by: 0.7, notMoreOftenThan: .milliseconds(500))
     }
 
-    /// Latency first: a frame taking longer than `slowLinkMs` from send to
-    /// ack is too big for the link right now — each one holds the next back —
-    /// so spend fewer bits per frame, whatever the target says.
+    /// Send-to-ack time, judged against this link's own normal rather than a
+    /// fixed number: a Tailscale or busy-Wi-Fi link idles at 6–15 ms, and
+    /// fixed 14/7 ms thresholds pinned the bitrate at its floor there for the
+    /// whole session. Only time *above* the link's baseline is queueing, which
+    /// fewer bits can cure; the baseline itself isn't.
     func linkLatency(_ milliseconds: Double) {
+        // The baseline follows the fastest recent sample, creeping up slowly so
+        // a link that genuinely got slower (moved rooms) is relearned.
+        linkBaselineMs = min(milliseconds, (linkBaselineMs ?? milliseconds) + 0.1)
         lastLinkMilliseconds = milliseconds
-        if milliseconds > Self.slowLinkMs {
-            lowerBitrate(by: 0.8, notMoreOftenThan: .seconds(1))
+        if milliseconds > (linkBaselineMs ?? milliseconds) + Self.queueingMs {
+            lowerBitrate(by: 0.85, notMoreOftenThan: .seconds(2))
         }
     }
 
-    private nonisolated static let slowLinkMs = 14.0
-    private nonisolated static let fastLinkMs = 7.0
+    /// Time above the baseline that counts as a queue building: about a
+    /// 60 fps frame interval.
+    private nonisolated static let queueingMs = 15.0
+    /// Within this of the baseline, the link is keeping up and the bitrate
+    /// may climb back.
+    private nonisolated static let clearMs = 5.0
+    private var linkBaselineMs: Double?
     private var lastLinkMilliseconds: Double?
 
     private func lowerBitrate(by factor: Double, notMoreOftenThan interval: Duration) {
@@ -140,18 +152,21 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let now = ContinuousClock.now
         if let lastCongestion, now - lastCongestion < interval { return }
         lastCongestion = now
-        let lowered = max(targetBitrate / 4, Int(Double(currentBitrate) * factor))
+        // Never below half the target: the whole picture going soft is worse
+        // than a few milliseconds more on a slow link.
+        let lowered = max(targetBitrate / 2, Int(Double(currentBitrate) * factor))
         guard lowered < currentBitrate else { return }
         currentBitrate = lowered
         applyBitrate()
     }
 
     /// Climbs 20% back toward the target every check once the link has gone
-    /// five seconds without trouble and frames are getting across quickly.
+    /// five seconds without trouble and frames are back near its baseline.
     private func recoverBitrate() {
         guard encoder != nil, currentBitrate < targetBitrate else { return }
         if let lastCongestion, ContinuousClock.now - lastCongestion < .seconds(5) { return }
-        if let lastLinkMilliseconds, lastLinkMilliseconds > Self.fastLinkMs { return }
+        if let lastLinkMilliseconds, let linkBaselineMs,
+           lastLinkMilliseconds > linkBaselineMs + Self.clearMs { return }
         currentBitrate = min(targetBitrate, currentBitrate * 6 / 5)
         applyBitrate()
     }
@@ -412,7 +427,10 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             self.pixelScale = scale
             onDisplayGeometry?(refreshed.frame, scale)
         } catch {
-            onError?("Display refresh failed: \(error.localizedDescription)")
+            // Not fatal: the stream keeps running at the old geometry and the
+            // next poll, two seconds on, tries again. Tearing every viewer
+            // down over one failed refresh was what ended sessions mid-use.
+            onWarning?("Display refresh failed: \(error.localizedDescription)")
         }
     }
 

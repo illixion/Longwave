@@ -2,6 +2,7 @@ import Foundation
 import CoreMedia
 import CoreVideo
 import VideoToolbox
+import DebugTrace
 
 /// Realtime HEVC encoder, with or without an alpha layer. It forwards the exact
 /// CoreMedia image description so the receiver reconstructs the format the
@@ -63,6 +64,13 @@ final class MacHEVCEncoder: @unchecked Sendable {
     private nonisolated(unsafe) var sequence: UInt64 = 0
     /// Set by `requestKeyFrame`, consumed by the next `encode`.
     private nonisolated(unsafe) var forceNextKeyFrame = false
+    /// Frames in a row that failed to encode. One failure is recovered from
+    /// here — the session is rebuilt and the next frame is a key frame — and
+    /// only a run of them is reported as fatal: a single bad frame used to end
+    /// every viewer's session.
+    private nonisolated(unsafe) var consecutiveFailures = 0
+    private nonisolated static let failuresBeforeGivingUp = 8
+    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "MacHEVCEncoder")
 
     nonisolated init(
         bitrate: Int = 24_000_000,
@@ -125,13 +133,30 @@ final class MacHEVCEncoder: @unchecked Sendable {
                 ? elapsed
                 : self.averageEncodeMilliseconds * 0.95 + elapsed * 0.05
             guard status == noErr, let encodedBuffer else {
-                self.onError?("HEVC-alpha encode callback failed (\(status))")
+                // A dropped output (no buffer, no error) is normal under load.
+                if status != noErr { self.encodeFailed("encode callback", status) }
                 return
             }
+            self.consecutiveFailures = 0
             self.emit(encodedBuffer)
         }
         if status != noErr {
-            onError?("VTCompressionSessionEncodeFrame failed (\(status))")
+            encodeFailed("VTCompressionSessionEncodeFrame", status)
+        }
+    }
+
+    /// Rebuilds the session on the next frame — which is then a key frame, so
+    /// viewers resynchronise — and only gives up after a run of failures.
+    private nonisolated func encodeFailed(_ stage: String, _ status: OSStatus) {
+        consecutiveFailures += 1
+        log.error("\(codecName, privacy: .public) \(stage, privacy: .public) failed (\(status, privacy: .public)), \(self.consecutiveFailures, privacy: .public) in a row")
+        if let session {
+            VTCompressionSessionInvalidate(session)
+        }
+        session = nil
+        lastFormatDescription = nil
+        if consecutiveFailures >= Self.failuresBeforeGivingUp {
+            onError?("\(codecName) encoding keeps failing (\(status))")
         }
     }
 

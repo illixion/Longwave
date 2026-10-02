@@ -497,10 +497,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
             case .ready:
                 self.log.info("Authenticated native stream candidate connected")
             case .failed(let error):
-                self.log.error("Native stream candidate failed: \(error.localizedDescription)")
-                self.remove(client)
+                self.remove(client, reason: "connection failed: \(error.localizedDescription)")
             case .cancelled:
-                self.remove(client)
+                self.remove(client, reason: "connection cancelled")
             default:
                 break
             }
@@ -520,7 +519,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 self.processInbound(client)
             }
             if isComplete || error != nil {
-                self.remove(client)
+                self.remove(client, reason: error.map { "receive failed: \($0.localizedDescription)" }
+                    ?? "viewer closed the connection")
             } else {
                 self.receiveLoop(client)
             }
@@ -728,13 +728,13 @@ final class MacNativeStreamServer: @unchecked Sendable {
         client?.connection.send(content: data, completion: .contentProcessed {
             [weak self, weak client] error in
             if let error, let client {
-                self?.log.error("Required send failed: \(error.localizedDescription)")
-                self?.remove(client)
+                self?.remove(client, reason: "required send failed: \(error.localizedDescription)")
             }
         })
     }
 
     private nonisolated func sendError(_ message: String, to client: Client) {
+        log.notice("Ending a viewer's session: \(message, privacy: .public)")
         let frame = MacNativeStreamProtocol.encodeFrame(.error, Data(message.utf8))
         client.connection.send(content: frame, completion: .contentProcessed { _ in
             client.connection.cancel()
@@ -798,13 +798,16 @@ final class MacNativeStreamServer: @unchecked Sendable {
         }
     }
 
-    private nonisolated func remove(_ client: Client) {
+    /// `reason` is code-defined text plus a system error description — it
+    /// carries no user data, so it is logged publicly; the viewer's name is not.
+    private nonisolated func remove(_ client: Client, reason: String) {
         queue.async { [self] in
             pendingClients.removeAll { $0 === client }
             guard let index = clients.firstIndex(where: { $0 === client }) else {
                 client.connection.cancel()
                 return
             }
+            log.notice("Viewer \(client.deviceName ?? "unknown", privacy: .private(mask: .hash)) left: \(reason, privacy: .public)")
             let streams = client.isV2
                 ? client.subscriptions
                 : (client.wantsDesktopV1 ? [MacNativeStreamProtocol.desktopStreamID] : [])

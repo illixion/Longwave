@@ -222,6 +222,9 @@ final class MacNativeStreamingController {
     /// "it feels laggy" can be pinned on one of them.
     private(set) var latencySummary: String?
     @ObservationIgnored private var lastLatencyLog = ContinuousClock.now
+    /// When the capture last restarted itself after an error — a few in a
+    /// row are tried before viewers are told it's over.
+    @ObservationIgnored private var captureRestarts: [ContinuousClock.Instant] = []
     @ObservationIgnored private let log = DebugLogger(
         subsystem: "pro.longwave.companion",
         category: "MacNativeStreaming"
@@ -429,6 +432,7 @@ final class MacNativeStreamingController {
         server.onError = { [weak self] message in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
+                self.log.error("Native stream server: \(message, privacy: .public)")
                 self.lastError = message
             }
         }
@@ -652,6 +656,25 @@ final class MacNativeStreamingController {
         startCapture()
     }
 
+    /// A capture that died is restarted in place — viewers stay connected and
+    /// just see the next key frame — up to three times a minute. Past that
+    /// something is persistently wrong, and viewers are told so instead of
+    /// being left on a frozen frame.
+    private func captureFailed(_ message: String) {
+        let now = ContinuousClock.now
+        captureRestarts = captureRestarts.filter { now - $0 < .seconds(60) }
+        guard captureRestarts.count < 3, !connectedDeviceNames.isEmpty else {
+            log.error("Desktop capture failed for good: \(message, privacy: .public)")
+            server?.disconnectDesktopViewers(withError: message)
+            stopCapture()
+            return
+        }
+        captureRestarts.append(now)
+        log.error("Desktop capture failed, restarting (\(self.captureRestarts.count, privacy: .public) of 3 this minute): \(message, privacy: .public)")
+        stopCapture()
+        startCapture()
+    }
+
     private func updateLatencySummary(linkMilliseconds: Double) {
         guard let capture else { return }
         let captureMs = capture.averageCaptureMilliseconds
@@ -728,8 +751,12 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, generation == self.captureGeneration else { return }
                 self.lastError = message
-                self.server?.disconnectDesktopViewers(withError: message)
-                self.stopCapture()
+                self.captureFailed(message)
+            }
+        }
+        capture.onWarning = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.log.notice("Desktop capture recovered: \(message, privacy: .public)")
             }
         }
         capture.onDisplayGeometry = { [weak self] frame, pixelScale in

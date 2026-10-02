@@ -25,7 +25,10 @@ final class InjectionService {
     }
 
     /// Whether this process holds the Accessibility permission.
-    private(set) var accessibilityTrusted = AXIsProcessTrusted()
+    /// Read through `AccessibilityTrustMonitor`, which notices the grant
+    /// changing on its own — a stored copy here only refreshed when some
+    /// button asked it to.
+    var accessibilityTrusted: Bool { AccessibilityTrustMonitor.shared.isTrusted }
 
     /// Fired after each injection — used by the menu bar for an activity glyph.
     var onInject: (() -> Void)?
@@ -40,13 +43,12 @@ final class InjectionService {
     }
 
     func refreshAccessibility() {
-        accessibilityTrusted = AXIsProcessTrusted()
+        AccessibilityTrustMonitor.shared.recheck()
     }
 
     /// Re-checks Accessibility, prompting the user to grant it if missing.
     func promptAccessibility() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        accessibilityTrusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        AccessibilityTrustMonitor.shared.prompt()
     }
 
     // MARK: - Injection (the only two operations)

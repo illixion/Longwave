@@ -47,7 +47,10 @@ final class MacNativeInputService {
     /// Whether this process holds the Accessibility permission — shared by
     /// both capabilities (and by `InjectionService`), since it's the same
     /// CGEvent-posting permission underneath all three.
-    private(set) var accessibilityTrusted = AXIsProcessTrusted()
+    /// Read through `AccessibilityTrustMonitor`, which notices the grant
+    /// changing on its own — a stored copy here only refreshed when some
+    /// button asked it to.
+    var accessibilityTrusted: Bool { AccessibilityTrustMonitor.shared.isTrusted }
 
     var isMouseAvailable: Bool { mouseControlEnabled && accessibilityTrusted }
     var isKeyboardShortcutsAvailable: Bool { keyboardShortcutsEnabled && accessibilityTrusted }
@@ -67,13 +70,12 @@ final class MacNativeInputService {
     }
 
     func refreshAccessibility() {
-        accessibilityTrusted = AXIsProcessTrusted()
+        AccessibilityTrustMonitor.shared.recheck()
     }
 
     /// Re-checks Accessibility, prompting the user to grant it if missing.
     func promptAccessibility() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        accessibilityTrusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        AccessibilityTrustMonitor.shared.prompt()
     }
 
     // MARK: - Pointer

@@ -30,6 +30,13 @@ final class AudioStreamerController {
         // (independent of audio streaming).
         injection.onInject = { [weak self] in self?.flashInjection() }
         Task { @MainActor in self.updateInjectionServer() }
+        // A grant (or revocation) made in System Settings reaches a connected
+        // headset straight away, on every channel that depends on it.
+        AccessibilityTrustMonitor.shared.onChange { [weak self] _ in
+            guard let self else { return }
+            self.refreshInjectionAccessibility()
+            self.macNativeStreaming.updateInputAvailability()
+        }
     }
 
     /// Persistent static auth token — clients must present it to connect.

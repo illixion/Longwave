@@ -52,10 +52,18 @@ struct CompanionWindowView: View {
 struct NativePane: View {
     @Bindable var controller: AudioStreamerController
 
+    /// macOS 27 renamed the pane, and the old name is nowhere in its Settings.
+    static func accessibilityNeeded(_ purpose: String) -> String {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            return "Needs Device Control permission \(purpose)."
+        }
+        return "Needs Accessibility permission \(purpose)."
+    }
+
     /// Whether anything in the remote-control section is asking for the
-    /// Accessibility grant. All three switches post events through it, and the
-    /// two services' `accessibilityTrusted` mirrors are both `AXIsProcessTrusted()`
-    /// — so one row, driven off whichever mirror is at hand, covers the set.
+    /// Accessibility grant. All three switches post events through it, and both
+    /// services read it from `AccessibilityTrustMonitor` — so one row covers
+    /// the set, and it clears by itself once System Settings grants it.
     private var remoteControlRequested: Bool {
         controller.macNativeStreaming.mouseControlEnabled
             || controller.macNativeStreaming.keyboardShortcutsEnabled
@@ -136,15 +144,11 @@ struct NativePane: View {
 
                     if remoteControlRequested && !controller.macNativeStreaming.input.accessibilityTrusted {
                         HStack {
-                            Text("Needs Accessibility permission to control input.")
+                            Text(Self.accessibilityNeeded("to control input"))
                                 .foregroundStyle(.orange)
                             Spacer()
-                            Button("Grant Accessibility…") {
+                            Button("Grant Access…") {
                                 controller.macNativeStreaming.grantInputAccessibility()
-                                // One grant, two services holding their own
-                                // mirror of it — and this row now speaks for the
-                                // text channel as well as the stream's.
-                                controller.refreshInjectionAccessibility()
                             }
                         }
                     } else if remoteControlRequested {
@@ -395,14 +399,11 @@ struct KeyboardPane: View {
 
                 if controller.injectionEnabled && !controller.injection.accessibilityTrusted {
                     HStack {
-                        Text("Needs Accessibility permission to type.")
+                        Text(NativePane.accessibilityNeeded("to type"))
                             .foregroundStyle(.orange)
                         Spacer()
-                        Button("Grant Accessibility…") {
+                        Button("Grant Access…") {
                             controller.grantAccessibility()
-                            // Same grant the Native tab's input toggles need, so
-                            // don't leave that pane's mirror claiming otherwise.
-                            controller.macNativeStreaming.updateInputAvailability()
                         }
                     }
                 } else if controller.injectionEnabled {

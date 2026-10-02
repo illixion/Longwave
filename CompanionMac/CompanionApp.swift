@@ -28,11 +28,11 @@ struct CompanionApp: App {
         _sandbox = State(initialValue: sandbox)
         _scheduler = State(initialValue: scheduler)
         // Here rather than in a window's task: the Companion runs windowless
-        // in the menu bar, and schedules and the agent's desktop session must
-        // work without any window open. One login attempt at launch (a no-op
-        // when the sandbox isn't installed or already has a session).
+        // in the menu bar, and schedules must fire without any window open.
+        // The agent's desktop session is *not* started here: it is logged in
+        // only when the user asks (Log In, setup, Device Hub) or a schedule
+        // resets the sandbox — never just because the Companion launched.
         scheduler.start()
-        Task { await sandbox.ensureDesktopSession() }
 
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
             .compactMap { $0 }

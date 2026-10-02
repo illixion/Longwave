@@ -206,10 +206,13 @@ final class LocalSandboxController {
         return true
     }
 
-    func reset() async {
+    /// Resetting logs the agent out. Only a scheduled run, which may need the
+    /// desktop, logs it straight back in; a reset from the window leaves it
+    /// signed out until the user chooses Log In.
+    func reset(logInAfter: Bool = false) async {
         guard await perform(.reset, label: "Resetting the sandbox…") else { return }
         sessions = []
-        await ensureDesktopSession(force: true)
+        if logInAfter { await ensureDesktopSession(force: true) }
     }
 
     func stop() async {

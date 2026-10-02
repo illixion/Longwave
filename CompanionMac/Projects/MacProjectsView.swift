@@ -50,7 +50,8 @@ struct MacProjectsView: View {
                 }
             }
         }
-        .task { await sandbox.ensureDesktopSession() }
+        // Status only: opening this window must not log the agent in.
+        .task { await sandbox.refresh() }
         .sheet(item: $setupAgent) { agent in
             AgentSetupSheet(host: sandbox.account, agent: agent)
                 .frame(minWidth: 520, minHeight: 420)

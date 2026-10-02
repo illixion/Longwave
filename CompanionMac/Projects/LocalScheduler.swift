@@ -178,7 +178,7 @@ final class LocalScheduler {
                     throw LocalSandboxController.SandboxError.message(
                         "Reset before run needs Full Disk Access for Longwave Companion (System Settings → Privacy & Security).")
                 }
-                await sandbox.reset()
+                await sandbox.reset(logInAfter: true)
                 if let error = sandbox.lastError { throw LocalSandboxController.SandboxError.message("Reset failed: \(error)") }
             } else {
                 await sandbox.refresh()

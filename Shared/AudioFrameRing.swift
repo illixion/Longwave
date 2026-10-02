@@ -24,7 +24,7 @@ import os
 /// the producer drops the buffer rather than blocking: that only happens when
 /// the network side is more than `slotCount` buffers behind, and a dropped
 /// 10 ms buffer beats stalling the audio device for everything on the Mac.
-final class AudioFrameRing: @unchecked Sendable {
+nonisolated final class AudioFrameRing: @unchecked Sendable {
 
     private struct Cursor: Sendable {
         var write = 0
@@ -55,14 +55,19 @@ final class AudioFrameRing: @unchecked Sendable {
     private var reportedDrops = 0
     private var lastHealthLogNanos: UInt64 = 0
 
-    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "AudioFrameRing")
+    private let log: DebugLogger
+    private let threadName: String
 
     /// - Parameters:
     ///   - slotCount: buffers in flight before the producer starts dropping.
     ///   - slotCapacity: bytes per buffer; must fit the largest IOProc
     ///     payload, so size it from the device's pinned IO buffer size with
     ///     headroom.
-    init(slotCount: Int = 16, slotCapacity: Int) {
+    ///   - name: names the consumer thread and the log category, so each
+    ///     ring's health lines say which stream they describe.
+    init(slotCount: Int = 16, slotCapacity: Int, name: String = "AudioFrameRing") {
+        log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "pro.longwave", category: name)
+        threadName = "pro.longwave.\(name)"
         self.slotCount = max(2, slotCount)
         self.slotCapacity = max(1, slotCapacity)
         storage = .allocate(byteCount: self.slotCount * self.slotCapacity, alignment: 16)
@@ -93,7 +98,7 @@ final class AudioFrameRing: @unchecked Sendable {
         let thread = Thread { [weak self] in
             self?.consume(handler)
         }
-        thread.name = "pro.longwave.companion.audio-ring"
+        thread.name = threadName
         // QoS only — deliberately *not* `threadPriority`. Setting an explicit
         // thread priority on an `NSThread` resets its quality-of-service to
         // the default class, which would demote the one thread standing

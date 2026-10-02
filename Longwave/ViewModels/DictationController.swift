@@ -262,6 +262,9 @@ final class DictationController {
     private func restoreAudioSession() {
         guard let restoreSession else { return }
         self.restoreSession = nil
+        // The microphone is being sent to the Mac; handing the session back
+        // as `.playback` would cut it off mid-sentence.
+        guard !AudioSessionCoordinator.shared.isRecording else { return }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(restoreSession.category,

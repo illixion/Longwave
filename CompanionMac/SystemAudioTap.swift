@@ -88,6 +88,24 @@ final class SystemAudioTap: @unchecked Sendable {
 
     /// Creates the tap + aggregate device and starts IO.
     /// Returns the capture format so the caller can build the stream header.
+    /// This process's Core Audio object, which exists from the first Core
+    /// Audio call on (no audio needs to have played yet).
+    private nonisolated static func ownProcessObject() -> AudioObjectID? {
+        var pid = getpid()
+        var object = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address,
+            UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object
+        )
+        return status == noErr && object != kAudioObjectUnknown ? object : nil
+    }
+
     nonisolated func start(muteSystemOutput: Bool) throws -> StreamFormat {
         stop()
         silentFrames = 0
@@ -96,8 +114,11 @@ final class SystemAudioTap: @unchecked Sendable {
         reportedClippedSamples = 0
         peakSample = 0
 
-        // 1. System-wide stereo mixdown tap of all processes
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        // 1. System-wide stereo mixdown tap of every process but this one.
+        // The Companion's only sound of its own is the headset microphone it
+        // plays into BlackHole; tapping that would send the wearer's voice
+        // straight back into their ears.
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: Self.ownProcessObject().map { [$0] } ?? [])
         description.name = "Longwave Audio Tap"
         description.isPrivate = true
         description.muteBehavior = muteSystemOutput ? .muted : .unmuted

@@ -107,6 +107,10 @@ struct AudioStreamView: View {
                     ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
                     : "Speaker Mode — mixes with other audio and auto-recovers")
 
+            #if canImport(UIKit)
+            MicrophoneToggleButton()
+            #endif
+
             Button {
                 showEQ.toggle()
             } label: {

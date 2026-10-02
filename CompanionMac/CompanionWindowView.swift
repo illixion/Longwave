@@ -188,6 +188,7 @@ struct NativePane: View {
                     if let nowPlaying = controller.nowPlaying, nowPlaying.hasTrack {
                         LabeledContent("Now Playing", value: "\(nowPlaying.title ?? "") — \(nowPlaying.artist ?? "")")
                     }
+                    LabeledContent("Headset microphone", value: controller.microphoneStatusText)
                     Toggle("Mute Mac output while streaming", isOn: $controller.muteWhileStreaming)
                         .help("Silences the local (or Vision Pro Sidecar) output so audio only plays through the Longwave app.")
                     Toggle("Show track in menu bar", isOn: $controller.showTrackInMenuBar)

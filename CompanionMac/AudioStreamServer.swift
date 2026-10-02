@@ -28,6 +28,10 @@ final class AudioStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onClientCountChange: (@Sendable (Int) -> Void)?
     /// Media transport command received from the client (fires on `queue`).
     nonisolated(unsafe) var onCommand: (@Sendable (MediaCommand) -> Void)?
+    /// The headset's microphone, from either transport (fires on `queue`).
+    nonisolated(unsafe) var onMicrophone: (@Sendable (MicrophonePacket) -> Void)?
+    /// The headset stopped sending its microphone (fires on `queue`).
+    nonisolated(unsafe) var onMicrophoneStopped: (@Sendable () -> Void)?
 
     private final class Client {
         let connection: NWConnection
@@ -379,6 +383,26 @@ final class AudioStreamServer: @unchecked Sendable {
             }
         }
         udp.start(queue: queue)
+        udpReceiveLoop(udp)
+    }
+
+    /// The UDP flow is the sender's, but the headset answers down it with its
+    /// microphone — one frame per datagram, like PCM the other way.
+    private nonisolated func udpReceiveLoop(_ udp: NWConnection) {
+        udp.receiveMessage { [weak self] data, _, _, error in
+            guard let self else { return }
+            if let data, let length = AudioStreamProtocol.decodeFrameLength(data),
+               length >= 1, data.count >= AudioStreamProtocol.frameLengthPrefixSize + Int(length) {
+                let start = data.startIndex + AudioStreamProtocol.frameLengthPrefixSize
+                if data[start] == AudioStreamProtocol.FrameType.microphone.rawValue,
+                   let packet = MicrophonePacket(parsing: data.subdata(in: (start + 1)..<(start + Int(length)))) {
+                    self.onMicrophone?(packet)
+                }
+            }
+            if error == nil {
+                self.udpReceiveLoop(udp)
+            }
+        }
     }
 
     /// Extracts the peer IP host from a connection's remote endpoint.
@@ -422,7 +446,11 @@ final class AudioStreamServer: @unchecked Sendable {
             )
             client.inbound.removeFirst(frameEnd)
 
-            if type == AudioStreamProtocol.FrameType.command.rawValue,
+            if type == AudioStreamProtocol.FrameType.microphone.rawValue {
+                if let packet = MicrophonePacket(parsing: payload) { onMicrophone?(packet) }
+            } else if type == AudioStreamProtocol.FrameType.microphoneStopped.rawValue {
+                onMicrophoneStopped?()
+            } else if type == AudioStreamProtocol.FrameType.command.rawValue,
                let message = MediaCommandMessage.decode(payload) {
                 onCommand?(message.command)
             } else if type == AudioStreamProtocol.FrameType.udpHello.rawValue {

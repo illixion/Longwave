@@ -253,7 +253,63 @@ final class AudioStreamManager {
         return "\(channels) · \(Int(sampleRate)) Hz · int24 PCM"
     }
 
-    private var receiver: AudioStreamReceiver?
+    private var receiver: AudioStreamReceiver? {
+        didSet { microphoneRoute.set(receiver) }
+    }
+
+    // MARK: Microphone to Mac
+
+    /// The connected Companion can play the microphone into a virtual input
+    /// device (it has BlackHole installed). Known once connected.
+    private(set) var microphoneAvailable = false
+    /// This device's microphone is being sent to the Mac.
+    private(set) var microphoneEnabled = false
+    /// Why the microphone last stopped or failed to start, for the UI.
+    private(set) var microphoneMessage: String?
+    /// Follows `receiver` across reconnects and reloads, so capture keeps
+    /// running while the stream underneath it is rebuilt.
+    private let microphoneRoute = MicrophoneRoute()
+    #if canImport(UIKit)
+    private var microphone: MicrophoneUplink?
+
+    func toggleMicrophone() {
+        if microphoneEnabled {
+            stopMicrophone(reason: nil)
+        } else {
+            Task { await startMicrophone() }
+        }
+    }
+
+    private func startMicrophone() async {
+        guard !microphoneEnabled, microphoneAvailable else { return }
+        let granted = await AVAudioApplication.requestRecordPermission()
+        guard granted else {
+            microphoneMessage = "Allow microphone access for Longwave in Settings."
+            return
+        }
+        let route = microphoneRoute
+        let uplink = MicrophoneUplink { frame in route.send(frame) }
+        do {
+            try uplink.start()
+        } catch {
+            microphoneMessage = error.localizedDescription
+            AppLog.audioStream.log("Microphone to Mac failed to start: \(error.localizedDescription)")
+            return
+        }
+        microphone = uplink
+        microphoneEnabled = true
+        microphoneMessage = nil
+    }
+
+    private func stopMicrophone(reason: String?) {
+        guard microphoneEnabled else { return }
+        microphone?.stop()
+        microphone = nil
+        microphoneEnabled = false
+        microphoneMessage = reason
+        receiver?.sendMicrophoneStopped()
+    }
+    #endif
 
     /// Deferred health re-check used in Music mode (see `ensureConnected`).
     private var healthRecheckTask: Task<Void, Never>?
@@ -469,6 +525,11 @@ final class AudioStreamManager {
     }
 
     private func disconnect(releasingMusicMode: Bool) {
+        // A real disconnect (not a rebuild) takes the microphone with it:
+        // nothing should be listening once the stream is gone.
+        #if canImport(UIKit)
+        if releasingMusicMode { stopMicrophone(reason: nil) }
+        #endif
         pendingCloseTask?.cancel()
         pendingCloseTask = nil
         retryTask?.cancel()
@@ -616,9 +677,15 @@ final class AudioStreamManager {
 
     private func handle(_ event: AudioStreamReceiver.Event) {
         switch event {
-        case .connected(let rate, let channels):
+        case .connected(let rate, let channels, let acceptsMicrophone):
             sampleRate = rate
             channelCount = channels
+            microphoneAvailable = acceptsMicrophone
+            #if canImport(UIKit)
+            if !acceptsMicrophone, microphoneEnabled {
+                stopMicrophone(reason: "This Mac can't take the microphone — install BlackHole there.")
+            }
+            #endif
             state = .streaming
             lastActivityAt = Date()
             retryDelay = 2
@@ -918,10 +985,29 @@ final class AudioStreamManager {
 /// Network + audio pipeline. All work happens on its serial queue and the
 /// NWConnection callback queue — off the main actor, same pattern as
 /// MoonlightAudioRenderer. Events are marshalled back via `onEvent`.
+/// The current receiver, readable from the microphone's capture thread.
+nonisolated final class MicrophoneRoute: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var receiver: AudioStreamReceiver?
+
+    func set(_ receiver: AudioStreamReceiver?) {
+        lock.lock()
+        self.receiver = receiver
+        lock.unlock()
+    }
+
+    func send(_ frame: Data) {
+        lock.lock()
+        let receiver = self.receiver
+        lock.unlock()
+        receiver?.sendMicrophone(frame)
+    }
+}
+
 final class AudioStreamReceiver: @unchecked Sendable {
 
     enum Event: Sendable {
-        case connected(sampleRate: Double, channels: Int)
+        case connected(sampleRate: Double, channels: Int, acceptsMicrophone: Bool)
         case bytesReceived(Int)
         /// A non-silent PCM frame was just scheduled (throttled to ~5/s).
         /// Drives the "audio active" UI; absent during silence.
@@ -1472,7 +1558,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 fail("Unsupported audio format (\(parsed.channelCount)ch @ \(parsed.sampleRate) Hz)")
                 return
             }
-            onEvent?(.connected(sampleRate: parsed.sampleRate, channels: parsed.channelCount))
+            onEvent?(.connected(
+                sampleRate: parsed.sampleRate,
+                channels: parsed.channelCount,
+                acceptsMicrophone: parsed.capabilities.contains(.acceptsMicrophone)
+            ))
             if lowLatency { openUDP() }
         }
 
@@ -1523,7 +1613,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 // Refresh liveness so the health probe doesn't mistake a
                 // quiet-but-live connection for a dead one.
                 onEvent?(.bytesReceived(totalBytes))
-            case .command, .udpHello, nil:
+            case .command, .udpHello, .microphone, .microphoneStopped, nil:
                 break // not receiver-bound / unknown — skip
             }
         }
@@ -1666,6 +1756,27 @@ final class AudioStreamReceiver: @unchecked Sendable {
         )
         guard disposition != .late else { return }
         schedule(samples)
+    }
+
+    /// Sends one `microphone` frame to the Mac: down the low-latency UDP flow
+    /// when it is carrying audio, otherwise on the TCP channel.
+    nonisolated func sendMicrophone(_ frame: Data) {
+        queue.async { [self] in
+            guard !stopped else { return }
+            if let udpConnection, udpFramesReceived > 0 {
+                udpConnection.send(content: frame, completion: .idempotent)
+            } else if header != nil, let connection {
+                connection.send(content: frame, completion: .idempotent)
+            }
+        }
+    }
+
+    nonisolated func sendMicrophoneStopped() {
+        queue.async { [self] in
+            guard !stopped, header != nil, let connection else { return }
+            let frame = AudioStreamProtocol.encodeFrame(.microphoneStopped, Data())
+            connection.send(content: frame, completion: .contentProcessed { _ in })
+        }
     }
 
     /// Sends a media transport command to the Mac sender.

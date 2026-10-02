@@ -32,7 +32,9 @@ import Security
 ///   0-3   magic "VVAS"
 ///   4     protocol version (8)
 ///   5     channel count
-///   6-7   reserved (0)
+///   6     capability flags (`AudioStreamHeader.Capabilities`; 0 from
+///         a sender that predates them)
+///   7     reserved (0)
 ///   8-15  sample rate, Float64 bit pattern
 ///
 /// Frame layout (v3):
@@ -130,6 +132,16 @@ nonisolated enum AudioStreamProtocol {
         /// produces no PCM datagrams and the receiver's grace window would
         /// wrongly fall back to TCP. Carries no payload; ignored for audio.
         case keepAlive = 0x07
+        /// The headset's microphone (receiver → sender): a `MicrophonePacket`.
+        /// Rides the UDP/DTLS flow when one is up — the receiver sends it
+        /// back down the connection the sender opened — and TCP otherwise.
+        /// Sent only to a sender whose header advertised
+        /// `acceptsMicrophone`.
+        case microphone = 0x08
+        /// The headset stopped sending its microphone (receiver → sender,
+        /// TCP, no payload), so the sender can let go of its output device
+        /// at once rather than waiting out a silence timeout.
+        case microphoneStopped = 0x09
     }
 
     /// Wraps a payload in a typed, length-prefixed frame.
@@ -387,12 +399,24 @@ nonisolated enum AudioTokenURL {
 
 /// Stream format negotiation header, sent once by the sender on connect.
 nonisolated struct AudioStreamHeader: Sendable, Equatable {
+    /// What the sender can do beyond streaming audio out, in header byte 6.
+    /// A sender that predates the field sends 0 there, so an older Companion
+    /// reads as offering nothing and the headset hides what it can't use.
+    struct Capabilities: OptionSet, Sendable, Equatable {
+        let rawValue: UInt8
+        /// It plays `microphone` frames into a virtual input device that
+        /// other apps on the Mac can choose as a microphone.
+        static let acceptsMicrophone = Capabilities(rawValue: 1 << 0)
+    }
+
     let sampleRate: Double
     let channelCount: Int
+    let capabilities: Capabilities
 
-    init(sampleRate: Double, channelCount: Int) {
+    init(sampleRate: Double, channelCount: Int, capabilities: Capabilities = []) {
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.capabilities = capabilities
     }
 
     func encoded() -> Data {
@@ -400,7 +424,8 @@ nonisolated struct AudioStreamHeader: Sendable, Equatable {
         data.append(contentsOf: AudioStreamProtocol.magic)
         data.append(AudioStreamProtocol.version)
         data.append(UInt8(channelCount))
-        data.append(contentsOf: [0, 0])
+        data.append(capabilities.rawValue)
+        data.append(0)
         var bits = sampleRate.bitPattern.littleEndian
         withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
         return data
@@ -426,5 +451,67 @@ nonisolated struct AudioStreamHeader: Sendable, Equatable {
 
         self.sampleRate = rate
         self.channelCount = channels
+        self.capabilities = Capabilities(rawValue: bytes[6])
+    }
+}
+
+// MARK: - Microphone
+
+/// One run of the headset's microphone, as carried by a `microphone` frame:
+/// a `PCMStamp`, the capture sample rate (UInt32) and channel count (UInt8),
+/// then interleaved int24 samples as in `pcm` frames.
+///
+/// The format rides on every packet rather than being negotiated once, so a
+/// lost datagram or a sender that joins mid-stream never leaves the other end
+/// guessing, and a change of input route (which can change the rate) needs no
+/// separate message.
+nonisolated struct MicrophonePacket: Sendable, Equatable {
+    static let headerSize = PCMStamp.size + 5
+    /// Sample frames per packet: 5 ms at 48 kHz, which keeps a mono int24
+    /// datagram well under a Wi-Fi MTU once DTLS has wrapped it.
+    static let maxFramesPerPacket = 240
+
+    var stamp: PCMStamp
+    var sampleRate: Double
+    var channelCount: Int
+    /// Interleaved int24 samples (see `PCM24`).
+    var samples: Data
+
+    var frameCount: Int {
+        samples.count / max(1, channelCount * AudioStreamProtocol.bytesPerSample)
+    }
+
+    /// The whole frame — length prefix, type and payload — ready to send.
+    func encodedFrame() -> Data {
+        var payload = stamp.encoded()
+        var rate = UInt32(sampleRate.rounded()).littleEndian
+        withUnsafeBytes(of: &rate) { payload.append(contentsOf: $0) }
+        payload.append(UInt8(channelCount))
+        payload.append(samples)
+        return AudioStreamProtocol.encodeFrame(.microphone, payload)
+    }
+
+    /// Parses a `microphone` payload (the bytes after the type byte). Nil when
+    /// it is too short or describes a format nothing could play.
+    init?(parsing payload: Data) {
+        guard payload.count >= Self.headerSize, let stamp = PCMStamp(parsing: payload) else { return nil }
+        let base = payload.startIndex + PCMStamp.size
+        var rate: UInt32 = 0
+        for i in 0..<4 {
+            rate |= UInt32(payload[base + i]) << (8 * UInt32(i))
+        }
+        let channels = Int(payload[base + 4])
+        guard (8_000...192_000).contains(rate), (1...8).contains(channels) else { return nil }
+        self.stamp = stamp
+        self.sampleRate = Double(rate)
+        self.channelCount = channels
+        self.samples = payload.subdata(in: (base + 5)..<payload.endIndex)
+    }
+
+    init(stamp: PCMStamp, sampleRate: Double, channelCount: Int, samples: Data) {
+        self.stamp = stamp
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.samples = samples
     }
 }

@@ -286,3 +286,35 @@ struct AudioVolumeRow: View {
         .font(.title3)
     }
 }
+
+#if canImport(UIKit)
+/// Sends this device's microphone to the Mac, where the Companion plays it
+/// into BlackHole for any app there to use as its microphone. Mixable, so it
+/// runs alongside a call or other audio here. Disabled until the connected
+/// Companion says it can take it.
+struct MicrophoneToggleButton: View {
+    @Environment(AudioStreamManager.self) private var audioManager
+
+    var body: some View {
+        Button {
+            audioManager.toggleMicrophone()
+        } label: {
+            Image(systemName: audioManager.microphoneEnabled ? "mic.fill" : "mic.slash")
+        }
+        .tint(audioManager.microphoneEnabled ? .red : nil)
+        .disabled(!audioManager.microphoneEnabled && !audioManager.microphoneAvailable)
+        .help(help)
+    }
+
+    private var help: String {
+        if let message = audioManager.microphoneMessage { return message }
+        if audioManager.microphoneEnabled { return "Microphone on — the Mac hears this headset" }
+        if !audioManager.microphoneAvailable {
+            return audioManager.state == .streaming
+                ? "Install BlackHole on the Mac to send it this microphone"
+                : "Microphone to Mac — available once audio is connected"
+        }
+        return "Send this microphone to the Mac (pick BlackHole as the microphone there)"
+    }
+}
+#endif

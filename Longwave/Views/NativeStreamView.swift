@@ -910,6 +910,10 @@ struct NativeStreamView: View {
                 }
                 .help(audioManager.audioModeLabel)
 
+                #if canImport(UIKit)
+                MicrophoneToggleButton()
+                #endif
+
                 Button {
                     showEQ.toggle()
                 } label: {
@@ -1004,6 +1008,10 @@ struct NativeStreamView: View {
                   : audioManager.effectiveAudioMode == .music
                     ? "Music Mode — exclusive playback with Control Center; pauses on interruption"
                     : "Speaker Mode — mixes with other audio and auto-recovers")
+
+            #if canImport(UIKit)
+            MicrophoneToggleButton()
+            #endif
 
             Button {
                 showEQ.toggle()

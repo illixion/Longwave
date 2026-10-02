@@ -29,9 +29,19 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
     private let log = AppLog.audioStream
     /// Every receiver currently holding a configured session, by mode.
     private var participants: [ObjectIdentifier: AudioMode] = [:]
-    /// The options last applied, or nil when nothing has been configured yet
-    /// (no participants, or the system reset media services under us).
-    private var appliedOptions: AVAudioSession.CategoryOptions?
+    /// Everything currently capturing the microphone (`MicrophoneUplink`).
+    /// Any one of them turns the category into `.playAndRecord`; the options
+    /// still come from the receivers, so a mixable session stays mixable.
+    private var recorders: Set<ObjectIdentifier> = []
+    /// The category and options last applied, or nil when nothing has been
+    /// configured yet (no participants, or the system reset media services
+    /// under us).
+    private var applied: Resolved?
+
+    private struct Resolved: Equatable {
+        var category: AVAudioSession.Category
+        var options: AVAudioSession.CategoryOptions
+    }
 
     private init() {}
 
@@ -46,23 +56,76 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
     ) -> Bool {
         lock.lock()
         participants[ObjectIdentifier(participant)] = mode
-        let options = Self.resolve(participants)
-        let changed = appliedOptions != options
-        appliedOptions = options
+        let resolved = resolveLocked()
+        let changed = applied != resolved
+        applied = resolved
         lock.unlock()
 
-        let session = AVAudioSession.sharedInstance()
         var configured = true
         if changed {
-            do {
-                try session.setCategory(.playback, mode: .default, options: options)
-            } catch {
-                log.log("Failed to configure audio session: \(error)")
-                configured = false
-            }
+            configured = apply(resolved)
         }
-        applySessionTraits(spatialAudioMode: spatialAudioMode, options: options)
+        applySessionTraits(spatialAudioMode: spatialAudioMode, options: resolved.options)
         return configured
+    }
+
+    /// Starts a microphone capture. The session moves to `.playAndRecord`
+    /// (keeping whatever mixability the receivers resolve to) and is
+    /// activated. Returns false when the category could not be set.
+    @discardableResult
+    func beginRecording(_ recorder: AnyObject) -> Bool {
+        lock.lock()
+        recorders.insert(ObjectIdentifier(recorder))
+        let resolved = resolveLocked()
+        let changed = applied != resolved
+        applied = resolved
+        lock.unlock()
+
+        if changed, !apply(resolved) { return false }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            log.log("Failed to activate the audio session for recording: \(error)")
+            return false
+        }
+        return true
+    }
+
+    func endRecording(_ recorder: AnyObject) {
+        lock.lock()
+        guard recorders.remove(ObjectIdentifier(recorder)) != nil else {
+            lock.unlock()
+            return
+        }
+        let idle = participants.isEmpty && recorders.isEmpty
+        let resolved = resolveLocked()
+        let changed = !idle && applied != resolved
+        applied = idle ? nil : resolved
+        lock.unlock()
+
+        if changed {
+            apply(resolved)
+            applySessionTraits(spatialAudioMode: nil, options: resolved.options)
+        }
+    }
+
+    /// True while something is capturing the microphone — other code that
+    /// borrows the session (dictation) must not hand it back as `.playback`.
+    var isRecording: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !recorders.isEmpty
+    }
+
+    @discardableResult
+    private func apply(_ resolved: Resolved) -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(resolved.category, mode: .default, options: resolved.options)
+            return true
+        } catch {
+            log.log("Failed to configure audio session (\(resolved.category.rawValue, privacy: .public)): \(error)")
+            return false
+        }
     }
 
     /// Drops a receiver that has stopped. The remaining participants get the
@@ -75,45 +138,44 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
             lock.unlock()
             return
         }
-        let wasExclusive = appliedOptions == []
-        let remaining = participants
-        let options = Self.resolve(remaining)
-        let changed = !remaining.isEmpty && appliedOptions != options
-        appliedOptions = remaining.isEmpty ? nil : options
+        let wasExclusive = applied?.options == []
+        let idle = participants.isEmpty && recorders.isEmpty
+        let resolved = resolveLocked()
+        let changed = !idle && applied != resolved
+        applied = idle ? nil : resolved
         lock.unlock()
 
-        let session = AVAudioSession.sharedInstance()
-        guard !remaining.isEmpty else {
-            // Nothing is playing any more. Hand the session back so other apps
-            // resume — but only if it was the exclusive one that interrupted
-            // them in the first place.
+        guard !idle else {
+            // Nothing is playing or recording any more. Hand the session back
+            // so other apps resume — but only if it was the exclusive one that
+            // interrupted them in the first place.
             if wasExclusive {
-                try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             }
             return
         }
         guard changed else { return }
-        do {
-            try session.setCategory(.playback, mode: .default, options: options)
-        } catch {
-            log.log("Failed to re-configure audio session: \(error)")
-        }
-        applySessionTraits(spatialAudioMode: nil, options: options)
+        apply(resolved)
+        applySessionTraits(spatialAudioMode: nil, options: resolved.options)
     }
 
     /// The system wiped the session out from under us (media services reset).
     /// Forgetting what we applied makes the next `join` re-assert it.
     func forgetAppliedState() {
         lock.lock()
-        appliedOptions = nil
+        applied = nil
         lock.unlock()
     }
 
     /// Exclusive as soon as anyone is in Music mode; mixable otherwise.
-    private static func resolve(
-        _ participants: [ObjectIdentifier: AudioMode]
-    ) -> AVAudioSession.CategoryOptions {
-        participants.values.contains(.music) ? [] : [.mixWithOthers]
+    /// Recording adds the input and nothing else, so a microphone sent to the
+    /// Mac coexists with a call in another app just as playback does.
+    /// Under `lock`.
+    private func resolveLocked() -> Resolved {
+        Resolved(
+            category: recorders.isEmpty ? .playback : .playAndRecord,
+            options: participants.values.contains(.music) ? [] : [.mixWithOthers]
+        )
     }
 
     /// The two visionOS-only session traits that ride along with the category.

@@ -212,6 +212,9 @@ final class AudioStreamerController {
 
     private var tap: SystemAudioTap?
     private var server: AudioStreamServer?
+    /// Plays the headset's microphone into BlackHole for other apps to use.
+    private let microphone = MicrophoneRelay()
+    private(set) var microphoneStatus: MicrophoneRelay.Status = .noDevice
     private var musicBridge: NowPlayingCoordinator?
     /// Whether the tap is currently muting local Mac output.
     private var tapMuted = false
@@ -307,6 +310,15 @@ final class AudioStreamerController {
         }
     }
 
+    var microphoneStatusText: String {
+        switch microphoneStatus {
+        case .noDevice: "Install BlackHole to use the headset microphone: brew install blackhole-2ch"
+        case .ready(let name): "Ready — choose \(name) as the microphone in your app"
+        case .live(let name): "Live — playing into \(name)"
+        case .failed(let reason): reason
+        }
+    }
+
     var formatText: String {
         guard let format = streamFormat else { return "—" }
         return "\(format.channelCount)ch \(Int(format.sampleRate)) Hz int24"
@@ -330,6 +342,13 @@ final class AudioStreamerController {
                 self?.handleClientCountChange(count)
             }
         }
+        let microphone = self.microphone
+        server.onMicrophone = { packet in microphone.receive(packet) }
+        server.onMicrophoneStopped = { microphone.headsetStopped() }
+        microphone.onStatusChange = { [weak self] status in
+            self?.microphoneStatus = status
+        }
+        microphone.refreshStatus()
         do {
             try server.start()
         } catch {
@@ -393,7 +412,13 @@ final class AudioStreamerController {
             tap.onAudio = { [weak server] pcm in
                 server?.broadcast(pcm)
             }
-            server.provideHeader(AudioStreamHeader(sampleRate: format.sampleRate, channelCount: format.channelCount))
+            // Offered only with a loopback device to play it into; a headset
+            // told otherwise would show a microphone button that does nothing.
+            server.provideHeader(AudioStreamHeader(
+                sampleRate: format.sampleRate,
+                channelCount: format.channelCount,
+                capabilities: microphone.isAvailable ? [.acceptsMicrophone] : []
+            ))
             self.tap = tap
         } catch {
             tap.stop()
@@ -436,6 +461,7 @@ final class AudioStreamerController {
         pendingStopTapTask?.cancel()
         pendingStopTapTask = nil
         stopTap()
+        microphone.stop()
         musicBridge?.stop()
         musicBridge = nil
         server?.stop()

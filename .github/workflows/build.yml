@@ -1,8 +1,10 @@
 name: Build Longwave
 
+# Documentation-only changes don't build or release.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 # Pinned dependency versions (keep in sync with scripts/setup-deps.sh)
@@ -123,6 +125,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=$(git rev-list --count HEAD) \
             "${EDITION[@]}"
 
       - name: Create unsigned IPA
@@ -218,6 +221,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=$(git rev-list --count HEAD) \
             "${EDITION[@]}"
 
       # The extra copies of moonlight-common-c are only safe if every one of
@@ -235,6 +239,18 @@ jobs:
           cp -R Longwave.app $RUNNER_TEMP/MoonlightPayload/Payload/
           cd $RUNNER_TEMP/MoonlightPayload
           zip -r $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa Payload
+
+      # The same Moonlight build for the visionOS source at apps.illixion.com, minus the
+      # broadcast extension: SideStore re-signs with the user's Apple ID, and on a free
+      # account the extension would cost another App ID. Released under a fixed name, so
+      # releases/latest/download/Longwave-visionOS-unsigned.ipa always serves the newest.
+      - name: Create unsigned visionOS IPA for sideloading
+        run: |
+          mkdir -p $RUNNER_TEMP/visionOSPayload/Payload
+          cp -R $RUNNER_TEMP/Longwave-moonlight.xcarchive/Products/Applications/Longwave.app $RUNNER_TEMP/visionOSPayload/Payload/
+          rm -rf $RUNNER_TEMP/visionOSPayload/Payload/Longwave.app/PlugIns
+          cd $RUNNER_TEMP/visionOSPayload
+          zip -qry $RUNNER_TEMP/Longwave-visionOS-unsigned.ipa Payload
 
       # The iPhone/iPad app, for the AltStore / SideStore source at apps.illixion.com.
       # Its target has MOONLIGHT_ENABLED and the pro.longwave.ios id baked in, so it is
@@ -310,6 +326,7 @@ jobs:
           cp $RUNNER_TEMP/Longwave-unsigned.ipa "dist/Longwave-${VERSION}-unsigned.ipa"
           cp $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa "dist/Longwave-${VERSION}-moonlight-unsigned.ipa"
           cp $RUNNER_TEMP/Longwave-iOS-unsigned.ipa dist/Longwave-iOS-unsigned.ipa
+          cp $RUNNER_TEMP/Longwave-visionOS-unsigned.ipa dist/Longwave-visionOS-unsigned.ipa
           cp $RUNNER_TEMP/LongwaveCompanion-unsigned.zip "dist/LongwaveCompanion-${VERSION}-unsigned.zip"
           cp $RUNNER_TEMP/LongwaveMac-unsigned.zip "dist/LongwaveMac-${VERSION}-unsigned.zip"
 
@@ -453,6 +470,7 @@ jobs:
           **Assets**
           - \`Longwave-…-unsigned.ipa\` — VNC + Audio only (Moonlight disabled). All MIT-compatible.
           - \`Longwave-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
+          - \`Longwave-visionOS-unsigned.ipa\` — the Moonlight build above without the broadcast extension, under a fixed name, which the visionOS source at https://apps.illixion.com installs and keeps updated (**GPLv3**).
           - \`Longwave-iOS-unsigned.ipa\` — the iPhone and iPad app, with Moonlight (**GPLv3**). Install it through AltStore or SideStore from https://apps.illixion.com, which keeps it updated.
           - \`LongwaveCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
           - \`LongwaveMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).

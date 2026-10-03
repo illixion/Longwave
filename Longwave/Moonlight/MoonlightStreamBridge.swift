@@ -99,7 +99,8 @@ enum MoonlightBridge {
     nonisolated static func audioCleanup(_ slot: Int) { library(slot).audioRenderer?.cleanup() }
 
     nonisolated static func audioDecodeAndPlay(_ slot: Int, _ sampleData: UnsafeMutablePointer<CChar>?, _ sampleLength: Int32) {
-        guard let sampleData, let renderer = library(slot).audioRenderer else { return }
+        // A nil sampleData is a lost packet; the renderer conceals it.
+        guard let renderer = library(slot).audioRenderer else { return }
         renderer.decodeAndPlaySample(sampleData, length: sampleLength)
     }
 

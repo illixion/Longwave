@@ -1,6 +1,7 @@
 #if MOONLIGHT_ENABLED
 import DebugTrace
 import Foundation
+import os
 import AVFoundation
 import Opus
 @preconcurrency import MoonlightCommonC
@@ -17,6 +18,44 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     private nonisolated(unsafe) var audioEngine: AVAudioEngine?
     private nonisolated(unsafe) var playerNode: AVAudioPlayerNode?
     private nonisolated(unsafe) var audioFormat: AVAudioFormat?
+
+    /// Jitter cushion queued on the player node before it is told to play,
+    /// and again after it runs dry. Starting playback on the first 5 ms Opus
+    /// frame — what this used to do — meant any arrival jitter above 5 ms
+    /// starved the node, and each starvation is a hard cut to silence and
+    /// back: the run of pops at the start of every session, when the link is
+    /// at its burstiest. 40 ms matches the native receiver's low-latency
+    /// base (`AudioStreamManager`), which rides the same Wi-Fi.
+    private nonisolated static let primeSeconds: Double = 0.040
+    /// Past this much queued audio the stream is running long (a post-stall
+    /// burst well beyond the cushion) and incoming frames are dropped until
+    /// it's back in range — game audio must not drift behind the video.
+    private nonisolated static let ceilingSeconds: Double = 0.250
+
+    /// Sample frames scheduled on the player node but not yet played back,
+    /// with a generation stamp so completion callbacks from buffers flushed
+    /// by `stop()` can't decrement the next run's depth. `AVAudioPlayerNode`
+    /// has no depth query, and a starved node doesn't stop — it renders
+    /// silence and keeps its clock running — so this counter is the only way
+    /// to see an underrun. Written from the render thread, hence the lock.
+    private struct QueueState: Sendable {
+        var frames = 0
+        var generation = 0
+    }
+    private let queueState = OSAllocatedUnfairLock(initialState: QueueState())
+
+    /// True once the cushion filled and the node was told to play. Owned by
+    /// moonlight-common-c's audio thread; `start` resets it before that
+    /// thread exists.
+    private nonisolated(unsafe) var playing = false
+
+    /// Serializes the player's play/pause against `stop()`, and `active` is
+    /// what it guards. moonlight-common-c calls `stop()` *before* joining its
+    /// audio threads, so a frame in flight can finish priming after the
+    /// engine has stopped — and `play()` on a node whose engine isn't running
+    /// raises an Objective-C exception rather than failing quietly.
+    private let lifecycleLock = NSLock()
+    private nonisolated(unsafe) var active = false
 
     /// When true, audio is decoded but not played (no audio mode).
     nonisolated(unsafe) var muted: Bool = false
@@ -91,19 +130,35 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         return 0
     }
 
+    /// Starts the engine but not the player: `decodeAndPlaySample` releases
+    /// it once the jitter cushion has filled.
     nonisolated func start() {
         guard !muted else { return }
+        playing = false
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         do {
             try audioEngine?.start()
-            playerNode?.play()
+            active = true
         } catch {
             AppLog.moonlightAudio.log("Failed to start audio engine: \(error)")
         }
     }
 
     nonisolated func stop() {
+        lifecycleLock.lock()
+        active = false
         playerNode?.stop()
         audioEngine?.stop()
+        lifecycleLock.unlock()
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
     }
 
     nonisolated func cleanup() {
@@ -163,7 +218,13 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     }
 
     /// Decode and play an Opus packet. Called from a background thread.
-    nonisolated func decodeAndPlaySample(_ data: UnsafeMutablePointer<CChar>, length: Int32) {
+    ///
+    /// `data` is nil when moonlight-common-c lost the packet: decoding nil
+    /// runs libopus's packet-loss concealment, which synthesizes a frame
+    /// that continues the waveform. Dropping it instead, as this used to,
+    /// left a 5 ms hole in the queue — a starvation, and so a click, per
+    /// lost packet.
+    nonisolated func decodeAndPlaySample(_ data: UnsafeMutablePointer<CChar>?, length: Int32) {
         guard !muted else { return }
         guard let decoder = decoder,
               let playerNode = playerNode,
@@ -176,8 +237,8 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         let decodedSamples = pcmBuffer.withUnsafeMutableBufferPointer { pcmPtr in
             opus_multistream_decode(
                 decoder,
-                UnsafeRawPointer(data).assumingMemoryBound(to: UInt8.self),
-                length,
+                data.map { UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self) },
+                data == nil ? 0 : length,
                 pcmPtr.baseAddress!,
                 Int32(samplesPerFrame),
                 0  // no FEC
@@ -196,7 +257,39 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         guard let channelData = audioBuffer.int16ChannelData else { return }
         memcpy(channelData[0], &pcmBuffer, byteCount)
 
-        playerNode.scheduleBuffer(audioBuffer)
+        let rate = Double(sampleRate)
+        let scheduled = Int(frameCount)
+        let (depth, generation) = queueState.withLock { ($0.frames, $0.generation) }
+
+        if depth > Int(Self.ceilingSeconds * rate) { return }
+
+        // Ran dry: re-enter the prebuffer state. The node is already
+        // rendering silence, so pausing it here is silence-to-silence and
+        // inaudible, and the frames scheduled from now on accumulate into a
+        // fresh cushion instead of trickling out one jittery frame at a time.
+        if playing, depth == 0 {
+            lifecycleLock.lock()
+            if active { playerNode.pause() }
+            lifecycleLock.unlock()
+            playing = false
+        }
+
+        queueState.withLock { $0.frames += scheduled }
+        playerNode.scheduleBuffer(audioBuffer, completionCallbackType: .dataPlayedBack) { [queueState] _ in
+            queueState.withLock { state in
+                guard state.generation == generation else { return }
+                state.frames -= scheduled
+            }
+        }
+
+        if !playing, depth + scheduled >= Int(Self.primeSeconds * rate) {
+            lifecycleLock.lock()
+            if active {
+                playerNode.play()
+                playing = true
+            }
+            lifecycleLock.unlock()
+        }
     }
 }
 #endif

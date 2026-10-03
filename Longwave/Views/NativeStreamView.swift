@@ -95,11 +95,10 @@ struct NativeStreamView: View {
     /// `MacNativeMouseBridge`. Made on first appearance, since the manager
     /// it drives comes from the environment.
     @State private var mouseBridge: MacNativeMouseBridge?
-    /// The Display menu is showing — its pickers live outside the ornament,
-    /// so the mouse's clicks must neither be caught by the hit target nor
+    /// The Display popover is showing — it lives outside the ornament, so
+    /// the mouse's clicks must neither be caught by the hit target nor
     /// reach the Mac.
-    @State private var displayMenuOpen = false
-    @State private var lastMenuChoice: Date?
+    @State private var displaySettingsShown = false
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -495,14 +494,8 @@ struct NativeStreamView: View {
                     if mouseOwnsPointer {
                         // Gone while the Display menu is open, so the mouse
                         // can work the menu.
-                        if !displayMenuOpen, let rect = mouseHitRect {
+                        if !displaySettingsShown, let rect = mouseHitRect {
                             MouseHitTarget()
-                                // What Moonlight's stream view has and this
-                                // didn't: with it, visionOS treats the view
-                                // as a game's and the mouse goes to GCMouse
-                                // with the pointer locked away, the way the
-                                // game stream behaves.
-                                .handlesGameControllerEvents(matching: .gamepad)
                                 .frame(width: rect.width, height: rect.height)
                                 .position(x: rect.midX, y: rect.midY)
                                 .offset(z: mouseLayerDepth)
@@ -599,6 +592,10 @@ struct NativeStreamView: View {
         // room. (When the composition was transparent there were no edges to
         // round.)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // As on Moonlight's stream view, whose mouse locks the way this one
+        // didn't with the modifier only on the mouse hit target: the whole
+        // content claims game-controller events.
+        .handlesGameControllerEvents(matching: .gamepad)
         // Explicit flex range so this stays freely resizable under the
         // window group's `.contentSize` resizability — without it, a plain
         // ZStack reports no size preference of its own and the window would
@@ -1207,116 +1204,124 @@ struct NativeStreamView: View {
         }
     }
 
-    /// Switches the desktop the host streams — its virtual display or one of
-    /// its monitors — without a trip to the Mac's companion window.
+    /// Which desktop the host streams and how it is shown, in a popover
+    /// rather than a menu: a popover's open state is ours to know, and the
+    /// mouse hit target has to stand aside for exactly as long as it shows.
+    /// A menu offers no such signal, and inferring one from its content
+    /// appearing went stale after choices that changed the content.
     private var displayMenu: some View {
-        Menu {
-            if screenManager.displays.count > 1 {
-                Picker("Desktop", selection: Binding(
-                    get: { screenManager.selectedDisplayID ?? "" },
-                    set: { menuChoice(); screenManager.selectDisplay($0) }
-                )) {
-                    ForEach(screenManager.displays) { display in
-                        Label(
-                            display.name,
-                            systemImage: display.isVirtual ? "rectangle.on.rectangle" : "display"
-                        )
-                        .tag(display.id)
-                    }
-                }
-                .pickerStyle(.inline)
-            }
-            virtualDisplayControls
-            Picker("Curve", selection: Binding(
-                get: { curvatureSetting },
-                set: { menuChoice(); curvatureSetting = $0 }
-            )) {
-                ForEach(NativeScreenCurvature.allCases) { curvature in
-                    Text(curvature.title).tag(curvature.rawValue)
-                }
-            }
-            .pickerStyle(.menu)
-            // A menu's content is built when it opens and torn down when it
-            // closes; SwiftUI offers no other open/closed signal. On the one
-            // item that is always there, so it fires once each way — except
-            // that a choice which changes the content (the host answering a
-            // resolution change) can rebuild it once more as the menu closes.
-            // So a choice also counts as closing, and an appearance right
-            // after one is ignored; a stuck "open" hid the hit target.
-            .onAppear {
-                if let lastMenuChoice, Date().timeIntervalSince(lastMenuChoice) < 1.5 { return }
-                setDisplayMenuOpen(true)
-            }
-            .onDisappear { setDisplayMenuOpen(false) }
+        Button {
+            setDisplaySettingsShown(!displaySettingsShown)
         } label: {
             Label("Display", systemImage: "display.2")
         }
         .help("Choose which Mac desktop to show, and how much it curves around you")
+        .popover(isPresented: Binding(
+            get: { displaySettingsShown },
+            set: { setDisplaySettingsShown($0) }
+        ), arrowEdge: .top) {
+            displaySettings
+                .padding(20)
+                .frame(width: 380)
+        }
     }
 
-    /// The host's virtual display, from the headset: on (the desktop exists
-    /// only for the headset) or off (mirror the Mac's main display), and
-    /// while on, its resolution and whether the Mac's own screens go dark.
-    /// Hosts that don't publish the settings get the plain picker above.
-    @ViewBuilder
-    private var virtualDisplayControls: some View {
-        let virtualID = MacNativeStreamProtocol.virtualDisplayID
-        let mainPhysical = screenManager.displays.first(where: { !$0.isVirtual })
-        if let settings = screenManager.virtualDisplaySettings,
-           screenManager.displays.contains(where: { $0.id == virtualID }) {
-            let virtualOn = screenManager.selectedDisplayID == virtualID
-            Section("Virtual Display") {
-                Toggle(isOn: Binding(
-                    get: { virtualOn },
-                    set: { on in
-                        menuChoice()
-                        if on {
-                            screenManager.selectDisplay(virtualID)
-                        } else if let mainPhysical {
-                            screenManager.selectDisplay(mainPhysical.id)
-                        }
-                    }
+    private var displaySettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if screenManager.virtualDisplaySettings != nil {
+                virtualDisplayControls
+            } else if screenManager.displays.count > 1 {
+                // A host that doesn't publish its virtual display's settings:
+                // just the list it offers.
+                Picker("Desktop", selection: Binding(
+                    get: { screenManager.selectedDisplayID ?? "" },
+                    set: { screenManager.selectDisplay($0) }
                 )) {
-                    Label(
-                        virtualOn ? "Virtual Display" : "Mirroring \(mainPhysical?.name ?? "Mac")",
-                        systemImage: "rectangle.on.rectangle"
-                    )
-                }
-                .disabled(!virtualOn && mainPhysical == nil)
-
-                if virtualOn {
-                    Picker(selection: Binding(
-                        get: { settings.resolution },
-                        set: { menuChoice(); screenManager.configureVirtualDisplay(.init(resolution: $0)) }
-                    )) {
-                        ForEach(settings.resolutions) { resolution in
-                            Text(resolution.title).tag(resolution.id)
-                        }
-                    } label: {
-                        Label("Resolution", systemImage: "aspectratio")
-                    }
-                    .pickerStyle(.menu)
-
-                    Toggle(isOn: Binding(
-                        get: { settings.hostDisplaysOff },
-                        set: { menuChoice(); screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
-                    )) {
-                        Label("Turn Off Mac Displays", systemImage: "power")
+                    ForEach(screenManager.displays) { display in
+                        Text(display.name).tag(display.id)
                     }
                 }
+                .pickerStyle(.menu)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Curve").font(.headline)
+                Picker("Curve", selection: $curvatureSetting) {
+                    ForEach(NativeScreenCurvature.allCases) { curvature in
+                        Text(curvature.title).tag(curvature.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
         }
     }
 
-    /// Picking anything in the Display menu closes it.
-    private func menuChoice() {
-        lastMenuChoice = Date()
-        setDisplayMenuOpen(false)
+    /// The host's virtual display: on (a desktop that exists only for the
+    /// headset — its resolution, and whether the Mac's own screens go dark)
+    /// or off (mirror one of the Mac's physical displays).
+    @ViewBuilder
+    private var virtualDisplayControls: some View {
+        let virtualID = MacNativeStreamProtocol.virtualDisplayID
+        let physical = screenManager.displays.filter { !$0.isVirtual }
+        if let settings = screenManager.virtualDisplaySettings {
+            let virtualOn = screenManager.selectedDisplayID == virtualID
+            Toggle(isOn: Binding(
+                get: { virtualOn },
+                set: { on in
+                    if on {
+                        screenManager.selectDisplay(virtualID)
+                    } else if let main = physical.first {
+                        // The host lists the main display first.
+                        screenManager.selectDisplay(main.id)
+                    }
+                }
+            )) {
+                Label("Virtual Display", systemImage: "rectangle.on.rectangle")
+            }
+            .disabled(!virtualOn && physical.isEmpty)
+
+            if virtualOn {
+                Picker(selection: Binding(
+                    get: { settings.resolution },
+                    set: { screenManager.configureVirtualDisplay(.init(resolution: $0)) }
+                )) {
+                    ForEach(settings.resolutions) { resolution in
+                        Text(resolution.title).tag(resolution.id)
+                    }
+                } label: {
+                    Label("Resolution", systemImage: "aspectratio")
+                }
+                .pickerStyle(.menu)
+
+                Toggle(isOn: Binding(
+                    get: { settings.hostDisplaysOff },
+                    set: { screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
+                )) {
+                    Label("Turn Off Mac Displays", systemImage: "power")
+                }
+            } else if physical.count > 1 {
+                Picker(selection: Binding(
+                    get: { screenManager.selectedDisplayID ?? "" },
+                    set: { screenManager.selectDisplay($0) }
+                )) {
+                    ForEach(physical) { display in
+                        Text(display.name).tag(display.id)
+                    }
+                } label: {
+                    Label("Mirror", systemImage: "display")
+                }
+                .pickerStyle(.menu)
+            } else if let only = physical.first {
+                Label("Mirroring \(only.name)", systemImage: "display")
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
-    private func setDisplayMenuOpen(_ open: Bool) {
-        displayMenuOpen = open
-        mouseBridge?.menuOpen = open
+    private func setDisplaySettingsShown(_ shown: Bool) {
+        displaySettingsShown = shown
+        mouseBridge?.menuOpen = shown
     }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio

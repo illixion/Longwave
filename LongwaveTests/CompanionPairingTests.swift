@@ -58,7 +58,7 @@ final class CompanionPairingTests: XCTestCase {
         XCTAssertEqual(h.code, m.code)
         XCTAssertEqual(h.code.count, 6)
         XCTAssertTrue(h.code.allSatisfy(\.isNumber))
-        let grant = PairingGrant(token: "secret", macID: "mac", macName: "Pegasus", addresses: ["172.20.48.198"])
+        let grant = PairingGrant(token: "secret", macID: "mac", macName: "Studio Mac", addresses: ["192.0.2.10"])
         XCTAssertEqual(try PairingExchange.open(PairingExchange.seal(grant, with: m.key), with: h.key), grant)
     }
 
@@ -95,7 +95,7 @@ final class CompanionPairingTests: XCTestCase {
     func testMessagesFrameAndSplitAcrossReads() throws {
         let messages: [PairingMessage] = [
             .commit(headsetID: "hs", headsetName: "Vision Pro", commitment: Data([1, 2, 3])),
-            .macHello(macID: "mac", macName: "Pegasus", publicKey: Data(count: 32), nonce: Data(count: 32)),
+            .macHello(macID: "mac", macName: "Studio Mac", publicKey: Data(count: 32), nonce: Data(count: 32)),
             .deny,
         ]
         var stream = Data()

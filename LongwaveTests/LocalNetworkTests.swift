@@ -13,7 +13,7 @@ final class LocalNetworkTests: XCTestCase {
 
     func testMixedInterfacesStillDetectsIcs() {
         // Ethernet + hotspot lease simultaneously (e.g. the host's own view, or a multihomed client).
-        XCTAssertEqual(LocalNetwork.inferWindowsHotspotHost(from: ["172.20.48.142", "192.168.137.207"]),
+        XCTAssertEqual(LocalNetwork.inferWindowsHotspotHost(from: ["192.0.2.142", "192.168.137.207"]),
                        "192.168.137.1")
     }
 

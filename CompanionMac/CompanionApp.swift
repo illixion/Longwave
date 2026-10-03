@@ -62,7 +62,9 @@ struct CompanionApp: App {
                 // string is what has to be the right length.
                 Text(track)
             } else {
-                Image(systemName: controller.isRunning ? "speaker.wave.2.fill" : "speaker.slash")
+                // The app icon's wave as a template glyph; it goes flat while audio is stopped.
+                Image(controller.isRunning ? "MenuBarWave" : "MenuBarWaveOff")
+                    .accessibilityLabel(controller.isRunning ? "Longwave, audio on" : "Longwave, audio off")
             }
         }
         .menuBarExtraStyle(.window)

@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, protocol, Tray, Menu, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -103,6 +103,7 @@ let dismissedPairingKey = null;
 let pairingRevealed = false;
 let quitInProgress = false;
 let allowQuit = false;
+let tray = null;
 let stackOperationTail = Promise.resolve();
 // The public backend (hotspot, native mac streaming) — always present.
 const client = new HotspotClient();
@@ -311,11 +312,49 @@ function createWindow() {
     }
     send('notify', { event, data });
   });
+  // Closing the window keeps the stack running in the tray; Quit lives in the tray menu.
   mainWindow.on('close', (event) => {
     if (allowQuit) return;
     event.preventDefault();
-    requestQuit();
+    mainWindow.hide();
+    showTrayHintOnce();
   });
+}
+
+// The app icon's wave without its tile: white on a dark taskbar, near-black on a light one.
+// Windows can theme the taskbar separately from apps, hence the system-UI flag.
+function trayImagePath() {
+  const dark = process.platform === 'win32'
+    ? nativeTheme.shouldUseDarkColorsForSystemIntegratedUI
+    : nativeTheme.shouldUseDarkColors;
+  return path.join(__dirname, 'assets', dark ? 'tray-dark.png' : 'tray-light.png');
+}
+
+function createTray() {
+  tray = new Tray(trayImagePath());
+  tray.setToolTip('Longwave Companion');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Longwave Companion', click: focusMainWindow },
+    { type: 'separator' },
+    { label: 'Quit Longwave', click: () => requestQuit() },
+  ]));
+  tray.on('click', focusMainWindow);
+  nativeTheme.on('updated', () => {
+    if (tray && !tray.isDestroyed()) tray.setImage(trayImagePath());
+  });
+}
+
+// Said once, the first time closing the window doesn't quit, so the app isn't mistaken for gone.
+function showTrayHintOnce() {
+  const flag = path.join(app.getPath('userData'), 'tray-hint-shown');
+  if (fs.existsSync(flag)) return;
+  try { fs.writeFileSync(flag, ''); } catch { /* shown again next time, harmless */ }
+  const hint = new Notification({
+    title: 'Longwave is still running',
+    body: 'It keeps serving your headset from the tray. Right-click the wave icon to quit.',
+  });
+  hint.on('click', focusMainWindow);
+  hint.show();
 }
 
 function pairingStatusKey(status) {
@@ -800,6 +839,7 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
   );
   controlServer.start();
   createWindow();
+  createTray();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

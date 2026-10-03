@@ -90,6 +90,10 @@ struct NativeStreamView: View {
     /// True while both hands are pinched (and briefly after), so the one-hand
     /// gestures stand down — see `TwoHandPointerGesture`.
     @State private var twoHandEngaged = false
+    /// A Bluetooth/USB mouse, read raw and sent straight to the Mac — see
+    /// `MacNativeMouseBridge`. Made on first appearance, since the manager
+    /// it drives comes from the environment.
+    @State private var mouseBridge: MacNativeMouseBridge?
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -483,7 +487,11 @@ struct NativeStreamView: View {
                     // one that's there. It claims no touches, which leaves the
                     // gestures below untouched.
                     IndirectScrollSurface(
-                        onScroll: indirectScroll,
+                        onScroll: { delta in
+                            // The bridge reads the wheel itself.
+                            guard !mouseOwnsPointer else { return }
+                            indirectScroll(delta)
+                        },
                         onScrollEnded: { scrollSteps.reset() }
                     )
                 }
@@ -504,6 +512,10 @@ struct NativeStreamView: View {
                     onSecondaryClick: rightClickAtCursor
                 )
                 .onContinuousHover { phase in
+                    // With a mouse connected the bridge moves the Mac's
+                    // cursor by its raw motion; a hover position would
+                    // fight it.
+                    guard !mouseOwnsPointer else { return }
                     // A mouse hovering the window plane; on the curve it
                     // follows the ray from the circle's centre.
                     if let curve = activeCurve {
@@ -534,9 +546,15 @@ struct NativeStreamView: View {
             WindowSceneReader { scene in
                 windowScene = scene
                 scheduleAspectLock()
+                startMouseBridge()
             }
             .frame(width: 1, height: 1)
+            .onAppear(perform: startMouseBridge)
+            .onChange(of: screenManager.state) {
+                mouseBridge?.streaming = screenManager.state == .streaming
+            }
             .onDisappear {
+                mouseBridge?.stop()
                 // Screen off: the audio and picker panels size themselves.
                 aspectLockTask?.cancel()
                 windowScene?.lockAspect(nil)
@@ -545,7 +563,8 @@ struct NativeStreamView: View {
 
             // Local pointer dot for trackpad mode — the Mac's own cursor
             // isn't visible until the pointer actually lands there.
-            if screenManager.touchMode == .relative, screenManager.streamSize.width > 0 {
+            // With a mouse, the Mac draws its own cursor into the stream.
+            if screenManager.touchMode == .relative, !mouseOwnsPointer, screenManager.streamSize.width > 0 {
                 cursorOverlay
             }
         }
@@ -650,6 +669,21 @@ struct NativeStreamView: View {
         )
     }
 
+    /// Whether a physical mouse drives the Mac's cursor: the view's own
+    /// taps, drags and hover then stand aside, since visionOS also delivers
+    /// each physical click to them (Moonlight's rule too).
+    private var mouseOwnsPointer: Bool {
+        guard let mouseBridge else { return false }
+        return mouseBridge.isActive && mouseBridge.captureEnabled
+    }
+
+    private func startMouseBridge() {
+        let bridge = mouseBridge ?? MacNativeMouseBridge(manager: screenManager)
+        mouseBridge = bridge
+        bridge.streaming = screenManager.state == .streaming
+        bridge.start(scene: windowScene)
+    }
+
     /// Bluetooth-mouse / gaze pointer motion without a button held — a
     /// DragGesture only fires while a button is down.
     private func hover(_ phase: HoverPhase, _ toFlat: (CGPoint) -> CGPoint = { $0 }) {
@@ -686,7 +720,7 @@ struct NativeStreamView: View {
     /// `location` is on the flat picture, in view points — from the flat
     /// gesture surface directly, or mapped off the curved mesh.
     private func handleTap(at location: CGPoint) {
-        guard !twoHandEngaged else { return }
+        guard !twoHandEngaged, !mouseOwnsPointer else { return }
         if dragLocked {
             // Lifting off the press-and-hold that *started* the lock
             // can arrive here as a tap; that would release it instantly.
@@ -716,7 +750,7 @@ struct NativeStreamView: View {
 
     /// Points on the flat picture, in view points, like `handleTap`.
     private func handleDragChanged(at location: CGPoint, translation: CGSize) {
-        guard !twoHandEngaged else { return }
+        guard !twoHandEngaged, !mouseOwnsPointer else { return }
         if screenManager.touchMode == .absolute {
             guard let point = framebufferPoint(location) else { return }
             if dragLocked {
@@ -803,7 +837,7 @@ struct NativeStreamView: View {
     /// pointer — the same "wherever the cursor is" rule the Right-click button
     /// uses, since a long press carries no location of its own.
     private func beginDragLockAtCursor() {
-        guard !twoHandEngaged, !dragLocked else { return }
+        guard !twoHandEngaged, !dragLocked, !mouseOwnsPointer else { return }
         if screenManager.touchMode == .absolute {
             guard let point = lastPointerPoint else { return }
             screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
@@ -1090,6 +1124,19 @@ struct NativeStreamView: View {
                     Label("Right-click", systemImage: "cursorarrow.click.2")
                 }
 
+                if let mouseBridge, mouseBridge.isActive {
+                    Toggle(isOn: Binding(
+                        get: { mouseBridge.captureEnabled },
+                        set: { mouseBridge.captureEnabled = $0 }
+                    )) {
+                        Label("Mouse", systemImage: mouseBridge.isPointerLocked ? "computermouse.fill" : "computermouse")
+                    }
+                    .toggleStyle(.button)
+                    .help(mouseBridge.captureEnabled
+                        ? "The mouse controls the Mac. Look here and pinch to give it back to visionOS."
+                        : "Send the mouse to the Mac")
+                }
+
                 displayMenu
 
                 Button(action: toggleKeyboardWindow) {
@@ -1114,6 +1161,9 @@ struct NativeStreamView: View {
         .buttonStyle(.bordered)
         .padding(12)
         .glassBackgroundEffect()
+        .onHover { hovering in
+            mouseBridge?.pointerOverControls = hovering
+        }
     }
 
     /// Switches the desktop the host streams — its virtual display or one of

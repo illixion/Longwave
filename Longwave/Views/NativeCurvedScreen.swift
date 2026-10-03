@@ -275,6 +275,10 @@ final class MacNativeCurvedTexture {
 struct NativeCurvedScreenView: View {
     let surface: MacNativeFrameSurface
     let curve: NativeScreenCurve
+    /// Off while a mouse owns the desktop: a click on the mesh is taken as
+    /// a gaze pinch, landing where the eyes are rather than under the
+    /// pointer, so the pointer has to fall through to the window plane.
+    let acceptsInput: Bool
     let onTap: (CGPoint) -> Void
     let onLongPress: () -> Void
     let onDragChanged: (_ point: CGPoint, _ translation: CGSize) -> Void
@@ -292,9 +296,13 @@ struct NativeCurvedScreenView: View {
 
     var body: some View {
         RealityView { content in
-            screen.components.set(InputTargetComponent())
             content.add(screen)
         } update: { content in
+            if acceptsInput {
+                screen.components.set(InputTargetComponent())
+            } else {
+                screen.components.remove(InputTargetComponent.self)
+            }
             // The picture's centre on the window plane, in the content's
             // space — RealityView's origin is not documented to sit there.
             let center = content.convert(

@@ -3,6 +3,7 @@ import SwiftUI
 import AVFoundation
 import UIKit
 import RAVEMedia
+import GameController
 
 private final class MacNativeLayerView: UIView {
     let displayLayer: AVSampleBufferDisplayLayer
@@ -98,6 +99,7 @@ struct NativeStreamView: View {
     /// so the mouse's clicks must neither be caught by the hit target nor
     /// reach the Mac.
     @State private var displayMenuOpen = false
+    @State private var lastMenuChoice: Date?
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -495,6 +497,12 @@ struct NativeStreamView: View {
                         // can work the menu.
                         if !displayMenuOpen, let rect = mouseHitRect {
                             MouseHitTarget()
+                                // What Moonlight's stream view has and this
+                                // didn't: with it, visionOS treats the view
+                                // as a game's and the mouse goes to GCMouse
+                                // with the pointer locked away, the way the
+                                // game stream behaves.
+                                .handlesGameControllerEvents(matching: .gamepad)
                                 .frame(width: rect.width, height: rect.height)
                                 .position(x: rect.midX, y: rect.midY)
                                 .offset(z: mouseLayerDepth)
@@ -1206,7 +1214,7 @@ struct NativeStreamView: View {
             if screenManager.displays.count > 1 {
                 Picker("Desktop", selection: Binding(
                     get: { screenManager.selectedDisplayID ?? "" },
-                    set: { screenManager.selectDisplay($0) }
+                    set: { menuChoice(); screenManager.selectDisplay($0) }
                 )) {
                     ForEach(screenManager.displays) { display in
                         Label(
@@ -1219,7 +1227,10 @@ struct NativeStreamView: View {
                 .pickerStyle(.inline)
             }
             virtualDisplayControls
-            Picker("Curve", selection: $curvatureSetting) {
+            Picker("Curve", selection: Binding(
+                get: { curvatureSetting },
+                set: { menuChoice(); curvatureSetting = $0 }
+            )) {
                 ForEach(NativeScreenCurvature.allCases) { curvature in
                     Text(curvature.title).tag(curvature.rawValue)
                 }
@@ -1227,8 +1238,15 @@ struct NativeStreamView: View {
             .pickerStyle(.menu)
             // A menu's content is built when it opens and torn down when it
             // closes; SwiftUI offers no other open/closed signal. On the one
-            // item that is always there, so it fires once each way.
-            .onAppear { setDisplayMenuOpen(true) }
+            // item that is always there, so it fires once each way — except
+            // that a choice which changes the content (the host answering a
+            // resolution change) can rebuild it once more as the menu closes.
+            // So a choice also counts as closing, and an appearance right
+            // after one is ignored; a stuck "open" hid the hit target.
+            .onAppear {
+                if let lastMenuChoice, Date().timeIntervalSince(lastMenuChoice) < 1.5 { return }
+                setDisplayMenuOpen(true)
+            }
             .onDisappear { setDisplayMenuOpen(false) }
         } label: {
             Label("Display", systemImage: "display.2")
@@ -1251,6 +1269,7 @@ struct NativeStreamView: View {
                 Toggle(isOn: Binding(
                     get: { virtualOn },
                     set: { on in
+                        menuChoice()
                         if on {
                             screenManager.selectDisplay(virtualID)
                         } else if let mainPhysical {
@@ -1268,7 +1287,7 @@ struct NativeStreamView: View {
                 if virtualOn {
                     Picker(selection: Binding(
                         get: { settings.resolution },
-                        set: { screenManager.configureVirtualDisplay(.init(resolution: $0)) }
+                        set: { menuChoice(); screenManager.configureVirtualDisplay(.init(resolution: $0)) }
                     )) {
                         ForEach(settings.resolutions) { resolution in
                             Text(resolution.title).tag(resolution.id)
@@ -1280,13 +1299,19 @@ struct NativeStreamView: View {
 
                     Toggle(isOn: Binding(
                         get: { settings.hostDisplaysOff },
-                        set: { screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
+                        set: { menuChoice(); screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
                     )) {
                         Label("Turn Off Mac Displays", systemImage: "power")
                     }
                 }
             }
         }
+    }
+
+    /// Picking anything in the Display menu closes it.
+    private func menuChoice() {
+        lastMenuChoice = Date()
+        setDisplayMenuOpen(false)
     }
 
     private func setDisplayMenuOpen(_ open: Bool) {

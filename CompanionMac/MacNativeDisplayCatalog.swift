@@ -8,8 +8,8 @@ import CoreGraphics
 /// reassigned on reconnect and across reboots, the UUID is not, and a choice
 /// made last week should still mean the same monitor.
 enum MacNativeDisplayCatalog {
-    /// Online physical displays, main first. Excludes the companion's own
-    /// virtual display — the picker lists that separately.
+    /// Online physical displays, main first, one per desktop. Excludes the
+    /// companion's own virtual display — the picker lists that separately.
     static func physicalDisplays() -> [MacNativeStreamProtocol.DisplayInfo] {
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
@@ -19,6 +19,9 @@ enum MacNativeDisplayCatalog {
         let main = CGMainDisplayID()
         return ids.prefix(Int(count))
             .filter { CGDisplayVendorNumber($0) != MacNativeVirtualDisplay.vendorID }
+            // A display mirroring another shows the same desktop; list the
+            // source only.
+            .filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
             .sorted { ($0 == main ? 0 : 1, $0) < ($1 == main ? 0 : 1, $1) }
             .compactMap { id in
                 guard let uuid = uuidString(for: id) else { return nil }

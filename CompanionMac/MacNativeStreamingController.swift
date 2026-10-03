@@ -741,11 +741,17 @@ final class MacNativeStreamingController {
         captureGeneration += 1
         let generation = captureGeneration
 
-        if virtualDisplayConfiguration != nil, let release = pendingDisplayRelease {
+        // Any start waits for the last virtual display to be gone: a new one
+        // can't get a display ID before then, and a physical display it took
+        // offline isn't back yet, so a capture "of the main display" would
+        // land on the virtual one that is about to disappear.
+        if let release = pendingDisplayRelease {
             Task { @MainActor [weak self] in
                 await release.value
                 guard let self, generation == self.captureGeneration else { return }
                 self.pendingDisplayRelease = nil
+                await self.waitForSelectedPhysicalDisplay()
+                guard generation == self.captureGeneration else { return }
                 self.startCapture()
             }
             return
@@ -855,6 +861,21 @@ final class MacNativeStreamingController {
                 server?.disconnectDesktopViewers(withError: error.localizedDescription)
             }
         }
+    }
+
+    /// After an exclusive virtual display goes, WindowServer reconnects the
+    /// physical displays one by one; the chosen one may not be online yet.
+    private func waitForSelectedPhysicalDisplay(timeout: Duration = .seconds(3)) async {
+        guard !virtualDisplayEnabled,
+              physicalDisplays.contains(where: { $0.id == selectedDisplayID }) else { return }
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if let id = MacNativeDisplayCatalog.displayID(forUUID: selectedDisplayID), CGDisplayIsOnline(id) != 0 {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        log.notice("Selected display still offline after the virtual display went; capturing the main display")
     }
 
     private func stopCapture() {

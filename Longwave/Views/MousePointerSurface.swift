@@ -1,6 +1,7 @@
 #if os(visionOS)
 import SwiftUI
 import UIKit
+import DebugTrace
 
 /// A Bluetooth/USB mouse over whatever this is layered on, read through
 /// UIKit's pointer events: where it hovers, which buttons go down and up
@@ -72,8 +73,13 @@ struct MousePointerSurface: UIViewRepresentable {
 
         @objc func handleHover(_ hover: UIHoverGestureRecognizer) {
             switch hover.state {
-            case .began, .changed:
+            case .began:
+                AppLog.macNativeMouse.info("Pointer entered the desktop")
                 surface.onHover(hover.location(in: hover.view))
+            case .changed:
+                surface.onHover(hover.location(in: hover.view))
+            case .ended, .cancelled:
+                AppLog.macNativeMouse.info("Pointer left the desktop")
             default:
                 break
             }
@@ -174,6 +180,7 @@ struct MousePointerSurface: UIViewRepresentable {
                 coordinator.surface.onButton(button, false, location)
             }
             for button in now.subtracting(held) {
+                AppLog.macNativeMouse.debug("Button down: \(String(describing: button), privacy: .public)")
                 coordinator.surface.onButton(button, true, location)
             }
             held = now

@@ -68,10 +68,15 @@ struct NativeScreenCurve: Equatable {
     /// no gaze position): the point on the curve along the ray from the
     /// circle's centre, which is where a viewer sitting there sees it. The
     /// outermost edges sit beyond the window's reach and clamp to it.
-    func flatPoint(forPlanePoint point: CGPoint) -> CGPoint {
-        let theta = atan((point.x - contentRect.midX) / radius)
+    ///
+    /// `depth` is how far in front of the window plane that plane sits: the
+    /// mouse layer floats just in front of the curve's forward edges so the
+    /// gaze reaches it before the mesh.
+    func flatPoint(forPlanePoint point: CGPoint, depth: Double = 0) -> CGPoint {
+        let distance = max(radius - depth, 1)
+        let theta = atan((point.x - contentRect.midX) / distance)
         let u = 0.5 + theta / (2 * halfAngle)
-        let v = 0.5 + (point.y - contentRect.midY) * cos(theta) / contentRect.height
+        let v = 0.5 + (point.y - contentRect.midY) * radius * cos(theta) / distance / contentRect.height
         return CGPoint(
             x: contentRect.minX + min(max(u, 0), 1) * contentRect.width,
             y: contentRect.minY + min(max(v, 0), 1) * contentRect.height
@@ -275,9 +280,12 @@ final class MacNativeCurvedTexture {
 struct NativeCurvedScreenView: View {
     let surface: MacNativeFrameSurface
     let curve: NativeScreenCurve
-    /// Off while a mouse owns the desktop: a click on the mesh is taken as
-    /// a gaze pinch, landing where the eyes are rather than under the
-    /// pointer, so the pointer has to fall through to the window plane.
+    /// Off while a mouse owns the desktop. visionOS sends the pointer to
+    /// whatever the gaze ray hits first; with this mesh in the way, a mouse
+    /// click became a gaze pinch on it, and with only its input target gone
+    /// the hit was swallowed and the pointer couldn't reach the desktop at
+    /// all. Off, the mesh carries neither input target nor collision shape,
+    /// so the gaze passes through to the mouse layer.
     let acceptsInput: Bool
     let onTap: (CGPoint) -> Void
     let onLongPress: () -> Void
@@ -289,6 +297,7 @@ struct NativeCurvedScreenView: View {
     @State private var texture = MacNativeCurvedTexture()
     @State private var builtCurve: NativeScreenCurve?
     @State private var dragStart: CGPoint?
+    @State private var collisionShape: ShapeResource?
 
     private var metersPerPoint: Double {
         Double(physicalMetrics.convert(1, to: .meters))
@@ -298,11 +307,7 @@ struct NativeCurvedScreenView: View {
         RealityView { content in
             content.add(screen)
         } update: { content in
-            if acceptsInput {
-                screen.components.set(InputTargetComponent())
-            } else {
-                screen.components.remove(InputTargetComponent.self)
-            }
+            applyInputTarget()
             // The picture's centre on the window plane, in the content's
             // space — RealityView's origin is not documented to sit there.
             let center = content.convert(
@@ -371,8 +376,19 @@ struct NativeCurvedScreenView: View {
             // The collision shape is what targeted gestures hit-test against,
             // so it follows the mesh — exact, not a box around it.
             if let shape = try? await ShapeResource.generateStaticMesh(from: mesh), builtCurve == built {
-                screen.components.set(CollisionComponent(shapes: [shape]))
+                collisionShape = shape
+                applyInputTarget()
             }
+        }
+    }
+
+    private func applyInputTarget() {
+        if acceptsInput, let collisionShape {
+            screen.components.set(InputTargetComponent())
+            screen.components.set(CollisionComponent(shapes: [collisionShape]))
+        } else {
+            screen.components.remove(InputTargetComponent.self)
+            screen.components.remove(CollisionComponent.self)
         }
     }
 

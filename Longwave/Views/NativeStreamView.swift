@@ -486,6 +486,9 @@ struct NativeStreamView: View {
                     // one that's there. It claims no touches, which leaves the
                     // gestures below untouched.
                     if mouseOwnsPointer {
+                        // In front of the curve's forward edges: the gaze
+                        // decides what the pointer may land on, and it has
+                        // to find this before the mesh.
                         MousePointerSurface(
                             onHover: mouseHover,
                             onButton: mouseButton,
@@ -493,6 +496,7 @@ struct NativeStreamView: View {
                             onScroll: mouseScroll,
                             onScrollEnded: { scrollSteps.reset() }
                         )
+                        .offset(z: mouseLayerDepth)
                     } else {
                         IndirectScrollSurface(
                             onScroll: indirectScroll,
@@ -524,7 +528,7 @@ struct NativeStreamView: View {
                     // A mouse hovering the window plane; on the curve it
                     // follows the ray from the circle's centre.
                     if let curve = activeCurve {
-                        hover(phase, curve.flatPoint(forPlanePoint:))
+                        hover(phase) { curve.flatPoint(forPlanePoint: $0) }
                     } else {
                         hover(phase)
                     }
@@ -710,7 +714,11 @@ struct NativeStreamView: View {
     }
 
     private func mousePoint(_ location: CGPoint) -> (x: UInt16, y: UInt16)? {
-        framebufferPoint(activeCurve?.flatPoint(forPlanePoint: location) ?? location)
+        framebufferPoint(activeCurve?.flatPoint(forPlanePoint: location, depth: mouseLayerDepth) ?? location)
+    }
+
+    private var mouseLayerDepth: Double {
+        activeCurve.map { $0.sagitta + 2 } ?? 0
     }
 
     /// Bluetooth-mouse / gaze pointer motion without a button held — a

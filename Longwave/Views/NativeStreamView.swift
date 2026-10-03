@@ -1185,6 +1185,7 @@ struct NativeStreamView: View {
                 }
                 .pickerStyle(.inline)
             }
+            virtualDisplayControls
             Picker("Curve", selection: $curvatureSetting) {
                 ForEach(NativeScreenCurvature.allCases) { curvature in
                     Text(curvature.title).tag(curvature.rawValue)
@@ -1195,6 +1196,59 @@ struct NativeStreamView: View {
             Label("Display", systemImage: "display.2")
         }
         .help("Choose which Mac desktop to show, and how much it curves around you")
+    }
+
+    /// The host's virtual display, from the headset: on (the desktop exists
+    /// only for the headset) or off (mirror the Mac's main display), and
+    /// while on, its resolution and whether the Mac's own screens go dark.
+    /// Hosts that don't publish the settings get the plain picker above.
+    @ViewBuilder
+    private var virtualDisplayControls: some View {
+        let virtualID = MacNativeStreamProtocol.virtualDisplayID
+        let mainPhysical = screenManager.displays.first(where: { !$0.isVirtual })
+        if let settings = screenManager.virtualDisplaySettings,
+           screenManager.displays.contains(where: { $0.id == virtualID }) {
+            let virtualOn = screenManager.selectedDisplayID == virtualID
+            Section("Virtual Display") {
+                Toggle(isOn: Binding(
+                    get: { virtualOn },
+                    set: { on in
+                        if on {
+                            screenManager.selectDisplay(virtualID)
+                        } else if let mainPhysical {
+                            screenManager.selectDisplay(mainPhysical.id)
+                        }
+                    }
+                )) {
+                    Label(
+                        virtualOn ? "Virtual Display" : "Mirroring \(mainPhysical?.name ?? "Mac")",
+                        systemImage: "rectangle.on.rectangle"
+                    )
+                }
+                .disabled(!virtualOn && mainPhysical == nil)
+
+                if virtualOn {
+                    Picker(selection: Binding(
+                        get: { settings.resolution },
+                        set: { screenManager.configureVirtualDisplay(.init(resolution: $0)) }
+                    )) {
+                        ForEach(settings.resolutions) { resolution in
+                            Text(resolution.title).tag(resolution.id)
+                        }
+                    } label: {
+                        Label("Resolution", systemImage: "aspectratio")
+                    }
+                    .pickerStyle(.menu)
+
+                    Toggle(isOn: Binding(
+                        get: { settings.hostDisplaysOff },
+                        set: { screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
+                    )) {
+                        Label("Turn Off Mac Displays", systemImage: "power")
+                    }
+                }
+            }
+        }
     }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio

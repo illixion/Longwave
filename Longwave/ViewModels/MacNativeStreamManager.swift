@@ -83,6 +83,8 @@ final class MacNativeStreamManager {
     /// shows. Empty for a host with no choice to offer (v1, Windows).
     private(set) var displays: [MacNativeStreamProtocol.DisplayInfo] = []
     private(set) var selectedDisplayID: String?
+    /// The host's virtual-display settings, when it lets the viewer change them.
+    private(set) var virtualDisplaySettings: MacNativeStreamProtocol.VirtualDisplaySettings?
     /// Subscribed per-window streams, keyed by host window ID. Each entry
     /// backs one ornament-free visionOS scene.
     private(set) var windowSessions: [UInt32: MacNativeWindowSession] = [:]
@@ -461,6 +463,12 @@ final class MacNativeStreamManager {
         client?.sendSelectDisplay(id: id)
     }
 
+    /// Changes the host's virtual display. Like `selectDisplay`, the menus
+    /// only move once the host answers with a new `displayList`.
+    func configureVirtualDisplay(_ change: MacNativeStreamProtocol.VirtualDisplayChange) {
+        client?.sendVirtualDisplayChange(change)
+    }
+
     func sendFocusWindow(windowID: UInt32) {
         client?.sendFocusWindow(windowID: windowID)
     }
@@ -512,6 +520,7 @@ final class MacNativeStreamManager {
         windowInventory = []
         displays = []
         selectedDisplayID = nil
+        virtualDisplaySettings = nil
         mouseAvailability = .unknown
         keyboardShortcutsAvailability = .unknown
         textInputAvailable = false
@@ -668,6 +677,7 @@ final class MacNativeStreamManager {
         case .displays(let list):
             displays = list.displays
             selectedDisplayID = list.selectedID
+            virtualDisplaySettings = list.virtualDisplay
         case .windowClosed(let windowID, let reason):
             windowSessions[windowID]?.closedReason = reason ?? "The window closed on the host."
         case .replaced(let deviceName):

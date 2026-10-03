@@ -138,7 +138,15 @@ final class MacNativeStreamingController {
             || physicalDisplays.contains(where: { $0.id == selected })
             ? selected
             : MacNativeDisplayCatalog.mainDisplayUUID()
-        return .init(displays: [virtual] + physicalDisplays, selectedID: effective)
+        return .init(
+            displays: [virtual] + physicalDisplays,
+            selectedID: effective,
+            virtualDisplay: .init(
+                resolution: virtualDisplayPreset.rawValue,
+                resolutions: MacNativeVirtualDisplayPreset.allCases.map { .init(id: $0.rawValue, title: $0.title) },
+                hostDisplaysOff: virtualDisplayExclusive
+            )
+        )
     }
 
     private func publishDisplayList() {
@@ -175,6 +183,7 @@ final class MacNativeStreamingController {
             // Settable ahead of time: it only matters once the virtual
             // display is the one streaming.
             if virtualDisplayEnabled { restartCaptureIfRunning() }
+            publishDisplayList()
         }
     }
 
@@ -548,6 +557,19 @@ final class MacNativeStreamingController {
                 guard displayID == MacNativeStreamProtocol.virtualDisplayID
                         || self.physicalDisplays.contains(where: { $0.id == displayID }) else { return }
                 self.selectedDisplayID = displayID
+            }
+        }
+        server.onConfigureVirtualDisplay = { [weak self] change in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                if let id = change.resolution,
+                   let preset = MacNativeVirtualDisplayPreset(rawValue: id),
+                   preset != self.virtualDisplayPreset {
+                    self.virtualDisplayPreset = preset
+                }
+                if let off = change.hostDisplaysOff, off != self.virtualDisplayExclusive {
+                    self.virtualDisplayExclusive = off
+                }
             }
         }
         server.onFocusWindow = { [weak self] windowID in

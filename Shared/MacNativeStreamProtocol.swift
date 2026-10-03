@@ -62,6 +62,11 @@ nonisolated enum MacNativeStreamProtocol {
         case displayList = 0x48
         /// Client → server: UTF-8 `DisplayInfo.id` — stream this desktop.
         case selectDisplay = 0x49
+        /// Client → server: JSON `VirtualDisplayChange` — change the virtual
+        /// display's resolution or whether it switches the host's own
+        /// displays off. Only sent to a host whose `displayList` carried
+        /// `virtualDisplay`; older hosts ignore it.
+        case configureVirtualDisplay = 0x4A
 
         // MARK: v2 — window inventory + multiplexed streams
 
@@ -228,6 +233,29 @@ nonisolated enum MacNativeStreamProtocol {
         let displays: [DisplayInfo]
         /// The `DisplayInfo.id` the desktop stream follows right now.
         let selectedID: String?
+        /// The virtual display's settings, from hosts that let the viewer
+        /// change them; absent from older hosts and the Windows companion.
+        var virtualDisplay: VirtualDisplaySettings? = nil
+    }
+
+    /// What the viewer may change about the host's virtual display.
+    struct VirtualDisplaySettings: Codable, Sendable, Equatable {
+        struct Resolution: Codable, Sendable, Equatable, Identifiable {
+            /// Opaque to the viewer; sent back as `VirtualDisplayChange.resolution`.
+            let id: String
+            let title: String
+        }
+
+        let resolution: String
+        let resolutions: [Resolution]
+        /// The host's physical displays go dark while the virtual one streams.
+        let hostDisplaysOff: Bool
+    }
+
+    /// Client → server: the fields to change; nil leaves one as it is.
+    struct VirtualDisplayChange: Codable, Sendable, Equatable {
+        var resolution: String?
+        var hostDisplaysOff: Bool?
     }
 
     /// `DisplayInfo.id` of the host's virtual display — the same whether or
@@ -335,6 +363,15 @@ nonisolated enum MacNativeStreamProtocol {
 
     static func decodeDisplayList(_ payload: Data) -> DisplayList? {
         try? JSONDecoder().decode(DisplayList.self, from: payload)
+    }
+
+    static func encodeVirtualDisplayChange(_ change: VirtualDisplayChange) -> Data {
+        encodeFrame(.configureVirtualDisplay, (try? JSONEncoder().encode(change)) ?? Data())
+    }
+
+    static func decodeVirtualDisplayChange(_ payload: Data) -> VirtualDisplayChange? {
+        guard payload.count <= 1024 else { return nil }
+        return try? JSONDecoder().decode(VirtualDisplayChange.self, from: payload)
     }
 
     static func encodeSelectDisplay(id: String) -> Data {

@@ -59,6 +59,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
     /// A viewer picked a desktop from `displayList` (a `DisplayInfo.id`).
     nonisolated(unsafe) var onSelectDisplay: (@Sendable (String) -> Void)?
+    nonisolated(unsafe) var onConfigureVirtualDisplay:
+        (@Sendable (MacNativeStreamProtocol.VirtualDisplayChange) -> Void)?
     nonisolated(unsafe) var onWindowMouseMove: (@Sendable (UInt32, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onWindowMouseDown:
         (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
@@ -608,6 +610,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 guard client.isActive, client.isV2,
                       let displayID = MacNativeStreamProtocol.decodeSelectDisplay(frame.payload) else { break }
                 onSelectDisplay?(displayID)
+            case MacNativeStreamProtocol.FrameType.configureVirtualDisplay.rawValue:
+                guard client.isActive, client.isV2,
+                      let change = MacNativeStreamProtocol.decodeVirtualDisplayChange(frame.payload) else { break }
+                onConfigureVirtualDisplay?(change)
             case MacNativeStreamProtocol.FrameType.focusWindow.rawValue:
                 guard client.isActive,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }

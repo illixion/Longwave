@@ -236,6 +236,37 @@ final class MacNativeDisplayListProtocolTests: XCTestCase {
         XCTAssertEqual(frames.first.flatMap { P.decodeDisplayList($0.payload) }, list)
     }
 
+    func testDisplayListCarriesVirtualDisplaySettings() {
+        var list = P.DisplayList(
+            displays: [.init(id: P.virtualDisplayID, name: "Virtual Display", isVirtual: true, width: 2560, height: 1440)],
+            selectedID: P.virtualDisplayID
+        )
+        list.virtualDisplay = .init(
+            resolution: "2560x1440",
+            resolutions: [.init(id: "1920x1080", title: "1920 × 1080"), .init(id: "2560x1440", title: "2560 × 1440")],
+            hostDisplaysOff: true
+        )
+        var buffer = P.encodeDisplayList(list)
+        XCTAssertEqual(P.drainFrames(&buffer).first.flatMap { P.decodeDisplayList($0.payload) }, list)
+    }
+
+    func testDisplayListFromOlderHostHasNoVirtualDisplaySettings() {
+        let json = #"{"displays":[{"id":"virtual","name":"Virtual Display","isVirtual":true,"width":0,"height":0}],"selectedID":"virtual"}"#
+        let list = P.decodeDisplayList(Data(json.utf8))
+        XCTAssertNotNil(list)
+        XCTAssertNil(list?.virtualDisplay)
+    }
+
+    func testVirtualDisplayChangeRoundTrip() {
+        var buffer = P.encodeVirtualDisplayChange(.init(resolution: "3440x1440"))
+        let frame = P.drainFrames(&buffer).first
+        XCTAssertEqual(frame?.type, P.FrameType.configureVirtualDisplay.rawValue)
+        let change = frame.flatMap { P.decodeVirtualDisplayChange($0.payload) }
+        XCTAssertEqual(change?.resolution, "3440x1440")
+        XCTAssertNil(change?.hostDisplaysOff)
+        XCTAssertNil(P.decodeVirtualDisplayChange(Data("not json".utf8)))
+    }
+
     func testSelectDisplayRejectsEmpty() {
         XCTAssertNil(P.decodeSelectDisplay(Data()))
         var buffer = P.encodeSelectDisplay(id: "virtual")

@@ -176,6 +176,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
         send(MacNativeStreamProtocol.encodeSelectDisplay(id: id))
     }
 
+    func sendVirtualDisplayChange(_ change: MacNativeStreamProtocol.VirtualDisplayChange) {
+        send(MacNativeStreamProtocol.encodeVirtualDisplayChange(change))
+    }
+
     func sendFocusWindow(windowID: UInt32) {
         send(MacNativeStreamProtocol.encodeWindowID(.focusWindow, windowID: windowID))
     }

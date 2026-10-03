@@ -45,6 +45,10 @@ final class MacNativeMouseBridge {
         }
     }
 
+    /// Set while one of the ornament's menus is open; its items sit outside
+    /// the ornament, so its hover doesn't cover them. Holds back presses too.
+    @ObservationIgnored var menuOpen = false
+
     /// Mouse input counts only while the window is streaming.
     @ObservationIgnored var streaming = false {
         didSet { if !streaming { releaseHeldButtons() } }
@@ -178,8 +182,9 @@ final class MacNativeMouseBridge {
 
     private func buttonChanged(_ button: MacNativeStreamProtocol.MouseButton, pressed: Bool) {
         if pressed {
-            let sent = forwarding && !pointerOverControls
-            AppLog.macNativeMouse.debug("Button \(button.rawValue, privacy: .public) down — \(sent ? "sent" : (self.pointerOverControls ? "held back: over the controls" : "held back: not streaming"), privacy: .public)")
+            let onControls = pointerOverControls || menuOpen
+            let sent = forwarding && !onControls
+            AppLog.macNativeMouse.debug("Button \(button.rawValue, privacy: .public) down — \(sent ? "sent" : (onControls ? "held back: on the controls" : "held back: not streaming"), privacy: .public)")
             guard sent, heldButtons.insert(button.rawValue).inserted else { return }
             manager.pressMouseAtVirtualCursor(button: button)
         } else {

@@ -94,6 +94,10 @@ struct NativeStreamView: View {
     /// `MacNativeMouseBridge`. Made on first appearance, since the manager
     /// it drives comes from the environment.
     @State private var mouseBridge: MacNativeMouseBridge?
+    /// The Display menu is showing — its pickers live outside the ornament,
+    /// so the mouse's clicks must neither be caught by the hit target nor
+    /// reach the Mac.
+    @State private var displayMenuOpen = false
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -487,11 +491,14 @@ struct NativeStreamView: View {
                     // one that's there. It claims no touches, which leaves the
                     // gestures below untouched.
                     if mouseOwnsPointer {
-                        // In front of the curve's forward edges: the gaze
-                        // decides what the pointer may land on, and it has
-                        // to find this before the mesh.
-                        MouseHitTarget()
-                            .offset(z: mouseLayerDepth)
+                        // Gone while the Display menu is open, so the mouse
+                        // can work the menu.
+                        if !displayMenuOpen, let rect = mouseHitRect {
+                            MouseHitTarget()
+                                .frame(width: rect.width, height: rect.height)
+                                .position(x: rect.midX, y: rect.midY)
+                                .offset(z: mouseLayerDepth)
+                        }
                     } else {
                         IndirectScrollSurface(
                             onScroll: indirectScroll,
@@ -688,6 +695,24 @@ struct NativeStreamView: View {
     /// The hit target sits just in front of the curve's forward edges: the
     /// gaze decides what the pointer may land on, and it has to find this
     /// before the mesh.
+    /// The picture's outline and nothing more, so the pointer is free to
+    /// move onto the ornament and visionOS hands it focus there. On the
+    /// curve that's the outline in the plane of its forward edges, where
+    /// the target sits.
+    private var mouseHitRect: CGRect? {
+        guard screenManager.streamSize.width > 0, viewSize.width > 0 else { return nil }
+        guard let curve = activeCurve else {
+            return NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize)
+        }
+        let width = 2 * curve.radius * sin(curve.halfAngle)
+        return CGRect(
+            x: curve.contentRect.midX - width / 2,
+            y: curve.contentRect.minY,
+            width: width,
+            height: curve.contentRect.height
+        )
+    }
+
     private var mouseLayerDepth: Double {
         activeCurve.map { $0.sagitta + 2 } ?? 0
     }
@@ -1200,6 +1225,11 @@ struct NativeStreamView: View {
                 }
             }
             .pickerStyle(.menu)
+            // A menu's content is built when it opens and torn down when it
+            // closes; SwiftUI offers no other open/closed signal. On the one
+            // item that is always there, so it fires once each way.
+            .onAppear { setDisplayMenuOpen(true) }
+            .onDisappear { setDisplayMenuOpen(false) }
         } label: {
             Label("Display", systemImage: "display.2")
         }
@@ -1257,6 +1287,11 @@ struct NativeStreamView: View {
                 }
             }
         }
+    }
+
+    private func setDisplayMenuOpen(_ open: Bool) {
+        displayMenuOpen = open
+        mouseBridge?.menuOpen = open
     }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio

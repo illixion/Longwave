@@ -93,6 +93,19 @@ Requires the [Longwave Companion](#longwave-companion-for-windows-beta) on the P
 - Saved connections with SwiftData persistence
 - Per-connection settings for both VNC and Moonlight
 
+## Install
+
+**iPhone and iPad:** add the source `https://apps.illixion.com/source.json` to [AltStore](https://altstore.io) or [SideStore](https://sidestore.io), or open [apps.illixion.com](https://apps.illixion.com) on the device and tap its button, then install Longwave. It updates from there with every release. The same file is attached to every release as `Longwave-iOS-unsigned.ipa`, and [this link](https://github.com/illixion/Longwave/releases/latest/download/Longwave-iOS-unsigned.ipa) always serves the newest one.
+
+- **iPhone and iPad only.** AltStore and SideStore don't install on Vision Pro or Mac.
+- **Your Apple ID signs it.** On a free Apple ID an app expires after 7 days unless AltStore or SideStore refreshes it in time, and only three sideloaded apps can be active at once, the store itself included.
+- **What the iPhone/iPad build has:** native Mac streaming, VNC, Moonlight game streaming, system audio and the SSH terminal. It includes Moonlight, so the binary is GPLv3. It has no broadcast extension, since each extension costs a free Apple ID another App ID, and PCVR is visionOS-only.
+- iOS 26.0 or later.
+
+**Vision Pro:** no sideloading store supports visionOS. The visionOS IPAs on the [Releases](../../releases) page are unsigned: sign one with your own Apple ID, or build from source (see [Building](#building)).
+
+**Mac:** `LongwaveMac` (the full client) and `LongwaveCompanion` are unsigned `.zip`s on the [Releases](../../releases) page; each release's notes give the two commands that get them past Gatekeeper. **Windows:** see [Longwave Companion for Windows](#longwave-companion-for-windows-beta).
+
 ## Requirements
 
 - Apple Vision Pro or visionOS Simulator

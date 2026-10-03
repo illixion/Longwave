@@ -90,9 +90,10 @@ struct NativeStreamView: View {
     /// True while both hands are pinched (and briefly after), so the one-hand
     /// gestures stand down — see `TwoHandPointerGesture`.
     @State private var twoHandEngaged = false
-    /// Whether a Bluetooth/USB mouse owns the desktop — see
-    /// `MacNativeMouseBridge` and `MousePointerSurface`.
-    @State private var mouseBridge = MacNativeMouseBridge()
+    /// A Bluetooth/USB mouse, read raw and sent straight to the Mac — see
+    /// `MacNativeMouseBridge`. Made on first appearance, since the manager
+    /// it drives comes from the environment.
+    @State private var mouseBridge: MacNativeMouseBridge?
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -489,14 +490,8 @@ struct NativeStreamView: View {
                         // In front of the curve's forward edges: the gaze
                         // decides what the pointer may land on, and it has
                         // to find this before the mesh.
-                        MousePointerSurface(
-                            onHover: mouseHover,
-                            onButton: mouseButton,
-                            onDrag: mouseHover,
-                            onScroll: mouseScroll,
-                            onScrollEnded: { scrollSteps.reset() }
-                        )
-                        .offset(z: mouseLayerDepth)
+                        MouseHitTarget()
+                            .offset(z: mouseLayerDepth)
                     } else {
                         IndirectScrollSurface(
                             onScroll: indirectScroll,
@@ -528,7 +523,7 @@ struct NativeStreamView: View {
                     // A mouse hovering the window plane; on the curve it
                     // follows the ray from the circle's centre.
                     if let curve = activeCurve {
-                        hover(phase) { curve.flatPoint(forPlanePoint: $0) }
+                        hover(phase, curve.flatPoint(forPlanePoint:))
                     } else {
                         hover(phase)
                     }
@@ -557,9 +552,12 @@ struct NativeStreamView: View {
                 scheduleAspectLock()
             }
             .frame(width: 1, height: 1)
-            .onAppear { mouseBridge.start() }
+            .onAppear(perform: startMouseBridge)
+            .onChange(of: screenManager.state) {
+                mouseBridge?.streaming = screenManager.state == .streaming
+            }
             .onDisappear {
-                mouseBridge.stop()
+                mouseBridge?.stop()
                 // Screen off: the audio and picker panels size themselves.
                 aspectLockTask?.cancel()
                 windowScene?.lockAspect(nil)
@@ -678,45 +676,18 @@ struct NativeStreamView: View {
     /// Whether a physical mouse drives the Mac's cursor: the view's own
     /// taps, drags and hover then stand aside, since visionOS also delivers
     /// each physical click to them (Moonlight's rule too).
-    private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
+    private var mouseOwnsPointer: Bool { mouseBridge?.ownsPointer ?? false }
 
-    /// The mouse's position, on the window plane: the Mac's cursor goes
-    /// to the same spot on the picture, through the curve when there is one.
-    private func mouseHover(_ location: CGPoint) {
-        guard let point = mousePoint(location) else { return }
-        lastPointerPoint = point
-        screenManager.moveCursorAbsolute(x: point.x, y: point.y)
+    private func startMouseBridge() {
+        let bridge = mouseBridge ?? MacNativeMouseBridge(manager: screenManager)
+        mouseBridge = bridge
+        bridge.streaming = screenManager.state == .streaming
+        bridge.start()
     }
 
-    private func mouseButton(_ button: MousePointerSurface.Button, pressed: Bool, at location: CGPoint) {
-        guard let raw = mousePoint(location) else { return }
-        let hostButton: MacNativeStreamProtocol.MouseButton = switch button {
-        case .left: .left
-        case .right: .right
-        case .middle: .other
-        }
-        if pressed {
-            // A quick second click lands on the first one's pixel, so the
-            // host counts a double-click even if the hand drifted a little.
-            let point = button == .left ? clickCadence.resolve(raw) : raw
-            lastPointerPoint = point
-            screenManager.sendMouseDown(button: hostButton, x: point.x, y: point.y)
-        } else {
-            screenManager.sendMouseUp(button: hostButton, x: raw.x, y: raw.y)
-        }
-    }
-
-    private func mouseScroll(_ delta: CGSize) {
-        guard screenManager.streamSize.width > 0, let point = lastPointerPoint else { return }
-        let steps = scrollSteps.steps(for: delta)
-        guard steps.dx != 0 || steps.dy != 0 else { return }
-        screenManager.sendScroll(x: point.x, y: point.y, deltaX: steps.dx, deltaY: steps.dy)
-    }
-
-    private func mousePoint(_ location: CGPoint) -> (x: UInt16, y: UInt16)? {
-        framebufferPoint(activeCurve?.flatPoint(forPlanePoint: location, depth: mouseLayerDepth) ?? location)
-    }
-
+    /// The hit target sits just in front of the curve's forward edges: the
+    /// gaze decides what the pointer may land on, and it has to find this
+    /// before the mesh.
     private var mouseLayerDepth: Double {
         activeCurve.map { $0.sagitta + 2 } ?? 0
     }
@@ -1161,8 +1132,11 @@ struct NativeStreamView: View {
                     Label("Right-click", systemImage: "cursorarrow.click.2")
                 }
 
-                if mouseBridge.isConnected {
-                    Toggle(isOn: $mouseBridge.captureEnabled) {
+                if let mouseBridge, mouseBridge.isConnected {
+                    Toggle(isOn: Binding(
+                        get: { mouseBridge.captureEnabled },
+                        set: { mouseBridge.captureEnabled = $0 }
+                    )) {
                         Label("Mouse", systemImage: "computermouse")
                     }
                     .toggleStyle(.button)
@@ -1195,6 +1169,9 @@ struct NativeStreamView: View {
         .buttonStyle(.bordered)
         .padding(12)
         .glassBackgroundEffect()
+        .onHover { hovering in
+            mouseBridge?.pointerOverControls = hovering
+        }
     }
 
     /// Switches the desktop the host streams — its virtual display or one of

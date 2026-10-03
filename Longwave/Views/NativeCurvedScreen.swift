@@ -68,15 +68,10 @@ struct NativeScreenCurve: Equatable {
     /// no gaze position): the point on the curve along the ray from the
     /// circle's centre, which is where a viewer sitting there sees it. The
     /// outermost edges sit beyond the window's reach and clamp to it.
-    ///
-    /// `depth` is how far in front of the window plane that plane sits: the
-    /// mouse layer floats just in front of the curve's forward edges so the
-    /// gaze reaches it before the mesh.
-    func flatPoint(forPlanePoint point: CGPoint, depth: Double = 0) -> CGPoint {
-        let distance = max(radius - depth, 1)
-        let theta = atan((point.x - contentRect.midX) / distance)
+    func flatPoint(forPlanePoint point: CGPoint) -> CGPoint {
+        let theta = atan((point.x - contentRect.midX) / radius)
         let u = 0.5 + theta / (2 * halfAngle)
-        let v = 0.5 + (point.y - contentRect.midY) * radius * cos(theta) / distance / contentRect.height
+        let v = 0.5 + (point.y - contentRect.midY) * cos(theta) / contentRect.height
         return CGPoint(
             x: contentRect.minX + min(max(u, 0), 1) * contentRect.width,
             y: contentRect.minY + min(max(v, 0), 1) * contentRect.height

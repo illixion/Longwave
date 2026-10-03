@@ -26,8 +26,11 @@ jobs:
     runs-on: macos-26
 
     steps:
+      # Full history: the iPhone/iPad build number is the commit count (see below).
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
@@ -233,6 +236,38 @@ jobs:
           cd $RUNNER_TEMP/MoonlightPayload
           zip -r $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa Payload
 
+      # The iPhone/iPad app, for the AltStore / SideStore source at apps.illixion.com.
+      # Its target has MOONLIGHT_ENABLED and the pro.longwave.ios id baked in, so it is
+      # GPLv3 like the Moonlight IPA and has to be archived in this real-dependency phase.
+      # The source reads it from every release under one fixed name, so
+      # releases/latest/download/Longwave-iOS-unsigned.ipa always points at the newest
+      # one. AltStore offers an update only when CFBundleVersion grows, and every build
+      # used to be 1; the commit count on main always grows.
+      - name: Build archive (Longwave for iPhone and iPad)
+        run: |
+          xcodebuild archive \
+            -project Longwave.xcodeproj \
+            -scheme LongwaveiOS \
+            -destination 'generic/platform=iOS' \
+            -archivePath $RUNNER_TEMP/LongwaveiOS.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=$(git rev-list --count HEAD)
+
+      # AltStore re-signs with the user's Apple ID, and on a free account every embedded
+      # extension or Watch app costs another App ID; the source only ships bare apps.
+      - name: Create unsigned iPhone/iPad IPA
+        run: |
+          APP=$RUNNER_TEMP/LongwaveiOS.xcarchive/Products/Applications/LongwaveiOS.app
+          for d in PlugIns Watch Extensions; do
+            [[ ! -d "$APP/$d" ]] || { echo "::error::LongwaveiOS.app embeds $d"; exit 1; }
+          done
+          mkdir -p $RUNNER_TEMP/iOSPayload/Payload
+          cp -R "$APP" $RUNNER_TEMP/iOSPayload/Payload/
+          cd $RUNNER_TEMP/iOSPayload
+          zip -qry $RUNNER_TEMP/Longwave-iOS-unsigned.ipa Payload
+
       # The full macOS client (VNC + Moonlight + Audio + SSH + host/companion
       # features). It links moonlight-common-c, so like the Moonlight IPA it is
       # GPLv3 — built here in the real-dependency phase, never in the MIT phase.
@@ -274,6 +309,7 @@ jobs:
           mkdir -p dist
           cp $RUNNER_TEMP/Longwave-unsigned.ipa "dist/Longwave-${VERSION}-unsigned.ipa"
           cp $RUNNER_TEMP/Longwave-moonlight-unsigned.ipa "dist/Longwave-${VERSION}-moonlight-unsigned.ipa"
+          cp $RUNNER_TEMP/Longwave-iOS-unsigned.ipa dist/Longwave-iOS-unsigned.ipa
           cp $RUNNER_TEMP/LongwaveCompanion-unsigned.zip "dist/LongwaveCompanion-${VERSION}-unsigned.zip"
           cp $RUNNER_TEMP/LongwaveMac-unsigned.zip "dist/LongwaveMac-${VERSION}-unsigned.zip"
 
@@ -417,6 +453,7 @@ jobs:
           **Assets**
           - \`Longwave-…-unsigned.ipa\` — VNC + Audio only (Moonlight disabled). All MIT-compatible.
           - \`Longwave-…-moonlight-unsigned.ipa\` — the Moonlight-enabled build (**GPLv3** — see below).
+          - \`Longwave-iOS-unsigned.ipa\` — the iPhone and iPad app, with Moonlight (**GPLv3**). Install it through AltStore or SideStore from https://apps.illixion.com, which keeps it updated.
           - \`LongwaveCompanion-…-unsigned.zip\` — the small macOS companion (menu-bar host: audio streaming, now-playing, broadcast/OBS, keyboard injection, SSH keys). Universal binary (Apple Silicon + Intel). MIT.
           - \`LongwaveMac-…-unsigned.zip\` — the **full macOS app**: the VNC/Moonlight/Audio/SSH **client** plus all the companion host features in one app. Universal binary (Apple Silicon + Intel). Links Moonlight, so **GPLv3** (see below).
           - \`LongwaveCompanion-…-x64-Setup.exe\` / \`…-arm64-Setup.exe\` — *if present*, the Longwave Companion installer (**Beta**), built natively for Intel/AMD (x64) and Windows-on-ARM (arm64). Includes the Hotspot and native screen streaming host features, built entirely from this public source tree. PCVR / Foveated Streaming (CloudXR) support is a separate, closed-source component installed on top — the companion UI hides that panel entirely when it isn't present. Ships with a signed build-provenance attestation; verify before running with \`gh attestation verify <file> --repo ${{ github.repository }}\`.

@@ -244,7 +244,10 @@ headers, so it goes through the ObjC runtime: KVC for properties, IMP casts for 
 `applySettings:` (plain `perform` cannot express init ownership or a `BOOL` return). Two traps: the
 display must be online (`CGDisplayIsOnline`) *and* listed by `SCShareableContent` before capture, which
 lags by a few hundred ms — retry, never fall back to the main display; and **removals are deferred while
-any exclusive display is active**, so a release test run while Mac VD is connected looks like a leak.
+any exclusive display is active**, so a release test run while Mac VD is connected looks like a leak. And
+while an exclusive display exists WindowServer has **no display ID to give another one** (its log:
+"no displayID available"), so recreating ours — a resolution change — must wait until the old one is
+gone (`pendingDisplayRelease`); creating it straight after the release failed and dropped the viewer.
 Hold `kIOPMAssertPreventUserIdleDisplaySleep` for the display's lifetime, as the agent does, or the
 Mac sleeps its only display and capture stops.
 

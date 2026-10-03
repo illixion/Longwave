@@ -342,6 +342,11 @@ final class MacNativeStreamingController {
     /// Per-window (Unity-style) streams for the active v2 viewer.
     private let windowStreams = MacNativeWindowStreamCoordinator()
     private var captureGeneration = 0
+    /// The last stop's virtual display, until WindowServer has destroyed it.
+    /// While an exclusive one exists WindowServer hands out no display ID,
+    /// so creating the next one any sooner fails ("no displayID available"
+    /// in its log, 2026-10-03, changing resolution from the headset).
+    @ObservationIgnored private var pendingDisplayRelease: Task<Void, Never>?
     private var serverGeneration = 0
 
     init() {
@@ -735,6 +740,17 @@ final class MacNativeStreamingController {
     private func startCapture() {
         captureGeneration += 1
         let generation = captureGeneration
+
+        if virtualDisplayConfiguration != nil, let release = pendingDisplayRelease {
+            Task { @MainActor [weak self] in
+                await release.value
+                guard let self, generation == self.captureGeneration else { return }
+                self.pendingDisplayRelease = nil
+                self.startCapture()
+            }
+            return
+        }
+
         let chroma = wantedChroma
         captureChroma = chroma
 
@@ -853,9 +869,17 @@ final class MacNativeStreamingController {
         let virtualDisplay = self.virtualDisplay
         self.virtualDisplay = nil
         virtualDisplaySummary = nil
-        Task {
+        let previousRelease = pendingDisplayRelease
+        let release = Task {
             await capture?.stop()
-            virtualDisplay?.invalidate()
+            if let virtualDisplay {
+                virtualDisplay.invalidate()
+                await MacNativeVirtualDisplay.waitUntilGone(virtualDisplay.displayID)
+            }
+            await previousRelease?.value
+        }
+        if virtualDisplay != nil || previousRelease != nil {
+            pendingDisplayRelease = release
         }
     }
 }

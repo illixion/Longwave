@@ -146,6 +146,17 @@ final class MacNativeVirtualDisplay {
         }
     }
 
+    /// Waits for WindowServer to finish removing a released display — about
+    /// a third of a second when it was exclusive and the physical displays
+    /// come back first. Gives up after `timeout`; the caller's next create
+    /// then fails on its own and says so.
+    static func waitUntilGone(_ displayID: CGDirectDisplayID, timeout: Duration = .seconds(3)) async {
+        let deadline = ContinuousClock.now + timeout
+        while onlineDisplays().contains(displayID), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
     // MARK: - Conflicts
 
     /// Why a virtual display must not be created right now, or `nil`.

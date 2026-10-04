@@ -143,6 +143,15 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         spatialAudioEnabled.toggle()
     }
 
+    /// Whether surround is playing as head-tracked virtual speakers (the
+    /// renderer's PHASE sound stage is up), which is when Recenter applies.
+    var isSoundStageActive = false
+
+    /// Makes the way the wearer faces now the front of the virtual speakers.
+    func recenterSpatialAudio() {
+        audioRenderer?.recenterSoundStage()
+    }
+
     private var audioRenderer: MoonlightAudioRenderer?
     private var gamepadManager: MoonlightGamepadManager?
     private var mouseManager: MoonlightMouseManager?
@@ -444,6 +453,9 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 await MainActor.run {
                     self.videoRenderer = video
                     self.audioRenderer = audio
+                    audio.onSoundStageChange = { [weak self] active in
+                        self?.isSoundStageActive = active
+                    }
                     self.displayLayer = layer
                     self.isStreamActive = true
                     // A Mac has a real pointer — relative "touchpad" mode makes no
@@ -567,6 +579,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         videoRenderer?.displayLayer = nil
         videoRenderer = nil
         audioRenderer = nil
+        isSoundStageActive = false
         isStreamActive = false
         isHDRActive = false
         // Reset FPS tracking so the next session doesn't underflow

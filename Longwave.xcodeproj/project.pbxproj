@@ -45,6 +45,9 @@
 		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
 		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
 		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
+		AA07000000000000000000F1 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F0 /* RAVESpatialAudio */; };
+		AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F2 /* RAVESpatialAudio */; };
+		AA07000000000000000000F5 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F4 /* RAVESpatialAudio */; };
 		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
 		AA07000000000000000000DF /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DE /* RAVECamera */; };
 		AA07000000000000000000E9 /* RAVEBrowser in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000E8 /* RAVEBrowser */; };
@@ -297,6 +300,7 @@
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
 				AA07000000000000000000DB /* RAVEMedia in Frameworks */,
+				AA07000000000000000000F1 /* RAVESpatialAudio in Frameworks */,
 				AA07000000000000000000DF /* RAVECamera in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -352,6 +356,7 @@
 				DD1010000000000000000028 /* RAVEInput in Frameworks */,
 				DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */,
 				DD101000000000000000002B /* RAVEMedia in Frameworks */,
+				AA07000000000000000000F5 /* RAVESpatialAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -376,6 +381,7 @@
 				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
 				AA07000000000000000000DD /* RAVEMedia in Frameworks */,
+				AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -514,6 +520,7 @@
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
 				AA07000000000000000000DA /* RAVEMedia */,
+				AA07000000000000000000F0 /* RAVESpatialAudio */,
 				AA07000000000000000000DE /* RAVECamera */,
 			);
 			productName = Longwave;
@@ -555,6 +562,7 @@
 				AA07000000000000000000D6 /* RAVEUI */,
 				AA07000000000000000000D8 /* RAVEConsole */,
 				AA07000000000000000000DC /* RAVEMedia */,
+				AA07000000000000000000F2 /* RAVESpatialAudio */,
 			);
 			productName = LongwaveMac;
 			productReference = A5B135754F5FB6AA031143FD /* LongwaveMac.app */;
@@ -673,6 +681,7 @@
 				DD1010000000000000000018 /* RAVEInput */,
 				DD1010000000000000000019 /* RAVEDiagnostics */,
 				DD101000000000000000002A /* RAVEMedia */,
+				AA07000000000000000000F4 /* RAVESpatialAudio */,
 			);
 			productName = LongwaveiOS;
 			productReference = DD1010000000000000000001 /* LongwaveiOS.app */;
@@ -1783,6 +1792,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEMedia;
+		};
+		AA07000000000000000000F0 /* RAVESpatialAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESpatialAudio;
+		};
+		AA07000000000000000000F2 /* RAVESpatialAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESpatialAudio;
+		};
+		AA07000000000000000000F4 /* RAVESpatialAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESpatialAudio;
 		};
 		AA07000000000000000000DE /* RAVECamera */ = {
 			isa = XCSwiftPackageProductDependency;

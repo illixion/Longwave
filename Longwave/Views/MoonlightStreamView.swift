@@ -429,6 +429,18 @@ struct MoonlightStreamView: View {
                   ? "Spatial Audio On — head-tracked rendering"
                   : "Spatial Audio Off — flat stereo playback")
 
+            // Surround as virtual speakers: the front is wherever the wearer
+            // faced when it started, so offer to move it.
+            if manager.isSoundStageActive {
+                Button {
+                    manager.recenterSpatialAudio()
+                } label: {
+                    Label("Recenter Audio", systemImage: "scope")
+                }
+                .labelStyle(.iconOnly)
+                .help("Recenter surround — make where you face now the front")
+            }
+
             Button {
                 openWindow(id: "main", value: MainWindowID.shared)
             } label: {

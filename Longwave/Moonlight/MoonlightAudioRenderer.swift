@@ -4,10 +4,14 @@ import Foundation
 import os
 import AVFoundation
 import Opus
+import RAVESpatialAudio
 @preconcurrency import MoonlightCommonC
 
 /// Decodes Opus audio packets from moonlight-common-c and plays them
-/// through AVAudioEngine using an AVAudioPlayerNode.
+/// through AVAudioEngine using an AVAudioPlayerNode — or, for surround with
+/// spatial audio on (visionOS), as virtual speakers on a PHASE sound stage
+/// (`MoonlightSoundStage`), because the engine path folds surround to stereo
+/// before the system spatializer sees it.
 class MoonlightAudioRenderer: @unchecked Sendable {
 
     private nonisolated(unsafe) var decoder: OpaquePointer?    // OpusMSDecoder*
@@ -59,6 +63,26 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
     /// When true, audio is decoded but not played (no audio mode).
     nonisolated(unsafe) var muted: Bool = false
+
+    /// Where decoded frames go while the sound stage is up: the stage's
+    /// `RAVEChannelFeed.push`, set and cleared by the main actor, read by the
+    /// decode thread per packet. A closure rather than the feed itself so the
+    /// property needs no macOS 15 availability (the Mac client floor is 14.2).
+    private typealias StageSink = @Sendable (UnsafePointer<Int16>, Int) -> Void
+    private let stageSink = OSAllocatedUnfairLock<StageSink?>(initialState: nil)
+    /// Whether the last packet went to the stage. Decode-thread owned, like
+    /// `playing`: the hand-over between paths happens on that thread.
+    private nonisolated(unsafe) var routedToStage = false
+    /// Whether the sound stage should be up. Requests only set it; the main
+    /// actor reconciles to the latest value, so a burst of toggles can't
+    /// leave a stale build or teardown behind.
+    private let wantsStage = OSAllocatedUnfairLock(initialState: false)
+    /// The `MoonlightSoundStage` while one is up (typed `AnyObject` for the
+    /// same availability reason as `stageSink`). Main actor.
+    private var soundStage: AnyObject?
+    /// Told when the sound stage comes up or goes down (main actor), so the
+    /// stream UI can offer Recenter.
+    var onSoundStageChange: ((Bool) -> Void)?
 
     /// Whether decoded game audio is spatialized (head-tracked) at the
     /// session level, or bypassed (flat passthrough of the stream's own
@@ -169,9 +193,11 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         } catch {
             AppLog.moonlightAudio.log("Failed to start audio engine: \(error)")
         }
+        requestSoundStage(spatialAudioEnabled)
     }
 
     nonisolated func stop() {
+        requestSoundStage(false)
         lifecycleLock.lock()
         active = false
         playerNode?.stop()
@@ -184,6 +210,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     }
 
     nonisolated func cleanup() {
+        requestSoundStage(false)
         playerNode?.stop()
         audioEngine?.stop()
 
@@ -227,8 +254,13 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// running (e.g. while muted, before any session has been configured).
     nonisolated func setSpatialAudioEnabled(_ enabled: Bool) {
         spatialAudioEnabled = enabled
-        #if os(visionOS)
         guard !muted else { return }
+        // Only once the engine runs: before that, `start()` makes the request.
+        lifecycleLock.lock()
+        let running = active
+        lifecycleLock.unlock()
+        if running { requestSoundStage(enabled) }
+        #if os(visionOS)
         do {
             try AVAudioSession.sharedInstance().setIntendedSpatialExperience(
                 enabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
@@ -237,6 +269,63 @@ class MoonlightAudioRenderer: @unchecked Sendable {
             AppLog.moonlightAudio.log("Failed to update spatial audio experience: \(error)")
         }
         #endif
+    }
+
+    // MARK: - Sound stage
+
+    /// Brings the sound stage up or down on the main actor. Until the hop
+    /// lands, packets keep going wherever they went (the stage keeps playing
+    /// until it is torn down, which is what clears the sink).
+    private nonisolated func requestSoundStage(_ on: Bool) {
+        let wanted = on && !muted && MoonlightSoundStagePolicy.wants(channelCount: channelCount)
+        wantsStage.withLock { $0 = wanted }
+        // Strong on purpose: a teardown must still run if this was the
+        // renderer's last request before the manager let go of it.
+        Task { @MainActor in
+            self.reconcileSoundStage()
+        }
+    }
+
+    private func reconcileSoundStage() {
+        if wantsStage.withLock({ $0 }) {
+            guard soundStage == nil else { return }
+            guard #available(macOS 15.0, *) else { return }
+            let sink = stageSink
+            let stage = MoonlightSoundStage(channelCount: channelCount, sampleRate: Double(sampleRate)) { feed in
+                sink.withLock { $0 = feed.map { feed in { samples, frames in feed.push(interleaved: samples, frames: frames) } } }
+            }
+            guard let stage, stage.start() else { return }
+            soundStage = stage
+            onSoundStageChange?(true)
+        } else {
+            guard let stage = soundStage else { return }
+            if #available(macOS 15.0, *) { (stage as? MoonlightSoundStage)?.stop() }
+            soundStage = nil
+            onSoundStageChange?(false)
+        }
+    }
+
+    /// Makes the way the wearer faces now the front of the virtual speakers.
+    /// A no-op unless the sound stage is up.
+    func recenterSoundStage() {
+        guard #available(macOS 15.0, *) else { return }
+        (soundStage as? MoonlightSoundStage)?.recenter()
+    }
+
+    var isSoundStageActive: Bool { soundStage != nil }
+
+    /// Leaving the flat path for the stage: drop what the player node still
+    /// has queued so the two paths never play at once, and leave it ready to
+    /// prime afresh if the stage goes away again.
+    private nonisolated func flushFlatPath() {
+        lifecycleLock.lock()
+        if active { playerNode?.stop() }
+        lifecycleLock.unlock()
+        queueState.withLock { state in
+            state.frames = 0
+            state.generation &+= 1
+        }
+        playing = false
     }
 
     /// Decode and play an Opus packet. Called from a background thread.
@@ -248,9 +337,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// lost packet.
     nonisolated func decodeAndPlaySample(_ data: UnsafeMutablePointer<CChar>?, length: Int32) {
         guard !muted else { return }
-        guard let decoder = decoder,
-              let playerNode = playerNode,
-              let format = audioFormat else { return }
+        guard let decoder = decoder else { return }
 
         // Decode Opus to interleaved PCM Int16
         let maxSamples = samplesPerFrame * channelCount
@@ -268,6 +355,22 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         }
 
         guard decodedSamples > 0 else { return }
+
+        // Surround on the sound stage. Same frames, PLC included, and the
+        // feed keeps the same 40 ms cushion and re-primes the same way.
+        if let sink = stageSink.withLock({ $0 }) {
+            if !routedToStage {
+                flushFlatPath()
+                routedToStage = true
+            }
+            pcmBuffer.withUnsafeBufferPointer { sink($0.baseAddress!, Int(decodedSamples)) }
+            return
+        }
+        // Back from the stage: the flat path was flushed on the way out and
+        // primes a fresh cushion from here.
+        routedToStage = false
+
+        guard let playerNode = playerNode, let format = audioFormat else { return }
 
         // Create AVAudioPCMBuffer and copy interleaved data
         let frameCount = AVAudioFrameCount(decodedSamples)

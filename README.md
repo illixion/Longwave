@@ -113,6 +113,15 @@ Requires the [Longwave Companion](#longwave-companion-for-windows-beta) on the P
 - Xcode 26.0+
 - For PCVR: a Windows PC with an NVIDIA RTX card, running Longwave Companion
 
+### Lag spikes or stutter on Wi-Fi
+
+Vision Pro's Wi-Fi briefly leaves your network's channel to serve Apple's peer-to-peer link (AWDL), which AirDrop, Handoff and Location Services use. Each trip holds back the stream for tens to hundreds of milliseconds, in stretches, even on an otherwise perfect network. If you see periodic hitches:
+
+1. On the headset, turn off **Handoff**, **AirDrop** (set receiving to off) and **Location Services**.
+2. If that doesn't help, put your router's 5 GHz network on **channel 44** in Europe or **channel 149** in the US. Those are the channels the peer-to-peer link uses there, so the radio no longer has to switch channels to serve it.
+
+Vision Pro has no 6 GHz radio, so moving the network to 6 GHz won't help.
+
 ## Setup
 
 ### RAVE Packages

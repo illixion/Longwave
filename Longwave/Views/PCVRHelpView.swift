@@ -44,6 +44,8 @@ struct PCVRHelpView: View {
                         "Hand alignment, under Controls during a session, shows what the PC is actually receiving."),
                     Row("bolt.horizontal", "Frames stutter",
                         "Step Stream quality down on the PC. Then close anything else recording or encoding — game recording overlays cost a surprising amount of the same encoder this needs."),
+                    Row("wifi.exclamationmark", "The picture hitches every so often",
+                        "Vision Pro's Wi‑Fi briefly leaves your network's channel for AirDrop, Handoff and Location Services. Turn those three off. If hitches remain, put your router's 5 GHz network on channel 44 in Europe or 149 in the US. Vision Pro has no 6 GHz radio, so 6 GHz won't help."),
                 ])
             }
             .padding(32)

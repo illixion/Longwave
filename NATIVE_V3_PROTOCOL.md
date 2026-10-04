@@ -1050,7 +1050,11 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    stalls also hit a constantly streaming flow, no FEC or rate control fixes
    them (the data is late, not lost) and Moonlight suffers equally. Phase 0
    measures this first; the latest-wins playout in §5 limits the damage to a
-   freeze rather than accumulated lag.
+   freeze rather than accumulated lag. The stalls are the radio leaving for
+   AWDL. The user-side mitigation is turning off Handoff, AirDrop and Location
+   Services, then the 5 GHz network on AWDL's channel (44 EU, 149 US); Vision Pro
+   has no 6 GHz radio. Phase 0 should measure with and without these, so the
+   baseline isn't polluted by a fixable setting.
 2. **Swift on Windows for a media host is unproven.** Mitigated by the C-ABI
    shim design and the Phase 2 go/no-go spike with a named fallback.
 3. **VideoToolbox LTR on hardware HEVC is unverified, and doubtful.** LTR was
@@ -1070,8 +1074,16 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    receive are the levers, BSD sockets the fallback.
 6. **NACK vs FEC balance** on the real AP is an empirical question for the
    simulator and Phase 1.
-7. **Spatial audio objects** from Windows games may be unobtainable without
-   being the system's spatial audio renderer.
+7. **Spatial audio from Windows games needs no driver.** Measured 2026-10-04
+   with `CompanionWindows/spike/spatial-audio-probe` (an ASI plugin hooking
+   `IMMDevice::Activate` and wrapping `ISpatialAudioClient` in-process):
+   Cyberpunk 2077 2.31 with Windows Sonic on asks for a **7.1.4 static bed**
+   (`StaticObjectTypeMask` 0x1FFE) and **zero dynamic objects** (max 0), even
+   with 111 available, and fills all twelve bed channels in gameplay. So the
+   capturable ceiling for this game is a 12-channel bed, which the hook gets
+   un-rendered (before Sonic binauralizes it). Becoming a system-wide spatial
+   format provider is the only partner-gated route, and it isn't needed. Other
+   titles may use dynamic objects; the object channel in §4 stays optional.
 8. **Virtual gamepads on Windows** need a driver, and the de-facto one is
    unmaintained (§7.2).
 9. **Anti-cheat** may reject injected input or virtual pads in some games;

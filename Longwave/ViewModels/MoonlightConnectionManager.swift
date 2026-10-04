@@ -151,6 +151,9 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     /// Guards against concurrent teardowns (e.g. a manual disconnect racing a
     /// server-initiated termination) issuing overlapping LiStopConnection calls.
     private var isTearingDown = false
+    /// Stage that made the last `LiStartConnection` fail; written and read on
+    /// the connecting thread only (see `moonlightStreamStageFailed`).
+    private nonisolated(unsafe) var failedStage: (name: String, errorCode: Int32)?
 
     // MARK: - Auto-reconnect state
 
@@ -483,6 +486,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 )
 
                 // Start connection (blocks until connected or fails)
+                self.failedStage = nil
                 let result = startMoonlightStream(
                     library: self.library,
                     config: streamConfig,
@@ -492,9 +496,11 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 )
 
                 if result != 0 {
+                    let message = self.failedStage.map { "Stage '\($0.name)' failed (error: \($0.errorCode))" }
+                        ?? "Failed to start stream (error: \(result))"
                     await MainActor.run {
                         self.teardownStream {
-                            self.connectionState = .error("Failed to start stream (error: \(result))")
+                            self.connectionState = .error(message)
                             self.statusMessage = "Stream failed"
                             if self.isAutoReconnecting { self.scheduleReconnect() }
                         }
@@ -680,14 +686,16 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
 
     nonisolated func moonlightStreamStageComplete(_ stage: Int32) {}
 
+    /// Called from inside `LiStartConnection`, which then undoes its own work
+    /// with an internal `LiStopConnection` before returning. Tearing down from
+    /// here would run a second `LiStopConnection` concurrently with that one —
+    /// both see the same stage and free the same contexts (a double free in
+    /// `destroyAudioStream`). So only record the stage; the non-zero return
+    /// in `startStreaming` does the teardown once the library is idle.
     nonisolated func moonlightStreamStageFailed(_ stage: Int32, errorCode: Int32) {
-        let name = library.stageName(stage)
-        Task { @MainActor in
-            self.teardownStream {
-                self.connectionState = .error("Stage '\(name)' failed (error: \(errorCode))")
-                self.statusMessage = "Stream setup failed"
-            }
-        }
+        // Same thread as the `startMoonlightStream` call, which reads it after
+        // `LiStartConnection` returns — no hop, no race.
+        failedStage = (library.stageName(stage), errorCode)
     }
 
     nonisolated func moonlightStreamConnectionStarted() {

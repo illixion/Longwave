@@ -110,13 +110,8 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
 
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: Double(sampleRate),
-            channels: AVAudioChannelCount(channelCount),
-            interleaved: true
-        ) else {
-            AppLog.moonlightAudio.log("Failed to create audio format")
+        guard let format = Self.makeFormat(sampleRate: sampleRate, channelCount: channelCount) else {
+            AppLog.moonlightAudio.log("Failed to create audio format for \(self.channelCount, privacy: .public) channels")
             return -1
         }
 
@@ -128,6 +123,33 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         audioFormat = format
 
         return 0
+    }
+
+    /// Interleaved Int16 PCM in the host's channel order. The plain
+    /// `channels:` initializer returns nil above two channels, so surround
+    /// needs an explicit layout. GameStream sends Windows (WAVEFORMATEXTENSIBLE)
+    /// order: FL FR FC LFE BL BR for 5.1, plus SL SR for 7.1.
+    private nonisolated static func makeFormat(sampleRate: Int, channelCount: Int) -> AVAudioFormat? {
+        let tag: AudioChannelLayoutTag
+        switch channelCount {
+        case 1, 2:
+            return AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: Double(sampleRate),
+                channels: AVAudioChannelCount(channelCount),
+                interleaved: true
+            )
+        case 6: tag = kAudioChannelLayoutTag_WAVE_5_1_A  // L R C LFE Ls Rs
+        case 8: tag = kAudioChannelLayoutTag_WAVE_7_1    // L R C LFE Rls Rrs Ls Rs
+        default: return nil
+        }
+        guard let layout = AVAudioChannelLayout(layoutTag: tag) else { return nil }
+        return AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Double(sampleRate),
+            interleaved: true,
+            channelLayout: layout
+        )
     }
 
     /// Starts the engine but not the player: `decodeAndPlaySample` releases

@@ -834,9 +834,31 @@ stream.
 
 **Virtual gamepads on Windows** need a driver. ViGEmBus — what Sunshine uses —
 was archived on 2023-11-02; existing installs keep working but nothing
-maintains it, and its announced successor hasn't shipped [W8]. Phase 3 decides
-between shipping ViGEmBus as is, a Virtual HID Framework driver of our own, or
-the successor if it appears.
+maintains it, and its announced successor hasn't shipped [W8].
+
+*Decision (2026-10-04):* our own **user-mode (UMDF2) driver on the inbox
+Virtual HID Framework**, presenting an Xbox Series pad (Windows' `xinputhid`
+makes it visible to XInput) and a DualSense (adaptive triggers, gyro,
+touchpad), with rumble and trigger effects returned as HID output reports.
+Being user-mode, a bug can't blue-screen the PC. libvirtualgamepad (MIT) is
+the reference. ViGEmBus 1.22, already signed by its author and already shipped
+opt-in by the PCVR host, is the fallback behind the same `lw_gamepad_*` API.
+
+*Distribution without certificates.* Longwave does not buy signing
+certificates: Windows code ships as MIT source that users review, build and
+run themselves, and the driver follows the same rule. Only kernel binaries
+need Microsoft's signature; a UMDF package needs a catalog signed by a
+certificate the machine trusts. So the driver's build script creates a
+certificate **on the user's machine** at install time, signs the catalog,
+adds the certificate to that machine's Root and TrustedPublisher stores, and
+**deletes the private key** — no key exists afterwards that could sign
+anything else, and uninstall removes the certificate. This is the pattern
+HIDMaestro uses, minus its one weakness (a long-lived key). Test-signing
+mode is never used: it weakens the whole machine and anti-cheat refuses it.
+*Unverified, and the first thing the gamepad spike checks:* that such a
+package installs and loads with Secure Boot on and test signing off on
+Windows 10 22H2 and 11, and how Smart App Control (Windows 11, usually off on
+upgraded machines) treats it.
 
 **Process model:** the Electron Companion and its C# backend stay — they own
 Hotspot NAT, PCVR install/supervision and the UI. The C# backend launches and
@@ -1084,8 +1106,10 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    un-rendered (before Sonic binauralizes it). Becoming a system-wide spatial
    format provider is the only partner-gated route, and it isn't needed. Other
    titles may use dynamic objects; the object channel in §4 stays optional.
-8. **Virtual gamepads on Windows** need a driver, and the de-facto one is
-   unmaintained (§7.2).
+8. **Virtual gamepads on Windows**: decided on a UMDF2 + VHF driver with a
+   locally generated, key-destroyed certificate (§7.2). Open: Secure Boot /
+   Smart App Control acceptance of a locally trusted catalog, and Vanguard-class
+   anti-cheat, which is reported to reject any virtual pad.
 9. **Anti-cheat** may reject injected input or virtual pads in some games;
    Sunshine faces the same.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on

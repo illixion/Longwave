@@ -9,6 +9,7 @@ Windows hosts.
 
 ## Status
 
+- **Next protocol: v3 proposed** — see [[NATIVE_V3_PROTOCOL.md]] (UDP + FEC, one host clock, portable Swift host core; absorbs Phases 4–5).
 - Full desktop milestone: **implemented** (see below). Was a transparent
   application-window composition; now the complete display.
 - **Receivers on every client: implemented** — the Mac client

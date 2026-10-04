@@ -1,0 +1,125 @@
+; Longwave virtual gamepad - UMDF2 source driver on the inbox Virtual HID Framework.
+;
+; Structure adapted from libvirtualgamepad's VibeshineVhfGamepad.inf.in
+; (MIT, Copyright (c) 2026 Chase Payne). x64 only for the spike.
+;
+; How the device stack is put together:
+;   * Function driver: Windows' own VHF (hidvhf.inf, "vhfservice"). We pull its
+;     sections in with Include/Needs, so no Microsoft binary is redistributed.
+;   * Upper filter: WUDFRd, the UMDF reflector, which forwards I/O to our DLL
+;     running inside WUDFHost.exe (a user-mode process).
+;   * Our DLL: LongwaveVirtualGamepad.dll, copied to System32\drivers\UMDF.
+; Windows 10 has no WUDFRD.inf filter sections to include, so the Win10 model
+; adds the reflector itself; Windows 11 (build 22000+) uses the inbox ones.
+
+[Version]
+Signature="$Windows NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%Longwave%
+CatalogFile=LongwaveVirtualGamepad.cat
+DriverVer=10/04/2026,0.1.0.1
+PnpLockdown=1
+
+[Manufacturer]
+%Longwave%=Longwave,NTamd64.10.0...19041,NTamd64.10.0...22000
+
+[Longwave.NTamd64.10.0...19041]
+%DeviceName%=Lwpad_Win10,Root\LongwaveVirtualGamepad
+
+[Longwave.NTamd64.10.0...22000]
+%DeviceName%=Lwpad_Win11,Root\LongwaveVirtualGamepad
+
+; ============================ Windows 10 (19041+) ============================
+
+[Lwpad_Win10.NT]
+Include=hidvhf.inf
+Needs=vhfservice.NT
+CopyFiles=Lwpad.CopyFiles
+
+[Lwpad_Win10.NT.HW]
+Include=hidvhf.inf
+Needs=vhfservice.NT.HW
+AddReg=Lwpad.AddReg
+
+[Lwpad_Win10.NT.Services]
+Include=hidvhf.inf
+Needs=vhfservice.NT.Services
+AddService=WUDFRd,0x000001f8,WUDFRd_ServiceInstall
+
+[Lwpad_Win10.NT.Filters]
+AddFilter=WUDFRd,,WUDFRd_UpperFilterPosition
+
+[Lwpad_Win10.NT.Wdf]
+UmdfService=LongwaveVirtualGamepad,Lwpad_Wdf
+UmdfServiceOrder=LongwaveVirtualGamepad
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfFsContextUsePolicy=CannotUseFsContexts
+
+[WUDFRd_UpperFilterPosition]
+FilterPosition=Upper
+
+[WUDFRd_ServiceInstall]
+DisplayName=%WUDFRdServiceName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+; ============================ Windows 11 (22000+) ============================
+
+[Lwpad_Win11.NT]
+Include=WUDFRD.inf,hidvhf.inf
+Needs=WUDFRD_UpperFilter.NT,vhfservice.NT
+CopyFiles=Lwpad.CopyFiles
+
+[Lwpad_Win11.NT.HW]
+Include=WUDFRD.inf,hidvhf.inf
+Needs=WUDFRD_UpperFilter.NT.HW,vhfservice.NT.HW
+AddReg=Lwpad.AddReg
+
+[Lwpad_Win11.NT.Services]
+Include=WUDFRD.inf,hidvhf.inf
+Needs=WUDFRD_UpperFilter.NT.Services,vhfservice.NT.Services
+
+[Lwpad_Win11.NT.Filters]
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.Filters
+
+[Lwpad_Win11.NT.Wdf]
+UmdfService=LongwaveVirtualGamepad,Lwpad_Wdf
+UmdfServiceOrder=LongwaveVirtualGamepad
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfFsContextUsePolicy=CannotUseFsContexts
+
+; ================================= Shared ====================================
+
+[Lwpad.AddReg]
+; Who may open the control interface (i.e. create virtual pads): SYSTEM and
+; Administrators fully, the interactive user read/write, and UD - the UMDF host
+; SID, which the driver needs to open its own stack for VHF.
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GA;;;UD)"
+
+[Lwpad_Wdf]
+UmdfLibraryVersion=2.15
+ServiceBinary=%13%\LongwaveVirtualGamepad.dll
+
+[Lwpad.CopyFiles]
+LongwaveVirtualGamepad.dll
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[SourceDisksNames]
+1=%DiskName%,,,
+
+[SourceDisksFiles]
+LongwaveVirtualGamepad.dll=1
+
+[Strings]
+Longwave="Longwave"
+DeviceName="Longwave Virtual Gamepad"
+WUDFRdServiceName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+DiskName="Longwave Virtual Gamepad Driver"

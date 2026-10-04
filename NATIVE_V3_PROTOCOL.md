@@ -855,10 +855,31 @@ adds the certificate to that machine's Root and TrustedPublisher stores, and
 anything else, and uninstall removes the certificate. This is the pattern
 HIDMaestro uses, minus its one weakness (a long-lived key). Test-signing
 mode is never used: it weakens the whole machine and anti-cheat refuses it.
-*Unverified, and the first thing the gamepad spike checks:* that such a
-package installs and loads with Secure Boot on and test signing off on
-Windows 10 22H2 and 11, and how Smart App Control (Windows 11, usually off on
-upgraded machines) treats it.
+
+*Verified on Windows 10 22H2 (2026-10-04, `gaming-pc`, Secure Boot on, test
+signing off; `CompanionWindows/spike/vhf-gamepad`):* the package installs
+silently and loads. Windows' own install log records "signed with an
+Authenticode catalog from a trusted publisher", signer score Authenticode, and
+the device is OK in `WUDFHost.exe`. Both halves of the trust are needed:
+an unsigned catalog is refused ("Code Integrity is enforced"), and a
+certificate in Root but not TrustedPublisher is refused when nobody can be
+prompted. Signing uses only inbox PowerShell (`New-SelfSignedCertificate`,
+`Set-AuthenticodeSignature`), so the machine that installs needs no SDK. The
+key's deletion is checked three ways. Windows also files a copy of the public
+certificate in `LocalMachine\CA`, which uninstall must remove. Once a package is
+in the driver store it keeps loading after the certificate expires (signatures
+are checked at import only), so the certificate gets a 10-year life; with the
+key gone that costs nothing. The spike's driver is a ~600-line rewrite of
+libvirtualgamepad's (Xbox Series + DualSense). Its report encoders are vendored
+unchanged, and it carries its own interface GUID and hardware ID so it can't
+collide with Vibeshine's. Functionally: XInput, Windows.Gaming.Input and SDL3
+see the pads, with exact values; rumble, impulse triggers, DualSense gyro and
+lightbar round-trip; killing the feeder removes its pads within ~15 ms; 2,000
+create/destroy cycles showed no leak; and the signed-in user drives pads
+without admin.
+*Still open:* Windows 11, and Smart App Control in particular. That run is
+packaged for a Hyper-V VM (`run-gamepad-spike.ps1`, which records SAC state and
+Code Integrity audit events 3076/3077), along with survival across a reboot.
 
 **Process model:** the Electron Companion and its C# backend stay — they own
 Hotspot NAT, PCVR install/supervision and the UI. The C# backend launches and
@@ -1065,6 +1086,18 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
   by default [M1][M4]. Moonlight: 1392/1024-byte packets, audio RS 4+2 with
   5 ms Opus [M2][M3].
 - ViGEmBus archived 2023-11-02 [W8].
+- A UMDF2 + VHF virtual gamepad needs no paid certificate on Windows 10 22H2
+  with Secure Boot on and test signing off. Measured 2026-10-04 on `gaming-pc`
+  (`CompanionWindows/spike/vhf-gamepad`, `evidence/` log). The catalog is
+  signed at install with a self-signed certificate that's trusted in
+  LocalMachine Root + TrustedPublisher and whose key is then destroyed; the
+  install is silent and the device is OK. Negative controls: an unsigned
+  catalog gives `0xE0000247`, Root-only trust gives `0xE0000242` (would
+  prompt). The Xbox Series pad is XInput-visible through the inbox
+  `xinputhid`; Windows.Gaming.Input sees it, input only for the foreground
+  process; SDL3 identifies the DualSense as PS5 with exact gyro. Rumble,
+  impulse triggers and lightbar reach the driver; the pads die with their
+  feeder; 2,000 create/destroy cycles showed no leak.
 
 ### Inference and open questions
 
@@ -1107,9 +1140,14 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    format provider is the only partner-gated route, and it isn't needed. Other
    titles may use dynamic objects; the object channel in §4 stays optional.
 8. **Virtual gamepads on Windows**: decided on a UMDF2 + VHF driver with a
-   locally generated, key-destroyed certificate (§7.2). Open: Secure Boot /
-   Smart App Control acceptance of a locally trusted catalog, and Vanguard-class
-   anti-cheat, which is reported to reject any virtual pad.
+   locally generated, key-destroyed certificate (§7.2). *Verified on Windows 10
+   22H2 with Secure Boot on:* silent install, driver loads, games' input APIs
+   see the pads (facts list above). *Open:* Windows 11 and Smart App Control.
+   SAC is a user-mode policy, so it governs our DLL and tools, not the kernel;
+   whether it accepts files signed by a locally trusted root is unknown, and
+   evaluation mode's audit events will predict it (VM kit in the spike). Also
+   open: survival across reboots and feature updates, real games, Steam Input,
+   and Vanguard-class anti-cheat, which is reported to reject any virtual pad.
 9. **Anti-cheat** may reject injected input or virtual pads in some games;
    Sunshine faces the same.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on

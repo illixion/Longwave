@@ -279,6 +279,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     private nonisolated func requestSoundStage(_ on: Bool) {
         let wanted = on && !muted && MoonlightSoundStagePolicy.wants(channelCount: channelCount)
         wantsStage.withLock { $0 = wanted }
+        AppLog.moonlightAudio.notice("Sound stage \(wanted ? "wanted" : "not wanted", privacy: .public): spatial=\(on, privacy: .public) muted=\(self.muted, privacy: .public) channels=\(self.channelCount, privacy: .public)")
         // Strong on purpose: a teardown must still run if this was the
         // renderer's last request before the manager let go of it.
         Task { @MainActor in

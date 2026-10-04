@@ -123,7 +123,7 @@ final class MoonlightSoundStage {
         self.stage = stage
         self.feed = feed
         publish(feed)
-        AppLog.moonlightAudio.info("Sound stage up: \(self.layout.rawValue, privacy: .public) as virtual speakers")
+        AppLog.moonlightAudio.notice("Sound stage up: \(self.layout.rawValue, privacy: .public) as virtual speakers")
         return true
     }
 
@@ -134,7 +134,7 @@ final class MoonlightSoundStage {
             // cushion being too small or too big for the link; drift and
             // re-anchors are PHASE's per-stream clocks wandering.
             let state = feed.state
-            AppLog.moonlightAudio.info("Sound stage down: \(state.underruns, privacy: .public) underruns, \(state.skips, privacy: .public) skips, \(feed.aligner.reanchors, privacy: .public) re-anchors, max drift \(feed.aligner.maxDrift, privacy: .public) frames, \(feed.fallbackRenders, privacy: .public) untimed renders")
+            AppLog.moonlightAudio.notice("Sound stage down: \(state.underruns, privacy: .public) underruns, \(state.skips, privacy: .public) skips, \(feed.aligner.reanchors, privacy: .public) re-anchors, max drift \(feed.aligner.maxDrift, privacy: .public) frames, \(feed.fallbackRenders, privacy: .public) untimed renders")
         }
         stage?.stop()
         stage = nil
@@ -143,7 +143,7 @@ final class MoonlightSoundStage {
 
     private func rebuild(_ reason: String) {
         guard stage != nil else { return }
-        AppLog.moonlightAudio.info("Rebuilding sound stage: \(reason, privacy: .public)")
+        AppLog.moonlightAudio.notice("Rebuilding sound stage: \(reason, privacy: .public)")
         teardown()
         _ = build()
     }

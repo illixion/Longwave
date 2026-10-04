@@ -65,11 +65,15 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     nonisolated(unsafe) var muted: Bool = false
 
     /// Where decoded frames go while the sound stage is up: the stage's
-    /// `RAVEChannelFeed.push`, set and cleared by the main actor, read by the
-    /// decode thread per packet. A closure rather than the feed itself so the
-    /// property needs no macOS 15 availability (the Mac client floor is 14.2).
-    private typealias StageSink = @Sendable (UnsafePointer<Int16>, Int) -> Void
-    private let stageSink = OSAllocatedUnfairLock<StageSink?>(initialState: nil)
+    /// `RAVEChannelFeed`, set and cleared by the main actor, read by the
+    /// decode thread per packet. Typed as an existential so the property
+    /// needs no macOS 15 availability (the Mac client floor is 14.2).
+    ///
+    /// Not a closure over `feed.push`: a `@Sendable` closure built through
+    /// `Optional.map` and stored here was reabstracted into a thunk that
+    /// called itself, overflowing the decode thread's stack on the first
+    /// packet (SIGBUS, 2026-10-04).
+    private let stageFeed = OSAllocatedUnfairLock<(any AnyObject & Sendable)?>(initialState: nil)
     /// Whether the last packet went to the stage. Decode-thread owned, like
     /// `playing`: the hand-over between paths happens on that thread.
     private nonisolated(unsafe) var routedToStage = false
@@ -78,7 +82,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// leave a stale build or teardown behind.
     private let wantsStage = OSAllocatedUnfairLock(initialState: false)
     /// The `MoonlightSoundStage` while one is up (typed `AnyObject` for the
-    /// same availability reason as `stageSink`). Main actor.
+    /// same availability reason as `stageFeed`). Main actor.
     private var soundStage: AnyObject?
     /// Told when the sound stage comes up or goes down (main actor), so the
     /// stream UI can offer Recenter.
@@ -291,9 +295,9 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         if wantsStage.withLock({ $0 }) {
             guard soundStage == nil else { return }
             guard #available(macOS 15.0, *) else { return }
-            let sink = stageSink
+            let slot = stageFeed
             let stage = MoonlightSoundStage(channelCount: channelCount, sampleRate: Double(sampleRate)) { feed in
-                sink.withLock { $0 = feed.map { feed in { samples, frames in feed.push(interleaved: samples, frames: frames) } } }
+                slot.withLock { $0 = feed }
             }
             guard let stage, stage.start() else { return }
             soundStage = stage
@@ -359,12 +363,13 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
         // Surround on the sound stage. Same frames, PLC included, and the
         // feed keeps the same 40 ms cushion and re-primes the same way.
-        if let sink = stageSink.withLock({ $0 }) {
+        if #available(macOS 15.0, *), let object = stageFeed.withLock({ $0 }) {
+            let feed = unsafeDowncast(object, to: RAVEChannelFeed.self)
             if !routedToStage {
                 flushFlatPath()
                 routedToStage = true
             }
-            pcmBuffer.withUnsafeBufferPointer { sink($0.baseAddress!, Int(decodedSamples)) }
+            pcmBuffer.withUnsafeBufferPointer { feed.push(interleaved: $0.baseAddress!, frames: Int(decodedSamples)) }
             return
         }
         // Back from the stage: the flat path was flushed on the way out and

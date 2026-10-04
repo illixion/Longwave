@@ -11,6 +11,12 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 ## Status
 
 - **Design: proposed.** Phase 0 (measurement) can start from this document.
+- **Phase 2 go/no-go spike: GO** (2026-10-04). A Swift executable on
+  `gaming-pc` captured the real 1440p desktop (WGC and DXGI duplication),
+  encoded HEVC with NVENC straight from the GPU texture, and streamed it over
+  UDP to a Swift receiver on the Mac, through a C-ABI shim that SwiftPM builds.
+  Results, workarounds and what is still open:
+  [Phase 2 spike result](#phase-2-spike-result-2026-10-04-go).
 - The v2 protocol (`Shared/MacNativeStreamProtocol.swift`) stays the shipping
   protocol, and remains served until every client in the field speaks v3.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
@@ -828,9 +834,15 @@ references (MF's `CODECAPI_AVLowLatencyMode` only removes reordering delay [W7])
 `CreateForWindow` via `IGraphicsCaptureItemInterop` [W6]) — it is the only API
 that captures single windows, which Unity streams need. Two caveats: Sunshine
 still calls WGC "beta" and DXGI Desktop Duplication "well-supported" [M4], and
-WGC's `MinUpdateInterval` (needed above 60 Hz) exists only from SDK 26100 /
-Windows 11 24H2 [W6]. DXGI duplication stays the fallback for the desktop
-stream.
+WGC's `MinUpdateInterval` exists only from SDK 26100 / Windows 11 24H2 [W6]
+— but *measured in the Phase 2 spike* it isn't needed to go above 60 Hz: on
+Windows 10 22H2, WGC delivered every composition of a 180 Hz panel (1,440
+frames in 8 s). Both backends sit behind the shim (`LW_CAPTURE_WGC`,
+`LW_CAPTURE_DDA`) at near-equal latency (§8). DXGI duplication stays the
+fallback for the desktop stream, and may be the better default on Windows 10:
+WGC there always draws a yellow border round the captured monitor
+(`IsBorderRequired` is Windows 11 API; documented, not yet observed here),
+while duplication has no border but doesn't draw the cursor.
 
 **Virtual gamepads on Windows** need a driver. ViGEmBus — what Sunshine uses —
 was archived on 2023-11-02; existing installs keep working but nothing
@@ -887,7 +899,8 @@ supervises `longwave-host.exe` (as it supervises other processes), talks to it
 over the existing named-pipe RPC style for enable/token/status, and its own
 Native stream is retired once the Swift host reaches parity (§8). The Swift
 runtime DLLs ship next to `longwave-host.exe` in the companion's installer
-(redistribution of the Swift runtime on Windows is a Phase 3 spike item).
+(measured in the Phase 2 spike: 13 DLLs, 13.6 MB, beside a 3.9 MB stripped
+exe; the 6.2.4 Windows SDK ships no static runtime, so they can't be linked in).
 
 ### 7.3 Linux
 
@@ -982,7 +995,8 @@ judgement.
   [[vt-hevc-encode-latency-benchmarks]]?).
 - Check `NvEncInvalidateRefFrames` on the RTX 3080 with a minimal NVENC harness
   (Sunshine on the same box exercises it already; its log says whether RFI is
-  in use).
+  in use). *Answered by the Phase 2 spike, 2026-10-04: it works* (cut-stream
+  test in the spike result below).
 
 Exit: a table of v2 and Moonlight latency (p50/p95/p99), loss behaviour and
 stall behaviour on three links (Wi-Fi 7 AP, Tailscale, impaired); recorded
@@ -1023,6 +1037,139 @@ Moonlight replacement is the north star.
 
 Exit: everything the C# Native host did, plus audio, acks and recovery;
 latency within Phase 0's Moonlight numbers + 5 ms on the same machine.
+
+#### Phase 2 spike result (2026-10-04): GO
+
+**Verdict: go.** Swift can be the Windows host. Every gate item worked on
+`gaming-pc`, and nothing hit a wall that the C++ fallback would avoid. Code:
+`Packages/LongwaveStream` — `CStreamWin` (the C ABI, `include/lw_stream.h`) and
+`StreamHostWindows` (its Swift wrappers) are meant to be kept;
+`StreamSpikeWire`, `longwave-host-spike` and `stream-spike-receiver` are
+spike-only. `scripts/windows.ps1` builds, tests and packages on the PC.
+
+Set-up: Windows 10 22H2 (19045), RTX 3080 on driver 610.88 (NVENC API 13.1),
+Swift 6.2.4 (its clang is 19.1.5), VS 2022 Build Tools 14.44, Windows SDK
+26100. Encoder settings throughout: HEVC Main, NVENC P1 with ultra-low-latency
+tuning, CBR 50 Mbit/s, one-frame VBV, no B-frames, infinite GOP with an IDR
+only on request.
+
+How the spike differs from the gate as written: the Phase 1 core doesn't exist
+yet, so a throwaway packetizer carried the pictures (28-byte header,
+1,200-byte datagrams, no FEC, no encryption), and the client was a Swift
+receiver on the Mac writing an elementary stream that VideoToolbox decoded
+(through ffmpeg), not Longwave itself. Those are integration steps, not
+feasibility questions.
+
+*Measured (facts).* "Capture" is the earlier of the OS's timestamp and the
+moment the shim got the frame (see workaround 2); "encoded" is the bitstream
+locked in system memory. The encode itself is all but ~0.1 ms of each figure:
+the GPU copy out of the OS's texture and the hand-off to the encode thread
+take under 0.02 ms.
+
+| Source (all 120 fps out) | capture→encoded p50 / p95 / p99, ms |
+|---|---|
+| Real 2560×1440 desktop (180 Hz panel), WGC, GPU otherwise idle | 4.23 / 4.59 / 4.64 |
+| same, GPU held at game clocks by a load generator | 3.02 / 4.24 / 4.62 |
+| Real desktop, DXGI duplication, idle | 4.83 / 5.20 / 5.28 |
+| same, game clocks | 3.47 / 4.87 / 5.22 |
+| Synthetic 1440p, fresh noise every frame (encoder worst case), game clocks | 2.91 / 4.32 / 4.42 |
+| same, GPU 100% busy (contention with a game) | 3.81 / 4.44 / 4.47 |
+| Synthetic 1440p panning, preset P4, game clocks | 5.73 / 7.13 / 7.18 |
+| Synthetic 3840×2160 at 60 fps, panning, game clocks | 6.08 / 7.27 / 7.44 |
+
+- Network: over wired LAN to the Mac, 1,200 of 1,200 pictures arrived at
+  48.7 Mbit/s with no loss, and decode clean in VideoToolbox. On loopback,
+  capture→received was p50 4.52 ms with the GPU idle.
+- CPU: the whole host process used 0.1–0.9% of the 12 logical CPUs (1–11% of
+  one core) at 1440p120, including ~5,000 datagrams/s and, in most runs, the
+  in-process test receiver.
+- Recovery: IDR on request works. So does `NvEncInvalidateRefFrames`: with the
+  two invalidated pictures cut out of the stream, all 361 later pictures
+  decoded bit-identical to the uncut stream, while cutting two ordinary
+  pictures instead broke decoding ("Could not find ref"). The encoder reports
+  reference invalidation, intra refresh and 7 LTR frames.
+- Audio: WASAPI loopback of a 7.1 endpoint (Steam Streaming Speakers) gave 8
+  channels of 48 kHz float, mask 0x63F; a distinct test tone per channel came
+  back on its own index, and macOS reads the WAV as 7.1.
+- swift-crypto 4.5.2 builds on x64 Windows (its BoringSSL compiles with the
+  toolchain's clang) and passes the RFC 7748 X25519, RFC 8439
+  ChaCha20-Poly1305 and RFC 5869 HKDF vectors, under `swift test` and inside
+  the packaged exe. Release ChaChaPoly seals a 1,200-byte datagram in 3.8 µs
+  (313 MB/s on the Ryzen 5600X): about 4% of one core at 100 Mbit/s.
+- Packaging: the exe plus 13 DLLs from the toolchain's runtime folder ran from
+  a fresh folder with `PATH` cut down to Windows' own directories. swiftCore
+  5.8 MB, FoundationEssentials 5.3 MB (pulled in by swift-crypto; there is no
+  `Foundation.dll` and none of ICU's 35 MB), swift_RegexParser 0.95 MB,
+  swift_StringProcessing 0.66 MB, MSVCP140 0.56 MB, dispatch 0.23 MB,
+  swiftDispatch 0.15 MB, VCRUNTIME140 0.12 MB, and under 0.06 MB each:
+  swiftSynchronization, VCRUNTIME140_1, swiftCRT, swiftWinSDK, BlocksRuntime.
+  17.5 MB in all with a stripped 3.9 MB exe, 6.1 MB zipped. Everything else
+  it links (d3d11, dxgi, avrt, ws2_32, the api-ms-win-* set) is part of Windows.
+
+*What worked first time:* SwiftPM compiled the C++20 shim, C++/WinRT headers
+included, with Swift's clang against MSVC's STL and the Windows SDK, with no
+compiler workaround. Importing the flat C header, C callbacks into Swift
+through `Unmanaged` contexts, `Synchronization.Mutex`/`Atomic`, Dispatch queues
+and semaphores, Winsock through `import WinSDK`, and `swift test` (XCTest) all
+worked as on the Mac.
+
+*What needed a workaround (each fix is in the code):*
+1. DXGI duplication with a blocking `AcquireNextFrame(100 ms)` stalled NVENC on
+   the same D3D11 device until the next desktop update: 18.8 fps and 25–50 ms
+   encodes. Polling with a zero timeout and a 0.5 ms high-resolution timer
+   sleep fixed it.
+2. WGC's `SystemRelativeTime` lands about one refresh *after* the frame reaches
+   us (−13 to −15 ms at 60 Hz, −4.6 ms at 180 Hz), apparently the vblank it was
+   composed for. Capture time is taken as the earlier of the two stamps.
+3. Encode latency follows the GPU's clocks. With only the stream running, the
+   driver sits in P3–P8 and NVENC takes 4–6 ms at 1440p; at game clocks it
+   takes ~3 ms. Phase 0's Moonlight comparison must be made with a game
+   running. Whether the host should hold clocks up itself is open: Sunshine's
+   way is a driver-profile setting, which changes the user's driver settings.
+4. SwiftPM's release build embeds DWARF in the `.exe` on Windows (15.5 MB of
+   19.3 MB); `windows.ps1 -Strip` (`-Xswiftc -gnone -Xcc -g0 -Xcxx -g0`)
+   removes it. `--static-swift-stdlib` is accepted and silently ignored, since
+   the 6.2.4 SDK ships no static runtime.
+5. Audio endpoint *indices* change when devices come and go (the monitor
+   waking added its DisplayPort audio), so endpoints must be chosen by ID. By
+   index, the spike once played its test tone on the wrong device.
+6. Swift-on-Windows papercuts, none blocking: `WinSDK` imports `WS_POPUP` as
+   `UInt32` but `WS_VISIBLE` as `Int32`; GDI handle types need `OpaquePointer`
+   casts; socket lengths are `Int32` on Windows but `socklen_t` elsewhere;
+   `String(format:)` needs Foundation (a `vsnprintf` helper avoids it); `fopen`
+   warns as deprecated.
+
+*The shim API to keep* is `lw_stream.h` as built: `lw_device` (one D3D11
+device for capture and encode); `lw_capture` (WGC or duplication, handing out
+frames as BGRA texture handles from a shim-owned ring that the consumer
+releases); `lw_encoder` (synchronous encode of a texture with a force-IDR flag,
+`invalidate`, `set_bitrate`); `lw_audio_loopback`; monitor and endpoint
+listing; QPC time. Its spike-only parts (`lw_capture_start_synthetic`,
+`lw_spike_gpu_load_*`, `lw_audio_play_test_tones`) are marked as such. NVENC's
+async completion-event wait gave the same latency as blocking in the lock call
+with less CPU, so make it the default.
+
+*Inference, not measured:* WGC draws the yellow capture border on Windows 10;
+duplication's missing cursor means the shim must draw the pointer; capturing
+the secure desktop (UAC prompts, lock screen) needs a SYSTEM-level helper in
+the user's session, which is how Sunshine runs; HDR needs `DuplicateOutput1`
+or FP16 capture and a 10-bit encode path; a 120 Hz display mode itself wasn't
+tested (120 fps was decimated from 180 Hz, since display settings were
+off-limits).
+
+*The fallback, evaluated:* a C++ host process would save the 13.6 MB of Swift
+runtime and the WinSDK papercuts. It would cost a second implementation of
+everything above the shim (transport, FEC, crypto on another library, rate
+control, playout), held to the Swift core by test vectors. Nothing in the
+spike justifies that, so it stays a fallback only.
+
+*Next:* build the Phase 1 core and put `StreamHostWindows` behind its
+`CaptureSource`/`VideoEncoder`/`AudioSource` protocols. Harden the shim:
+recovery from device removal (TDR) and display-mode changes, the cursor for
+duplication, window capture, HDR, scaling when the encode size differs from
+the capture size, AMF/Media Foundation behind the same `lw_encoder` API, and
+CodeView PDBs for crash symbols. Add a Windows CI job like Oneiros', and
+settle the clock question (workaround 3).
 
 ### Phase 3 — game-grade features (6–8 weeks, overlaps Phase 2's tail)
 
@@ -1080,6 +1227,12 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
 - Swift 6.2.4 on `gaming-pc` runs Oneiros' headless engine tests:
   Oneiros' `Docs/PORTABILITY_PLAN.md`.
   No first-class COM interop in Swift [S3].
+- Phase 2 spike, 2026-10-04 (`Packages/LongwaveStream`, results in §8): Swift
+  6.2.4 builds a C++/WinRT shim and drives WGC and DXGI capture, NVENC and
+  WASAPI on `gaming-pc`. The real 1440p desktop at 120 fps measured
+  capture→encoded p50 3.0 ms at game clocks and 4.2 ms with the GPU idle.
+  `NvEncInvalidateRefFrames` works on the RTX 3080, swift-crypto 4.5.2 passes
+  RFC vectors on x64 Windows, and the runtime ships as 13 DLLs (13.6 MB).
 - The Static Linux SDK has no dynamic linking [S2].
 - Sunshine: 20% default FEC, ≤ 255 shards/block, ≤ 4 blocks/frame, min 2 parity,
   RFI for NVENC only, 64 KB / 64-packet send batches, media encryption off on LAN
@@ -1110,8 +1263,10 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    Services, then the 5 GHz network on AWDL's channel (44 EU, 149 US); Vision Pro
    has no 6 GHz radio. Phase 0 should measure with and without these, so the
    baseline isn't polluted by a fixable setting.
-2. **Swift on Windows for a media host is unproven.** Mitigated by the C-ABI
-   shim design and the Phase 2 go/no-go spike with a named fallback.
+2. **Swift on Windows for a media host.** *The Phase 2 spike passed on
+   2026-10-04* (§8). What's left is breadth, not feasibility: HDR, the cursor
+   under duplication, the secure desktop, AMF/Media Foundation, device-loss
+   recovery, and a long soak.
 3. **VideoToolbox LTR on hardware HEVC is unverified, and doubtful.** LTR was
    introduced with VideoToolbox's low-latency mode, which WWDC21 described as
    H.264-only [V1]; the SDK header's "cloud gaming" recipe pairs them; and our
@@ -1152,8 +1307,9 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    Sunshine faces the same.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on
     everyone; simulcast is only partly possible on single-engine Macs.
-11. **swift-crypto on x64 Windows** isn't claimed by its README [S1]; CNG
-    fallback in the shim.
+11. **swift-crypto on x64 Windows** isn't claimed by its README [S1]. *Closed
+    2026-10-04:* 4.5.2 builds there and passes the RFC 7748, 8439 and 5869
+    vectors (Phase 2 spike), so no CNG fallback is needed.
 12. **Mac Virtual Display's transport is unknown.** Reports say it uses a
     direct device-to-device link that needs no Wi-Fi network [P4]; Apple
     publishes nothing. If that link is what lets Mac VD dodge the headset's

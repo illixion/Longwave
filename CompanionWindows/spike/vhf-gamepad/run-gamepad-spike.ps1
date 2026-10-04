@@ -73,6 +73,14 @@ try {
     if ($mp.PSObject.Properties.Name -contains "SmartAppControlState") { Fact "Smart App Control (Defender)" $mp.SmartAppControlState }
     Fact "Defender" "mode=$($mp.AMRunningMode) realtime=$($mp.RealTimeProtectionEnabled)"
 } catch { Fact "Defender" "Get-MpComputerStatus unavailable" }
+# Smart App Control asks Defender's cloud (MAPS) about files. A fresh install's
+# Defender can be too old for the cloud (HTTP 426) until its first update; SAC
+# then allows unknown files it would otherwise block, so record it.
+try { Fact "Defender signatures" "$($mp.AntivirusSignatureVersion), $($mp.AntivirusSignatureAge) days old, engine $($mp.AMEngineVersion)" } catch { }
+$maps = (& "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -ValidateMapsConnection 2>&1 | Select-String "establish" | Select-Object -First 1)
+Fact "Defender cloud (MAPS)" ($(if ($maps) { $maps.Line.Trim() } else { "unknown" }))
+$tf = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI" -ErrorAction SilentlyContinue).TestFlags
+Fact "CI TestFlags (3090 allow events)" ($(if ($tf) { "0x{0:X}" -f $tf } else { "not set" }))
 $lic = Get-CimInstance SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND Name LIKE 'Windows%'" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($lic) { Fact "Windows activation" (@("unlicensed", "licensed", "OOB grace", "OOT grace", "non-genuine grace", "notification", "extended grace")[[int]$lic.LicenseStatus]) }
 foreach ($f in "System32\drivers\vhf.sys", "System32\VhfUm.dll", "System32\WUDFHost.exe", "System32\drivers\WUDFRd.sys") {
@@ -85,10 +93,16 @@ foreach ($inf in "hidvhf.inf", "xinputhid.inf", "WUDFRD.inf") {
     Fact "Inbox $inf" ($(if (Test-Path (Join-Path $env:SystemRoot "INF\$inf")) { "present" } else { "MISSING$note" }))
 }
 Fact "ViGEmBus present" ([bool](Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object FriendlyName -like "*Virtual Gamepad Emulation Bus*"))
-Fact "XInput slots in use before" ((& "$bin\lwpad-test.exe" probe | Select-String "connected" | Where-Object { $_ -notmatch "not connected" }).Count)
+# Never run a kit binary before install.ps1 has signed it: with Smart App Control
+# on, an unsigned first run is blocked and the verdict stayed with that build
+# after signing (Windows 11 VM, 2026-10-04). So the XInput probe waits.
+if ($AfterReboot -or (Get-AuthenticodeSignature "$bin\lwpad-test.exe").Status -eq "Valid") {
+    Fact "XInput slots in use before" ((& "$bin\lwpad-test.exe" probe | Select-String "connected" | Where-Object { $_ -notmatch "not connected" }).Count)
+} else {
+    Fact "XInput slots in use before" "not probed (kit binaries are unsigned until install.ps1 signs them)"
+}
 
 # ----------------------------------------------------------------------------
-$ciStart = Get-Date
 if (-not $AfterReboot) {
     Section "2. Install (no paid certificate, no test signing)"
     $setupLog = Join-Path $env:SystemRoot "INF\setupapi.dev.log"
@@ -129,7 +143,39 @@ Capture { & "$bin\lwpad-test.exe" info }
 Log "-- XInput (what most PC games use):"
 Capture { & "$bin\lwpad-test.exe" xinput }
 Log "-- Windows.Gaming.Input (needs this session's desktop; opens a small window briefly):"
-Capture { & "$bin\lwpad-test.exe" wgi }
+# Games run unelevated, and so will the Longwave host. On Windows 11 (seen on
+# 26300) WGI vibration from an *elevated* process never reaches the device while
+# input does, so the counted run is unelevated: a one-shot scheduled task for the
+# signed-in user at RunLevel Limited, in this desktop session. The elevated run
+# is kept for comparison as INFO lines. Falls back to the elevated run alone
+# when there is no interactive session (SSH).
+$wgiUser = (Get-CimInstance Win32_ComputerSystem).UserName
+$sessionId = (Get-Process -Id $PID).SessionId
+$wgiLimited = $null
+if ($sessionId -gt 0 -and $wgiUser) {
+    $wgiOut = Join-Path $env:PUBLIC "lwpad-wgi-$PID.txt"
+    $taskName = "lwpad-wgi-unelevated-$PID"
+    try {
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"`"$bin\lwpad-test.exe`" wgi > `"$wgiOut`" 2>&1`"" -WorkingDirectory $kit
+        $principal = New-ScheduledTaskPrincipal -UserId $wgiUser -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        $deadline = (Get-Date).AddSeconds(60)
+        Start-Sleep -Seconds 1
+        while ((Get-ScheduledTask -TaskName $taskName).State -eq "Running" -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+        $wgiLimited = Get-Content $wgiOut -ErrorAction SilentlyContinue
+    } catch { Log "INFO wgi could not start an unelevated run ($($_.Exception.Message)); counting the elevated run" }
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item $wgiOut -ErrorAction SilentlyContinue
+}
+if ($wgiLimited) {
+    Log "   (unelevated, as $wgiUser, like a game:)"
+    Log (($wgiLimited | Out-String).TrimEnd())
+    Log "   (elevated, for comparison; not counted:)"
+    Capture { & "$bin\lwpad-test.exe" wgi | ForEach-Object { $_ -replace "^(PASS|FAIL|SKIP) ", 'INFO elevated: $1 ' } }
+} else {
+    Capture { & "$bin\lwpad-test.exe" wgi }
+}
 Log "-- SDL3 (Steam and many games), Xbox profile:"
 Capture { & "$bin\lwpad-sdltest.exe" xbox }
 Log "-- SDL3, DualSense profile (gyro, rumble, lightbar):"
@@ -161,16 +207,29 @@ Log "-- Create/destroy $Cycles times:"
 Capture { & "$bin\lwpad-test.exe" cycle $Cycles | Where-Object { $_ -notmatch "^INFO cycle " } }
 
 # ----------------------------------------------------------------------------
-Section "5. Code Integrity / Smart App Control events since the install"
+Section "5. Code Integrity / Smart App Control events since this run started"
 # 3076 = would have been blocked (audit, e.g. SAC evaluation), 3077 = blocked,
-# 3033/3034/3089 = signature problems on a loaded image.
-$events = Get-WinEvent -LogName "Microsoft-Windows-CodeIntegrity/Operational" -ErrorAction SilentlyContinue |
-    Where-Object { $_.TimeCreated -ge $ciStart }
-Fact "CodeIntegrity events" @($events).Count
-Capture { $events | Select-Object -First 30 | Format-List TimeCreated, Id, @{n = "Message"; e = { ($_.Message -split "`n")[0..2] -join " " } } }
-$ours = @($events | Where-Object { $_.Message -match "lwpad|Longwave|SDL3" })
-if ($ours.Count) { Log "INFO ci-events $($ours.Count) Code Integrity events mention our files (see above)" }
-else { Log "PASS ci-events no Code Integrity event mentions our files" }
+# 3033/3034 = signing level not met (accompany 3076/3077), 3089 = signature
+# details. 3090 = "allowed" decisions, logged only with the diagnostic
+# HKLM\SYSTEM\CurrentControlSet\Control\CI TestFlags=0x300 (after a reboot);
+# their PassesSmartlocker / DefenderTrust fields say *why* SAC allowed a file.
+$events = @(Get-WinEvent -LogName "Microsoft-Windows-CodeIntegrity/Operational" -ErrorAction SilentlyContinue |
+    Where-Object { $_.TimeCreated -ge $started })
+Fact "CodeIntegrity events" $events.Count
+Capture { $events | Group-Object Id | Sort-Object Name | ForEach-Object { "   id {0}: {1}" -f $_.Name, $_.Count } }
+$oursPattern = "lwpad|Longwave|SDL3"
+$blocks = @($events | Where-Object { $_.Id -in 3033, 3034, 3076, 3077 -and $_.Message -match $oursPattern })
+Capture { $blocks | Sort-Object TimeCreated | ForEach-Object { "   [{0:HH:mm:ss}] {1} {2}" -f $_.TimeCreated, $_.Id, ($_.Message -replace "\s+", " ") } }
+$enforced = @($blocks | Where-Object Id -eq 3077)
+$audited = @($blocks | Where-Object Id -eq 3076)
+if ($enforced.Count) { Log "FAIL ci-blocked $($enforced.Count) block events (3077) for our files; see above" }
+elseif ($audited.Count) { Log "INFO ci-audit $($audited.Count) would-have-blocked events (3076, audit/evaluation) for our files; see above" }
+else { Log "PASS ci-events no block or audit event (3033/3034/3076/3077) for our files" }
+$allowed = @($events | Where-Object { $_.Id -eq 3090 -and $_.Message -match $oursPattern })
+foreach ($e in $allowed) {
+    $d = @{}; ([xml]$e.ToXml()).Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
+    Log ("INFO ci-allowed {0} policy={1} PassesSmartlocker={2} DefenderTrust={3} audit={4}" -f $d.FileName, $d.PolicyName, $d.PassesSmartlocker, $d.DefenderTrust, $d.AuditEnabled)
+}
 $ci2 = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
 Fact "Smart App Control state now" $ci2
 

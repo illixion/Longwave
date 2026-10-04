@@ -3,8 +3,12 @@
 Spike for NATIVE_V3_PROTOCOL.md §7.2 ("Virtual gamepads on Windows") and §9 risk 8.
 Question: can Longwave ship its own virtual gamepad driver for Windows without
 buying a code-signing certificate and without test-signing mode, and do games
-see the pad? **Answer on Windows 10 22H2 (Secure Boot on): yes.** Results are
-at the end; the Windows 11 run is pending (see "Running the test").
+see the pad? **Answer on Windows 10 22H2 (Secure Boot on): yes.** **On Windows
+11 26H2 (Secure Boot on, fresh install): yes while Smart App Control is in
+evaluation or off; with Smart App Control on, not reliably** — Windows ignores
+the local certificate there and judges each file by Microsoft's cloud
+reputation, which blocked our feeder tool in one of two fresh builds. Results
+are at the end.
 
 ## What it is, in plain Windows terms
 
@@ -78,7 +82,9 @@ vendor/libvirtualgamepad/         MIT, unchanged: wire protocol + report encoder
 build.ps1                         build everything, assemble build\kit
 install.ps1 / uninstall.ps1       see above (inbox PowerShell only)
 run-gamepad-spike.ps1             baseline + install + tests + uninstall -> results\*.log
-evidence/                         result logs worth keeping (Windows 10 run)
+vm/New-Win11TestVM.ps1            Hyper-V host: stock Windows 11 VM, unattended (+ autounattend.template.xml)
+vm/Run-KitInVM.ps1                Hyper-V host: run the kit in that VM's desktop, reboot, run again, fetch logs
+evidence/                         result logs worth keeping (Windows 10 PC, Windows 11 VM)
 ```
 
 `spike/` is gitignored in this repo; files here are force-added.
@@ -139,14 +145,39 @@ the same in a Hyper-V VM (see "VM caveats").
 To test without the reboot step, run once without switches: it installs, tests
 and uninstalls. To remove everything by hand: `.\uninstall.ps1`.
 
+**The Windows 11 VM, end to end from the Hyper-V host** (elevated Windows
+PowerShell on the host; nothing on the host changes beyond the VM's files):
+```powershell
+.\vm\New-Win11TestVM.ps1 -IsoPath C:\...\Win11_x64.iso        # ~10 min unattended
+.\vm\Run-KitInVM.ps1 -KitZip C:\...\lwpad-kit.zip           # both runs + reboot, ~4 min
+```
+`New-Win11TestVM.ps1` builds a Generation 2 VM (4 vCPU, 4-6 GB, 64 GB disk,
+Secure Boot with the Microsoft Windows template, vTPM, Default Switch) and
+installs Windows 11 Pro with an answer file that skips the account/EULA pages
+but relaxes nothing: no Secure Boot/TPM bypass, Defender and Smart App Control
+as shipped. A local admin `lwtest` signs in automatically (its random password
+is in `lwtest-password.txt` next to the VM). `Run-KitInVM.ps1` drives the guest
+over PowerShell Direct and runs the kit through a scheduled task in the
+signed-in desktop session, so the WGI check has a foreground window. Three
+things it does on purpose, each learned the hard way:
+- **Updates Defender first.** The ISO's Defender was a year old and its cloud
+  refused it (`ValidateMapsConnection` → HTTP 426). Smart App Control then
+  allowed every unknown file, which made the first SAC results meaningless.
+  Don't pause Windows Update before Defender has updated once.
+- **Reboots from inside the guest.** `Restart-VM` is a hard reset; one took a
+  device node installed two minutes earlier with it, along with other
+  unflushed registry writes.
+- **Never runs a kit binary before `install.ps1` has signed it** (see the SAC
+  results).
+
 **Over SSH instead:** Windows 11 includes OpenSSH Server as an optional feature
 (`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`, then
 `Start-Service sshd`). Everything except the WGI check works over SSH as an
 administrator.
 
-### What the Windows 11 run must answer
+### What the Windows 11 run had to answer
 
-The log's baseline section records these; they are the open questions.
+The log's baseline section records these (answers in the results below).
 
 - **Smart App Control** (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`,
   `VerifiedAndReputablePolicyState`: 0 off, 1 on, 2 evaluation; plus
@@ -222,7 +253,89 @@ Function (Xbox Series profile unless noted):
   cycles): **57 PASS, 0 FAIL, 0 SKIP** in 33 s, then a clean uninstall. The
   log is `evidence/win10-gaming-pc-2026-10-04.log`. The `-KeepInstalled` /
   `-AfterReboot` pair was exercised without the reboot itself (not allowed on
-  that PC), so **survival across a reboot is untested** and is the VM run's job.
+  that PC), so survival across a reboot was left to the Windows 11 VM (below:
+it survives).
+
+## Results: Windows 11 26H2 (Hyper-V VM on gaming-pc), 2026-10-04
+
+Logs: `evidence/win11-hyperv-vm-2026-10-04-*.log` (numbered in the order run)
+and `-8-sac-controls.txt` (the control experiments, with raw event data).
+
+Baseline: Windows 11 Pro 26H2 build 26300.9457, fresh unattended install from
+Microsoft's ISO, not activated. **Secure Boot ON**, **test signing off**, vTPM
+ready. **Smart App Control: Evaluation** (`VerifiedAndReputablePolicyState=2`,
+Defender `SmartAppControlState=Eval`, evaluation ends 2026-11-18). **Memory
+Integrity not running, VBS off**: Windows didn't turn them on in this VM. The VM
+has no nested virtualization (an AMD host on Windows 10 can't offer it), which
+VBS in a guest needs. HVCI governs kernel code and this driver adds none.
+Inbox `vhf.sys`, `VhfUm.dll`, `hidvhf.inf`, `xinputhid.inf`, `WUDFRD.inf`
+present.
+
+### Facts
+
+- **Evaluation mode (the out-of-box state): works, survives a reboot.** The
+  same zip as Windows 10: silent install through the Windows 11 INF section, 56
+  PASS 0 FAIL, then a graceful reboot. The device came back by itself
+  (`-AfterReboot`: 56 PASS 0 FAIL, then a clean uninstall). Logs 1 and 2.
+- **Evaluation mode logs nothing useful.** No 3076 ("would have blocked")
+  events for any kit file, including the build that SAC-on later blocked.
+  The diagnostic 3090 events say every kit file passed the evaluation policy
+  (`PassesSmartlocker=true`). Evaluation gives no early warning.
+- **Installed during evaluation, then SAC on: keeps working.** SAC switched to
+  On (Windows Security, one UAC prompt, no reboot needed), graceful reboot:
+  the driver loaded at boot and every tool ran, 56 PASS. Files that had already
+  run were not checked again (log 3).
+- **SAC on, fresh build of the same source: our signature counts for nothing.**
+  Blocked files are logged with `Validated Signing Level=1` (unsigned) even
+  though they carry a valid signature from a certificate in Root and
+  TrustedPublisher. What decides is the cloud's verdict on the file. In two
+  fresh builds made three minutes apart:
+  - build 0.1.0.7777 (log 5): `lwpad-test.exe` **blocked** ("An Application
+    Control policy has blocked this file", 3077, policy
+    `VerifiedAndReputableDesktop`), before and after signing, and a copy of it
+    too. In the same run, `lwpad-devnode.exe`, `lwpad-sdltest.exe`, SDL3.dll and
+    the driver DLL in `WUDFHost.exe` were allowed. The install succeeded and
+    the device was OK.
+  - build 0.1.0.8888, which had never run unsigned (log 6): **everything
+    allowed**, 57 PASS 0 FAIL.
+  - Controls (file 8): one unsigned copy of a build was blocked while copies
+    of the same bytes, signed by a trusted or an untrusted self-signed
+    certificate, were allowed. Minutes later, unsigned copies of the next build
+    (random bytes appended) were allowed too.
+- **The driver DLL was never blocked** in any run, under any SAC state.
+- **SAC off: works.** The build whose tool SAC had blocked: 57 PASS 0 FAIL (log
+  7). On this build, Windows Security left "On" selectable after Off. Turning it
+  back on wasn't tried.
+- **SAC with a stale Defender allows everything.** Before Defender's first
+  update, its cloud refused the old client (MAPS HTTP 426) and SAC "On" let
+  unsigned, never-seen binaries run (`DefenderTrust=-1`). File 8, section A.
+  It explains why the first attempt saw no blocks at all; it isn't a mitigation.
+- **Windows.Gaming.Input vibration from an elevated process doesn't reach the
+  driver on this Windows 11 build** (input does). Unelevated it passes every
+  time, as on Windows 10. Games aren't elevated, and neither is the Longwave
+  host. The kit now runs the counted WGI check unelevated and logs the
+  elevated one as INFO.
+- XInput, SDL3 (Xbox + DualSense with gyro, rumble, lightbar), kill-the-feeder
+  (~30 ms) and 250-cycle create/destroy all behave as on Windows 10.
+
+### Inference (not measured)
+
+- What a user with **SAC on** would see: a "Part of this app has been blocked"
+  style notification, and Longwave's gamepad feature failing because its
+  feeder (the host exe, or a helper like `lwpad-devnode`) can't start. Whether
+  that happens varies with each build and over time. Signing locally neither
+  helps nor hurts that verdict; signing is still needed for the driver
+  package itself.
+- Users who installed while SAC was in evaluation probably keep working when
+  SAC later turns itself on, until a rebuild or update replaces the files.
+- No free fix makes SAC trust a local build. SAC has no per-app exception, and
+  a self-made certificate isn't a "valid signature" to it. The options are SAC
+  off (which this build lets the user undo), or binaries with cloud reputation
+  (in practice a publicly trusted signature, i.e. the paid certificate this
+  design avoids). Microsoft's file submission portal is per binary, so
+  per-user builds can't use it.
+- The kernel half is unaffected by SAC: VHF, `WUDFRd` and `xinputhid` are
+  Microsoft's, and the UMDF DLL loaded in every run.
 
 ## Licences
 

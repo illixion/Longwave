@@ -1,0 +1,249 @@
+﻿
+==============================================================================
+== 1. Baseline (run, 2026-10-04T14:37:29)
+==============================================================================
+OS                                     Microsoft Windows 11 Pro 26H2 build 26300.9457
+Computer                               LWWIN11TEST  Microsoft Corporation / Virtual Machine  hypervisor-present=True
+Session                                id 1 (0 = service session, e.g. SSH; games run in >= 1)
+Kit                                    DriverVer 0.1.0.8888 built 2026-10-04T17:37:18 on DESKTOP-B5T7DIS
+Secure Boot                            True
+Test signing (bcdedit)                 not set (off)
+nointegritychecks (bcdedit)            not set (off)
+Virtualization-based security          off
+Memory Integrity (HVCI)                not running (services running: 0)
+Smart App Control (CI\Policy)          ON (enforcing)  [VerifiedAndReputablePolicyState=1]
+Smart App Control (Defender)           On
+Defender                               mode=Normal realtime=True
+Defender signatures                    1.459.547.0, 0 days old, engine 1.1.26090.9
+Defender cloud (MAPS)                  ValidateMapsConnection successfully established a connection to MAPS
+CI TestFlags (3090 allow events)       0x300
+Windows activation                     notification
+Inbox System32\drivers\vhf.sys         10.0.26100.8972 (WinBuild.160101.0800)
+Inbox System32\VhfUm.dll               10.0.26100.1 (WinBuild.160101.0800)
+Inbox System32\WUDFHost.exe            10.0.26100.8521 (WinBuild.160101.0800)
+Inbox System32\drivers\WUDFRd.sys      10.0.26100.9444 (WinBuild.160101.0800)
+Inbox hidvhf.inf                       present
+Inbox xinputhid.inf                    present
+Inbox WUDFRD.inf                       present
+ViGEmBus present                       False
+XInput slots in use before             not probed (kit binaries are unsigned until install.ps1 signs them)
+
+==============================================================================
+== 2. Install (no paid certificate, no test signing)
+==============================================================================
+== creating a one-off code-signing certificate (key is non-exportable)
+   subject   : CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+   thumbprint: 245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E  valid until 10/01/2036 14:37:51
+   key file  : C:\ProgramData\Microsoft\Crypto\Keys\0300b2ad165ac6992d7e9207fffa8359_c9c3fe2f-a536-419e-88e5-4667617a969a (exists: True)
+== signing the catalog, the driver DLL and the kit's tools
+   signed LongwaveVirtualGamepad.cat
+   signed LongwaveVirtualGamepad.dll
+   signed lwpad-devnode.exe
+   signed lwpad-sdltest.exe
+   signed lwpad-test.exe
+== trusting the public certificate (LocalMachine\Root + LocalMachine\TrustedPublisher)
+   all signatures verify as Valid
+== destroying the private key
+   verified: no certificate with a private key, key file gone, key cannot be opened
+== staging the driver package (pnputil /add-driver)
+Microsoft PnP Utility
+
+Adding driver package:  LongwaveVirtualGamepad.inf
+Driver package added successfully.
+Published Name:         oem2.inf
+
+Total driver packages:  1
+Added driver packages:  1
+   published as oem2.inf
+== creating the device node and installing the driver on it
+node created
+driver installed on node
+== installed; driver is running
+node ROOT\LONGWAVEVIRTUALGAMEPAD\0000: started=1 problem=0 (0 = working)
+install.ps1 exit code                  0  (5 s)
+-- setupapi.dev.log (Windows' own install log), signature-related lines:
+>>>  [Driver Install (DrvSetupInstallDriver) - C:\lwpad-kit4\driver\LongwaveVirtualGamepad.inf]
+>>>  Section start 2026/10/04 14:37:51.827
+     inf:           Driver Version = 10/04/2026,0.1.0.8888
+     sig:                Driver package catalog is valid.
+!    sig:                     Verifying file against specific (valid) catalog failed.
+!    sig:                     Error 0x800b0109: A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.
+     sig:                     Success: File is signed in Authenticode(tm) catalog.
+     sig:                     Error 0xe0000241: The INF was signed with an Authenticode(tm) catalog from a trusted publisher.
+     sig:           Signer Score  = 0x0F000000 (Authenticode)
+     sig:           Signer Name   = Longwave Virtual Gamepad local signer
+     dvs:           Driver Version - 10/04/2026,0.1.0.8888
+<<<  Section end 2026/10/04 14:37:52.034
+<<<  [Exit status: SUCCESS]
+>>>  [Device Install (UpdateDriverForPlugAndPlayDevices) - Root\LongwaveVirtualGamepad]
+>>>  Section start 2026/10/04 14:37:52.554
+     ndv:           Driver Version - 0.1.0.8888
+     dvi:                     Install Device: Starting device 'ROOT\LONGWAVEVIRTUALGAMEPAD\0000'. 14:37:52.606
+     dvi:                     Install Device: Starting device completed. 14:37:53.143
+<<<  Section end 2026/10/04 14:37:53.159
+<<<  [Exit status: SUCCESS]
+PASS install silent, non-interactive install succeeded
+
+==============================================================================
+== 3. Driver state
+==============================================================================
+
+
+Status       : OK
+Problem      : CM_PROB_NONE
+Class        : System
+FriendlyName : Longwave Virtual Gamepad
+InstanceId   : ROOT\LONGWAVEVIRTUALGAMEPAD\0000
+
+
+DeviceName    : Longwave Virtual Gamepad
+DriverVersion : 0.1.0.8888
+InfName       : oem2.inf
+IsSigned      : False
+Signer        :
+PASS driver-loaded device OK, hosted by WUDFHost pid 3012
+-- certificates (public halves only should exist; HasPrivateKey must be False):
+
+Store            Thumbprint                               HasPrivateKey NotAfter            
+-----            ----------                               ------------- --------            
+Root             245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E         False 10/1/2036 2:37:51 PM
+TrustedPublisher 245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E         False 10/1/2036 2:37:51 PM
+CA               245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E         False 10/1/2036 2:37:51 PM
+PASS private-key no Longwave signer certificate with a private key exists
+-- signatures of the kit's files (Valid = signed by the now key-less local cert):
+
+File                       Status Signer                                                                      
+----                       ------ ------                                                                      
+longwavevirtualgamepad.cat  Valid CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+LongwaveVirtualGamepad.dll  Valid CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+lwpad-devnode.exe           Valid CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+lwpad-sdltest.exe           Valid CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+lwpad-test.exe              Valid CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+
+==============================================================================
+== 4. Function
+==============================================================================
+PASS query-info protocol=2 profiles=0x28 features=0x2b max_controllers=16
+INFO interface \\?\ROOT#LONGWAVEVIRTUALGAMEPAD#0000#{9b6bd835-f12f-4b31-9dc7-8afd6029ced2}
+INFO stats[now] created=0 destroyed=0 active=0 reports=0 outputs=0 features=0 owned_closes=0
+-- XInput (what most PC games use):
+PASS xinput-slot slot=0 appeared 56 ms after create
+INFO caps type=1 subtype=1 flags=0x0
+PASS xinput-input A            buttons=0x1000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.7 ms)
+PASS xinput-input B            buttons=0x2000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.3 ms)
+PASS xinput-input X            buttons=0x4000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.3 ms)
+PASS xinput-input Y            buttons=0x8000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.8 ms)
+PASS xinput-input LB           buttons=0x0100 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.3 ms)
+PASS xinput-input RB           buttons=0x0200 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input Back         buttons=0x0020 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input Start        buttons=0x0010 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.3 ms)
+PASS xinput-input LS           buttons=0x0040 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input RS           buttons=0x0080 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input Up           buttons=0x0001 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.4 ms)
+PASS xinput-input Down         buttons=0x0002 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input Left         buttons=0x0004 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Right        buttons=0x0008 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input UpRight      buttons=0x0009 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input A+B+LB       buttons=0x3100 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input LX+max       buttons=0x0000 LX=32767 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input LX-min       buttons=0x0000 LX=-32768 LY=0 RX=0 RY=0 LT=0 RT=0 (3.2 ms)
+PASS xinput-input LY+up        buttons=0x0000 LX=0 LY=32767 RX=0 RY=0 LT=0 RT=0 (1.4 ms)
+PASS xinput-input LY-down      buttons=0x0000 LX=0 LY=-32768 RX=0 RY=0 LT=0 RT=0 (0.3 ms)
+PASS xinput-input RX+half      buttons=0x0000 LX=0 LY=0 RX=16384 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input RY-half      buttons=0x0000 LX=0 LY=0 RX=0 RY=-16384 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Diag         buttons=0x0000 LX=12345 LY=-23456 RX=-1000 RY=30000 LT=0 RT=0 (0.3 ms)
+PASS xinput-input LT-full      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=255 RT=0 (0.2 ms)
+PASS xinput-input RT-full      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=255 (0.2 ms)
+PASS xinput-input Triggers-mid buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=64 RT=192 (0.2 ms)
+PASS xinput-input Neutral      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+INFO submit->XInputGetState latency: mean 0.42 ms, worst 3.15 ms (1 ms polling)
+PASS xinput-rumble set L=32768 R=65535 -> driver got low=32767 high=65535 lt=0 rt=0 (0.1 ms)
+PASS xinput-rumble set L=65535 R=0 -> driver got low=65535 high=0 lt=0 rt=0 (10.2 ms)
+PASS xinput-rumble set L=0 R=0 -> driver got low=0 high=0 lt=0 rt=0 (12.4 ms)
+PASS xinput-removed slot 0 disconnected 7 ms after destroy
+INFO stats[end] created=1 destroyed=1 active=0 reports=28 outputs=3 features=0 owned_closes=0
+-- Windows.Gaming.Input (needs this session's desktop; opens a small window briefly):
+   (unelevated, as LWWIN11TEST\lwtest, like a game:)
+INFO WGI test window is the foreground window
+INFO WGI gamepads before: 0
+INFO GamepadAdded 32 ms after create
+PASS wgi-gamepad appeared; vid=045e pid=0b12 name='XINPUT compatible HID device' wireless=0
+PASS wgi-input A+RB, LX=1.000 RT=1.000
+PASS wgi-vibration driver got low=32767 high=65535 lt=16383 rt=48495 (impulse triggers reach the driver)
+   (elevated, for comparison; not counted:)
+INFO WGI test window is the foreground window
+INFO WGI gamepads before: 0
+INFO GamepadAdded 31 ms after create
+INFO elevated: PASS wgi-gamepad appeared; vid=045e pid=0b12 name='XINPUT compatible HID device' wireless=0
+INFO elevated: PASS wgi-input A+RB, LX=1.000 RT=1.000
+INFO elevated: FAIL wgi-vibration last type=0 low=0 high=0 lt=0 rt=0
+-- SDL3 (Steam and many games), Xbox profile:
+INFO sdl version 3.4.18
+PASS sdl-xbox-type name='Xbox Series X Controller' type=XBOXONE backend=x
+PASS sdl-xbox-input A=1 Y=1 LX=32767 LY=32767 LT=32767
+PASS sdl-xbox-rumble driver got low=16383 high=49151
+-- SDL3, DualSense profile (gyro, rumble, lightbar):
+INFO sdl version 3.4.18
+PASS sdl-ds5-type name='DualSense Wireless Controller' type=PS5 backend=h
+PASS sdl-ds5-input Circle=1 touchpad-click=1 LX=-32768 RY=-32768 RT=32767
+PASS sdl-ds5-gyro driver axis 0 at 90 deg/s -> SDL rad/s [1.571 0.000 0.000] (SDL axis 0)
+PASS sdl-ds5-gyro driver axis 1 at 90 deg/s -> SDL rad/s [0.000 1.571 0.000] (SDL axis 1)
+PASS sdl-ds5-gyro driver axis 2 at 90 deg/s -> SDL rad/s [0.000 0.000 1.571] (SDL axis 2)
+PASS sdl-ds5-gyro-axes driver x,y,z -> SDL axes 0,1,2
+INFO sdl-ds5-accel at rest m/s^2 [0.00 9.81 0.00] (expect ~9.8 on one axis)
+PASS sdl-ds5-rumble driver got low=65280 high=32768
+PASS sdl-ds5-lightbar driver got rgb=255,0,128 valid=0x5
+-- Feeder killed mid-session (the pad must not outlive its feeder):
+   feeder: READY slot=0 pid=11128
+   while alive: SLOT 0 connected buttons=0x1000 LX=32767 LY=0 RX=0 RY=0 LT=0 RT=200 packet=2
+PASS kill-feeder pad in slot 0 disappeared within 17 ms of killing its feeder
+-- Create/destroy 250 times:
+INFO stats[before] created=7 destroyed=7 active=0 reports=218 outputs=14 features=1 owned_closes=1
+INFO WUDFHost pid=3012 handles=225 private=1848 KB threads=11; our HID nodes present=0 total=2
+INFO stats[after] created=257 destroyed=257 active=0 reports=709 outputs=14 features=1 owned_closes=1
+INFO WUDFHost pid=3012 handles=225 private=2016 KB threads=12; our HID nodes present=0 total=2
+INFO 250 cycles in 5.2 s; appear mean 13 ms worst 21 ms; removal worst 12 ms
+PASS cycle 250 create/use/destroy cycles, no failures
+PASS cycle-host same WUDFHost pid 3012 throughout
+PASS cycle-leaks WUDFHost handle growth 0, private bytes growth 168 KB over 250 cycles
+PASS cycle-pnp HID nodes present 0 -> 0, total incl. phantom 2 -> 2
+
+==============================================================================
+== 5. Code Integrity / Smart App Control events since this run started
+==============================================================================
+CodeIntegrity events                   99
+   id 3090: 99
+PASS ci-events no block or audit event (3033/3034/3076/3077) for our files
+INFO ci-allowed \lwpad-kit4\bin\SDL3.dll policy=VerifiedAndReputableDesktop PassesSmartlocker=true DefenderTrust=0 audit=false
+INFO ci-allowed \lwpad-kit4\bin\lwpad-sdltest.exe policy=VerifiedAndReputableDesktop PassesSmartlocker=true DefenderTrust=0 audit=false
+INFO ci-allowed \lwpad-kit4\bin\lwpad-test.exe policy=VerifiedAndReputableDesktop PassesSmartlocker=true DefenderTrust=0 audit=false
+INFO ci-allowed \Windows\System32\DriverStore\FileRepository\longwavevirtualgamepad.inf_amd64_80f399567b5edbcb\LongwaveVirtualGamepad.dll policy=VerifiedAndReputableDesktop PassesSmartlocker=true DefenderTrust=0 audit=false
+INFO ci-allowed \lwpad-kit4\bin\lwpad-devnode.exe policy=VerifiedAndReputableDesktop PassesSmartlocker=true DefenderTrust=0 audit=false
+Smart App Control state now            1
+
+==============================================================================
+== 6. Uninstall
+==============================================================================
+== removing the device node
+removed ROOT\LONGWAVEVIRTUALGAMEPAD\0000
+== removing remembered virtual pad nodes
+   HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+   VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD0
+== deleting the driver package from the driver store
+Microsoft PnP Utility
+
+Ignoring /force when used with /uninstall to delete driver package.
+Driver package uninstalled.
+Driver package deleted successfully.
+== removing the certificate from LocalMachine\Root, TrustedPublisher, CA, My
+   Root\245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+   TrustedPublisher\245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+   CA\245EF3051E2FF7792AF9718D9F0B2F5EC3C5578E CN=Longwave Virtual Gamepad local signer, OU=LWWIN11TEST 2026-10-04T14.37.51
+== clean: no device node, pad nodes, driver package, DLL or certificate left
+PASS uninstall nothing left behind
+
+==============================================================================
+== Summary
+==============================================================================
+PASS 57  FAIL 0  SKIP 0   (44 s)
+Log: C:\lwpad-kit4\results\LWWIN11TEST-run-20261004-143729.log

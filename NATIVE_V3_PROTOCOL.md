@@ -889,9 +889,20 @@ see the pads, with exact values; rumble, impulse triggers, DualSense gyro and
 lightbar round-trip; killing the feeder removes its pads within ~15 ms; 2,000
 create/destroy cycles showed no leak; and the signed-in user drives pads
 without admin.
-*Still open:* Windows 11, and Smart App Control in particular. That run is
-packaged for a Hyper-V VM (`run-gamepad-spike.ps1`, which records SAC state and
-Code Integrity audit events 3076/3077), along with survival across a reboot.
+*Verified on Windows 11 26H2 (2026-10-04, fresh unattended install in a Hyper-V
+VM on `gaming-pc`, Secure Boot on, test signing off, Memory Integrity not
+running):* with Smart App Control in **evaluation** (its out-of-box state) or
+**off**, the same package installs silently and every check passes. The driver
+comes back by itself after a reboot. A driver installed during evaluation kept
+working after SAC was switched **on**. With SAC **on**, a fresh build is a
+gamble. SAC ignores the locally trusted signature: blocked files are logged as
+unsigned (`Validated Signing Level=1`, event 3077). Each file stands or falls by
+Microsoft's cloud verdict. One of two fresh builds of the same source had its
+test feeder blocked; the other ran completely. The UMDF DLL inside
+`WUDFHost.exe` was never blocked. Evaluation mode emitted no audit (3076) events
+that would have predicted the block. So SAC is the remaining risk (§9 risk 8),
+and it falls on our user-mode **executables** (the host, helpers), not on the
+driver.
 
 **Process model:** the Electron Companion and its C# backend stay — they own
 Hotspot NAT, PCVR install/supervision and the UI. The C# backend launches and
@@ -1251,6 +1262,17 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
   process; SDL3 identifies the DualSense as PS5 with exact gyro. Rumble,
   impulse triggers and lightbar reach the driver; the pads die with their
   feeder; 2,000 create/destroy cycles showed no leak.
+- The same package on Windows 11 26H2 build 26300 (Hyper-V VM, fresh install,
+  Secure Boot on, 2026-10-04, `evidence/win11-hyperv-vm-*`) installs silently
+  and passes everything with Smart App Control in evaluation or off, including
+  after a reboot. With SAC on, blocks are 3077 events from policy
+  `VerifiedAndReputableDesktop`, with the locally signed file at `Validated
+  Signing Level=1`, i.e. treated as unsigned. Of two fresh builds, one had
+  `lwpad-test.exe` blocked and one ran fully; the driver DLL was never blocked.
+  Evaluation mode logged no 3076 for files SAC-on later blocked. With a stale
+  Defender (cloud answering HTTP 426) SAC-on allowed every unknown file.
+  Windows.Gaming.Input vibration from an *elevated* process doesn't reach the
+  device on this build; unelevated it does.
 
 ### Inference and open questions
 
@@ -1296,13 +1318,21 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    titles may use dynamic objects; the object channel in §4 stays optional.
 8. **Virtual gamepads on Windows**: decided on a UMDF2 + VHF driver with a
    locally generated, key-destroyed certificate (§7.2). *Verified on Windows 10
-   22H2 with Secure Boot on:* silent install, driver loads, games' input APIs
-   see the pads (facts list above). *Open:* Windows 11 and Smart App Control.
-   SAC is a user-mode policy, so it governs our DLL and tools, not the kernel;
-   whether it accepts files signed by a locally trusted root is unknown, and
-   evaluation mode's audit events will predict it (VM kit in the spike). Also
-   open: survival across reboots and feature updates, real games, Steam Input,
-   and Vanguard-class anti-cheat, which is reported to reject any virtual pad.
+   22H2 and Windows 11 26H2, Secure Boot on:* silent install, driver loads and
+   survives a reboot, games' input APIs see the pads (facts list above).
+   *Verified:* Smart App Control does **not** accept a locally trusted root.
+   With SAC on, a fresh user build can have an executable blocked (seen once
+   in two builds), and evaluation mode gives no warning. *Inference:* SAC is
+   per-file, depends on cloud reputation, and changes over time. It threatens
+   the host and helper executables more than the driver DLL (never blocked in
+   any run). A user who installed during evaluation probably keeps working
+   until the next rebuild. No free fix is known: SAC has no per-app exception,
+   so the options are documenting "turn SAC off" (on this build Windows
+   Security still lets the user turn it back on), or reputation, which in
+   practice means the paid certificate this design avoids. Building is
+   unaffected; only running is. *Open:* feature updates, real games, Steam
+   Input, and Vanguard-class anti-cheat, which is reported to reject any
+   virtual pad.
 9. **Anti-cheat** may reject injected input or virtual pads in some games;
    Sunshine faces the same.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on

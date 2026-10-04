@@ -1,0 +1,62 @@
+Smart App Control controls, Windows 11 Pro 26H2 build 26300.9457, Hyper-V VM LongwaveWin11Test, 2026-10-04 (times UTC)
+Commands run over PowerShell Direct (session 0) or, where noted, a scheduled task in the console desktop session.
+CI "allowed" events (3090) were enabled with HKLM\SYSTEM\CurrentControlSet\Control\CI TestFlags=0x300 plus a reboot.
+SAC was switched Evaluation -> On and On -> Off in Windows Security (App & browser control > Smart App Control settings),
+each with a UAC prompt; no reboot was needed for either change.
+
+== A. Stale Defender: SAC "On" blocked nothing (first timeline, later reverted to the fresh checkpoint)
+Updates had been paused right after setup, so Defender still had the ISO's signatures:
+  AMEngineVersion 1.1.25080.5, signatures 1.437.1.0, AntivirusSignatureAge 382
+  MpCmdRun -ValidateMapsConnection: "failed to establish a connection to MAPS (hr=0x80004005 httpcode=426)"
+With SAC On (VerifiedAndReputableDesktop enforced, UMCI status 2), all of these RAN, from session 0 and from the desktop:
+  unsigned never-seen lwpad-test.exe copy; a copy with 32 random bytes appended; the same with Mark of the Web (ZoneId=3);
+  whoami.exe with 32 random bytes appended (unsigned, never seen).
+3090 for that whoami copy: StatusCode=0x0 SmartlockerEnabled=true PassesSmartlocker=false DefenderTrust=-1 AuditEnabled=false
+policy VerifiedAndReputableDesktop. I.e. no cloud answer (-1) and the file was let through.
+Update-MpSignature -UpdateSource MicrosoftUpdateServer (22 s): engine 1.1.26090.9, signatures 1.459.547.0, MAPS connects.
+Immediately after, fresh copies of the kit's locally signed lwpad-test.exe / lwpad-sdltest.exe were blocked:
+  'C:\ctrl\b52167b\lwpad-test.exe' was blocked by your organization's Device Guard policy.
+  3077 ... did not meet the Enterprise signing level requirements or violated code integrity policy (Policy ID:{0283ac0f-fff1-49ae-ada1-8a933130cad6})
+       Requested Signing Level=2  Validated Signing Level=1  Status=0xc0e90002  PolicyName=VerifiedAndReputableDesktop
+  3089 for the same file: PublisherName/IssuerName=Longwave Virtual Gamepad local signer  ValidatedSigningLevel=1  VerificationError=18  KnownRoot=2
+  (the certificate was in LocalMachine\Root and TrustedPublisher at the time; the driver kept loading)
+
+== B. Clean timeline (reverted to the fresh checkpoint, Defender updated BEFORE any kit file ran)
+Evaluation mode, kit installed/tested/rebooted (logs 1, 2): no 3076 or 3077 for any kit file. 3090 for every kit file:
+  policy=VerifiedAndReputableDesktopEvaluation PassesSmartlocker=true DefenderTrust=0 audit=true
+SAC -> On, graceful reboot, -AfterReboot (log 3): driver loaded at boot, every tool ran, 56 PASS. Files that had run during
+evaluation produced no new CI events (validated once, not re-checked).
+
+Unique-content controls under SAC On (lwpad-test.exe from the 2026-10-04 zip + 64 random bytes; uniq.ps1, 14:32):
+  a-unsigned           NotSigned     BLOCKED  3077 Validated Signing Level=1
+  b-signed-trusted     Valid         RAN      3090 PassesSmartlocker=true DefenderTrust=0   (new self-signed cert in Root + TrustedPublisher)
+  c-signed-untrusted   UnknownError  RAN      3090 PassesSmartlocker=true DefenderTrust=0   (self-signed cert trusted nowhere)
+  (a, b, c share the same bytes before signing; a ran first)
+
+Fresh build, never seen anywhere (build.ps1 -DriverVersion 0.1.0.7777 on gaming-pc, 14:34; log 5):
+  run-gamepad-spike.ps1's baseline ran lwpad-test.exe probe BEFORE install.ps1 signed it -> blocked (3077, level 1).
+  install.ps1 then signed everything, staged the package, lwpad-devnode.exe ran (signed) and created the node, the driver
+  DLL loaded in WUDFHost (device OK) - but lwpad-test.exe, now signed by the trusted local cert, stayed blocked:
+  208 x 3077 for \lwpad-kit3\bin\lwpad-test.exe, Validated Signing Level=1. A fresh copy of the signed file: blocked too.
+  lwpad-sdltest.exe and SDL3.dll: 3090 PassesSmartlocker=true.
+
+Fresh build, signed before its first execution (-DriverVersion 0.1.0.8888, 14:37; kit fixed to skip the unsigned probe; log 6):
+  57 PASS 0 FAIL. 3090 PassesSmartlocker=true DefenderTrust=0 for lwpad-test.exe, lwpad-sdltest.exe, lwpad-devnode.exe,
+  SDL3.dll and the driver-store copy of LongwaveVirtualGamepad.dll.
+
+Unique-content controls repeated from that build's lwpad-test.exe (uniq3.ps1, 14:38):
+  u4 unsigned, first run       RAN
+  u1-unsigned                  NotSigned     RAN   3090 PassesSmartlocker=true DefenderTrust=0
+  u2-signed-untrusted          UnknownError  RAN   3090 PassesSmartlocker=true DefenderTrust=0
+  u3-signed-trusted            Valid         RAN   3090 PassesSmartlocker=true DefenderTrust=0
+  u4 then signed (trusted)     Valid         RAN   3090 PassesSmartlocker=true DefenderTrust=0
+  -> four minutes after build 0.1.0.7777's lwpad-test.exe was blocked, unsigned random-suffixed copies of the 0.1.0.8888
+     build of the same source ran. The verdict follows the content's cloud reputation, not the local signature.
+
+SAC -> Off (log 7): the 0.1.0.7777 build whose lwpad-test.exe had been blocked: 57 PASS 0 FAIL, no CI events.
+After Off, the "On" radio button stayed selectable in Windows Security on this build (re-enabling was not tried).
+
+== C. Windows.Gaming.Input vibration from an elevated process (not SAC-related)
+Every run on this VM: an elevated lwpad-test wgi gets GamepadAdded and input but its Vibration() never reaches the driver
+(FAIL wgi-vibration last type=0); the same binary unelevated (scheduled task, RunLevel Limited, same session) passes
+every time: "driver got low=32767 high=65535 lt=16383 rt=48495". On Windows 10 (gaming-pc) the elevated run passed.

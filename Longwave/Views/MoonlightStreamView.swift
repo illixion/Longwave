@@ -429,9 +429,10 @@ struct MoonlightStreamView: View {
                   ? "Spatial Audio On — head-tracked rendering"
                   : "Spatial Audio Off — flat stereo playback")
 
-            // Surround as virtual speakers: the front is wherever the wearer
-            // faced when it started, so offer to move it.
-            if manager.isSoundStageActive {
+            // Surround as virtual speakers on AirPods/headphones: the front is
+            // wherever the wearer faced when it started, so offer to move it.
+            // On the headset's speakers the stage follows the window instead.
+            if manager.canRecenterSpatialAudio {
                 Button {
                     manager.recenterSpatialAudio()
                 } label: {

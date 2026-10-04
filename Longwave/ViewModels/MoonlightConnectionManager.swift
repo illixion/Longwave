@@ -143,9 +143,39 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         spatialAudioEnabled.toggle()
     }
 
-    /// Whether surround is playing as head-tracked virtual speakers (the
-    /// renderer's PHASE sound stage is up), which is when Recenter applies.
+    /// Whether surround is playing as virtual speakers (the renderer's PHASE
+    /// sound stage is up).
     var isSoundStageActive = false
+
+    /// Whether audio goes to AirPods or other headphones. Only there does
+    /// Recenter mean anything: on the headset's own speakers the system keeps
+    /// the virtual speakers anchored to the stream window (verified on a
+    /// headset, 2026-10-04), so there is no front to move.
+    private(set) var isHeadphoneRoute = MoonlightConnectionManager.headphonesAreRouted()
+    @ObservationIgnored private var routeObserver: NSObjectProtocol?
+
+    /// Recenter is offered only while the stage plays to headphones.
+    var canRecenterSpatialAudio: Bool { isSoundStageActive && isHeadphoneRoute }
+
+    private static func headphonesAreRouted() -> Bool {
+        #if os(macOS)
+        return false
+        #else
+        let headphonePorts: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .headphones]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+        #endif
+    }
+
+    private func observeAudioRoute() {
+        #if !os(macOS)
+        guard routeObserver == nil else { return }
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isHeadphoneRoute = Self.headphonesAreRouted() }
+        }
+        #endif
+    }
 
     /// Makes the way the wearer faces now the front of the virtual speakers.
     func recenterSpatialAudio() {
@@ -455,7 +485,9 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                     self.audioRenderer = audio
                     audio.onSoundStageChange = { [weak self] active in
                         self?.isSoundStageActive = active
+                        self?.isHeadphoneRoute = Self.headphonesAreRouted()
                     }
+                    self.observeAudioRoute()
                     self.displayLayer = layer
                     self.isStreamActive = true
                     // A Mac has a real pointer — relative "touchpad" mode makes no

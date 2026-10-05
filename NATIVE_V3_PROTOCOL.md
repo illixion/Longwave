@@ -928,7 +928,11 @@ someone signs in. Details: `CompanionWindows/spike/vhf-gamepad/README.md`,
 "Sleep and power".
 
 **Controller layering.** One pad pipeline with two possible inputs and one
-output, so a second input source never means a second driver:
+output, so a second input source never means a second driver. It serves every
+consumer, not only the stream: the Native/v3 host, and PCVR, where a game with
+only Xbox controller support gets the controller paired to the headset as a
+virtual pad (today the PCVR session broker's ViGEmBus Xbox 360 mode, to move
+onto this driver). The sleep fix above therefore protects PCVR sessions too.
 
 - *Inputs.* The headset bridge (the client's GameController devices: Xbox,
   DualSense, Switch Pro, with gyro, accelerometer and battery where visionOS

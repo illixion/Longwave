@@ -111,6 +111,19 @@ async function check({ force = false } = {}) {
       };
     }
 
+    // Not blessed yet: no signed manifest on the release, so downloadAndVerify() would refuse
+    // it anyway. Say nothing rather than offer a button that can only fail — the release will
+    // be offered on the next check after scripts/bless-release.sh has run.
+    const names = new Set((latest.assets || []).map((a) => a.name));
+    if (!names.has(trust.MANIFEST_NAME) || !names.has(trust.SIGNATURE_NAME)) {
+      return {
+        available: false,
+        reason: 'unblessed',
+        currentVersion: buildInfo.version,
+        version: latest.tag_name,
+      };
+    }
+
     return {
       available: true,
       currentVersion: buildInfo.version,

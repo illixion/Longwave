@@ -269,7 +269,7 @@ async function onDownloadPcvr() {
     el.pcvrDlStatus.textContent = '';
   } catch (e) {
     el.pcvrDlTitle.textContent = 'Install failed';
-    el.pcvrDlStatus.textContent = e.message || String(e);
+    el.pcvrDlStatus.textContent = ipcErrorMessage(e);
   } finally {
     pcvrInstalling = false;
     el.pcvrDlProgress.classList.add('hidden');
@@ -310,7 +310,15 @@ const UPDATE_REASON_SILENT = new Set([
   // A release whose installer for this architecture never built, and a build whose own release
   // has gone. Both are normal enough, and neither is actionable by the person reading it.
   'asset-missing', 'current-release-unknown',
+  // Published by CI but not yet signed with the release key — offered once it is.
+  'unblessed',
 ]);
+
+/** An IPC rejection's own message, without Electron's "Error invoking remote method 'x': Error: ". */
+function ipcErrorMessage(e) {
+  const text = (e && e.message) || String(e);
+  return text.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '');
+}
 
 async function refreshUpdateState() {
   if (typeof window.hotspot.checkUpdate !== 'function') return;
@@ -361,7 +369,7 @@ async function onUpdateClick() {
       await window.hotspot.installUpdate(updateReady);
     } catch (e) {
       updateBusy = false;
-      el.appUpdateStatus.textContent = e.message || String(e);
+      el.appUpdateStatus.textContent = ipcErrorMessage(e);
       renderUpdateBanner();
     }
     return;
@@ -376,7 +384,7 @@ async function onUpdateClick() {
     updateReady = result.path;
     el.appUpdateStatus.textContent = 'Verified against the signed release manifest.';
   } catch (e) {
-    el.appUpdateStatus.textContent = e.message || String(e);
+    el.appUpdateStatus.textContent = ipcErrorMessage(e);
   } finally {
     updateBusy = false;
     el.appUpdateProgress.classList.add('hidden');

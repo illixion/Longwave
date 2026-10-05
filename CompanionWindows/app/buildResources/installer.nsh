@@ -21,7 +21,16 @@
 
 !include nsDialogs.nsh
 !include LogicLib.nsh
+; electron-builder prepends this file to its own script, ahead of the template's
+; `!include MUI2.nsh`, so MUI_HEADER_TEXT below would not exist yet and makensis aborts with
+; 'macro named "MUI_HEADER_TEXT" not found'. MUI2.nsh is include-guarded, so pulling it in
+; early is harmless for the template's own include later.
+!include MUI2.nsh
 
+; The same script is compiled twice — once to build the uninstaller (BUILD_UNINSTALLER) and
+; once for the installer. The opt-in page exists only in the second, and NSIS treats an
+; unreferenced function or variable as a warning that electron-builder fails the build on.
+!ifndef BUILD_UNINSTALLER
 Var PcvrCheckbox
 Var PcvrOptIn
 
@@ -87,6 +96,7 @@ FunctionEnd
 Function PcvrOptInPageLeave
   ${NSD_GetState} $PcvrCheckbox $PcvrOptIn
 FunctionEnd
+!endif
 
 !macro customInstall
   ; SetRegView 64 is load-bearing, not boilerplate. The NSIS stub electron-builder produces is

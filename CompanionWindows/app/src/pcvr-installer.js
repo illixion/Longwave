@@ -484,8 +484,13 @@ async function downloadAndInstall(onProgress) {
     //      no weaker per signature. Kept for bundles published before the manifest existed,
     //      and reached when a manifest exists but predates this bundle's upload (the release
     //      is blessed once, and the bundle is attached separately and by hand afterwards).
-    //   3. The .sha256 sidecar, which proves only that the download matches whatever was
-    //      uploaded. No use against a compromised release, which is why it is last.
+    //
+    // The .sha256 sidecar is deliberately NOT a third option. It proves only that the download
+    // matches whatever was uploaded beside it, so anyone who can upload release assets — a
+    // leaked CI token, the exact threat the signed manifest exists for — could attach a bundle
+    // plus a matching .sha256 to any release (including a blessed one, whose manifest would not
+    // list the new asset) and every copy of the app at that version would install and run it.
+    // The legitimate path never needs it: package-pcvr-bundle.sh re-blesses after uploading.
     //
     // fetchManifest is NOT wrapped in a catch: it returns null when the release simply has no
     // manifest, and throws only when a manifest is present and its signature does not check
@@ -507,24 +512,15 @@ async function downloadAndInstall(onProgress) {
           `signature verification failed — the download is corrupt or was tampered with: ${e.message}`);
       }
       verifiedBy = 'bundle-signature';
-    } else if (info.checksumUrl) {
-      onProgress?.({ phase: 'verifying' });
-      const checksumRes = await net.fetch(info.checksumUrl);
-      if (!checksumRes.ok) throw new Error(`could not fetch checksum: HTTP ${checksumRes.status}`);
-      const expected = (await checksumRes.text()).trim().split(/\s+/)[0].toLowerCase();
-      const actual = await trust.sha256File(tmpZip);
-      if (expected !== actual) {
-        throw new Error('checksum mismatch — the download is corrupt or was tampered with');
-      }
-      verifiedBy = 'checksum';
     }
     if (!verifiedBy) {
-      // Reachable only if a release carries the bundle with no manifest, no .asc and no
-      // .sha256 — i.e. someone uploaded it by hand. Before this check that combination
-      // installed and ran a closed-source binary on nothing but TLS to GitHub.
+      // The bundle is on the release but no signature covers it: the release was never
+      // blessed, or the bundle was attached after the blessing. Either way nothing the signing
+      // key vouched for — refuse rather than run a closed-source binary on TLS to GitHub alone.
       throw new Error(
-        `${info.assetName} on ${info.version} has nothing to verify it against — no signed `
-        + `SHA256SUMS, no .asc, no .sha256. Refusing to install it.`);
+        `${info.assetName} on ${info.version} is not covered by a signature — not in a signed `
+        + `SHA256SUMS and no .asc. Refusing to install it. (Re-run scripts/bless-release.sh `
+        + `--tag ${info.version} after attaching the bundle.)`);
     }
 
     onProgress?.({ phase: 'extracting' });

@@ -215,7 +215,7 @@ struct ControllerBridgeRendezvous: Equatable {
     }
 }
 
-// MARK: - Host models (mirror CompanionWindows/backend/Foveated/GameLibrary.cs)
+// MARK: - Host models (mirror CompanionWindows/backend/Games/GameModels.cs, GameTitle)
 
 /// One title as the host describes it. Only the exposed subset ever arrives here.
 struct GameLibraryTitle: Decodable, Identifiable, Hashable {

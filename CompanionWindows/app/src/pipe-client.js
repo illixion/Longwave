@@ -111,7 +111,9 @@ class HotspotClient extends EventEmitter {
     }
   }
 
-  rpc(method, params) {
+  /** `timeoutMs` overrides the default for the few calls that can legitimately take longer
+   *  (resolving a Steam launch waits for Steam to start). */
+  rpc(method, params, timeoutMs = RPC_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
       if (!this._connected || !this._sock) {
         reject(new Error('backend not connected'));
@@ -123,7 +125,7 @@ class HotspotClient extends EventEmitter {
       const timer = setTimeout(() => {
         this._pending.delete(id);
         reject(new Error(`RPC timeout: ${method}`));
-      }, RPC_TIMEOUT_MS);
+      }, timeoutMs);
       this._pending.set(id, { resolve, reject, timer });
       try {
         this._sock.write(JSON.stringify(req) + '\n');

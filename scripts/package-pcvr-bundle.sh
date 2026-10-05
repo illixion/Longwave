@@ -414,9 +414,9 @@ mkdir -p "$UI_OUT"
 # branch in a public build away together with its strings.
 if [[ "$INTERNAL" == 1 ]]; then UI_DEFINE=true; else UI_DEFINE=false; fi
 (cd "$REPO_ROOT/CompanionWindows/app" && npx --no-install esbuild \
-  "$UI_SRC/pcvr.js" "$UI_SRC/games.js" "$UI_SRC/shared.js" \
+  "$UI_SRC/pcvr.js" "$UI_SRC/shared.js" \
   --minify --outdir="$UI_OUT" --charset=utf8 --define:LONGWAVE_INTERNAL=$UI_DEFINE)
-for f in pcvr.html games.html styles.css; do
+for f in pcvr.html styles.css; do
   # esbuild's --loader=copy would also do this, but keeping HTML/CSS a plain cp is one fewer
   # thing that could silently transform markup a browser depends on rendering byte-for-byte.
   # The one transformation is the build flavour: markup between <!--#internal--> and

@@ -224,8 +224,8 @@ body {
    rather than left to the flex default so the module rule below reads as the exception it is. */
 .view { flex: 0 0 auto; }
 
-/* The PCVR and Game library views are a header plus one full-bleed <webview>, not a stack of
-   panels: the module page inside scrolls itself. So they fill the stage instead of being sized
+/* The PCVR view is a header plus one full-bleed <webview>, not a stack of panels: the module
+   page inside scrolls itself. So they fill the stage instead of being sized
    by their content, which is what gives .module-view's `flex: 1` a definite height to resolve
    against.
    Without this the webview collapsed to its intrinsic size and clipped the module page a
@@ -233,7 +233,7 @@ body {
    It went unnoticed because the module UI only moved out of this shell on 2026-08-18 and the
    page could not render at all until the pcvr-module:// root learned its dev fallback, so this
    was the first time anything had actually been drawn in there. */
-#foveatedView, #gamesView { flex: 1 1 auto; min-height: 0; }
+#foveatedView { flex: 1 1 auto; min-height: 0; }
 
 .view-head {
   display: flex;
@@ -724,11 +724,6 @@ select { cursor: pointer; }
   transition: width .2s ease;
 }
 
-/* ── Game library ────────────────────────────────────────────────────────── */
-
-.games-toolbar { display: flex; align-items: center; gap: 9px; }
-.games-toolbar input[type="search"] { flex: 1; font-family: var(--body); font-size: 13.5px; }
-
 .icon-button {
   flex: none;
   width: 38px;
@@ -743,93 +738,147 @@ select { cursor: pointer; }
 }
 .icon-button:hover { color: var(--ink); border-color: var(--faint); }
 
-.games-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
-  gap: 11px;
-  max-height: 520px;
-  overflow-y: auto;
-  padding: 2px;
-}
-.games-list .games-empty { grid-column: 1 / -1; }
-.games-empty { padding: 40px 20px; color: var(--faint); text-align: center; font-size: 12.5px; }
-.games-footer { display: flex; justify-content: space-between; gap: 20px; }
 
-/* A tile is lit when the headset can see it — the same amber, the same meaning. */
-.game-tile {
-  position: relative;
-  aspect-ratio: 460 / 215;
-  overflow: hidden;
-  cursor: pointer;
+/* ── Games ───────────────────────────────────────────────────────────────── */
+
+/* The Games view fills the stage instead of growing with its content: the list scrolls itself
+   (windowed — see games.js), which needs a definite height to scroll within. */
+.view-games { flex: 1 1 auto; min-height: 0; max-width: none; gap: 12px; }
+.view-games .view-head { padding-bottom: 12px; }
+
+.lib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.lib-toolbar input[type="search"] { flex: 1 1 200px; min-width: 160px; }
+.lib-sort { display: flex; align-items: center; gap: 7px; }
+.lib-sort select { padding: 8px 10px; font-size: 12.5px; }
+.lib-count { margin: -4px 0 0; }
+
+.seg {
+  display: inline-flex;
+  padding: 2px;
   background: var(--inset);
-  border: 2px solid transparent;
+  border: 1px solid var(--etch);
+  border-radius: 8px;
+}
+.seg-btn {
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--dim);
+  font: 500 12px var(--body);
+  cursor: pointer;
+}
+.seg-btn:hover { color: var(--ink); }
+.seg-btn.is-on { background: var(--face-hi); color: var(--ink); box-shadow: inset 0 0 0 1px var(--etch); }
+
+.lib-body { display: flex; gap: 14px; flex: 1 1 auto; min-height: 0; }
+.lib-scroller {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid var(--etch);
+  border-radius: 10px;
+  background: var(--inset);
+  contain: strict;
+}
+.lib-spacer { position: relative; width: 100%; }
+.lib-window { position: absolute; left: 0; right: 0; }
+.lib-empty { position: absolute; inset: 40px 20px auto; margin: 0; color: var(--faint); text-align: center; font-size: 12.5px; }
+
+/* List rows: one fixed height (LIST_ROW in games.js) so the window maths stays exact. */
+.lib-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 104px 76px;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid #1E1D1A;
+  cursor: pointer;
+}
+.lib-row:hover { background: rgba(255, 255, 255, .025); }
+.lib-row.is-selected, .lib-tile.is-selected { background: var(--face-hi); }
+.lib-row.is-selected { box-shadow: inset 2px 0 0 var(--lcd); }
+.lib-row-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lib-row-name strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.lib-row > span { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-row > .num { text-align: right; font-variant-numeric: tabular-nums; }
+.lib-lamp { flex: none; width: 7px; height: 7px; border-radius: 50%; background: transparent; box-shadow: inset 0 0 0 1px var(--etch); }
+.lib-lamp.is-exposed { background: var(--tally); box-shadow: 0 0 6px rgba(255, 138, 61, .6); }
+.lib-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid rgba(203, 224, 230, .45);
+  border-radius: 999px;
+  color: var(--lcd);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  line-height: 16px;
+}
+
+/* Grid tiles: portrait box art, the headset gallery's shape. */
+.lib-grid-row { display: grid; gap: 12px; padding: 0 12px; }
+.lib-tile {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--etch);
   border-radius: 9px;
-  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+  background: var(--face);
+  cursor: pointer;
 }
-.game-tile:hover { transform: translateY(-2px); }
-.game-tile.selected {
-  border-color: var(--tally);
-  box-shadow: 0 0 0 1px rgba(255, 138, 61, .3), 0 8px 20px rgba(0, 0, 0, .4);
-}
-.game-tile-art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
-.game-tile:not(.selected) .game-tile-art { filter: saturate(.45) brightness(.55); }
-.game-tile:hover .game-tile-art { filter: none; }
-.game-tile.has-art .game-tile-placeholder { display: none; }
-.game-tile-placeholder {
+.lib-tile.is-selected { border-color: var(--lcd); box-shadow: 0 0 0 1px var(--lcd); }
+.lib-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.lib-tile-placeholder {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  background: linear-gradient(140deg, #2A2823, #171613);
-  color: rgba(255, 255, 255, .14);
-  font-family: var(--display);
-  font-size: 38px;
-  font-weight: 600;
-  font-stretch: 87.5%;
+  color: var(--faint);
+  font: 600 34px var(--display);
 }
-.game-tile-check {
+.lib-tile.has-art .lib-tile-placeholder { display: none; }
+.lib-tile-caption {
   position: absolute;
-  z-index: 2;
-  top: 7px;
-  left: 7px;
-  width: 17px;
-  height: 17px;
-  cursor: pointer;
-  accent-color: var(--tally);
-}
-.game-tile-caption {
-  position: absolute;
-  z-index: 1;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  padding: 18px 9px 7px;
-  background: linear-gradient(transparent, rgba(8, 8, 7, .94));
-}
-.game-tile-name { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.game-tile-actions {
-  position: absolute;
-  z-index: 2;
-  top: 6px;
-  right: 6px;
+  inset: auto 0 0 0;
   display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity .12s ease;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 9px 8px;
+  background: linear-gradient(transparent, rgba(10, 9, 8, .92));
+  font-size: 12px;
+  font-weight: 600;
 }
-.game-tile:hover .game-tile-actions, .game-tile:focus-within .game-tile-actions { opacity: 1; }
-.game-tile-btn {
-  padding: 3px 7px;
-  background: rgba(12, 11, 10, .88);
-  border: 1px solid rgba(255, 255, 255, .2);
-  border-radius: 5px;
-  color: var(--ink);
-  font: 500 10px var(--body);
-  cursor: pointer;
-}
-.game-tile-opt.on { border-color: var(--tally); color: var(--tally); }
+.lib-tile-caption span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-tile .lib-lamp { position: absolute; top: 8px; right: 8px; }
 
-/* The PCVR and Games <webview>s, hosting the downloaded module's own pages (see
+/* Detail pane for the selected title. */
+.lib-detail {
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--etch);
+  border-radius: 10px;
+  background: var(--face);
+}
+.lib-detail h3 { margin: 0; font-family: var(--display); font-size: 18px; font-weight: 500; }
+.lib-detail .hint { margin: -4px 0 0; }
+.lib-detail-art { overflow: hidden; aspect-ratio: 460 / 215; border-radius: 7px; background: var(--inset); }
+.lib-detail-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lib-detail .key { width: 100%; }
+.lib-detail .switch-row { padding: 8px 0; }
+
+@media (max-width: 1100px) {
+  .lib-row { grid-template-columns: minmax(0, 1fr) 80px 88px; }
+  .lib-row > .num { display: none; }
+}
+
+/* The PCVR <webview>, hosting the downloaded module's own pages (see
    pcvr-installer.js + main.js's pcvr-module:// handler). Electron webviews default to
    inline/unsized, so this is load-bearing, not decorative. */
 .module-view {
@@ -935,3 +984,4 @@ select { cursor: pointer; }
   border-bottom: 1px solid #232220;
   vertical-align: top;
 }
+.lib-detail-art:empty { display: none; }

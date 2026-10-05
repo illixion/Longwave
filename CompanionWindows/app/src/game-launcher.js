@@ -114,31 +114,34 @@ function displayName(filePath) {
 }
 
 /**
- * A PCVR session is "on" while the host is serving or coming up; a VR launch then reaches the
- * headset. Anything else — no host, host off, host in error — is a desktop launch.
+ * How a title starts. Flat titles always start on the desktop. A VR or both title goes through
+ * PCVR while its session is on; while the session is still starting the caller waits (bounded)
+ * for the headset and then decides again ('wait'); with no session it starts on the desktop —
+ * for a VR-only title that is Steam's own behaviour, its VR entry with no headset streaming.
  */
-function launchModeFor(pcvrConnected, foveatedStatus) {
-  return pcvrConnected && foveatedStatus
-    && (foveatedStatus.state === 'on' || foveatedStatus.state === 'starting') ? 'vr' : 'flat';
+function launchModeFor(pcvrConnected, foveatedStatus, kind = 'vr') {
+  if (kind === 'flat') return 'flat';
+  if (!pcvrConnected || !foveatedStatus) return 'flat';
+  if (foveatedStatus.state === 'on') return 'vr';
+  if (foveatedStatus.state === 'starting') return 'wait';
+  return 'flat';
 }
 
-const isInside = (child, parent) => {
-  if (!parent) return false;
-  const p = win.normalize(parent).replace(/\\+$/, '').toLowerCase() + '\\';
-  return win.normalize(child).toLowerCase().startsWith(p);
-};
-
-/**
- * The library title a browsed executable belongs to, or null: a custom title with that exact
- * executable, or a Steam title whose install directory contains it (the library launches Steam
- * titles from their own launch entries with their Steam identity, which is what was wanted).
- */
-function matchTitleForExecutable(titles, exePath) {
-  if (!Array.isArray(titles) || !exePath) return null;
-  const full = win.normalize(exePath).toLowerCase();
-  return titles.find((t) => t.executable && win.normalize(t.executable).toLowerCase() === full)
-    || titles.find((t) => t.source === 'steam' && isInside(exePath, t.installDir))
-    || null;
+/** Library titles matching a search, best first: name prefix, then word prefix, then substring. */
+function searchTitles(titles, query, limit = 50) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!Array.isArray(titles)) return [];
+  if (!q) return titles.slice(0, limit);
+  const scored = [];
+  for (const t of titles) {
+    const name = String(t.name || '').toLowerCase();
+    const at = name.indexOf(q);
+    if (at < 0) continue;
+    const score = at === 0 ? 0 : /[\s:\-_.]/.test(name[at - 1]) ? 1 : 2;
+    scored.push([score, name, t]);
+  }
+  scored.sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]));
+  return scored.slice(0, limit).map((x) => x[2]);
 }
 
 /** The Steam app id a steam:// URL starts, or null (steam://rungameid/N, steam://run/N). */
@@ -183,16 +186,20 @@ function childEnvironment(baseEnv, steamAppId) {
 
 // ---- Command line ----------------------------------------------------------
 
+const TITLE_ID = /^(steam:\d+|custom:[0-9a-f]{6,32})$/i;
+
 /**
- * The game a command line asks for, or null. Accepts `--launch <path>`, `--launch=<path>`, or a
- * bare path (what Windows passes when a game is dropped on the exe or its shortcut). Switches
- * are skipped, and only an existing file with a launchable extension counts, so Electron's and
- * Chromium's own arguments are never mistaken for a game. `skip` is how many leading entries are
- * the program itself (1 packaged, 2 for `electron .` in a checkout). Relative paths resolve
- * against `cwd` — a second instance's, when handed over. `pathApi` is the platform's path
- * module; tests pass path.win32.
+ * The game a command line asks for, or null:
+ *   `--launch-title <id>` / `--launch-title=<id>` → { titleId } (shortcuts to library titles);
+ *   `--launch <path>`, `--launch=<path>`, or a bare path (what Windows passes when a game is
+ *   dropped on the exe or its shortcut) → { path }.
+ * Switches are skipped, and only an existing file with a launchable extension counts as a path,
+ * so Electron's and Chromium's own arguments are never mistaken for a game. `skip` is how many
+ * leading entries are the program itself (1 packaged, 2 for `electron .` in a checkout).
+ * Relative paths resolve against `cwd` — a second instance's, when handed over. `pathApi` is the
+ * platform's path module; tests pass path.win32.
  */
-function gamePathFromArgv(argv, {
+function gameRequestFromArgv(argv, {
   skip = 1, cwd = process.cwd(), exists = fs.existsSync, pathApi = path,
 } = {}) {
   const args = Array.isArray(argv) ? argv.slice(skip) : [];
@@ -201,10 +208,13 @@ function gamePathFromArgv(argv, {
     const full = pathApi.isAbsolute(candidate)
       ? pathApi.normalize(candidate)
       : pathApi.resolve(cwd || '', candidate);
-    return fileKind(full) && exists(full) ? full : null;
+    return fileKind(full) && exists(full) ? { path: full } : null;
   };
+  const acceptId = (id) => (typeof id === 'string' && TITLE_ID.test(id) ? { titleId: id } : null);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === '--launch-title') return acceptId(args[i + 1]);
+    if (a.startsWith('--launch-title=')) return acceptId(a.slice('--launch-title='.length));
     if (a === '--launch') return accept(args[i + 1]);
     if (a.startsWith('--launch=')) return accept(a.slice('--launch='.length));
   }
@@ -214,6 +224,18 @@ function gamePathFromArgv(argv, {
     if (found) return found;
   }
   return null;
+}
+
+/** The arguments a desktop shortcut passes to the Companion for a request. */
+function shortcutArguments(request) {
+  if (request && request.titleId && TITLE_ID.test(request.titleId)) return `--launch-title ${request.titleId}`;
+  if (request && request.path) return `--launch "${request.path}"`;
+  throw new Error('nothing to make a shortcut for');
+}
+
+/** A file name for a shortcut: the game's name without characters Windows forbids. */
+function shortcutFileName(name) {
+  return `${String(name || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/[. ]+$/, '').trim() || 'Game'}.lnk`;
 }
 
 module.exports = {
@@ -231,10 +253,12 @@ module.exports = {
   fileKind,
   displayName,
   launchModeFor,
-  matchTitleForExecutable,
+  searchTitles,
   steamAppIdFromUrl,
   parseInternetShortcut,
   urlAllowed,
   childEnvironment,
-  gamePathFromArgv,
+  gameRequestFromArgv,
+  shortcutArguments,
+  shortcutFileName,
 };

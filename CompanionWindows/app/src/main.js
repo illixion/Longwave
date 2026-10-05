@@ -11,7 +11,6 @@ const { ControlServer } = require('./control-server');
 const pcvrInstaller = require('./pcvr-installer');
 const updater = require('./updater');
 const gameLauncher = require('./game-launcher');
-const steamLocate = require('./steam-locate');
 
 // Custom scheme the downloaded PCVR module's own pages load from (pcvr-module://ui/pcvr.html
 // etc.), so the <webview> hosting them never needs a bare file:// URL into a user-writable
@@ -117,19 +116,20 @@ const client = new HotspotClient();
 // beyond checking pcvrClient.connected.
 const pcvrClient = new HotspotClient(PCVR_PIPE_PATH);
 // Foveated*/Games* methods live on the PCVR host's pipe; everything else (hotspot, native
-// screen streaming, Ping) is the public backend. Method names are unique across both pipes
+// screen streaming, the Library* game library, Ping) is the public backend. Method names are unique across both pipes
 // by construction, so a prefix check is unambiguous.
 function routeClientFor(method) {
   return method.startsWith('Foveated') || method.startsWith('Games') ? pcvrClient : client;
 }
 // How many leading argv entries are the program itself: the exe when packaged, `electron .` in a
-// checkout. Everything after is ours to read — gamePathFromArgv skips switches regardless.
+// checkout. Everything after is ours to read — gameRequestFromArgv skips switches regardless.
 const ARGV_SKIP = process.defaultApp ? 2 : 1;
-// A game on our own command line (`--launch <path>`, or a path dropped on the exe or its
-// shortcut). Handed to an already-running instance through the lock's additionalData, so it
-// arrives intact even though Chromium rewrites the argv the second-instance event reports.
-const commandLineGame = gameLauncher.gamePathFromArgv(process.argv, { skip: ARGV_SKIP });
-const gotSingleInstanceLock = app.requestSingleInstanceLock({ launchPath: commandLineGame });
+// A game on our own command line (`--launch <path>`, `--launch-title <id>`, or a path dropped on
+// the exe or its shortcut). Handed to an already-running instance through the lock's
+// additionalData, so it arrives intact even though Chromium rewrites the argv the
+// second-instance event reports.
+const commandLineGame = gameLauncher.gameRequestFromArgv(process.argv, { skip: ARGV_SKIP });
+const gotSingleInstanceLock = app.requestSingleInstanceLock({ launch: commandLineGame });
 
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -238,7 +238,12 @@ function startBackend() {
   } catch (e) {
     console.warn('[main] backend log unavailable:', e.message);
   }
-  backendProc = spawn(exe, [], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  // LONGWAVE_STATE_DIR: the game library keeps its state beside this app's own (userData).
+  backendProc = spawn(exe, [], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, LONGWAVE_STATE_DIR: app.getPath('userData') },
+  });
   for (const stream of [backendProc.stdout, backendProc.stderr]) {
     // Read regardless of whether the log survived: an undrained pipe eventually blocks the
     // backend.
@@ -581,8 +586,7 @@ async function dispatchControl(method, params = {}) {
       const gameId = params.gameId || 'steam:546560';
       return runStackOperation(async () => {
         await waitForFoveatedConnected(Math.min(Math.max(params.connectTimeoutSeconds || 120, 1), 600));
-        const launched = await rpc('GamesLaunch', { id: gameId });
-        if (!launched) throw new Error(`GamesLaunch refused or failed for ${gameId}`);
+        await launchTitleInVr(gameId);
         return { ok: true, gameId };
       });
     }
@@ -595,8 +599,7 @@ async function dispatchControl(method, params = {}) {
         const started = await supervisor.startStack(rpc, hostParams);
         if (!started.ok) return started;
         const status = await waitForFoveatedConnected(timeout);
-        const launched = await rpc('GamesLaunch', { id: gameId });
-        if (!launched) throw new Error(`GamesLaunch refused or failed for ${gameId}`);
+        await launchTitleInVr(gameId);
         return { ok: true, steps: started.steps, status, gameId };
       });
     }
@@ -605,112 +608,96 @@ async function dispatchControl(method, params = {}) {
   }
 }
 
-// ---- Launch game… (tray launcher, NATIVE_V3_PROTOCOL.md §7.6) ----
+// ---- Game library launching: the Games tab, Launch game…, shortcuts (NATIVE_V3 §7.6) ----
 //
-// The decisions live in game-launcher.js (tested); this is the Electron half: the picker window,
-// the consent box, and starting things. Routing, in one place:
-//   * a PCVR library title → GamesLaunch on the PCVR host, vr = whether a PCVR session is on
-//     (the host applies the optimised profile and the Steam identity);
-//   * a browsed .exe (or a .lnk pointing at one) → that library title if it is one, else a
-//     detached, unelevated spawn in its own folder — with SteamAppId/SteamGameId and Steam
-//     running when a Steam library owns it, so Steam's DRM does not restart it;
-//   * a .url → the library title its steam:// id names, else its scheme's handler;
-//   * a .lnk to something other than an exe → the shell opens it.
-// Nothing here elevates: this process is asInvoker, spawn cannot raise a UAC prompt, and an exe
-// that demands administrator rights fails with a message instead.
+// The library is the public backend's (Library* RPCs; CompanionWindows/backend/Games). It resolves
+// a title to an executable, arguments, working folder and Steam identity, and starts Steam first
+// when needed. This process decides where the title runs and starts it:
+//   * flat titles always start on the desktop, here;
+//   * VR / both titles go to the PCVR host (GamesLaunchResolved: the CloudXR-specific start) while a
+//     PCVR session is on; a session still starting is waited for (bounded), then desktop;
+//   * a browsed .exe (or .lnk to one) is matched to its library title by path — which is how a
+//     game under steamapps\common gets its Steam identity — and otherwise offered "Add to
+//     library" in the picker, or started as is from the command line;
+//   * a .url opens the library title its steam:// id names, else its scheme's handler; a .lnk to
+//     something other than a program is opened by the shell.
+// Nothing here elevates: this process is asInvoker, spawn cannot raise a UAC prompt, and a game
+// that demands administrator rights fails with a message instead. Desktop games are children of
+// this process, detached, so they outlive it; the backend never starts them because it is
+// tree-killed on quit.
 
 const userDataDir = () => app.getPath('userData');
+const VR_WAIT_SECONDS = 60;
+const RESOLVE_TIMEOUT_MS = 45000; // Steam may need starting first (up to ~32 s)
+
+/** An RPC error's message without the "exception: " / "methodNotFound: " code prefix. */
+function rpcMessage(e) {
+  return String(e && e.message ? e.message : e).replace(/^[a-zA-Z]+: /, '');
+}
 
 function sendLauncher(channel, payload) {
   if (launcherWindow && !launcherWindow.isDestroyed()) launcherWindow.webContents.send(channel, payload);
 }
 
 function sendLauncherMode() {
-  sendLauncher('launcher-mode', {
-    mode: gameLauncher.launchModeFor(pcvrClient.connected, lastFoveatedStatus),
-    pcvrConnected: pcvrClient.connected,
-  });
+  sendLauncher('launcher-mode', { pcvrOn: pcvrSessionState() });
 }
 
-/** Up to 10 s for the PCVR host's pipe (only when there is a host to wait for). */
+/** 'on', 'starting' or 'off', from the PCVR host's last status. */
+function pcvrSessionState() {
+  if (!pcvrClient.connected || !lastFoveatedStatus) return 'off';
+  return lastFoveatedStatus.state === 'on' || lastFoveatedStatus.state === 'starting'
+    ? lastFoveatedStatus.state : 'off';
+}
+
+/** Up to 10 s for the pipes a launch may need: the public backend, and the PCVR host if installed. */
 async function waitForLaunchPipes() {
-  if (process.env.LONGWAVE_NO_SPAWN !== '1' && !resolvePcvrHostExe()) return;
-  try { await waitForBackend(pcvrClient, 10000); } catch { /* launch with what is available */ }
+  const waits = [waitForBackend(client, 10000).catch(() => null)];
+  if (process.env.LONGWAVE_NO_SPAWN === '1' || resolvePcvrHostExe()) {
+    waits.push(waitForBackend(pcvrClient, 10000).catch(() => null));
+  }
+  await Promise.all(waits);
 }
 
-/** The live PCVR state and library; an absent or unresponsive host just means "no library". */
-async function launchContext() {
-  let status = lastFoveatedStatus;
-  let titles = [];
-  if (pcvrClient.connected) {
-    try {
-      status = await withTimeout(pcvrClient.rpc('FoveatedStatus'), 3000, 'FoveatedStatus');
-      lastFoveatedStatus = status;
-    } catch { /* the last pushed snapshot */ }
-    try {
-      const list = await withTimeout(pcvrClient.rpc('GamesList'), 10000, 'GamesList');
-      if (Array.isArray(list)) titles = list;
-    } catch (e) {
-      console.warn('[launcher] GamesList failed:', e.message);
-    }
-  }
-  return {
-    pcvrConnected: pcvrClient.connected,
-    status,
-    titles,
-    mode: gameLauncher.launchModeFor(pcvrClient.connected, status),
-  };
+async function refreshFoveatedStatus() {
+  if (!pcvrClient.connected) return null;
+  try {
+    lastFoveatedStatus = await withTimeout(pcvrClient.rpc('FoveatedStatus'), 3000, 'FoveatedStatus');
+  } catch { /* the last pushed snapshot */ }
+  return lastFoveatedStatus;
 }
 
-function titlePlan(title) {
-  return { kind: 'title', id: title.id, name: title.name };
+async function libraryRpc(method, params, timeoutMs) {
+  if (!client.connected) throw new Error('The Companion\'s backend is not running, so the game library is unavailable.');
+  try {
+    return await client.rpc(method, params, timeoutMs);
+  } catch (e) {
+    throw new Error(rpcMessage(e));
+  }
 }
 
-/** What a picked file starts as. Throws an Error with a user-facing message when it can't. */
-async function planForFile(filePath, titles) {
-  const kind = gameLauncher.fileKind(filePath);
-  const name = gameLauncher.displayName(filePath);
-  if (!kind) throw new Error('Choose a program (.exe), a shortcut (.lnk) or an internet shortcut (.url).');
-  if (!fs.existsSync(filePath)) throw new Error(`${filePath} no longer exists.`);
+function libraryList() {
+  return client.connected ? libraryRpc('LibraryList', null).catch(() => []) : Promise.resolve([]);
+}
 
-  const exePlan = async (exe, args, cwd) => {
-    const title = gameLauncher.matchTitleForExecutable(titles, exe);
-    if (title) return titlePlan(title);
-    const steamRoot = await steamLocate.findSteamRoot();
-    const owner = steamLocate.findOwningSteamApp(exe, steamRoot);
-    return {
-      kind: 'exe', name, exe, args: args || '', cwd: cwd || path.dirname(exe),
-      steamAppId: owner ? owner.appId : null, steamRoot,
-    };
-  };
-
-  if (kind === 'exe') return exePlan(filePath);
-  if (kind === 'lnk') {
-    let link = null;
-    try { link = shell.readShortcutLink(filePath); } catch { /* advertised/odd shortcuts */ }
-    if (link && link.target && gameLauncher.fileKind(link.target) === 'exe' && fs.existsSync(link.target)) {
-      return exePlan(link.target, link.args, link.cwd);
-    }
-    return { kind: 'open', name, path: filePath };
+/** Resolve a title (Steam started first when needed) and start it in VR through the PCVR host. */
+async function launchTitleInVr(id) {
+  await waitForBackend(client, 10000);
+  const plan = await libraryRpc('LibraryResolveLaunch', { id, vr: true }, RESOLVE_TIMEOUT_MS);
+  const ok = await pcvrClient.rpc('GamesLaunchResolved', plan);
+  if (!ok) {
+    throw new Error(`The PCVR host could not start ${plan.name}. It refuses a second PCVR game while `
+      + 'one is running; otherwise pcvr-host.log in the Companion\'s logs says why.');
   }
-  // .url
-  const url = gameLauncher.parseInternetShortcut(await fs.promises.readFile(filePath, 'utf8'));
-  if (!url) throw new Error(`${path.basename(filePath)} has no address in it.`);
-  const appId = gameLauncher.steamAppIdFromUrl(url);
-  const title = appId && titles.find((t) => t.id === `steam:${appId}`);
-  if (title) return titlePlan(title);
-  if (!gameLauncher.urlAllowed(url)) {
-    throw new Error('That shortcut points at a file rather than a game launcher, so Longwave will not open it.');
-  }
-  return { kind: 'url', name, url };
+  return plan;
 }
 
 function spawnDetached(exe, args, cwd, env) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      // Verbatim, so a shortcut's argument string reaches the game exactly as written; argv0
-      // carries its own quotes for the same reason.
+      // Verbatim, so a shortcut's or Steam's argument string reaches the game exactly as written;
+      // argv0 carries its own quotes for the same reason.
       child = spawn(exe, args ? [args] : [], {
         cwd, env, detached: true, stdio: 'ignore', windowsVerbatimArguments: true, argv0: `"${exe}"`,
       });
@@ -732,39 +719,110 @@ function spawnErrorMessage(e, name) {
   return `${name} did not start: ${e && e.message ? e.message : e}`;
 }
 
-async function performLaunch(plan, mode) {
-  switch (plan.kind) {
-    case 'title': {
-      const ok = await pcvrClient.rpc('GamesLaunch', { id: plan.id, vr: mode === 'vr' });
-      if (!ok) {
-        throw new Error(`The PCVR host could not start ${plan.name}. It refuses a game that is `
-          + 'already running; otherwise pcvr-host.log in the Companion\'s logs says why.');
-      }
-      return;
+async function startDesktop(exe, args, cwd, steamAppId, name) {
+  try {
+    await spawnDetached(exe, args, cwd, gameLauncher.childEnvironment(process.env, steamAppId));
+  } catch (e) {
+    throw new Error(spawnErrorMessage(e, name));
+  }
+}
+
+/**
+ * Starts a library title where it belongs. Returns { name, where } for the notification. When the
+ * PCVR session is still starting this waits for the headset, then falls back to the desktop.
+ */
+async function launchLibraryTitle(id) {
+  const title = await libraryRpc('LibraryGet', { id });
+  if (!title) throw new Error('That game is no longer in the library.');
+  await refreshFoveatedStatus();
+  let mode = gameLauncher.launchModeFor(pcvrClient.connected, lastFoveatedStatus, title.kind);
+  let fellBack = false;
+  if (mode === 'wait') {
+    try {
+      await waitForFoveatedConnected(VR_WAIT_SECONDS);
+      mode = 'vr';
+    } catch {
+      mode = 'flat';
+      fellBack = true;
     }
-    case 'exe': {
-      if (plan.steamAppId && !await steamLocate.ensureSteamRunning(plan.steamRoot,
-        (line) => console.log('[launcher]', line))) {
-        throw new Error(`${plan.name} is a Steam game and Steam could not be started. Start Steam, then try again.`);
+  }
+  if (mode === 'vr') {
+    await launchTitleInVr(id);
+  } else {
+    const plan = await libraryRpc('LibraryResolveLaunch', { id, vr: false }, RESOLVE_TIMEOUT_MS);
+    await startDesktop(plan.executable, plan.arguments, plan.workingDirectory, plan.steamAppId, plan.name);
+  }
+  libraryRpc('LibraryMarkPlayed', { id }).catch(() => null);
+  return {
+    name: title.name,
+    where: mode === 'vr' ? 'in VR through PCVR' : 'on the desktop',
+    fellBack,
+  };
+}
+
+/**
+ * What a file stands for: a library title (matched by path, or a steam:// .url), or a plain
+ * start. `addToLibrary(info)` is asked, in the picker only, about a program that is not in the
+ * library; it returns a kind ('flat' / 'vr'), 'launch' or null (cancel).
+ */
+async function resolveFile(filePath, { addToLibrary = null } = {}) {
+  const kind = gameLauncher.fileKind(filePath);
+  const name = gameLauncher.displayName(filePath);
+  if (!kind) throw new Error('Choose a program (.exe), a shortcut (.lnk) or an internet shortcut (.url).');
+  if (!fs.existsSync(filePath)) throw new Error(`${filePath} no longer exists.`);
+
+  const forExe = async (exe, args, cwd) => {
+    const title = client.connected ? await libraryRpc('LibraryMatchPath', { path: exe }).catch(() => null) : null;
+    if (title) return { kind: 'title', id: title.id, name: title.name };
+    if (addToLibrary) {
+      const answer = await addToLibrary({ name, exe });
+      if (answer === null) return { kind: 'cancel' };
+      if (answer === 'flat' || answer === 'vr') {
+        const added = await libraryRpc('LibraryAddCustom', { path: exe, arguments: args || null, kind: answer });
+        return { kind: 'title', id: added.id, name: added.name };
       }
-      try {
-        await spawnDetached(plan.exe, plan.args, plan.cwd,
-          gameLauncher.childEnvironment(process.env, plan.steamAppId));
-      } catch (e) {
-        throw new Error(spawnErrorMessage(e, plan.name));
-      }
-      return;
     }
+    return { kind: 'exe', name, exe, args: args || '', cwd: cwd || path.dirname(exe) };
+  };
+
+  if (kind === 'exe') return forExe(filePath);
+  if (kind === 'lnk') {
+    let link = null;
+    try { link = shell.readShortcutLink(filePath); } catch { /* advertised/odd shortcuts */ }
+    if (link && link.target && gameLauncher.fileKind(link.target) === 'exe' && fs.existsSync(link.target)) {
+      return forExe(link.target, link.args, link.cwd);
+    }
+    return { kind: 'open', name, path: filePath };
+  }
+  const url = gameLauncher.parseInternetShortcut(await fs.promises.readFile(filePath, 'utf8'));
+  if (!url) throw new Error(`${path.basename(filePath)} has no address in it.`);
+  const appId = gameLauncher.steamAppIdFromUrl(url);
+  if (appId && client.connected) {
+    const title = await libraryRpc('LibraryGet', { id: `steam:${appId}` }).catch(() => null);
+    if (title) return { kind: 'title', id: title.id, name: title.name };
+  }
+  if (!gameLauncher.urlAllowed(url)) {
+    throw new Error('That shortcut points at a file rather than a game launcher, so Longwave will not open it.');
+  }
+  return { kind: 'url', name, url };
+}
+
+async function performResolved(r) {
+  switch (r.kind) {
+    case 'title': return launchLibraryTitle(r.id);
+    case 'exe':
+      await startDesktop(r.exe, r.args, r.cwd, null, r.name);
+      return { name: r.name, where: 'on the desktop' };
     case 'url':
-      await shell.openExternal(plan.url);
-      return;
+      await shell.openExternal(r.url);
+      return { name: r.name, where: 'through its launcher' };
     case 'open': {
-      const error = await shell.openPath(plan.path);
-      if (error) throw new Error(`${plan.name} did not open: ${error}`);
-      return;
+      const error = await shell.openPath(r.path);
+      if (error) throw new Error(`${r.name} did not open: ${error}`);
+      return { name: r.name, where: 'through its shortcut' };
     }
     default:
-      throw new Error(`unknown launch plan ${plan.kind}`);
+      throw new Error(`unknown launch ${r.kind}`);
   }
 }
 
@@ -785,8 +843,24 @@ function showLaunchError(owner, message) {
   return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
 }
 
+async function askAddToLibrary(owner, { name }) {
+  const options = {
+    type: 'question',
+    title: 'Add to library',
+    message: `Add ${name} to your game library?`,
+    detail: 'Games in the library keep their launch settings, appear in the Games tab and the '
+      + 'tray, and can get a desktop shortcut. Choose how it is played.',
+    buttons: ['Add as a desktop game', 'Add as a VR game', 'Launch without adding', 'Cancel'],
+    defaultId: 0,
+    cancelId: 3,
+    noLink: true,
+  };
+  const { response } = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+  return ['flat', 'vr', 'launch', null][response] ?? null;
+}
+
 /**
- * One launch, start to finish. `resolve(ctx)` turns the request into a plan (or throws a
+ * One launch, start to finish. `resolve()` turns the request into something startable (or throws a
  * user-facing Error). Consent comes first, so declining starts nothing at all. Returns whether
  * the game started.
  */
@@ -795,33 +869,42 @@ async function runLaunch(resolve, { owner = null, recent = null } = {}) {
   launchInFlight = true;
   try {
     if (!await confirmLaunch(owner)) return false;
-    const ctx = await launchContext();
-    let plan;
+    let started;
+    let resolved;
     try {
-      plan = await resolve(ctx);
-      await performLaunch(plan, ctx.mode);
+      resolved = await resolve();
+      if (resolved.kind === 'cancel') return false;
+      started = await performResolved(resolved);
     } catch (e) {
       console.warn('[launcher] launch failed:', e.message);
       await showLaunchError(owner, e.message);
       return false;
     }
-    const where = plan.kind === 'title' && ctx.mode === 'vr' ? 'in VR through PCVR' : 'on the desktop';
-    console.log(`[launcher] started ${plan.kind} ${where}${plan.steamAppId ? ` (Steam app ${plan.steamAppId})` : ''}`);
-    gameLauncher.addRecent(userDataDir(), recent || (plan.kind === 'title'
-      ? { kind: 'title', id: plan.id, name: plan.name }
-      : { kind: 'file', path: plan.path || plan.exe, name: plan.name }));
-    new Notification({ title: `Starting ${plan.name}`, body: `Launched ${where} by Longwave.` }).show();
+    console.log(`[launcher] started ${resolved.kind} ${started.where}`);
+    gameLauncher.addRecent(userDataDir(), resolved.kind === 'title'
+      ? { kind: 'title', id: resolved.id, name: resolved.name }
+      : (recent || { kind: 'file', path: resolved.path || resolved.exe, name: resolved.name }));
+    new Notification({
+      title: `Starting ${started.name}`,
+      body: started.fellBack
+        ? 'The headset did not connect in time, so it started on the desktop instead.'
+        : `Launched ${started.where} by Longwave.`,
+    }).show();
     return true;
   } finally {
     launchInFlight = false;
   }
 }
 
-/** The command-line path: same as a browsed file, minus the picker, and no window comes forward. */
-function launchFromCommandLine(filePath) {
+/** The command-line path: the picker's Browse minus the picker (and minus "Add to library"),
+ *  and no window comes forward. */
+function launchFromCommandLine(request) {
   console.log('[launcher] command-line launch requested');
-  return runLaunch((ctx) => planForFile(filePath, ctx.titles),
-    { recent: { kind: 'file', path: filePath, name: gameLauncher.displayName(filePath) } });
+  if (request.titleId) {
+    return runLaunch(async () => ({ kind: 'title', id: request.titleId, name: request.titleId }));
+  }
+  return runLaunch(() => resolveFile(request.path),
+    { recent: { kind: 'file', path: request.path, name: gameLauncher.displayName(request.path) } });
 }
 
 function openLauncherWindow() {
@@ -854,32 +937,39 @@ function openLauncherWindow() {
 
 const fromLauncher = (event) => launcherWindow && !launcherWindow.isDestroyed()
   && event.sender === launcherWindow.webContents;
+const fromMainWindow = (event) => mainWindow && !mainWindow.isDestroyed()
+  && event.sender === mainWindow.webContents;
 
-function recentView(recent, titles, pcvrConnected) {
+/** The library as the picker shows it: name, kind, profile — no paths. */
+function pickerTitle(t) {
+  return { id: t.id, name: t.name, kind: t.kind, optimised: Boolean(t.optimizedAvailable && t.optimized) };
+}
+
+function recentView(recent, byId) {
   const key = gameLauncher.recentKey(recent);
   if (recent.kind === 'title') {
-    const title = pcvrConnected && titles.find((t) => t.id === recent.id);
-    return title ? { key, kind: 'title', name: title.name, detail: 'PCVR library', canShortcut: false } : null;
+    const title = byId.get(recent.id);
+    return title ? { key, kind: 'title', name: title.name, detail: kindLabel(title.kind), canShortcut: true } : null;
   }
   if (!fs.existsSync(recent.path)) return null;
   return { key, kind: 'file', name: recent.name, detail: recent.path, canShortcut: true };
 }
 
+function kindLabel(kind) {
+  return kind === 'vr' ? 'VR' : kind === 'both' ? 'VR and desktop' : 'Desktop';
+}
+
 ipcMain.handle('launcher-state', async (event) => {
   if (!fromLauncher(event)) return null;
-  const ctx = await launchContext();
+  const titles = await libraryList();
+  const byId = new Map(titles.map((t) => [t.id, t]));
+  await refreshFoveatedStatus();
   return {
-    mode: ctx.mode,
-    pcvrConnected: ctx.pcvrConnected,
+    pcvrOn: pcvrSessionState(),
+    libraryAvailable: client.connected,
     askBeforeLaunch: !gameLauncher.consentRemembered(userDataDir()),
-    titles: ctx.titles.map((t) => ({
-      id: t.id,
-      name: t.name,
-      source: t.source,
-      optimised: Boolean(t.optimizedAvailable && t.optimized),
-    })).sort((a, b) => a.name.localeCompare(b.name)),
-    recents: gameLauncher.loadRecents(userDataDir())
-      .map((r) => recentView(r, ctx.titles, ctx.pcvrConnected)).filter(Boolean),
+    titles: titles.map(pickerTitle),
+    recents: gameLauncher.loadRecents(userDataDir()).map((r) => recentView(r, byId)).filter(Boolean),
   };
 });
 
@@ -891,31 +981,24 @@ async function launchFromPicker(resolve, recent) {
 
 ipcMain.handle('launcher-launch-title', (event, id) => {
   if (!fromLauncher(event) || typeof id !== 'string') return false;
-  return launchFromPicker(async (ctx) => {
-    const title = ctx.titles.find((t) => t.id === id);
-    if (!title) throw new Error('That game is no longer in the PCVR library.');
-    return titlePlan(title);
-  });
+  return launchFromPicker(async () => ({ kind: 'title', id, name: id }));
 });
 
 ipcMain.handle('launcher-launch-recent', (event, key) => {
   if (!fromLauncher(event)) return false;
   const recent = gameLauncher.loadRecents(userDataDir()).find((r) => gameLauncher.recentKey(r) === key);
   if (!recent) return false;
-  return launchFromPicker(async (ctx) => {
-    if (recent.kind === 'file') return planForFile(recent.path, ctx.titles);
-    const title = ctx.titles.find((t) => t.id === recent.id);
-    if (!title) throw new Error(`${recent.name} needs the PCVR host, which is not running.`);
-    return titlePlan(title);
-  }, recent);
+  return launchFromPicker(async () => (recent.kind === 'file'
+    ? resolveFile(recent.path, { addToLibrary: (info) => askAddToLibrary(launcherWindow, info) })
+    : { kind: 'title', id: recent.id, name: recent.name }), recent);
 });
 
-async function browseForGame(owner) {
+async function browseForGame(owner, { title = 'Choose a game', withUrl = true } = {}) {
   const result = await dialog.showOpenDialog(owner, {
-    title: 'Choose a game',
+    title,
     properties: ['openFile', 'dontAddToRecent'],
     filters: [
-      { name: 'Games and shortcuts', extensions: ['exe', 'lnk', 'url'] },
+      { name: 'Games and shortcuts', extensions: withUrl ? ['exe', 'lnk', 'url'] : ['exe', 'lnk'] },
       { name: 'All files', extensions: ['*'] },
     ],
   });
@@ -926,50 +1009,123 @@ ipcMain.handle('launcher-browse', async (event) => {
   if (!fromLauncher(event)) return false;
   const filePath = await browseForGame(launcherWindow);
   if (!filePath) return false;
-  return launchFromPicker((ctx) => planForFile(filePath, ctx.titles),
+  return launchFromPicker(
+    () => resolveFile(filePath, { addToLibrary: (info) => askAddToLibrary(launcherWindow, info) }),
     { kind: 'file', path: filePath, name: gameLauncher.displayName(filePath) });
 });
 
 ipcMain.handle('launcher-set-ask', (event, ask) => {
-  if (!fromLauncher(event)) return null;
+  if (!fromLauncher(event) && !fromMainWindow(event)) return null;
   gameLauncher.setConsentRemembered(userDataDir(), !ask);
   return !gameLauncher.consentRemembered(userDataDir());
 });
 
 /**
- * A desktop shortcut that starts a recent game through Longwave: the Companion exe with
- * `--launch "<path>"`, the game's name and icon. Returns the shortcut's path, or null.
+ * A desktop shortcut that starts a game through Longwave: the Companion exe with
+ * `--launch-title <id>` (library titles) or `--launch "<path>"` (other files), the game's name
+ * and icon. Returns the shortcut's path, or null.
  */
-ipcMain.handle('launcher-create-shortcut', async (event, key) => {
-  if (!fromLauncher(event)) return null;
-  const recent = gameLauncher.loadRecents(userDataDir())
-    .find((r) => r.kind === 'file' && gameLauncher.recentKey(r) === key);
-  if (!recent || !fs.existsSync(recent.path)) return null;
-  let icon = recent.path;
-  if (gameLauncher.fileKind(recent.path) === 'lnk') {
-    try {
-      const link = shell.readShortcutLink(recent.path);
-      icon = link.icon || link.target || '';
-    } catch { icon = ''; }
-  } else if (gameLauncher.fileKind(recent.path) === 'url') {
-    icon = '';
-  }
-  const safeName = recent.name.replace(/[<>:"/\\|?*]/g, '').trim() || 'Game';
-  const linkPath = path.join(app.getPath('desktop'), `${safeName}.lnk`);
-  const launchArgs = `--launch "${recent.path}"`;
+function writeGameShortcut({ name, request, icon, cwd }) {
+  const linkPath = path.join(app.getPath('desktop'), gameLauncher.shortcutFileName(name));
+  const launchArgs = gameLauncher.shortcutArguments(request);
   const ok = shell.writeShortcutLink(linkPath, 'create', {
     target: process.execPath,
     // A checkout runs as `electron <app dir>`, so the app directory goes first there.
     args: app.isPackaged ? launchArgs : `"${app.getAppPath()}" ${launchArgs}`,
-    cwd: path.dirname(recent.path),
-    description: `Start ${recent.name} through Longwave`,
-    ...(icon ? { icon, iconIndex: 0 } : {}),
+    cwd: cwd || path.dirname(process.execPath),
+    description: `Start ${name} through Longwave`,
+    icon: icon && fs.existsSync(icon) ? icon : process.execPath,
+    iconIndex: 0,
   });
   return ok ? linkPath : null;
+}
+
+async function shortcutForTitle(id) {
+  const title = await libraryRpc('LibraryGet', { id });
+  if (!title) return null;
+  return writeGameShortcut({
+    name: title.name,
+    request: { titleId: title.id },
+    icon: title.icon || title.executable || null,
+    cwd: title.installDir || null,
+  });
+}
+
+ipcMain.handle('launcher-create-shortcut', async (event, key) => {
+  if (!fromLauncher(event)) return null;
+  const recent = gameLauncher.loadRecents(userDataDir()).find((r) => gameLauncher.recentKey(r) === key);
+  if (!recent) return null;
+  if (recent.kind === 'title') return shortcutForTitle(recent.id);
+  if (!fs.existsSync(recent.path)) return null;
+  let icon = recent.path;
+  if (gameLauncher.fileKind(recent.path) === 'lnk') {
+    try {
+      const link = shell.readShortcutLink(recent.path);
+      icon = link.icon || link.target || null;
+    } catch { icon = null; }
+  } else if (gameLauncher.fileKind(recent.path) === 'url') {
+    icon = null;
+  }
+  return writeGameShortcut({
+    name: recent.name, request: { path: recent.path }, icon, cwd: path.dirname(recent.path),
+  });
 });
 
 ipcMain.handle('launcher-close', (event) => {
   if (fromLauncher(event)) launcherWindow.close();
+});
+
+// The Games tab's own actions. Curation calls (LibraryList/SetExposed/…) go through the generic
+// 'rpc' bridge; these three need the main process (dialogs, spawning, the desktop).
+ipcMain.handle('library-launch', async (event, id) => {
+  if (!fromMainWindow(event) || typeof id !== 'string') return false;
+  return runLaunch(async () => ({ kind: 'title', id, name: id }), { owner: mainWindow });
+});
+
+ipcMain.handle('library-create-shortcut', async (event, id) => {
+  if (!fromMainWindow(event) || typeof id !== 'string') return null;
+  return shortcutForTitle(id);
+});
+
+/** "Add a game…": pick a program or shortcut, choose VR or desktop, add it. Returns the title. */
+ipcMain.handle('library-add', async (event) => {
+  if (!fromMainWindow(event)) return null;
+  const filePath = await browseForGame(mainWindow, { title: 'Add a game to the library', withUrl: false });
+  if (!filePath) return null;
+  let exe = filePath;
+  let args = null;
+  if (gameLauncher.fileKind(filePath) === 'lnk') {
+    const link = shell.readShortcutLink(filePath);
+    if (!link.target || gameLauncher.fileKind(link.target) !== 'exe') {
+      throw new Error('That shortcut does not point at a program.');
+    }
+    exe = link.target;
+    args = link.args || null;
+  }
+  const existing = await libraryRpc('LibraryMatchPath', { path: exe });
+  if (existing) return existing;
+  const options = {
+    type: 'question',
+    title: 'Add a game',
+    message: `How is ${gameLauncher.displayName(filePath)} played?`,
+    buttons: ['On the desktop', 'In VR', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  };
+  const { response } = await dialog.showMessageBox(mainWindow, options);
+  if (response === 2) return null;
+  return libraryRpc('LibraryAddCustom', {
+    path: exe,
+    name: gameLauncher.displayName(filePath),
+    arguments: args,
+    kind: response === 1 ? 'vr' : 'flat',
+  });
+});
+
+ipcMain.handle('library-ask-state', (event) => {
+  if (!fromMainWindow(event)) return null;
+  return !gameLauncher.consentRemembered(userDataDir());
 });
 
 // ---- IPC bridge: renderer -> backend RPC ----
@@ -982,6 +1138,7 @@ ipcMain.handle('rpc', async (_e, method, params) => {
     lastFoveatedStatus = result;
     syncPairingWindow(result);
   }
+  if (method === 'LibraryList') rememberLibraryArt(result);
   return result;
 });
 // Whether the closed-source PCVR host is installed and its pipe is up right now — the
@@ -1074,61 +1231,50 @@ ipcMain.handle('pcvr-optin-resolve', (_e, outcome) => {
   return { ok: true };
 });
 
-/**
- * Native file picker for "Add a game". This is why the headset needs no filesystem access at all:
- * the user chooses the executable here, in a dialog, and only the resulting path is sent to the
- * backend. Returns null when the dialog is cancelled.
- */
-ipcMain.handle('pick-executable', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Choose a game executable',
-    properties: ['openFile', 'dontAddToRecent'],
-    filters: [
-      { name: 'Programs', extensions: ['exe'] },
-      { name: 'All files', extensions: ['*'] },
-    ],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
-});
-
 /* Art is returned as a data: URL rather than a file:// path because the renderer's CSP allows
    `img-src 'self' data:` and nothing else. Widening it to `file:` to reach Steam's cache would be a
    real loosening for a cosmetic gain; base64 of a 30-40 KB jpg is cheap by comparison.
 
-   The path is validated against Steam's art cache first, so this handler cannot be used as a
-   general file reader even though the renderer is our own code. */
+   Only paths the library itself reported (LibraryList through the 'rpc' bridge, recorded in
+   allowedArt) are served, and only images, so this handler cannot be used as a general file
+   reader even though the renderer is our own code. The cache is bounded: a grid scrolled through
+   thousands of covers must not keep every one of them in memory. */
+const ART_CACHE_LIMIT = 400;
 const artCache = new Map();
+const allowedArt = new Set();
 
-function steamArtRoot() {
-  // Mirrors GameLibrary.SteamArtCacheRoot. Read from the registry would be better, but the renderer
-  // only ever passes back paths the backend produced, so this is a bound, not a lookup.
-  return ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
-    .map((r) => path.join(r, 'appcache', 'librarycache'))
-    .find((p) => fs.existsSync(p)) || null;
+function rememberLibraryArt(titles) {
+  if (!Array.isArray(titles)) return;
+  allowedArt.clear();
+  for (const t of titles) {
+    if (t && typeof t.portraitArt === 'string') allowedArt.add(t.portraitArt);
+    if (t && typeof t.landscapeArt === 'string') allowedArt.add(t.landscapeArt);
+  }
 }
 
 ipcMain.handle('game-art', async (_e, artPath) => {
   if (typeof artPath !== 'string' || artPath.length === 0) return null;
-  if (artCache.has(artPath)) return artCache.get(artPath);
-
-  const root = steamArtRoot();
-  if (!root) return null;
-  const full = path.resolve(artPath);
-  if (!full.toLowerCase().startsWith(path.resolve(root).toLowerCase() + path.sep)) {
-    console.warn('[main] refusing art outside the Steam cache:', full);
+  if (artCache.has(artPath)) {
+    const hit = artCache.get(artPath);
+    artCache.delete(artPath);
+    artCache.set(artPath, hit); // most recently used last
+    return hit;
+  }
+  if (!allowedArt.has(artPath)) {
+    console.warn('[main] refusing art the library did not report');
     return null;
   }
-  const ext = path.extname(full).toLowerCase();
+  const ext = path.extname(artPath).toLowerCase();
   const mime = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : null;
   if (!mime) return null;
 
   try {
-    const url = `data:${mime};base64,${(await fs.promises.readFile(full)).toString('base64')}`;
+    const url = `data:${mime};base64,${(await fs.promises.readFile(artPath)).toString('base64')}`;
     artCache.set(artPath, url);
+    while (artCache.size > ART_CACHE_LIMIT) artCache.delete(artCache.keys().next().value);
     return url;
   } catch (e) {
-    console.warn('[main] could not read art', full, e.message);
+    console.warn('[main] could not read art:', e.message);
     return null;
   }
 });
@@ -1208,9 +1354,9 @@ if (gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv, cwd, additionalData) => {
     // A second start that names a game launches it and nothing else: no window comes forward,
     // only the consent box or an error if one is due. A plain second start shows the window.
-    const game = (additionalData && typeof additionalData.launchPath === 'string'
-      && additionalData.launchPath)
-      || gameLauncher.gamePathFromArgv(argv, { skip: ARGV_SKIP, cwd });
+    const handed = additionalData && additionalData.launch;
+    const game = (handed && (typeof handed.path === 'string' || typeof handed.titleId === 'string') && handed)
+      || gameLauncher.gameRequestFromArgv(argv, { skip: ARGV_SKIP, cwd });
     if (game) launchFromCommandLine(game);
     else focusMainWindow();
   });
@@ -1246,6 +1392,7 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
   createTray();
   pcvrClient.on('connected', () => sendLauncher('launcher-refresh'));
   pcvrClient.on('disconnected', () => sendLauncher('launcher-refresh'));
+  client.on('connected', () => sendLauncher('launcher-refresh'));
   pcvrClient.on('notify', (event) => { if (event === 'foveated') sendLauncherMode(); });
   if (commandLineGame) {
     waitForLaunchPipes().then(() => launchFromCommandLine(commandLineGame));

@@ -53,8 +53,6 @@ const el = {
   pcvrModuleView: $('pcvrModuleView'),
   noticesBtn: $('noticesBtn'),
 
-  // Game library — entirely the downloaded module's own page; see gamesModuleView.
-  gamesModuleView: $('gamesModuleView'),
 
   // Hotspot
   capabilityBanner: $('capabilityBanner'),
@@ -193,21 +191,21 @@ function applyPcvrBannerVisibility() {
 }
 
 /**
- * Hides PCVR and the Game library outright on a host that cannot run them — anything but
+ * Hides PCVR outright on a host that cannot run it (the Games tab stays: the library is public
+ * and serves desktop games everywhere) — anything but
  * Windows x64, because CloudXR is x64-only and the feature needs an RTX GPU. Not "installed vs
  * not": there is no download that would ever work, so an empty tab offering one is a promise
  * the product cannot keep.
  *
  * The PCVR tab is also the DEFAULT selected one, so hiding it has to move the selection or the
  * app boots showing a blank pane with no tab lit. Screen streaming is the next entry in the
- * rail and works everywhere.
+ * rail after Games and works everywhere.
  */
 async function applyPcvrHostSupport() {
   if (typeof window.hotspot.pcvrSupported !== 'function') return;
   pcvrSupported = await window.hotspot.pcvrSupported();
   if (pcvrSupported) return;
   el.foveatedTab.classList.add('hidden');
-  el.gamesTab.classList.add('hidden');
   applyPcvrBannerVisibility();
   if (el.foveatedTab.classList.contains('is-current')) showView('streamView');
 }
@@ -417,9 +415,7 @@ async function ensurePcvrModuleLoaded() {
   // with no separate copy to keep in sync.
   const preloadUrl = await window.hotspot.preloadUrl();
   el.pcvrModuleView.setAttribute('preload', preloadUrl);
-  el.gamesModuleView.setAttribute('preload', preloadUrl);
   el.pcvrModuleView.src = 'pcvr-module://ui/pcvr.html';
-  el.gamesModuleView.src = 'pcvr-module://ui/games.html';
 }
 
 /** Shows or hides the PCVR download banner and the module <webview>s to match live host
@@ -428,7 +424,6 @@ async function ensurePcvrModuleLoaded() {
 function applyHostCapabilities() {
   applyPcvrBannerVisibility();
   el.pcvrModuleView.classList.toggle('hidden', !hasPcvr);
-  el.gamesModuleView.classList.toggle('hidden', !hasPcvr);
   if (hasPcvr) {
     pcvrDownloadInfo = null;
     ensurePcvrModuleLoaded();
@@ -444,12 +439,9 @@ function showView(viewId) {
     tab.setAttribute('aria-selected', String(current));
     $(tab.dataset.view).classList.toggle('hidden', !current);
   }
-  /* Scanning the Steam libraries touches the disk, so the module only does it when the tab
-     is actually being looked at — the shell just relays the "you're on-screen now, rescan"
-     signal into the isolated <webview>, which owns the actual games.js/refreshGames() logic. */
-  if (viewId === 'gamesView' && el.gamesModuleView.src) {
-    el.gamesModuleView.send('shell-command', 'refresh-games');
-  }
+  /* Scanning the Steam libraries touches the disk, so the Games tab (games.js) only reads the
+     library when it is actually being looked at. */
+  if (viewId === 'gamesView' && window.GamesTab) window.GamesTab.shown();
 }
 
 // ── Backend connection ─────────────────────────────────────────────────────
@@ -798,13 +790,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   surfacePcvrOptIn();
   el.noticesBtn.addEventListener('click', () => window.hotspot.openNoticesWindow());
   el.pcvrModuleView.addEventListener('ipc-message', onPcvrModuleMessage);
-  el.gamesModuleView.addEventListener('ipc-message', onPcvrModuleMessage);
   applyHostCapabilities();
 
   el.ssid.value = await window.hotspot.genSsid();
   el.passphrase.value = await window.hotspot.genPassphrase();
 
-  window.hotspot.onConnection(setBackendConnected);
+  window.hotspot.onConnection((connected) => {
+    setBackendConnected(connected);
+    if (window.GamesTab) window.GamesTab.connected(connected);
+  });
   window.hotspot.onNotify(({ event, data }) => {
     if (event === 'state') renderStatus(data);
     else if (event === 'nativeStream') renderNativeStream(data);

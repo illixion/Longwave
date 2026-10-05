@@ -1,9 +1,12 @@
 'use strict';
-// Launch game picker. Everything that starts a game happens in the main process; this window
-// only names what was chosen (a library id or a recents key) or asks for the native Browse dialog.
+// Launch game picker: recents, a search over the whole library, and Browse. Everything that
+// starts a game happens in the main process; this window only names what was chosen (a library
+// id or a recents key) or asks for the native Browse dialog.
 (() => {
   const $ = (id) => document.getElementById(id);
   const api = window.launcher;
+  const KIND = { vr: 'VR', both: 'VR + desktop', flat: 'Desktop' };
+  const MAX_RESULTS = 60;
   let state = null;
   let busy = false;
 
@@ -24,13 +27,12 @@
     $('status').classList.toggle('is-error', isError);
   }
 
-  function renderMode(mode, pcvrConnected) {
-    const vr = mode === 'vr';
-    $('modeLamp').dataset.state = vr ? 'live' : 'off';
-    $('modeText').textContent = vr
-      ? 'PCVR is on: library games start in VR.'
-      : pcvrConnected
-        ? 'No PCVR session: games start on the desktop.'
+  function renderMode(pcvrOn) {
+    $('modeLamp').dataset.state = pcvrOn === 'on' ? 'live' : 'off';
+    $('modeText').textContent = pcvrOn === 'on'
+      ? 'PCVR is on: VR games start in the headset.'
+      : pcvrOn === 'starting'
+        ? 'PCVR is starting: VR games wait for the headset.'
         : 'Games start on the desktop.';
   }
 
@@ -41,9 +43,9 @@
     for (const b of document.querySelectorAll('button')) b.disabled = true;
     setStatus('Starting…');
     try {
-      const started = await action();
+      await action();
       // On success the main process closes this window; a failure was already explained in a dialog.
-      if (started) setStatus('');
+      setStatus('');
     } catch (e) {
       setStatus(e && e.message ? e.message : String(e), true);
     } finally {
@@ -67,7 +69,7 @@
     const list = $('recents');
     list.replaceChildren();
     for (const r of state.recents) {
-      const li = el('li', {}, [
+      list.append(el('li', {}, [
         itemButton(r.name, r.detail, null, () => run(() => api.launchRecent(r.key))),
         r.canShortcut ? el('button', {
           className: 'side', type: 'button', title: `Put a shortcut to ${r.name} on the desktop`,
@@ -77,28 +79,46 @@
             setStatus(made ? `Shortcut created: ${made}` : 'The shortcut could not be created.', !made);
           },
         }, [document.createTextNode('Shortcut')]) : null,
-      ]);
-      list.append(li);
+      ]));
     }
     $('recentsSection').classList.toggle('hidden', state.recents.length === 0);
   }
 
+  /** Name prefix first, then word prefix, then anywhere — same ranking as game-launcher.js. */
+  function search(q) {
+    const query = q.trim().toLowerCase();
+    if (!query) return [];
+    const scored = [];
+    for (const t of state.titles) {
+      const name = t.name.toLowerCase();
+      const at = name.indexOf(query);
+      if (at < 0) continue;
+      scored.push([at === 0 ? 0 : /[\s:\-_.]/.test(name[at - 1]) ? 1 : 2, name, t]);
+    }
+    scored.sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]));
+    return scored.slice(0, MAX_RESULTS).map((x) => x[2]);
+  }
+
   function renderLibrary() {
-    const show = state.pcvrConnected && state.titles.length > 0;
+    const show = state.libraryAvailable && state.titles.length > 0;
     $('librarySection').classList.toggle('hidden', !show);
     if (!show) return;
-    const q = $('filter').value.trim().toLowerCase();
+    const q = $('filter').value;
+    const matches = search(q);
     const list = $('library');
     list.replaceChildren();
-    const matches = state.titles.filter((t) => !q || t.name.toLowerCase().includes(q));
-    const badge = state.mode === 'vr' ? 'Optimised' : 'Optimised in VR';
     for (const t of matches) {
       list.append(el('li', {}, [
-        itemButton(t.name, t.source === 'steam' ? 'Steam' : 'Added by you',
-          t.optimised ? badge : null, () => run(() => api.launchTitle(t.id))),
+        itemButton(t.name, KIND[t.kind] || '', t.optimised ? 'Optimised' : null,
+          () => run(() => api.launchTitle(t.id))),
       ]));
     }
-    $('libraryEmpty').classList.toggle('hidden', matches.length > 0);
+    list.classList.toggle('hidden', matches.length === 0);
+    const empty = $('libraryEmpty');
+    empty.classList.toggle('hidden', matches.length > 0);
+    empty.textContent = q.trim()
+      ? 'No games match.'
+      : `Type to search ${state.titles.length} game${state.titles.length === 1 ? '' : 's'}.`;
   }
 
   async function refresh() {
@@ -109,13 +129,13 @@
       return;
     }
     if (!state) return;
-    renderMode(state.mode, state.pcvrConnected);
+    renderMode(state.pcvrOn);
     $('ask').checked = state.askBeforeLaunch;
     renderRecents();
     renderLibrary();
   }
 
-  // Up/Down move between rows in a list, so a long library is usable from the keyboard.
+  // Up/Down move between rows, so the picker works from the keyboard alone.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { api.close(); return; }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -124,7 +144,7 @@
     const i = items.indexOf(document.activeElement);
     const next = e.key === 'ArrowDown'
       ? items[Math.min(i + 1, items.length - 1)]
-      : i <= 0 ? (document.activeElement === $('filter') ? items[0] : $('filter')) : items[i - 1];
+      : i <= 0 ? $('filter') : items[i - 1];
     if (next) { e.preventDefault(); next.focus(); }
   });
   $('filter').addEventListener('input', renderLibrary);
@@ -138,13 +158,7 @@
   $('ask').addEventListener('change', async (e) => {
     $('ask').checked = await api.setAskBeforeLaunch(e.target.checked);
   });
-  api.onMode(({ mode, pcvrConnected }) => {
-    if (!state) return;
-    state.mode = mode;
-    state.pcvrConnected = pcvrConnected;
-    renderMode(mode, pcvrConnected);
-    renderLibrary();
-  });
+  api.onMode(({ pcvrOn }) => { if (state) { state.pcvrOn = pcvrOn; renderMode(pcvrOn); } });
   api.onRefresh(refresh);
 
   $('browse').focus();

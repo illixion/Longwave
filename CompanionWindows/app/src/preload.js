@@ -18,15 +18,20 @@ contextBridge.exposeInMainWorld('hotspot', {
   // Reclaim the encoder and the OpenVR runtime: stops Sunshine and SteamVR, never OBS.
   foveatedStopConflicts: () => ipcRenderer.invoke('rpc', 'FoveatedStopConflicts'),
 
-  // Game library. Curation is local-only by design: the headset receives the exposed subset and
-  // has no way to browse this PC, so picking a file goes through the OS dialog below.
-  gamesList: () => ipcRenderer.invoke('rpc', 'GamesList'),
-  gamesSetExposed: (ids) => ipcRenderer.invoke('rpc', 'GamesSetExposed', { ids }),
-  gamesSetOptimized: (id, enabled) => ipcRenderer.invoke('rpc', 'GamesSetOptimized', { id, enabled }),
-  gamesAddCustom: (params) => ipcRenderer.invoke('rpc', 'GamesAddCustom', params),
-  gamesRemoveCustom: (id) => ipcRenderer.invoke('rpc', 'GamesRemoveCustom', { id }),
-  gamesLaunch: (id) => ipcRenderer.invoke('rpc', 'GamesLaunch', { id }),
-  pickExecutable: () => ipcRenderer.invoke('pick-executable'),
+  // Game library — public, VR and flat (the backend's Library* RPCs). Curation is local-only by
+  // design: the headset receives the exposed, VR-capable subset and has no way to browse this PC,
+  // so adding a game goes through the OS dialog (libraryAdd) in the main process.
+  libraryList: (refresh = false) => ipcRenderer.invoke('rpc', 'LibraryList', { refresh }),
+  librarySetExposed: (ids) => ipcRenderer.invoke('rpc', 'LibrarySetExposed', { ids }),
+  librarySetOptimized: (id, enabled) => ipcRenderer.invoke('rpc', 'LibrarySetOptimized', { id, enabled }),
+  // kind: 'vr' | 'flat' | 'both', or null to go back to what Steam says.
+  librarySetKind: (id, kind) => ipcRenderer.invoke('rpc', 'LibrarySetKind', { id, kind }),
+  libraryRemoveCustom: (id) => ipcRenderer.invoke('rpc', 'LibraryRemoveCustom', { id }),
+  libraryLaunch: (id) => ipcRenderer.invoke('library-launch', id),
+  libraryCreateShortcut: (id) => ipcRenderer.invoke('library-create-shortcut', id),
+  libraryAdd: () => ipcRenderer.invoke('library-add'),
+  libraryAskBeforeLaunch: () => ipcRenderer.invoke('library-ask-state'),
+  librarySetAskBeforeLaunch: (ask) => ipcRenderer.invoke('launcher-set-ask', ask),
   // Returns a data: URL (the CSP permits data: but not file:), or null when there is no art.
   gameArt: (artPath) => ipcRenderer.invoke('game-art', artPath),
 

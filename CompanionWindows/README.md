@@ -369,32 +369,53 @@ type works unchanged against a Windows host:
 Requires Windows 10 2004+ for Windows.Graphics.Capture and a hardware HEVC encoder
 (NVIDIA/Intel/AMD — there is no software fallback yet).
 
+## Games
+
+The **Games** tab is the Companion's game library: every game on this PC, VR and desktop alike.
+It is public code (the backend's `Games/` folder, the `Library*` RPCs on the public pipe) and works
+with or without the PCVR component.
+
+- **What is in it.** Every installed Steam game, found through `libraryfolders.vdf` and each
+  library's `appmanifest_*.acf` (SteamVR and the redistributables are left out), plus anything you
+  add with **Add a game…** (a program or a shortcut to one; you say whether it is played in VR or
+  on the desktop, and the entry runs exactly that program with exactly those arguments). Each
+  title has a **kind** — VR, desktop, or both — read from Steam's `appinfo.vdf` (VR-only titles,
+  VR launch options next to desktop ones); change it in the title's panel if Steam is wrong.
+- **Views.** **Grid** shows box art and is the default when most of the library is VR;
+  **List** shows name, kind, last played and size. Search, sort (name, last played, size, kind)
+  and filter (All / VR / Desktop). Both views draw only the rows on screen, so a library of
+  thousands of titles scrolls smoothly. The view and sort are remembered.
+- **Per title:** **Launch**, **Create desktop shortcut**, the kind, **Show on headset** (VR titles
+  only: what the PCVR game gallery on Vision Pro offers), **Optimised launch** where Longwave has a
+  tuned profile for the title (Half-Life: Alyx today), and **Remove** for titles you added.
+- **Where it is kept.** `%APPDATA%\longwave-windows-companion\game-library.json`. On first start
+  the library imports the PCVR component's old `C:\dev\Longwave-companion\game-library.json`
+  (titles you added, what the headset can see, profile choices) and leaves that file alone.
+- **Diagnostics.** `LongwaveCompanionBackend.exe --steam-launches [appid]` prints each Steam
+  title's kind and the VR and desktop launch entries it would use. `LONGWAVE_LIBRARY_SYNTHETIC=<n>`
+  in the backend's environment adds `n` fake, unlaunchable titles, for trying the tab with a
+  large library.
+
+**How a game starts.** Never elevated: the Companion runs as you and starts the game directly, so
+a program that demands administrator rights fails with a message rather than a UAC prompt. A
+Steam game starts from its own launch entry in `appinfo.vdf` with `SteamAppId`/`SteamGameId` set,
+after starting Steam (unelevated, `-silent`) if it isn't running, so Steam's DRM doesn't quit it
+and relaunch it through Steam. A **desktop** title always starts on the desktop. A **VR** or
+**both** title starts in VR through the PCVR component while a PCVR session is on; while one is
+still starting, the launch waits up to a minute for the headset and otherwise starts on the
+desktop, with a notification saying so. With no PCVR session it starts on the desktop (a VR-only
+title then starts the way Steam's Play button would).
+
 ## Launch game…
 
-The tray icon's menu has **Launch game…**, which starts a game through Longwave. It opens a
-small picker:
-
-- **Browse for a game…** — the main path. Any program (`.exe`), shortcut (`.lnk`) or internet
-  shortcut (`.url`), with or without the PCVR component installed. A program inside a Steam
-  library (`…\steamapps\common\<game>\…`) is matched to its Steam app through the library's
-  `appmanifest_*.acf` and started with `SteamAppId`/`SteamGameId` set, after starting Steam
-  (unelevated, `-silent`) if it isn't running, so Steam's DRM doesn't quit it and relaunch it
-  through Steam. Anything else starts as it is, in its own folder. A `.lnk` to a program is
-  resolved and started the same way, with its arguments; a `.url` opens through its scheme's
-  handler (Steam, Epic, …); `file:` URLs are refused.
-- **PCVR library** — shown when the PCVR component is running: its titles, marked when an
-  optimised launch profile applies. A browsed program that belongs to a library title, or a
-  `steam://rungameid/<id>` shortcut for one, is launched as that title.
-- **Recent** — the last few launches, each with a **Shortcut** button that adds a
-  desktop shortcut starting that game through Longwave (see below).
-
-**How it starts.** Never elevated: the Companion runs as you and starts the game directly, so a
-program that demands administrator rights fails with a message rather than a UAC prompt. A
-library title goes through the PCVR component (`GamesLaunch`), which applies its optimised
-profile and Steam identity. While a PCVR session is on (the PCVR tab is on or starting) it starts
-in VR; otherwise it starts on the desktop with Steam's non-VR launch entry, and is not treated as
-the PCVR game (stopping PCVR won't close it). A browsed program that is not a library title is
-always a plain desktop start.
+The tray icon's menu has **Launch game…**: a small picker with your recent games, a search over
+the whole library, and **Browse for a game…** for any program (`.exe`), shortcut (`.lnk`) or
+internet shortcut (`.url`). A browsed program that belongs to a library title is launched as that
+title — a program inside a Steam game's folder is that Steam game, with its Steam identity. One
+that isn't in the library is offered **Add to library** (as a desktop or a VR game) before it
+starts, or can be launched without adding. A `.url` to `steam://rungameid/<id>` launches that
+library title; other `.url`s open through their scheme's handler (Steam, Epic, …), and `file:`
+URLs are refused. Each recent game has a **Shortcut** button.
 
 **First use asks.** Before the first launch a box explains what launching through Longwave does,
 with **Yes / No** and **Don't ask again**. No starts nothing. Only Yes with the box ticked is
@@ -403,18 +424,21 @@ tick **Ask before launching games** at the bottom of the picker, or delete that 
 live beside it in `launch-recents.json`.
 
 **From a shortcut or the command line.** The Companion exe takes a game, so a desktop shortcut
-can start a game through Longwave:
+can start one through Longwave:
 
 ```
+"Longwave Companion.exe" --launch-title steam:546560
 "Longwave Companion.exe" --launch "D:\Games\Foo\foo.exe"
 "Longwave Companion.exe" "D:\Games\Foo\foo.exe"
 ```
 
-The bare form is what Windows passes when a game is dropped onto the exe or its shortcut. Only an
-existing `.exe`, `.lnk` or `.url` counts as a game; switches are ignored. It does exactly what
-Browse does, without the picker and without bringing the window forward (only the consent box or
-an error shows). If the Companion is already running, the new process hands the game to it and
-exits. If not, it starts in the tray, waits up to 10 s for the PCVR component to connect, and then
+**Create desktop shortcut** writes the first form for a library title and the second for any
+other file, with the game's name and icon. The bare form is what Windows passes when a game is
+dropped onto the exe or its shortcut. Only an existing `.exe`, `.lnk` or `.url` counts as a game;
+switches are ignored. A path is resolved against the library first and otherwise started as it
+is (no "Add to library" question on the command line). Nothing comes forward but the consent box
+or an error. If the Companion is already running, the new process hands the game to it and exits;
+if not, it starts in the tray, waits up to 10 s for its backend and the PCVR component, and then
 launches with whatever connected.
 
 ## Behavior notes

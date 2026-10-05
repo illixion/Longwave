@@ -9,8 +9,12 @@ const path = require('path');
 // history but nothing initializes/builds it there), so hasPcvrHost is false and the CI
 // installer is exactly what it always was: hotspot + native streaming, nothing closed-source.
 // A local build with the submodule checked out and published picks it up automatically.
+// The submodule sits at the repository root, two levels up from this app directory (not one:
+// CompanionWindows/Longwave-PCVR-Host does not exist, so this check was always false and a local
+// build silently left the host out).
+const pcvrHostRoot = path.join(__dirname, '..', '..', 'Longwave-PCVR-Host');
 const pcvrHostPublish = path.join(
-  __dirname, '..', 'Longwave-PCVR-Host', 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish');
+  pcvrHostRoot, 'bin', 'Release', 'net8.0-windows10.0.22621.0', 'publish');
 const hasPcvrHost = fs.existsSync(pcvrHostPublish);
 
 const extraResources = [
@@ -31,7 +35,7 @@ const extraResources = [
 
 if (hasPcvrHost) {
   extraResources.push({
-    from: '../Longwave-PCVR-Host/bin/Release/net8.0-windows10.0.22621.0/publish',
+    from: pcvrHostPublish,
     to: 'pcvr-host',
     filter: ['**/*'],
   });
@@ -41,7 +45,7 @@ if (hasPcvrHost) {
   // gap that fix documents. Gated on hasPcvrHost like the binaries, so CI (which never
   // initialises the submodule) still stages nothing closed-source.
   extraResources.push({
-    from: '../Longwave-PCVR-Host/ui',
+    from: path.join(pcvrHostRoot, 'ui'),
     to: 'pcvr-host/ui',
     filter: ['**/*'],
   });

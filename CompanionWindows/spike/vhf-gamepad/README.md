@@ -9,16 +9,17 @@ evaluation or off; with Smart App Control on, not reliably** — Windows ignores
 the local certificate there and judges each file by Microsoft's cloud
 reputation, which blocked our feeder tool in one of two fresh builds. **On Windows
 11 bare metal with Memory Integrity (HVCI) on, built on the machine itself: yes,
-HVCI changes nothing**, but putting the PC to sleep while pads were being created
-and destroyed blue-screened it (0x9F in Microsoft's `vhf.sys`), which is an open
-risk. Results are at the end.
+HVCI changes nothing.** Sleep needed a fix: the first driver blue-screened the PC
+(0x9F in Microsoft's `vhf.sys`) whenever it went to sleep with a pad present.
+The driver now deletes its pads before `vhf.sys` powers down, and the feeder
+recreates them after resume (see "Sleep and power"). Results are at the end.
 
 ## What it is, in plain Windows terms
 
 - **A user-mode driver (UMDF2).** It's a DLL that Windows loads into
   `WUDFHost.exe`, an ordinary process. If it crashes, that process restarts; our
-  code can't blue-screen the PC. (The kernel stack it drives can: see the sleep
-  crash in the Windows 11 bare-metal results.) Only *kernel* drivers need
+  code can't blue-screen the PC. (The kernel stack it drives can, and did, when
+  the PC slept with a pad present: see "Sleep and power".) Only *kernel* drivers need
   Microsoft's signature, so a user-mode driver is what makes "no paid
   certificate" possible at all.
 - **On the inbox Virtual HID Framework (VHF).** `vhf.sys` and `VhfUm.dll` ship
@@ -76,17 +77,18 @@ a package onto a machine for the first time.
 ## Layout
 
 ```
-driver/driver.cpp                 the UMDF2/VHF driver (~600 lines; Xbox Series + DualSense)
+driver/driver.cpp                 the UMDF2/VHF driver (~1,000 lines; Xbox Series + DualSense)
 driver/LongwaveVirtualGamepad.inf the package description (Win10 and Win11 sections)
 include/lwpad.h                   our interface GUID, hardware ID, stats IOCTL
 tools/lwpad-devnode.cpp           create/remove/status of the root device node
 tools/lwpad_client.h              feeder-side client (what lw_gamepad_* would wrap)
-tools/lwpad-test.cpp              XInput / Windows.Gaming.Input / kill / cycle tests
+tools/lwpad-test.cpp              XInput / Windows.Gaming.Input / kill / cycle / sleep tests
 tools/lwpad-sdltest.cpp           SDL3 tests (Xbox; DualSense gyro, rumble, lightbar)
 vendor/libvirtualgamepad/         MIT, unchanged: wire protocol + report encoders
 build.ps1                         build everything, assemble build\kit
 install.ps1 / uninstall.ps1       see above (inbox PowerShell only)
 run-gamepad-spike.ps1             baseline + install + tests + uninstall -> results\*.log
+run-sleep-test.ps1                one real sleep (S3) with pads idle/churning, wake timer, checks -> results\*.log
 vm/New-Win11TestVM.ps1            Hyper-V host: stock Windows 11 VM, unattended (+ autounattend.template.xml)
 vm/Run-KitInVM.ps1                Hyper-V host: run the kit in that VM's desktop, reboot, run again, fetch logs
 evidence/                         result logs worth keeping (Windows 10 PC, Windows 11 VM and bare metal)
@@ -149,6 +151,15 @@ the same in a Hyper-V VM (see "VM caveats").
 
 To test without the reboot step, run once without switches: it installs, tests
 and uninstalls. To remove everything by hand: `.\uninstall.ps1`.
+
+**Sleep test** (the PC really sleeps, ~1.5 minutes per run): with the driver
+installed (`-KeepInstalled`), run
+`powershell -ExecutionPolicy Bypass -File .\run-sleep-test.ps1 -Mode idle` (or
+`none`, `churn`, `aware`). It needs S3 and wake timers enabled (both checked),
+and a timer wakes the PC after 45 s. After the wake the session is locked until
+someone signs in, and XInput reads zeros while it is, so those checks report
+SKIP. To keep the sleep from cutting off an SSH session, start it from a
+scheduled task.
 
 **The Windows 11 VM, end to end from the Hyper-V host** (elevated Windows
 PowerShell on the host; nothing on the host changes beyond the VM's files):
@@ -388,24 +399,27 @@ there.
   store, CNG key or task. Early in that boot Kernel-PnP logged event 219 once
   ("`\Driver\WUDFRd` failed to load", 0xC0000365) for our node, which then
   started normally.
-- **Sleep while pads are being created and destroyed blue-screens the PC.** On
-  the first attempt, someone at the PC chose Sleep from the Start menu (System
+- **Sleep with a pad present blue-screened the PC (first driver; fixed since).**
+  On the first attempt, someone at the PC chose Sleep from the Start menu (System
   log: `winlogon.exe` called `SetSuspendState`) while the 250-cycle
-  create/destroy test was running. The system-sleep D3 `IRP_MN_SET_POWER` for
-  `ROOT\LONGWAVEVIRTUALGAMEPAD\0000` went through our filter (`WudfRd`) and was
-  held pending by Microsoft's `vhf.sys` (10.0.26100.8972). Five minutes later the
-  power watchdog bugchecked: **0x9F, subcode 3** (bucket
-  `0x9F_3_POWER_DOWN_IMAGE_ntkrnlmp`). After the crash the device node and the
-  DLL copy were gone, as in the VM's hard reset, but the package and the
-  certificate remained, and `uninstall.ps1` removed them cleanly. Our user-mode
-  code didn't crash. The kernel stack it drives couldn't finish a power
-  transition while pad add/remove was in flight. Why exactly isn't visible in a
-  triage minidump.
+  create/destroy test was running. Five minutes later the power watchdog
+  bugchecked: **0x9F, subcode 3** (`0x9F_3_POWER_DOWN_IMAGE_ntkrnlmp`), with
+  Microsoft's `vhf.sys` (10.0.26100.8972) holding the D3 IRP of
+  `ROOT\LONGWAVEVIRTUALGAMEPAD\0000`. After the crash the device node and the DLL
+  copy were gone, as in the VM's hard reset, but the package and the certificate
+  remained, and `uninstall.ps1` removed them cleanly. The cause, the fix and the
+  sleep tests are in "Sleep and power" below: any pad that exists when the PC
+  sleeps is enough, churn or not.
 - First attempt only: **XInput input read zeros** (26 FAIL, and SDL's Xbox input
-  too) while the slot appeared and rumble arrived. It didn't come back in the
-  repeat run, after the reboot, over SSH (session 0), from a background desktop
-  process, or with the monitor switched off. Unexplained. It may be related to
-  the sleep that came a minute later.
+  too) while the slot appeared and rumble arrived. **Explained since:** Windows
+  gives XInput all-zero readings while the console session is **locked**
+  (lock screen up), for every process, while slots and rumble keep working.
+  The display had timed out and the session locked; the System log shows the
+  user waking the display (Kernel-Power 566 `UserDisplayBurst`) a minute before
+  choosing Sleep. Reproduced on purpose after a wake from sleep (the session
+  locks then): zeros while locked, exact values before. The zeros are also why
+  the cycle test was still running a minute later (each cycle's input check
+  timed out after 1 s), so it was mid-run when Sleep was chosen.
 - **Windows.Gaming.Input unelevated passes whenever its window gets the
   foreground:** input, vibration and impulse triggers, 3 of 3 standalone, 4 of 4
   nested under an elevated parent as the kit does it, and the counted run after
@@ -424,12 +438,111 @@ there.
 - New here: HVCI on (no effect), a real S3 sleep (the VM never slept), and the
   elevated WGI input failure. Same as the VM: SAC evaluation logs nothing for
   our files.
-- **Open: sleep.** Not yet known: whether sleep with pads present but idle is
-  safe, and whether a driver change avoids the hang. One option is to refuse or
-  defer create/destroy while a power-down is pending; another is to not wait in
-  `VhfDelete`. The Longwave host creates pads when a session starts and destroys
-  them when it ends, so a PC put to sleep at that moment is a realistic case. It
-  needs a deliberate sleep test (S3, then Wake-on-LAN) before this ships.
+- **Sleep: fixed**, see below.
+
+## Sleep and power (Windows 11 bare metal, 2026-10-05)
+
+Log: `evidence/win11-baremetal-sleep-2026-10-05.log` (dump analysis, every run).
+gaming-pc has S3 sleep only (no Modern Standby), so "sleep" here is S3.
+
+### What went wrong
+
+**Any pad that exists when the PC goes to sleep hangs the sleep, and five minutes
+later the PC blue-screens** (0x9F, subcode 3, `vhf.sys`). Creating or destroying
+pads has nothing to do with it; two idle pads are enough. The live kernel dump
+of the first crash shows the chain:
+
+1. For each pad, Microsoft's `VhfUm.dll` (the user-mode side of VHF, loaded in
+   our `WUDFHost.exe`) keeps one IOCTL waiting in `vhf.sys`: a "pull request
+   notify", the channel for rumble and feature requests coming from games.
+2. `vhf.sys` (a KMDF driver, and the power policy owner of our device) receives
+   it through a power-managed queue and holds it until a game sends an output
+   report. It never releases it on power-down, and that queue has no
+   `EvtIoStop`.
+3. WDF won't take a device out of D0 while a request from a power-managed queue
+   is still outstanding. So `vhf.sys` never finishes its D3, and the power
+   manager's watchdog bugchecks the PC.
+
+Our driver didn't hold anything up: it had already passed the power IRP down.
+It just let pads exist when `vhf.sys` powered down. libvirtualgamepad and
+Vibeshine, where the design came from, have the same exposure: no power
+handling, and the same power-managed filter queue.
+
+### The design now
+
+- **No pad outlives D0.** The driver's `EvtDeviceD0Exit` deletes every pad.
+  Windows calls it on every way out of the working state (sleep, hibernate,
+  shutdown, disable, removal), and it runs *before* the power IRP reaches
+  `vhf.sys`. That frees the waiting request: `VhfDelete` cancels it, and
+  `vhf.sys` handles the delete directly instead of through its stopped queue.
+  Nothing in it waits for PnP, which is frozen during a power transition (both
+  from the disassembly, see the log). The HID children are removed when PnP
+  runs again, after resume.
+- **The feeder can tell, and recreates.** A pad deleted this way keeps its
+  owner. That feeder's next request for it fails with **`ERROR_DEVICE_REMOVED`
+  (1617)**. It then sends destroy (which succeeds and releases the slot) and
+  create again. While the device is out of D0, every create or input request
+  fails at once with `ERROR_NOT_READY` (21) instead of waiting out the sleep.
+  The stats IOCTL counts these deletions (`pads_lost_to_power`).
+- **The driver's queue is no longer power-managed.** WDF's docs say a driver
+  above the power policy owner must not use one. Power is handled explicitly
+  instead: D0Exit and every VHF call take the same lock, so a create in flight
+  finishes before D0Exit deletes it.
+- **Create waits for the old child to go.** `VhfDelete` returns once `vhf.sys`
+  has marked the child missing, and PnP removes it moments later, or only after
+  resume if the delete happened during a sleep. Before creating a pad, the
+  driver waits (at most 2 s, then `ERROR_BUSY`) until no HID device ending in
+  `&LongwavePad<n>` is present. That way two children with the same instance ID
+  never coexist. This is a precaution; it was never observed to break.
+- **Host side, as a second line of defence:** a host can register
+  `PowerRegisterSuspendResumeNotification`, destroy its pads on
+  `PBT_APMSUSPEND` and recreate them on `PBT_APMRESUMEAUTOMATIC`
+  (`lwpad-test sleep aware` does exactly this). That makes the driver's deletion
+  a no-op. Windows only allows about 2 s for the notification, and it isn't
+  guaranteed in every path, so the driver can't rely on it. Recreating on
+  `ERROR_DEVICE_REMOVED` is what the host *must* do.
+
+### Results
+
+`run-sleep-test.ps1 -Mode <m>`: real S3 sleep, woken by a 45 s timer. Rows are
+in the order run. "Before" is the driver up to commit 8cb1120; "after" is this
+version.
+
+| mode | pads during the sleep | before fix | after fix |
+|---|---|---|---|
+| none | none, driver installed | OK | OK |
+| idle | Xbox + DualSense, left alone | **hang, 0x9F_3 after 5 min** | OK, twice. Both pads `ERROR_DEVICE_REMOVED`, recreated 2-8 ms after resume |
+| churn | idle pads + a 3rd pad created/destroyed ~70 times/s | not run (idle already hangs) | OK, twice (204 and 217 cycles across the sleep) |
+| aware | churn, plus the feeder's own suspend handling | not run | OK, twice. Pads destroyed in 0.7-16 ms before the sleep; the driver had none left to delete |
+
+After every fixed run: no dump, the device node OK, the same `WUDFHost.exe`
+process (the driver host never restarted), and new pads appear in XInput within
+6-14 ms.
+
+The standard `run-gamepad-spike.ps1` suite on the fixed driver, in the
+desktop session: **57 PASS 0 FAIL 0 SKIP**, then a clean uninstall. The 250
+create/destroy cycles still average 9 ms (worst 12 ms), so waiting for the old
+child costs nothing measurable. The log is section F of the evidence file.
+
+Two things learned along the way:
+
+- **XInput reads all zeros while the console session is locked**, for every
+  process. Slots appear and rumble works, but input is blanked. After a wake
+  the session is locked (sign-in on wake), so the sleep test reports its XInput
+  checks as SKIP then, with the driver's report counter as evidence that the
+  HID stack keeps reading. This also explains the first bare-metal run's
+  XInput FAILs. For Longwave it means a pad is useless in a locked session
+  regardless of the driver, as it is for a physical pad.
+- **The second deliberate crash didn't restart by itself** (the first did, in
+  ~40 s). The PC stayed off the network, Wake-on-LAN didn't reach it, and
+  someone had to power it on. `CrashControl\AutoReboot` was 1. A crash during
+  a half-finished S3 is a bad state to recover from: one more reason the hang
+  had to go.
+
+Not tested: hibernate (S4), Fast Startup shutdown, Modern Standby (S0ix)
+machines. The deletion happens on every D0Exit, so S4 and shutdown go through
+the same path. On Modern Standby a plain "sleep" doesn't power the device down
+at all, so the pads simply stay up. That is inferred, not measured.
 
 ## Licences
 

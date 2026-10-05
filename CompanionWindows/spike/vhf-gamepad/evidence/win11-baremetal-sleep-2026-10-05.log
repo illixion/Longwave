@@ -1,0 +1,854 @@
+Longwave vhf-gamepad kit: sleep (S3) on Windows 11 bare metal (gaming-pc), 2026-10-05
+================================================================================
+Machine: gaming-pc hardware (Ryzen 5 5600X, RTX 3080, MSI B550M), Windows 11 Pro 26H2 build 26300,
+host DESKTOP-M0A8FO0, HVCI on, SAC evaluation, Secure Boot on. Times are the PC's local clock (UTC-7).
+Sleep states (powercfg /a): Standby (S3), Hibernate, Fast Startup. No S0 Low Power Idle (Modern Standby),
+so "sleep" is S3. Wake timers allowed on AC. CrashControl\AutoReboot = 1 (unchanged).
+Driven over SSH; each sleep test ran from a one-shot SYSTEM scheduled task (run-sleep-test.ps1 ->
+lwpad-test sleep <mode> 45): the test arms a resume-capable waitable timer for 45 s, calls
+SetSuspendState(sleep), and writes every line through to disk as it goes.
+
+Sections:
+  A. Root cause, from the live kernel dump of the first crash (ResourceTimeout-20261005-0455.dmp)
+  B. Before the fix (driver as of 8cb1120): none = OK, idle = 0x9F bugcheck
+  C. After the fix (DriverVer 0.1.0.7001): none, idle x2, churn x2, aware x2 = 0 FAIL
+  D. XInput zeros while the console session is locked
+  E. Raw logs (B and C above)
+  F. Standard suite (run-gamepad-spike.ps1) on the fixed driver: 57 PASS 0 FAIL 0 SKIP
+
+Summary
+  mode   pads during the sleep                          before fix            after fix
+  none   none (driver installed)                        OK                    OK
+  idle   Xbox + DualSense, created then left alone      HANG -> 0x9F_3 (5 min) OK x2, both pads ERROR_DEVICE_REMOVED, recreated 2-8 ms after resume
+  churn  idle pads + 3rd pad create/destroy ~70/s       not run (idle already hangs; churn always has a pad) OK x2 (204, 217 cycles across the sleep)
+  aware  churn, plus the feeder destroys its pads on
+         PBT_APMSUSPEND and recreates after resume       -                     OK x2 (destroyed in 0.7-16 ms; driver had nothing left to delete)
+
+############ A. Root cause (cdb 10.0.26100.6584 on the 1.4 GB live dump taken 3 min into the hung sleep)
+!poaction: Action Sleep, Lightest State Sleeping3, Irp minor SetPower. Pending power IRPs for PDO
+  ffffbe02aabe75a0 (ROOT\LONGWAVEVIRTUALGAMEPAD\0000): set/S3 and set/D3, both CURRENT at \Driver\vhf.
+Thread ffffbe02adefc040 (System), the D3 IRP being processed in vhf.sys's KMDF FDO, blocked:
+    nt!KeWaitForSingleObject
+    Wdf01000!FxIoQueue::StopProcessingForPower+0xf6
+    Wdf01000!FxPkgIo::StopProcessingForPower+0x12f
+    Wdf01000!FxPkgPnp::PowerGotoDx+0x2a
+    ...
+    Wdf01000!FxPkgFdo::DispatchDeviceSetPower+0x7c
+    nt!IopPoHandleIrp / IofCallDriver
+    WUDFRd!RdPnpTracker::RdPnpForwardToLowerDevice+0x80       (our UMDF filter had already passed it down)
+!wdfdevice (vhf FDO): Power state WdfDevStatePowerGotoDx, PwrPol SleepingNoWakePowerDown, power policy owner,
+  pended device power irp (D3) and system power irp (S3). The HID child PDO had already reached WdfDevStatePowerDx.
+!wdfqueue 0x000041fd521095e8 (vhf FDO default queue): Parallel, Power-managed, PowerStoppingDriverNotified,
+  "Number of driver owned requests: 1 ... cancelable ... !irp 0xffffbe02b0819ba0", EvtIoDeviceControl
+  vhf!FDO_EvtIoDeviceControl, NO EvtIoStop.
+!irp ffffbe02b0819ba0: IRP_MJ_DEVICE_CONTROL 0xb0336, pending in \Driver\vhf, issued by our WUDFHost.exe thread
+  2ba4.19dc (start address in \Windows\System32\VhfUm.dll = VhfUm!VhfaAsyncIoctl::WorkerThread), which waits on
+  2 objects (the IOCTL's event and its stop event).
+Disassembly: FDO_EvtIoDeviceControl routes 0xB0336 to vhf!PDO_PullRequestNotify -> PullRequestLoop_ProcessNotifyRequest,
+  which, when no HID output/feature request is waiting, calls WdfRequestMarkCancelableEx and keeps the request. It is
+  completed only when a HID pull request arrives (PullRequestLoop_HidPullRequestQueueReadyNotification) or when it is
+  cancelled (STATUS_CANCELLED). Nothing completes it on power-down. => every live pad parks one such request, so
+  vhf.sys's D3 can never finish while a pad exists: 0x9F_3 after the 5-minute watchdog.
+Our own queue (sequential, power-managed) held only lwpad-test's destroy IOCTL (0x22e008), not yet dispatched.
+Why deleting pads in our EvtDeviceD0Exit is safe (also from the disassembly):
+  VhfUm!VhfDelete -> VhfaPump::Stop for both pumps (sets the stop event; the worker calls CancelIoEx on its pending
+  IOCTL, vhf completes it as cancelled) -> VhfaDevice::SendDeleteIoctl. vhf.sys handles the delete in
+  FDO_EvtIoInCallerContext -> FDO_DeleteVhfDevice -> WdfPdoMarkMissing, i.e. in the caller's context, not through
+  its power-managed queue, and without waiting for PnP to remove the child.
+vhf.sys 10.0.26100.8972, WUDFRd.sys 10.0.26100.9444.
+
+############ B. Before the fix (unfixed driver, built from 8cb1120 driver.cpp, DriverVer 0.1.0.6018)
+
+Note on B-idle: the log ends at PBT_APMSUSPEND because the PC never finished going to sleep. SSH still answered
+2 minutes in (user mode keeps running during the device phase); pads and device node showed OK. At 06:03:59 (5 min
+after SetSuspendState) the PC bugchecked: WER 1001 "0x0000009f (0x3, 0xffffba83df263cc0, 0xfffff806303fe650,
+0xffffba83dc20a010)", minidump 100526-37000-01.dmp: DRVPOWERSTATE_SUBCODE 3, FAULTING_MODULE vhf,
+FAILURE_BUCKET_ID 0x9F_3_POWER_DOWN_IMAGE_ntkrnlmp. Unlike the first crash (04:57, rebooted by itself in ~40 s),
+this time the PC did NOT restart and did not answer Wake-on-LAN; it stayed off the LAN for ~35 minutes until the
+user powered it on (boot 06:39:33). AutoReboot was already 1, so the setting is not why. Probably the crash came
+while devices were already powered down for S3 and the reset never completed; not investigated further.
+
+---- DESKTOP-M0A8FO0-sleep-none-20261005-054853.log
+
+== Sleep test, mode none, wake after 45 s (2026-10-05T05:48:53)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.6018 built 2026-10-05T05:48:20 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 14708
+
+== lwpad-test sleep none 45
+INFO sleep test mode=none wake=45 s, started 05:48:54.512
+INFO stats[before] created=0 destroyed=0 active=0 reports=0 outputs=0 features=0 owned_closes=0 lost_to_power=0
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.013 [05:48:55.525] calling SetSuspendState(sleep)
+INFO t=1.088 [05:48:55.600] power notification PBT_APMSUSPEND (4)
+INFO t=63.434 [05:49:57.766] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=63.512 [05:49:57.845] SetSuspendState returned 1 (error 0) after 62.5 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO stats[after resume] created=0 destroyed=0 active=0 reports=0 outputs=0 features=0 owned_closes=0 lost_to_power=0
+INFO t=63.559 [05:49:57.891] power notification PBT_APMRESUMESUSPEND (7)
+FAIL sleep-fresh-pad slot=0 input=0 removed=1 buttons=0x0000 LX=0
+INFO stats[end] created=1 destroyed=1 active=0 reports=1 outputs=4 features=0 owned_closes=0 lost_to_power=0
+INFO sleep test done 05:49:58.885, 1 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 14708 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&3&LONGWAVEPAD3
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[05:48:55.527] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[05:48:55.528] Kernel-Power 566: The system session has transitioned from 1 to 3. | Reason SxTransition  | BootId: 7
+[05:48:55.739] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[05:48:57.493] Kernel-Power 107: The system has resumed from sleep.
+[05:49:56.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 1, FullResume: 1211, AverageResume: 1211
+[05:49:56.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 2339396, SuspendEnd: 2339396
+[05:49:57.766] Kernel-Power 566: The system session has transitioned from 3 to 4. | Reason SxTransition  | BootId: 7
+[05:49:57.962] Kernel-Power 566: The system session has transitioned from 4 to 6. | Reason UserDisplayBurst  | BootId: 7
+[05:49:58.865] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T12:48:55.527738700Z | Wake Time: ‎2026‎-‎10‎-‎05T12:49:57.845303700Z
+[06:42:24.565] Kernel-Power 172: Connectivity state in standby: Disconnected, Reason: NIC compliance
+[06:43:09.009] DriverFrameworks-UserMode 10000: A driver package which uses user-mode driver framework version 2.35.0 is being installed on device SWD\WPDBUSENUM\{F9648D7C-C0CA-11F1-B291-806E6F6E6963}#0000000001000000.
+[06:43:09.015] DriverFrameworks-UserMode 10001: The UMDF service WpdFs (CLSID {112de495-ac4c-46f8-b663-6a4266c53313}) was installed.  It requires framework version 2.35.0 or higher.
+[06:43:09.024] DriverFrameworks-UserMode 10100: The driver package installation has succeeded.
+[06:43:09.034] UserPnp 20003: Driver Management has concluded the process to add Service WUDFWpdFs for Device Instance ID SWD\WPDBUSENUM\{F9648D7C-C0CA-11F1-B291-806E6F6E6963}#0000000001000000 with the following status: 0.
+[06:43:09.288] DriverFrameworks-UserMode 10000: A driver package which uses user-mode driver framework version 2.35.0 is being installed on device SWD\WPDBUSENUM\_??_USBSTOR#DISK&VEN_&PROD_USB_DISK_3.0&REV_PMAP#07003265CAAD7122&0#{53F56307-B6BF-11D0-94F2-00A0C91EFB8B}
+[06:43:09.297] DriverFrameworks-UserMode 10002: The UMDF service WpdFs (CLSID {112de495-ac4c-46f8-b663-6a4266c53313}) was upgraded.  It requires framework version 2.35.0 or higher.
+[06:43:09.301] DriverFrameworks-UserMode 10100: The driver package installation has succeeded.
+[06:43:09.311] UserPnp 20003: Driver Management has concluded the process to add Service WUDFWpdFs for Device Instance ID SWD\WPDBUSENUM\_??_USBSTOR#DISK&VEN_&PROD_USB_DISK_3.0&REV_PMAP#07003265CAAD7122&0#{53F56307-B6BF-11D0-94F2-00A0C91EFB8B} with t
+[06:43:51.385] Kernel-Power 109: The kernel power manager has initiated a shutdown transition. | Action: Power Action Reboot  | Event Code: 0x0 
+[06:43:51.521] Kernel-Power 577: The system has prepared for a system initiated reboot from Active.
+[06:44:10.143] Kernel-Power 172: Connectivity state in standby: Disconnected, Reason: NIC compliance
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 5  FAIL 1   (lwpad-test exit 1, 66 s)
+   FAIL sleep-fresh-pad slot=0 input=0 removed=1 buttons=0x0000 LX=0
+Log: C:\Users\Ixion\src\vhf-gamepad-old\build\kit\results\DESKTOP-M0A8FO0-sleep-none-20261005-054853.log
+
+
+(The FAIL here is the lock screen, section D: after the wake the session was locked and XInput read zeros; this
+ run only waited 1 s. The device, driver host and sleep itself were fine.)
+
+---- DESKTOP-M0A8FO0-sleep-idle-20261005-055855.log
+
+== Sleep test, mode idle, wake after 45 s (2026-10-05T05:58:55)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.6018 built 2026-10-05T05:48:20 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 14708
+
+== lwpad-test sleep idle 45
+INFO sleep test mode=idle wake=45 s, started 05:58:58.558
+INFO stats[before] created=1 destroyed=1 active=0 reports=1 outputs=4 features=0 owned_closes=0 lost_to_power=0
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.012 [05:58:59.569] calling SetSuspendState(sleep)
+INFO t=1.054 [05:58:59.612] power notification PBT_APMSUSPEND (4)
+
+############ C. After the fix (DriverVer 0.1.0.7001, this commit), in the order run
+
+Notes: the first idle run predates the lock-screen detection, so its two XInput checks are FAILs that the later
+runs report as SKIP (section D). The first aware run's sleep-fresh-pad FAIL is a test artifact: the long-lived
+Xbox pad, recreated 1 ms after resume, took its XInput slot just as the fresh pad was created, and the test took
+that slot for the fresh pad's; fixed (the test now waits for the long-lived pad's slot first) and rerun.
+"create errors 21xN" in churn = ERROR_NOT_READY: creates refused while the device was out of D0, as designed.
+
+---- DESKTOP-M0A8FO0-sleep-idle-20261005-064159.log
+
+== Sleep test, mode idle, wake after 45 s (2026-10-05T06:41:59)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep idle 45
+INFO sleep test mode=idle wake=45 s, started 06:42:00.577
+INFO stats[before] created=1 destroyed=1 active=0 reports=28 outputs=3 features=0 owned_closes=0 lost_to_power=0
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.013 [06:42:01.590] calling SetSuspendState(sleep)
+INFO t=1.127 [06:42:01.704] power notification PBT_APMSUSPEND (4)
+INFO t=40.368 [06:42:40.763] power notification PBT_APMRESUMESUSPEND (7)
+INFO t=40.400 [06:42:40.795] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=40.496 [06:42:40.891] SetSuspendState returned 1 (error 0) after 39.5 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=2)
+INFO t=40.579 pad 0 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+INFO t=40.596 pad 1 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+PASS sleep-recover 2 long-lived pad(s) usable 8 ms after resume (1 attempt(s))
+INFO stats[after resume] created=5 destroyed=3 active=2 reports=31 outputs=3 features=0 owned_closes=0 lost_to_power=2
+INFO fresh pad: XInput slot 1 after 14 ms, input visible after 10002 ms
+INFO stats[fresh pad] created=6 destroyed=3 active=3 reports=5013 outputs=10 features=0 owned_closes=0 lost_to_power=2
+FAIL sleep-fresh-pad slot=1 input=0 removed=1 buttons=0x0000 LX=0
+FAIL sleep-xinput long-lived Xbox pad's input not seen in XInput after resume
+INFO stats[end] created=6 destroyed=6 active=0 reports=9987 outputs=12 features=0 owned_closes=0 lost_to_power=2
+INFO sleep test done 06:43:01.082, 2 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:42:01.593] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:42:01.593] Kernel-Power 566: The system session has transitioned from 0 to 1. | Reason ScreenOffGracePeriod  | BootId: 8
+[06:42:01.813] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:42:04.529] Kernel-Power 107: The system has resumed from sleep.
+[06:42:39.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 1, FullResume: 1202, AverageResume: 1202
+[06:42:39.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 165473, SuspendEnd: 165473
+[06:42:40.768] Kernel-Power 566: The system session has transitioned from 1 to 2. | Reason SxTransition  | BootId: 8
+[06:42:40.933] Kernel-Power 566: The system session has transitioned from 2 to 4. | Reason Unknown  | BootId: 8
+[06:42:41.875] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:42:01.593613900Z | Wake Time: ‎2026‎-‎10‎-‎05T13:42:40.890150000Z
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 2   (lwpad-test exit 1, 62 s)
+   FAIL sleep-fresh-pad slot=1 input=0 removed=1 buttons=0x0000 LX=0
+   FAIL sleep-xinput long-lived Xbox pad's input not seen in XInput after resume
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-idle-20261005-064159.log
+
+---- DESKTOP-M0A8FO0-sleep-churn-20261005-064621.log
+
+== Sleep test, mode churn, wake after 45 s (2026-10-05T06:46:21)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep churn 45
+INFO sleep test mode=churn wake=45 s, started 06:46:22.811; console session LOCKED
+INFO stats[before] created=7 destroyed=7 active=0 reports=9992 outputs=14 features=0 owned_closes=1 lost_to_power=2
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO t=1.010 churn running: 69 cycles in the first second
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.015 [06:46:23.823] calling SetSuspendState(sleep)
+INFO t=1.069 [06:46:23.877] power notification PBT_APMSUSPEND (4)
+INFO t=63.134 [06:47:25.763] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=63.169 [06:47:25.798] SetSuspendState returned 1 (error 0) after 62.2 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO churn: 204 cycles, create errors {code x count}: 21x376, input failures 6, destroy failures 0
+INFO t=64.192 pad 0 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+INFO t=64.195 pad 1 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+PASS sleep-recover 2 long-lived pad(s) usable 2 ms after resume (1 attempt(s))
+INFO stats[after resume] created=215 destroyed=213 active=2 reports=10199 outputs=14 features=0 owned_closes=1 lost_to_power=5
+INFO t=64.214 [06:47:26.844] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 1 after 6 ms, input visible after 10002 ms
+INFO stats[fresh pad] created=216 destroyed=213 active=3 reports=15188 outputs=20 features=0 owned_closes=1 lost_to_power=5
+SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+INFO stats[end] created=216 destroyed=216 active=0 reports=20183 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO sleep test done 06:47:46.862, 0 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:46:23.827] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:46:23.828] Kernel-Power 566: The system session has transitioned from 5 to 7. | Reason SxTransition  | BootId: 8
+[06:46:23.964] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:46:25.055] Kernel-Power 107: The system has resumed from sleep.
+[06:47:24.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 2, FullResume: 1197, AverageResume: 1200
+[06:47:24.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 391503, SuspendEnd: 391503
+[06:47:25.764] Kernel-Power 566: The system session has transitioned from 7 to 8. | Reason SxTransition  | BootId: 8
+[06:47:26.040] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:46:23.827773300Z | Wake Time: ‎2026‎-‎10‎-‎05T13:47:25.797771900Z
+[06:47:26.916] Kernel-Power 566: The system session has transitioned from 8 to 10. | Reason UserDisplayBurst  | BootId: 8
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 0  SKIP 2   (lwpad-test exit 0, 86 s)
+   SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+   SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-churn-20261005-064621.log
+
+---- DESKTOP-M0A8FO0-sleep-none-20261005-065141.log
+
+== Sleep test, mode none, wake after 45 s (2026-10-05T06:51:41)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep none 45
+INFO sleep test mode=none wake=45 s, started 06:51:41.980; console session LOCKED
+INFO stats[before] created=216 destroyed=216 active=0 reports=20183 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.015 [06:51:42.993] calling SetSuspendState(sleep)
+INFO t=1.055 [06:51:43.034] power notification PBT_APMSUSPEND (4)
+INFO t=64.023 [06:52:45.822] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=64.047 [06:52:45.845] SetSuspendState returned 1 (error 0) after 63.0 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO stats[after resume] created=216 destroyed=216 active=0 reports=20183 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO t=64.080 [06:52:45.878] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 0 after 11 ms, input visible after 10001 ms
+INFO stats[fresh pad] created=217 destroyed=216 active=1 reports=25189 outputs=20 features=0 owned_closes=1 lost_to_power=5
+SKIP sleep-fresh-pad new pad after resume: XInput slot 0 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+INFO stats[end] created=217 destroyed=217 active=0 reports=25189 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO sleep test done 06:52:55.876, 0 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:51:42.996] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:51:42.996] Kernel-Power 566: The system session has transitioned from 11 to 13. | Reason SxTransition  | BootId: 8
+[06:51:43.182] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:51:44.325] Kernel-Power 107: The system has resumed from sleep.
+[06:52:44.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 3, FullResume: 1209, AverageResume: 1203
+[06:52:44.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 651800, SuspendEnd: 651801
+[06:52:45.822] Kernel-Power 566: The system session has transitioned from 13 to 14. | Reason SxTransition  | BootId: 8
+[06:52:45.985] Kernel-Power 566: The system session has transitioned from 14 to 16. | Reason UserDisplayBurst  | BootId: 8
+[06:52:46.437] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:51:42.996427700Z | Wake Time: ‎2026‎-‎10‎-‎05T13:52:45.845838200Z
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 5  FAIL 0  SKIP 1   (lwpad-test exit 0, 75 s)
+   SKIP sleep-fresh-pad new pad after resume: XInput slot 0 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-none-20261005-065141.log
+
+---- DESKTOP-M0A8FO0-sleep-aware-20261005-065326.log
+
+== Sleep test, mode aware, wake after 45 s (2026-10-05T06:53:26)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep aware 45
+INFO sleep test mode=aware wake=45 s, started 06:53:27.480; console session LOCKED
+INFO stats[before] created=217 destroyed=217 active=0 reports=25189 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO t=1.011 churn running: 73 cycles in the first second
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.017 [06:53:28.496] calling SetSuspendState(sleep)
+INFO t=1.121 [06:53:28.601] power notification PBT_APMSUSPEND (4)
+INFO t=1.140 aware: pads destroyed before suspend in 16.2 ms
+INFO t=64.536 [06:54:31.833] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=64.569 [06:54:31.866] SetSuspendState returned 1 (error 0) after 63.5 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO churn: 146 cycles, create errors {code x count}: none, input failures 2, destroy failures 0
+PASS sleep-recover 2 long-lived pad(s) usable 1 ms after resume (1 attempt(s))
+INFO stats[after resume] created=367 destroyed=365 active=2 reports=25339 outputs=20 features=0 owned_closes=1 lost_to_power=5
+INFO t=65.601 [06:54:32.898] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 0 after 8 ms, input visible after 10001 ms
+INFO stats[fresh pad] created=368 destroyed=365 active=3 reports=30350 outputs=20 features=0 owned_closes=1 lost_to_power=5
+FAIL sleep-fresh-pad slot=0 input=0 removed=0 buttons=0x0000 LX=0
+SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+INFO stats[end] created=368 destroyed=368 active=0 reports=35351 outputs=22 features=0 owned_closes=1 lost_to_power=5
+INFO sleep test done 06:54:57.915, 1 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:53:28.511] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:53:28.512] Kernel-Power 566: The system session has transitioned from 16 to 17. | Reason UserDisplayBurst  | BootId: 8
+[06:53:28.698] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:53:29.917] Kernel-Power 107: The system has resumed from sleep.
+[06:54:30.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 4, FullResume: 1205, AverageResume: 1203
+[06:54:30.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 697688, SuspendEnd: 697689
+[06:54:31.833] Kernel-Power 566: The system session has transitioned from 17 to 18. | Reason SxTransition  | BootId: 8
+[06:54:32.152] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:53:28.511650800Z | Wake Time: ‎2026‎-‎10‎-‎05T13:54:31.866406900Z
+[06:54:32.969] Kernel-Power 566: The system session has transitioned from 18 to 20. | Reason UserDisplayBurst  | BootId: 8
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 1  SKIP 1   (lwpad-test exit 1, 91 s)
+   FAIL sleep-fresh-pad slot=0 input=0 removed=0 buttons=0x0000 LX=0
+   SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-aware-20261005-065326.log
+
+---- DESKTOP-M0A8FO0-sleep-aware-20261005-065603.log
+
+== Sleep test, mode aware, wake after 45 s (2026-10-05T06:56:03)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep aware 45
+INFO sleep test mode=aware wake=45 s, started 06:56:04.191; console session LOCKED
+INFO stats[before] created=368 destroyed=368 active=0 reports=35351 outputs=22 features=0 owned_closes=1 lost_to_power=5
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO t=1.010 churn running: 72 cycles in the first second
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.014 [06:56:05.204] calling SetSuspendState(sleep)
+INFO t=1.094 [06:56:05.284] power notification PBT_APMSUSPEND (4)
+INFO t=1.098 aware: pads destroyed before suspend in 0.7 ms
+INFO t=63.750 [06:57:07.761] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=63.845 [06:57:07.855] SetSuspendState returned 1 (error 0) after 62.8 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO churn: 142 cycles, create errors {code x count}: none, input failures 4, destroy failures 0
+PASS sleep-recover 2 long-lived pad(s) usable 1 ms after resume (1 attempt(s))
+INFO stats[after resume] created=514 destroyed=512 active=2 reports=35497 outputs=22 features=0 owned_closes=1 lost_to_power=5
+INFO t=65.089 [06:57:09.099] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 1 after 8 ms, input visible after 10001 ms
+INFO stats[fresh pad] created=515 destroyed=512 active=3 reports=40466 outputs=28 features=0 owned_closes=1 lost_to_power=5
+SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+INFO stats[end] created=515 destroyed=515 active=0 reports=45459 outputs=28 features=0 owned_closes=1 lost_to_power=5
+INFO sleep test done 06:57:29.117, 0 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:56:05.206] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:56:05.207] Kernel-Power 566: The system session has transitioned from 20 to 21. | Reason UserDisplayBurst  | BootId: 8
+[06:56:05.366] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:56:06.459] Kernel-Power 107: The system has resumed from sleep.
+[06:57:06.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 5, FullResume: 1199, AverageResume: 1203
+[06:57:06.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 794121, SuspendEnd: 794121
+[06:57:07.761] Kernel-Power 566: The system session has transitioned from 21 to 22. | Reason SxTransition  | BootId: 8
+[06:57:08.146] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:56:05.207098200Z | Wake Time: ‎2026‎-‎10‎-‎05T13:57:07.855243900Z
+[06:57:09.170] Kernel-Power 566: The system session has transitioned from 22 to 24. | Reason UserDisplayBurst  | BootId: 8
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 0  SKIP 2   (lwpad-test exit 0, 86 s)
+   SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+   SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-aware-20261005-065603.log
+
+---- DESKTOP-M0A8FO0-sleep-idle-20261005-065754.log
+
+== Sleep test, mode idle, wake after 45 s (2026-10-05T06:57:54)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep idle 45
+INFO sleep test mode=idle wake=45 s, started 06:57:55.401; console session LOCKED
+INFO stats[before] created=515 destroyed=515 active=0 reports=45459 outputs=28 features=0 owned_closes=1 lost_to_power=5
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.015 [06:57:56.415] calling SetSuspendState(sleep)
+INFO t=1.086 [06:57:56.486] power notification PBT_APMSUSPEND (4)
+INFO t=64.542 [06:58:59.763] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=64.574 [06:58:59.794] SetSuspendState returned 1 (error 0) after 63.6 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO t=64.578 pad 0 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+INFO t=64.580 pad 1 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+PASS sleep-recover 2 long-lived pad(s) usable 2 ms after resume (1 attempt(s))
+INFO stats[after resume] created=519 destroyed=517 active=2 reports=45463 outputs=28 features=0 owned_closes=1 lost_to_power=7
+INFO t=64.807 [06:59:00.027] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 1 after 8 ms, input visible after 10001 ms
+INFO stats[fresh pad] created=520 destroyed=517 active=3 reports=50459 outputs=28 features=0 owned_closes=1 lost_to_power=7
+SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+INFO stats[end] created=520 destroyed=520 active=0 reports=55452 outputs=28 features=0 owned_closes=1 lost_to_power=7
+INFO sleep test done 06:59:20.045, 0 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:57:56.418] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:57:56.418] Kernel-Power 566: The system session has transitioned from 24 to 25. | Reason UserDisplayBurst  | BootId: 8
+[06:57:56.555] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:57:57.678] Kernel-Power 107: The system has resumed from sleep.
+[06:58:58.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 6, FullResume: 1207, AverageResume: 1203
+[06:58:58.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 845769, SuspendEnd: 845769
+[06:58:59.763] Kernel-Power 566: The system session has transitioned from 25 to 26. | Reason SxTransition  | BootId: 8
+[06:59:00.097] Kernel-Power 566: The system session has transitioned from 26 to 28. | Reason UserDisplayBurst  | BootId: 8
+[06:59:00.774] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:57:56.418182900Z | Wake Time: ‎2026‎-‎10‎-‎05T13:58:59.794188000Z
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 0  SKIP 2   (lwpad-test exit 0, 85 s)
+   SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+   SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-idle-20261005-065754.log
+
+---- DESKTOP-M0A8FO0-sleep-churn-20261005-065940.log
+
+== Sleep test, mode churn, wake after 45 s (2026-10-05T06:59:40)
+OS: Microsoft Windows 11 Pro build 26300; kit: DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+(powercfg /a: S3, Hibernate, Fast Startup available; no S0 Low Power Idle)
+Allow wake timers (AC):     Current AC Power Setting Index: 0x00000001   (0 = disabled, 1 = enabled, 2 = important only)
+Device before: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK
+Driver host before: WUDFHost pid 9056
+
+== lwpad-test sleep churn 45
+INFO sleep test mode=churn wake=45 s, started 06:59:40.789; console session LOCKED
+INFO stats[before] created=520 destroyed=520 active=0 reports=55452 outputs=28 features=0 owned_closes=1 lost_to_power=7
+INFO PowerRegisterSuspendResumeNotification -> 0
+INFO t=1.010 churn running: 74 cycles in the first second
+INFO wake timer armed (SetWaitableTimer resume=TRUE, last error 0)
+INFO t=1.017 [06:59:41.804] calling SetSuspendState(sleep)
+INFO t=1.104 [06:59:41.892] power notification PBT_APMSUSPEND (4)
+INFO t=64.165 [07:00:44.773] power notification PBT_APMRESUMEAUTOMATIC (18)
+INFO t=64.195 [07:00:44.802] SetSuspendState returned 1 (error 0) after 63.2 s
+PASS sleep-cycle suspended and resumed (suspend notifications=1 resume=1)
+INFO churn: 217 cycles, create errors {code x count}: 21x355, input failures 1, destroy failures 0
+INFO t=65.219 pad 0 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+INFO t=65.221 pad 1 after resume: input refused (error=1617 ERROR_DEVICE_REMOVED (pad lost to power-down))
+PASS sleep-recover 2 long-lived pad(s) usable 2 ms after resume (1 attempt(s))
+INFO stats[after resume] created=741 destroyed=739 active=2 reports=55672 outputs=28 features=0 owned_closes=1 lost_to_power=9
+INFO t=65.440 [07:00:46.048] power notification PBT_APMRESUMESUSPEND (7)
+INFO fresh pad: XInput slot 1 after 5 ms, input visible after 10000 ms
+INFO stats[fresh pad] created=742 destroyed=739 active=3 reports=60665 outputs=32 features=0 owned_closes=1 lost_to_power=9
+SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+INFO stats[end] created=742 destroyed=742 active=0 reports=65657 outputs=34 features=0 owned_closes=1 lost_to_power=9
+INFO sleep test done 07:01:06.066, 0 failure(s)
+
+== After resume
+Device after: ROOT\LONGWAVEVIRTUALGAMEPAD\0000 status=OK problem=CM_PROB_NONE
+PASS sleep-host same WUDFHost pid 9056 (driver host did not restart)
+PASS sleep-device device node OK after resume
+-- our HID pad nodes now (present ones should be none, the test destroyed its pads):
+
+Status  Class    InstanceId                                          
+------  -----    ----------                                          
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD0
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD2
+Unknown HIDClass HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&4&LONGWAVEPAD3
+Unknown HIDClass VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&4&LONGWAVEPAD1
+-- System log since the test started (Kernel-Power, Power-Troubleshooter, PnP, bugcheck, WUDF):
+[06:59:41.807] Kernel-Power 187: User-mode process attempted to change the system state by calling SetSuspendState or SetSystemPowerState APIs.
+[06:59:41.807] Kernel-Power 566: The system session has transitioned from 28 to 29. | Reason UserDisplayBurst  | BootId: 8
+[06:59:41.969] Kernel-Power 42: The system is entering sleep. | Sleep Reason: Application API
+[06:59:43.018] Kernel-Power 107: The system has resumed from sleep.
+[07:00:43.500] Kernel-Power 131: Firmware S3 times. ResumeCount: 7, FullResume: 1200, AverageResume: 1203
+[07:00:43.500] Kernel-Power 130: Firmware S3 times. SuspendStart: 890758, SuspendEnd: 890758
+[07:00:44.773] Kernel-Power 566: The system session has transitioned from 29 to 30. | Reason SxTransition  | BootId: 8
+[07:00:45.049] Power-Troubleshooter 1: The system has returned from a low power state. | Sleep Time: ‎2026‎-‎10‎-‎05T13:59:41.807708000Z | Wake Time: ‎2026‎-‎10‎-‎05T14:00:44.802166700Z
+[07:00:46.122] Kernel-Power 566: The system session has transitioned from 30 to 32. | Reason UserDisplayBurst  | BootId: 8
+PASS sleep-events entered sleep (Kernel-Power 42) and woke (Power-Troubleshooter 1)
+PASS sleep-dumps no new live kernel dump or minidump
+
+== Summary
+PASS 6  FAIL 0  SKIP 2   (lwpad-test exit 0, 86 s)
+   SKIP sleep-fresh-pad new pad after resume: XInput slot 1 appeared and was removed, but the console session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took
+   SKIP sleep-xinput console session locked after wake; XInput reads zeros until sign-in
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-sleep-churn-20261005-065940.log
+
+
+############ D. XInput zeros while the console session is locked
+After each wake the console session is locked (LogonUI.exe running; "require sign-in on wakeup"). With no sleep
+involved, on the fixed driver, while locked:
+  PASS xinput-slot slot=0 appeared 14 ms after create
+  FAIL xinput-input A  want buttons=0x1000 ... got 0x0000 0 0 0 0 0 0      (and every other input case)
+The same check passed minutes earlier with the session unlocked (after the user signed in at 06:40). Driver-side
+counters show the HID stack keeps taking the reports (e.g. reports 25339 -> 30350 during one 10 s fresh-pad
+check), and rumble still arrives: Windows hands XInput zeros while the lock screen is up. This also explains the
+first bare-metal run's 26 XInput FAILs (display had timed out and the session was locked).
+
+############ F. Standard suite on the fixed driver (DriverVer 0.1.0.7001), desktop session, elevated
+Run 07:12 after the user signed in (session unlocked). Afterwards: no node, package, certificate, DLL or task left.
+Then (coordinator) display-off timeout AC = never and CONSOLELOCK (sign-in on wake) AC = 0 on gaming-pc.
+
+==============================================================================
+== 1. Baseline (run, 2026-10-05T07:12:08)
+==============================================================================
+OS                                     Microsoft Windows 11 Pro 26H2 build 26300.9457
+Computer                               DESKTOP-M0A8FO0  Micro-Star International Co., Ltd. / MS-7C94  hypervisor-present=True
+Session                                id 1 (0 = service session, e.g. SSH; games run in >= 1)
+Kit                                    DriverVer 0.1.0.7001 built 2026-10-05T05:58:35 on DESKTOP-M0A8FO0
+Secure Boot                            True
+Test signing (bcdedit)                 not set (off)
+nointegritychecks (bcdedit)            not set (off)
+Virtualization-based security          running
+Memory Integrity (HVCI)                RUNNING (services running: 2)
+Smart App Control (CI\Policy)          EVALUATION  [VerifiedAndReputablePolicyState=2]
+Smart App Control (Defender)           Eval
+Defender                               mode=Normal realtime=True
+Defender signatures                    1.459.561.0, 0 days old, engine 1.1.26080.3
+Defender cloud (MAPS)                  ValidateMapsConnection successfully established a connection to MAPS
+CI TestFlags (3090 allow events)       not set
+Windows activation                     licensed
+Inbox System32\drivers\vhf.sys         10.0.26100.8972 (WinBuild.160101.0800)
+Inbox System32\VhfUm.dll               10.0.26100.1 (WinBuild.160101.0800)
+Inbox System32\WUDFHost.exe            10.0.26100.8521 (WinBuild.160101.0800)
+Inbox System32\drivers\WUDFRd.sys      10.0.26100.9444 (WinBuild.160101.0800)
+Inbox hidvhf.inf                       present
+Inbox xinputhid.inf                    present
+Inbox WUDFRD.inf                       present
+ViGEmBus present                       False
+XInput slots in use before             not probed (kit binaries are unsigned until install.ps1 signs them)
+
+==============================================================================
+== 2. Install (no paid certificate, no test signing)
+==============================================================================
+== creating a one-off code-signing certificate (key is non-exportable)
+   subject   : CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+   thumbprint: 5FC52869A0C02095A07AB6D3DF117CEE48A50386  valid until 10/02/2036 07:12:22
+   key file  : C:\ProgramData\Microsoft\Crypto\Keys\1780ba8ab99d329a5416f969efc87fcc_335a0e28-176d-4d93-9cab-8d8ac8b0e8e3 (exists: True)
+== signing the catalog, the driver DLL and the kit's tools
+   signed LongwaveVirtualGamepad.cat
+   signed LongwaveVirtualGamepad.dll
+   signed lwpad-devnode.exe
+   signed lwpad-sdltest.exe
+   signed lwpad-test.exe
+== trusting the public certificate (LocalMachine\Root + LocalMachine\TrustedPublisher)
+   all signatures verify as Valid
+== destroying the private key
+   verified: no certificate with a private key, key file gone, key cannot be opened
+== staging the driver package (pnputil /add-driver)
+Microsoft PnP Utility
+
+Adding driver package:  LongwaveVirtualGamepad.inf
+Driver package added successfully.
+Published Name:         oem8.inf
+
+Total driver packages:  1
+Added driver packages:  1
+   published as oem8.inf
+== creating the device node and installing the driver on it
+node created
+driver installed on node
+== installed; driver is running
+node ROOT\LONGWAVEVIRTUALGAMEPAD\0000: started=1 problem=0 (0 = working)
+install.ps1 exit code                  0  (12 s)
+-- setupapi.dev.log (Windows' own install log), signature-related lines:
+>>>  [Driver Install (DrvSetupInstallDriver) - C:\Users\Ixion\src\vhf-gamepad-new\build\kit\driver\LongwaveVirtualGamepad.inf]
+>>>  Section start 2026/10/05 07:12:22.818
+     inf:           Driver Version = 10/05/2026,0.1.0.7001
+     sig:                Driver package catalog is valid.
+!    sig:                     Verifying file against specific (valid) catalog failed.
+!    sig:                     Error 0x800b0109: A certificate chain processed, but terminated in a root certificate which is not trusted by the trust provider.
+     sig:                     Success: File is signed in Authenticode(tm) catalog.
+     sig:                     Error 0xe0000241: The INF was signed with an Authenticode(tm) catalog from a trusted publisher.
+     sig:           Signer Score  = 0x0F000000 (Authenticode)
+     sig:           Signer Name   = Longwave Virtual Gamepad local signer
+     dvs:           Driver Version - 10/05/2026,0.1.0.7001
+<<<  Section end 2026/10/05 07:12:23.042
+<<<  [Exit status: SUCCESS]
+>>>  [Device Install (UpdateDriverForPlugAndPlayDevices) - Root\LongwaveVirtualGamepad]
+>>>  Section start 2026/10/05 07:12:31.571
+     ndv:           Driver Version - 0.1.0.7001
+     dvi:                     Install Device: Starting device 'ROOT\LONGWAVEVIRTUALGAMEPAD\0000'. 07:12:31.902
+     dvi:                     Install Device: Starting device completed. 07:12:32.269
+<<<  Section end 2026/10/05 07:12:32.301
+<<<  [Exit status: SUCCESS]
+PASS install silent, non-interactive install succeeded
+
+==============================================================================
+== 3. Driver state
+==============================================================================
+
+
+Status       : OK
+Problem      : CM_PROB_NONE
+Class        : System
+FriendlyName : Longwave Virtual Gamepad
+InstanceId   : ROOT\LONGWAVEVIRTUALGAMEPAD\0000
+
+
+DeviceName    : Longwave Virtual Gamepad
+DriverVersion : 0.1.0.7001
+InfName       : oem8.inf
+IsSigned      : False
+Signer        :
+PASS driver-loaded device OK, hosted by WUDFHost pid 6472
+-- certificates (public halves only should exist; HasPrivateKey must be False):
+
+Store            Thumbprint                               HasPrivateKey NotAfter            
+-----            ----------                               ------------- --------            
+Root             5FC52869A0C02095A07AB6D3DF117CEE48A50386         False 10/2/2036 7:12:22 AM
+TrustedPublisher 5FC52869A0C02095A07AB6D3DF117CEE48A50386         False 10/2/2036 7:12:22 AM
+CA               5FC52869A0C02095A07AB6D3DF117CEE48A50386         False 10/2/2036 7:12:22 AM
+PASS private-key no Longwave signer certificate with a private key exists
+-- signatures of the kit's files (Valid = signed by the now key-less local cert):
+
+File                       Status Signer                                                                          
+----                       ------ ------                                                                          
+longwavevirtualgamepad.cat  Valid CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+LongwaveVirtualGamepad.dll  Valid CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+lwpad-devnode.exe           Valid CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+lwpad-sdltest.exe           Valid CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+lwpad-test.exe              Valid CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+
+==============================================================================
+== 4. Function
+==============================================================================
+PASS query-info protocol=2 profiles=0x28 features=0x2b max_controllers=16
+INFO interface \\?\ROOT#LONGWAVEVIRTUALGAMEPAD#0000#{9b6bd835-f12f-4b31-9dc7-8afd6029ced2}
+INFO stats[now] created=0 destroyed=0 active=0 reports=0 outputs=0 features=0 owned_closes=0 lost_to_power=0
+-- XInput (what most PC games use):
+PASS xinput-slot slot=0 appeared 21 ms after create
+INFO caps type=1 subtype=1 flags=0x0
+PASS xinput-input A            buttons=0x1000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.2 ms)
+PASS xinput-input B            buttons=0x2000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input X            buttons=0x4000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Y            buttons=0x8000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LB           buttons=0x0100 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input RB           buttons=0x0200 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Back         buttons=0x0020 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Start        buttons=0x0010 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LS           buttons=0x0040 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input RS           buttons=0x0080 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Up           buttons=0x0001 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Down         buttons=0x0002 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Left         buttons=0x0004 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Right        buttons=0x0008 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input UpRight      buttons=0x0009 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input A+B+LB       buttons=0x3100 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LX+max       buttons=0x0000 LX=32767 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LX-min       buttons=0x0000 LX=-32768 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LY+up        buttons=0x0000 LX=0 LY=32767 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LY-down      buttons=0x0000 LX=0 LY=-32768 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input RX+half      buttons=0x0000 LX=0 LY=0 RX=16384 RY=0 LT=0 RT=0 (0.1 ms)
+PASS xinput-input RY-half      buttons=0x0000 LX=0 LY=0 RX=0 RY=-16384 LT=0 RT=0 (0.1 ms)
+PASS xinput-input Diag         buttons=0x0000 LX=12345 LY=-23456 RX=-1000 RY=30000 LT=0 RT=0 (0.1 ms)
+PASS xinput-input LT-full      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=255 RT=0 (0.1 ms)
+PASS xinput-input RT-full      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=255 (0.1 ms)
+PASS xinput-input Triggers-mid buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=64 RT=192 (0.1 ms)
+PASS xinput-input Neutral      buttons=0x0000 LX=0 LY=0 RX=0 RY=0 LT=0 RT=0 (0.1 ms)
+INFO submit->XInputGetState latency: mean 0.13 ms, worst 0.23 ms (1 ms polling)
+PASS xinput-rumble set L=32768 R=65535 -> driver got low=32767 high=65535 lt=0 rt=0 (0.1 ms)
+PASS xinput-rumble set L=65535 R=0 -> driver got low=65535 high=0 lt=0 rt=0 (11.6 ms)
+PASS xinput-rumble set L=0 R=0 -> driver got low=0 high=0 lt=0 rt=0 (11.5 ms)
+PASS xinput-removed slot 0 disconnected 4 ms after destroy
+INFO stats[end] created=1 destroyed=1 active=0 reports=28 outputs=3 features=0 owned_closes=0 lost_to_power=0
+-- Windows.Gaming.Input (needs this session's desktop; opens a small window briefly):
+   (unelevated, as DESKTOP-M0A8FO0\Ixion, like a game:)
+INFO WGI test window is the foreground window
+INFO WGI gamepads before: 0
+INFO GamepadAdded 32 ms after create
+PASS wgi-gamepad appeared; vid=045e pid=0b12 name='XINPUT compatible HID device' wireless=0
+PASS wgi-input A+RB, LX=1.000 RT=1.000
+PASS wgi-vibration driver got low=32767 high=65535 lt=16383 rt=48495 (impulse triggers reach the driver)
+   (elevated, for comparison; not counted:)
+INFO WGI test window is the foreground window
+INFO WGI gamepads before: 0
+INFO GamepadAdded 31 ms after create
+INFO elevated: PASS wgi-gamepad appeared; vid=045e pid=0b12 name='XINPUT compatible HID device' wireless=0
+INFO elevated: PASS wgi-input A+RB, LX=1.000 RT=1.000
+INFO elevated: FAIL wgi-vibration last type=0 low=0 high=0 lt=0 rt=0
+-- SDL3 (Steam and many games), Xbox profile:
+INFO sdl version 3.4.18
+PASS sdl-xbox-type name='Xbox Series X Controller' type=XBOXONE backend=x
+PASS sdl-xbox-input A=1 Y=1 LX=32767 LY=32767 LT=32767
+PASS sdl-xbox-rumble driver got low=16383 high=49151
+-- SDL3, DualSense profile (gyro, rumble, lightbar):
+INFO sdl version 3.4.18
+PASS sdl-ds5-type name='DualSense Wireless Controller' type=PS5 backend=h
+PASS sdl-ds5-input Circle=1 touchpad-click=1 LX=-32768 RY=-32768 RT=32767
+PASS sdl-ds5-gyro driver axis 0 at 90 deg/s -> SDL rad/s [1.571 0.000 0.000] (SDL axis 0)
+PASS sdl-ds5-gyro driver axis 1 at 90 deg/s -> SDL rad/s [0.000 1.571 0.000] (SDL axis 1)
+PASS sdl-ds5-gyro driver axis 2 at 90 deg/s -> SDL rad/s [0.000 0.000 1.571] (SDL axis 2)
+PASS sdl-ds5-gyro-axes driver x,y,z -> SDL axes 0,1,2
+INFO sdl-ds5-accel at rest m/s^2 [0.00 9.81 0.00] (expect ~9.8 on one axis)
+PASS sdl-ds5-rumble driver got low=65280 high=32768
+PASS sdl-ds5-lightbar driver got rgb=255,0,128 valid=0x5
+-- Feeder killed mid-session (the pad must not outlive its feeder):
+   feeder: READY slot=0 pid=9208
+   while alive: SLOT 0 connected buttons=0x1000 LX=32767 LY=0 RX=0 RY=0 LT=0 RT=200 packet=2
+PASS kill-feeder pad in slot 0 disappeared within 16 ms of killing its feeder
+-- Create/destroy 250 times:
+INFO stats[before] created=7 destroyed=7 active=0 reports=187 outputs=14 features=1 owned_closes=1 lost_to_power=0
+INFO WUDFHost pid=6472 handles=225 private=1864 KB threads=10; our HID nodes present=0 total=2
+INFO stats[after] created=257 destroyed=257 active=0 reports=686 outputs=14 features=1 owned_closes=1 lost_to_power=0
+INFO WUDFHost pid=6472 handles=225 private=1960 KB threads=11; our HID nodes present=0 total=2
+INFO 250 cycles in 2.8 s; appear mean 9 ms worst 12 ms; removal worst 3 ms
+PASS cycle 250 create/use/destroy cycles, no failures
+PASS cycle-host same WUDFHost pid 6472 throughout
+PASS cycle-leaks WUDFHost handle growth 0, private bytes growth 96 KB over 250 cycles
+PASS cycle-pnp HID nodes present 0 -> 0, total incl. phantom 2 -> 2
+
+==============================================================================
+== 5. Code Integrity / Smart App Control events since this run started
+==============================================================================
+CodeIntegrity events                   0
+PASS ci-events no block or audit event (3033/3034/3076/3077) for our files
+Smart App Control state now            2
+
+==============================================================================
+== 6. Uninstall
+==============================================================================
+== removing the device node
+removed ROOT\LONGWAVEVIRTUALGAMEPAD\0000
+== removing remembered virtual pad nodes
+   HID\VID_045E&PID_0B12&IG_00\1&F0D20EB&5&LONGWAVEPAD0
+   VHF\HID_DEVICE_SYSTEM_VHF\1&F0D20EB&5&LONGWAVEPAD0
+== deleting the driver package from the driver store
+Microsoft PnP Utility
+
+Ignoring /force when used with /uninstall to delete driver package.
+Driver package uninstalled.
+Driver package deleted successfully.
+== removing the certificate from LocalMachine\Root, TrustedPublisher, CA, My
+   Root\5FC52869A0C02095A07AB6D3DF117CEE48A50386 CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+   TrustedPublisher\5FC52869A0C02095A07AB6D3DF117CEE48A50386 CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+   CA\5FC52869A0C02095A07AB6D3DF117CEE48A50386 CN=Longwave Virtual Gamepad local signer, OU=DESKTOP-M0A8FO0 2026-10-05T07.12.22
+== clean: no device node, pad nodes, driver package, DLL or certificate left
+PASS uninstall nothing left behind
+
+==============================================================================
+== Summary
+==============================================================================
+PASS 57  FAIL 0  SKIP 0   (42 s)
+Log: C:\Users\Ixion\src\vhf-gamepad-new\build\kit\results\DESKTOP-M0A8FO0-run-20261005-071208.log

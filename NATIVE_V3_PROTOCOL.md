@@ -852,7 +852,8 @@ maintains it, and its announced successor hasn't shipped [W8].
 Virtual HID Framework**, presenting an Xbox Series pad (Windows' `xinputhid`
 makes it visible to XInput) and a DualSense (adaptive triggers, gyro,
 touchpad), with rumble and trigger effects returned as HID output reports.
-Being user-mode, a bug can't blue-screen the PC. libvirtualgamepad (MIT) is
+Being user-mode, a bug in our code can't blue-screen the PC. The kernel stack
+it drives can, though: see the sleep note below. libvirtualgamepad (MIT) is
 the reference. ViGEmBus 1.22, already signed by its author and already shipped
 opt-in by the PCVR host, is the fallback behind the same `lw_gamepad_*` API.
 
@@ -903,6 +904,23 @@ test feeder blocked; the other ran completely. The UMDF DLL inside
 that would have predicted the block. So SAC is the remaining risk (§9 risk 8),
 and it falls on our user-mode **executables** (the host, helpers), not on the
 driver.
+
+*Sleep (verified 2026-10-05, Windows 11 bare metal, S3):* the first driver
+blue-screened the PC (0x9F, `vhf.sys`) whenever it slept with a pad present,
+even an idle one. For each pad, Microsoft's VhfUm keeps one request waiting in
+`vhf.sys`, and `vhf.sys` won't power down while it waits. The driver now
+deletes every pad in `EvtDeviceD0Exit`, before `vhf.sys` gets the power IRP,
+and refuses VHF work until D0Entry. Idle pads, churn and suspend-aware runs
+all sleep and resume cleanly since. **What the host must do:** treat
+`ERROR_DEVICE_REMOVED` (1617) on any pad request as "lost to a power-down"
+(destroy that id, then create it again). Treat `ERROR_NOT_READY` (21) as "the
+device is powered down; retry shortly". Optionally, as defence in depth,
+destroy pads on `PBT_APMSUSPEND` and recreate them on
+`PBT_APMRESUMEAUTOMATIC` (`PowerRegisterSuspendResumeNotification`), but never
+rely on that notification alone. XInput reads zeros for every pad, virtual or
+physical, while the console session is locked, which it is after a wake until
+someone signs in. Details: `CompanionWindows/spike/vhf-gamepad/README.md`,
+"Sleep and power".
 
 **Process model:** the Electron Companion and its C# backend stay — they own
 Hotspot NAT, PCVR install/supervision and the UI. The C# backend launches and
@@ -1330,7 +1348,9 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    so the options are documenting "turn SAC off" (on this build Windows
    Security still lets the user turn it back on), or reputation, which in
    practice means the paid certificate this design avoids. Building is
-   unaffected; only running is. *Open:* feature updates, real games, Steam
+   unaffected; only running is. *Fixed:* sleeping with a pad present
+   blue-screened the PC through `vhf.sys`; the driver now deletes pads on every
+   power-down and the host recreates them (§7.2). *Open:* feature updates, real games, Steam
    Input, and Vanguard-class anti-cheat, which is reported to reject any
    virtual pad.
 9. **Anti-cheat** may reject injected input or virtual pads in some games;

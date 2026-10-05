@@ -140,3 +140,68 @@ public sealed class OperationResult
     /// <summary>The post-operation status snapshot, so the UI updates in one round-trip.</summary>
     [JsonPropertyName("snapshot")] public HotspotStatus? Snapshot { get; set; }
 }
+
+// ---------------------------------------------------------------------------
+// Game library (Games/GameLibrary.cs). Library* methods; the PCVR host's pipe keeps Games* for
+// the headset relay and the CloudXR launch.
+// ---------------------------------------------------------------------------
+
+public sealed class LibraryListParams
+{
+    /// <summary>Rescan Steam instead of using the last few seconds' discovery.</summary>
+    [JsonPropertyName("refresh")] public bool Refresh { get; set; }
+}
+
+public sealed class LibraryIdParams
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+}
+
+public sealed class LibrarySetExposedParams
+{
+    [JsonPropertyName("ids")] public string[]? Ids { get; set; }
+}
+
+public sealed class LibrarySetOptimizedParams
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+}
+
+public sealed class LibrarySetKindParams
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    /// <summary>"vr", "flat", "both", or null to return to the detected kind.</summary>
+    [JsonPropertyName("kind")] public string? Kind { get; set; }
+}
+
+public sealed class LibraryAddCustomParams
+{
+    [JsonPropertyName("path")] public string? Path { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+    [JsonPropertyName("arguments")] public string? Arguments { get; set; }
+    [JsonPropertyName("kind")] public string? Kind { get; set; }
+}
+
+public sealed class LibraryPathParams
+{
+    [JsonPropertyName("path")] public string? Path { get; set; }
+}
+
+public sealed class LibraryResolveParams
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    /// <summary>The title's VR entry (PCVR) rather than its desktop one.</summary>
+    [JsonPropertyName("vr")] public bool Vr { get; set; }
+    /// <summary>The headset's bound: only exposed, VR-capable titles.</summary>
+    [JsonPropertyName("exposedOnly")] public bool ExposedOnly { get; set; }
+    /// <summary>Start Steam first when the title is a Steam game (the caller is about to launch).</summary>
+    [JsonPropertyName("prepare")] public bool Prepare { get; set; } = true;
+}
+
+public sealed class LibraryArtParams
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("orientation")] public string? Orientation { get; set; }
+    [JsonPropertyName("exposedOnly")] public bool ExposedOnly { get; set; } = true;
+}

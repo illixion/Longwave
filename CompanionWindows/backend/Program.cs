@@ -30,6 +30,14 @@ if (args.Contains("--probe"))
     return status.CanHostAp ? 0 : 1;
 }
 
+// --steam-launches [appid] : resolve Steam's local launch metadata and each title's kind without
+// starting anything. Useful over SSH for checking that a title has a compatible direct entry.
+if (Array.IndexOf(args, "--steam-launches") is var steamIdx and >= 0)
+{
+    return Longwave.WindowsCompanion.Backend.Games.SteamLaunchReport.Run(
+        steamIdx + 1 < args.Length && uint.TryParse(args[steamIdx + 1], out var one) ? one : null);
+}
+
 // --tether-host [--parent-pid=N] : the elevated tethering helper. Spawned by an unelevated
 // backend through ShellExecute "runas" when the user turns the hotspot on, so that the Mobile
 // Hotspot API — the one feature here that genuinely needs administrator rights — gets them
@@ -82,6 +90,12 @@ builder.Services.AddSingleton<ITetheringService>(sp =>
     return new ElevatedTetheringProxy(lf.CreateLogger<ElevatedTetheringProxy>(), local);
 });
 builder.Services.AddSingleton<NativeStreamingService>();
+// The game library (public since 2026-10-05; the PCVR host consumes it over this pipe).
+builder.Services.AddSingleton(sp => new Longwave.WindowsCompanion.Backend.Games.GameLibrary(
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger("GameLibrary"),
+    Longwave.WindowsCompanion.Backend.Games.GameLibrary.DefaultStatePath(),
+    syntheticCount: int.TryParse(Environment.GetEnvironmentVariable("LONGWAVE_LIBRARY_SYNTHETIC"), out var synthetic)
+        ? Math.Clamp(synthetic, 0, 100_000) : 0));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NativeStreamingService>());
 builder.Services.AddHostedService<MonitorService>();
 builder.Services.AddHostedService<PipeServer>();

@@ -30,6 +30,10 @@
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Game library: Steam's binary appinfo.vdf (launch entries, VR flags) and cover-art
+         scaling for the headset. Both MIT. -->
+    <PackageReference Include="ValveKeyValue" Version="0.20.0.417" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

@@ -38,6 +38,7 @@ public sealed class PipeServer : BackgroundService
     private readonly ILogger<PipeServer> _log;
     private readonly ITetheringService _controller;
     private readonly NativeStream.NativeStreamingService _nativeStream;
+    private readonly Games.GameLibrary _games;
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, ClientConnection> _clients = new();
 
@@ -67,11 +68,12 @@ public sealed class PipeServer : BackgroundService
     }
 
     public PipeServer(ILogger<PipeServer> log, ITetheringService controller,
-                     NativeStream.NativeStreamingService nativeStream)
+                     NativeStream.NativeStreamingService nativeStream, Games.GameLibrary games)
     {
         _log = log;
         _controller = controller;
         _nativeStream = nativeStream;
+        _games = games;
         _controller.StatusChanged += OnStatusChanged;
         _nativeStream.StatusChanged += OnNativeStreamChanged;
     }
@@ -253,6 +255,25 @@ public sealed class PipeServer : BackgroundService
                 "NativeStreamSetEnabled" => SetNativeStreamEnabled(ParseParams<NativeStreamEnableParams>(req)),
                 "NativeStreamSetInput" => SetNativeStreamInput(ParseParams<NativeStreamInputParams>(req)),
                 "NativeStreamRegenerateToken" => RegenerateNativeStreamToken(),
+                // ---- Game library (public; the PCVR host relays the headset's requests here) ----
+                "LibraryList" => ListLibrary(ParseParams<LibraryListParams>(req)),
+                "LibraryListExposed" => _games.ListExposedTitles(),
+                "LibraryGet" => _games.Find(RequireId(ParseParams<LibraryIdParams>(req)?.Id)),
+                "LibrarySetExposed" => _games.SetExposed(ParseParams<LibrarySetExposedParams>(req)?.Ids ?? Array.Empty<string>()),
+                "LibrarySetOptimized" => ParseParams<LibrarySetOptimizedParams>(req) is { } opt
+                    ? _games.SetOptimized(RequireId(opt.Id), opt.Enabled)
+                    : throw new ArgumentException("LibrarySetOptimized needs an id."),
+                "LibrarySetKind" => ParseParams<LibrarySetKindParams>(req) is { } sk
+                    ? _games.SetKind(RequireId(sk.Id), Games.GameKinds.Parse(sk.Kind))
+                    : throw new ArgumentException("LibrarySetKind needs an id."),
+                "LibraryAddCustom" => AddCustomGame(ParseParams<LibraryAddCustomParams>(req)),
+                "LibraryRemoveCustom" => _games.RemoveCustomTitle(RequireId(ParseParams<LibraryIdParams>(req)?.Id)),
+                "LibraryMatchPath" => _games.MatchPath(ParseParams<LibraryPathParams>(req)?.Path),
+                "LibraryResolveLaunch" => await ResolveLaunchAsync(ParseParams<LibraryResolveParams>(req)),
+                "LibraryMarkPlayed" => _games.MarkPlayed(RequireId(ParseParams<LibraryIdParams>(req)?.Id)),
+                "LibraryArt" => ParseParams<LibraryArtParams>(req) is { } art
+                    ? await _games.GetArtAsync(RequireId(art.Id), art.Orientation, art.ExposedOnly)
+                    : throw new ArgumentException("LibraryArt needs an id."),
                 "Ping" => "pong",
                 _ => Sentinel.Unknown,
             };
@@ -271,6 +292,33 @@ public sealed class PipeServer : BackgroundService
     }
 
     private static readonly TimeSpan StatusQueryTimeout = TimeSpan.FromSeconds(10);
+
+    private static string RequireId(string? id) =>
+        string.IsNullOrWhiteSpace(id) ? throw new ArgumentException("A title id is required.") : id;
+
+    private object ListLibrary(LibraryListParams? p)
+    {
+        if (p?.Refresh == true) _games.Invalidate();
+        return _games.ListAllTitles();
+    }
+
+    private object AddCustomGame(LibraryAddCustomParams? p)
+    {
+        if (p is null || string.IsNullOrWhiteSpace(p.Path)) throw new ArgumentException("A path is required.");
+        return _games.AddCustomTitle(p.Path, p.Name, p.Arguments, Games.GameKinds.Parse(p.Kind) ?? Games.GameKind.Flat);
+    }
+
+    /// <summary>
+    /// Resolves a launch and, for a Steam title, makes sure Steam is running first. A refusal
+    /// comes back as an RPC error whose message is meant for the user.
+    /// </summary>
+    private async Task<object> ResolveLaunchAsync(LibraryResolveParams? p)
+    {
+        var plan = _games.ResolveLaunch(RequireId(p?.Id), p?.Vr ?? false, p?.ExposedOnly ?? false);
+        if (plan.SteamAppId is not null && (p?.Prepare ?? true) && !await _games.EnsureSteamRunningAsync())
+            throw new Games.LaunchRefusedException($"{plan.Name} is a Steam game and Steam could not be started. Start Steam, then try again.");
+        return plan;
+    }
 
     private async Task<object> GetClientsAsync()
     {

@@ -8,13 +8,28 @@
 //   lwpad-test hold <seconds>     create an Xbox pad, hold A + left stick right (for the kill test)
 //   lwpad-test probe              print connected XInput slots and their state
 //   lwpad-test cycle <n>          create/destroy n times, checking XInput sees each, then leak checks
+//   lwpad-test sleep <mode> [s] [log]
+//                                 put the PC to sleep (S3) with pads in a given state, wake it with a
+//                                 timer after s seconds (default 45), then check what survived and
+//                                 that pads can be recreated and work. Modes:
+//                                   none   no pads (driver installed, idle)
+//                                   idle   an Xbox and a DualSense pad, created and left alone
+//                                   churn  idle pads plus a thread creating/destroying a third pad
+//                                          as fast as it can, straight through the sleep
+//                                   aware  like churn, but this process also does what a careful
+//                                          host should: on the suspend notification it destroys
+//                                          its pads, and recreates them after resume
+//                                 Every line also goes to [log] (written through to disk), so a
+//                                 hang or crash still leaves the record of what happened.
 
 #include <windows.h>
 #include <cfgmgr32.h>
+#include <powrprof.h>
 #include <devguid.h>
 #include <psapi.h>
 #include <setupapi.h>
 #include <tlhelp32.h>
+#include <wtsapi32.h>
 #include <xinput.h>
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -28,6 +43,8 @@
 #include <cstdlib>
 #include <cwchar>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -40,51 +57,66 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "powrprof.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 namespace {
 
 int g_failures = 0;
+HANDLE g_tee = nullptr;  // optional copy of every line, written through to disk
+std::mutex g_print_lock;
+
+void emit(const char *tag, const char *name, const char *fmt, va_list args) {
+  char text[2048];
+  int n = 0;
+  if (name != nullptr) {
+    n = std::snprintf(text, sizeof(text), "%s %s ", tag, name);
+  } else {
+    n = std::snprintf(text, sizeof(text), "%s ", tag);
+  }
+  if (n < 0) n = 0;
+  const int m = std::vsnprintf(text + n, sizeof(text) - n - 2, fmt, args);
+  n = m < 0 ? n : (n + m < static_cast<int>(sizeof(text)) - 2 ? n + m : static_cast<int>(sizeof(text)) - 3);
+  text[n++] = '\n';
+  text[n] = '\0';
+  std::lock_guard<std::mutex> lock(g_print_lock);
+  std::fputs(text, stdout);
+  std::fflush(stdout);
+  if (g_tee != nullptr) {
+    DWORD written = 0;
+    WriteFile(g_tee, text, static_cast<DWORD>(n), &written, nullptr);
+    FlushFileBuffers(g_tee);
+  }
+}
 
 void pass(const char *name, const char *fmt = "", ...) {
-  std::printf("PASS %s ", name);
   va_list args;
   va_start(args, fmt);
-  std::vprintf(fmt, args);
+  emit("PASS", name, fmt, args);
   va_end(args);
-  std::printf("\n");
-  std::fflush(stdout);
 }
 
 void fail(const char *name, const char *fmt = "", ...) {
   ++g_failures;
-  std::printf("FAIL %s ", name);
   va_list args;
   va_start(args, fmt);
-  std::vprintf(fmt, args);
+  emit("FAIL", name, fmt, args);
   va_end(args);
-  std::printf("\n");
-  std::fflush(stdout);
 }
 
 // A check that couldn't run meaningfully here (e.g. no foreground window).
 void skip(const char *name, const char *fmt, ...) {
-  std::printf("SKIP %s ", name);
   va_list args;
   va_start(args, fmt);
-  std::vprintf(fmt, args);
+  emit("SKIP", name, fmt, args);
   va_end(args);
-  std::printf("\n");
-  std::fflush(stdout);
 }
 
 void info(const char *fmt, ...) {
-  std::printf("INFO ");
   va_list args;
   va_start(args, fmt);
-  std::vprintf(fmt, args);
+  emit("INFO", nullptr, fmt, args);
   va_end(args);
-  std::printf("\n");
-  std::fflush(stdout);
 }
 
 using clock_type = std::chrono::steady_clock;
@@ -112,6 +144,24 @@ DWORD xinput_connected_mask() {
   return mask;
 }
 
+// True while the console session is locked (lock screen up). Windows hands
+// XInput readings of zero to every process then (slots and rumble still work),
+// as it does for a background process with Windows.Gaming.Input; after a wake
+// from sleep the session is locked until someone signs in.
+bool console_locked() {
+  const DWORD session = WTSGetActiveConsoleSessionId();
+  if (session == 0xFFFFFFFF) return false;
+  LPWSTR buffer = nullptr;
+  DWORD bytes = 0;
+  bool locked = false;
+  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, WTSSessionInfoEx, &buffer, &bytes) && buffer) {
+    const auto *info_ex = reinterpret_cast<const WTSINFOEXW *>(buffer);
+    if (info_ex->Level == 1) locked = info_ex->Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_LOCK;
+    WTSFreeMemory(buffer);
+  }
+  return locked;
+}
+
 bool open_driver(lwpad_client &client) {
   if (client.open()) return true;
   fail("open-driver", "error=%lu (is the driver installed and its device started?)", client.last_error);
@@ -121,9 +171,10 @@ bool open_driver(lwpad_client &client) {
 void print_stats(lwpad_client &client, const char *label) {
   lwpad::stats_response s {};
   if (client.stats(&s)) {
-    info("stats[%s] created=%u destroyed=%u active=%u reports=%u outputs=%u features=%u owned_closes=%u", label,
-         s.controllers_created, s.controllers_destroyed, s.controllers_active, s.reports_submitted, s.output_reports,
-         s.feature_reads, s.closes_with_owned);
+    info("stats[%s] created=%u destroyed=%u active=%u reports=%u outputs=%u features=%u owned_closes=%u "
+         "lost_to_power=%u",
+         label, s.controllers_created, s.controllers_destroyed, s.controllers_active, s.reports_submitted,
+         s.output_reports, s.feature_reads, s.closes_with_owned, s.pads_lost_to_power);
   }
 }
 
@@ -188,6 +239,7 @@ int cmd_xinput() {
     return 1;
   }
   pass("xinput-slot", "slot=%d appeared %.0f ms after create", slot, create_ms);
+  if (console_locked()) info("the console session is LOCKED: Windows gives XInput zeros while it is, so input checks will fail");
 
   XINPUT_CAPABILITIES caps {};
   if (XInputGetCapabilities(slot, 0, &caps) == ERROR_SUCCESS) {
@@ -623,6 +675,323 @@ int cmd_cycle(int count) {
   return g_failures ? 1 : 0;
 }
 
+
+// --- sleep ---------------------------------------------------------------------
+
+const char *win32_name(DWORD e) {
+  switch (e) {
+    case ERROR_SUCCESS: return "ok";
+    case ERROR_DEVICE_REMOVED: return "ERROR_DEVICE_REMOVED (pad lost to power-down)";
+    case ERROR_NOT_READY: return "ERROR_NOT_READY";
+    case ERROR_BUSY: return "ERROR_BUSY";
+    case ERROR_NOT_FOUND: return "ERROR_NOT_FOUND";
+    case ERROR_GEN_FAILURE: return "ERROR_GEN_FAILURE";
+    case ERROR_DEVICE_NOT_AVAILABLE: return "ERROR_DEVICE_NOT_AVAILABLE";
+    case ERROR_OPERATION_ABORTED: return "ERROR_OPERATION_ABORTED";
+    default: return "";
+  }
+}
+
+std::string wall_clock() {
+  SYSTEMTIME t;
+  GetLocalTime(&t);
+  char text[32];
+  std::snprintf(text, sizeof(text), "%02u:%02u:%02u.%03u", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+  return text;
+}
+
+struct sleep_run {
+  bool aware = false;
+  clock_type::time_point t0 = clock_type::now();
+  // Long-lived pads (ids 0 and 1), driven from the main thread or, in aware
+  // mode, the suspend callback; pads_lock serialises the two.
+  std::mutex pads_lock;
+  lwpad_client pads;
+  bool pads_up = false;
+  int pad_count = 0;
+  // The churn pad (id 2) on its own handle, like a second feeder.
+  std::thread churn;
+  std::atomic<bool> churn_stop {false};
+  std::atomic<bool> churn_paused {false};
+  std::mutex churn_lock;  // held for each create..destroy iteration
+  std::atomic<long> churn_cycles {0}, churn_input_failures {0}, churn_destroy_failures {0};
+  std::map<DWORD, long> churn_create_errors;  // churn thread only, read after join
+  std::atomic<int> suspend_seen {0}, resume_seen {0};
+
+  double t() const { return ms_since(t0) / 1000.0; }
+};
+
+constexpr lvg::profile k_long_lived[] = {lvg::profile::xbox_series, lvg::profile::dualsense};
+
+bool create_long_lived(sleep_run &run) {
+  bool ok = true;
+  for (int i = 0; i < run.pad_count; ++i) {
+    if (!run.pads.create(i, k_long_lived[i])) {
+      info("t=%.3f create pad %d failed: error=%lu %s", run.t(), i, run.pads.last_error, win32_name(run.pads.last_error));
+      ok = false;
+    } else {
+      run.pads.input(i, 0);
+    }
+  }
+  run.pads_up = ok;
+  return ok;
+}
+
+void destroy_long_lived(sleep_run &run) {
+  for (int i = 0; i < run.pad_count; ++i) run.pads.destroy(i);
+  run.pads_up = false;
+}
+
+ULONG CALLBACK on_power_event(PVOID context, ULONG type, PVOID) {
+  auto *const run = static_cast<sleep_run *>(context);
+  const char *name = type == PBT_APMSUSPEND           ? "PBT_APMSUSPEND"
+                     : type == PBT_APMRESUMESUSPEND   ? "PBT_APMRESUMESUSPEND"
+                     : type == PBT_APMRESUMEAUTOMATIC ? "PBT_APMRESUMEAUTOMATIC"
+                                                      : "other";
+  info("t=%.3f [%s] power notification %s (%lu)", run->t(), wall_clock().c_str(), name, type);
+  if (type == PBT_APMSUSPEND) {
+    ++run->suspend_seen;
+    if (run->aware) {
+      const auto start = clock_type::now();
+      run->churn_paused = true;
+      { std::lock_guard<std::mutex> wait_for_iteration(run->churn_lock); }
+      {
+        std::lock_guard<std::mutex> lock(run->pads_lock);
+        destroy_long_lived(*run);
+      }
+      info("t=%.3f aware: pads destroyed before suspend in %.1f ms", run->t(), ms_since(start));
+    }
+  } else if (type == PBT_APMRESUMEAUTOMATIC || type == PBT_APMRESUMESUSPEND) {
+    ++run->resume_seen;
+  }
+  return ERROR_SUCCESS;
+}
+
+void churn_loop(sleep_run *run) {
+  lwpad_client client;
+  if (!client.open()) return;
+  while (!run->churn_stop) {
+    if (run->churn_paused) {
+      Sleep(5);
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(run->churn_lock);
+    if (!client.create(2, lvg::profile::xbox_series)) {
+      ++run->churn_create_errors[client.last_error];
+      Sleep(5);
+      continue;
+    }
+    for (int i = 0; i < 3; ++i) {
+      if (!client.input(2, i == 1 ? lvg::south : 0)) ++run->churn_input_failures;
+    }
+    if (!client.destroy(2)) ++run->churn_destroy_failures;
+    ++run->churn_cycles;
+  }
+}
+
+bool enable_shutdown_privilege() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return false;
+  TOKEN_PRIVILEGES tp {1};
+  bool ok = false;
+  if (LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid)) {
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    ok = AdjustTokenPrivileges(token, FALSE, &tp, 0, nullptr, nullptr) && GetLastError() == ERROR_SUCCESS;
+  }
+  CloseHandle(token);
+  return ok;
+}
+
+// After resume: is pad `id` still usable, and if not, can it be recreated?
+void check_long_lived_after_resume(sleep_run &run) {
+  std::lock_guard<std::mutex> lock(run.pads_lock);
+  for (int i = 0; i < run.pad_count; ++i) {
+    if (run.aware) break;  // aware mode destroyed them on purpose; recreated below
+    const bool alive = run.pads.input(i, 0);
+    info("t=%.3f pad %d after resume: input %s (error=%lu %s)", run.t(), i, alive ? "accepted" : "refused",
+         run.pads.last_error, win32_name(run.pads.last_error));
+  }
+  const auto start = clock_type::now();
+  int attempts = 0;
+  bool all = false;
+  while (!all && ms_since(start) < 15000) {
+    ++attempts;
+    all = true;
+    for (int i = 0; i < run.pad_count; ++i) {
+      if (run.pads.input(i, 0)) continue;  // still alive (or recreated on an earlier attempt)
+      run.pads.destroy(i);                 // lets go of a pad lost to the power-down
+      if (!run.pads.create(i, k_long_lived[i])) {
+        all = false;
+        if (attempts == 1 || attempts % 10 == 0) {
+          info("t=%.3f recreate pad %d attempt %d: error=%lu %s", run.t(), i, attempts, run.pads.last_error,
+               win32_name(run.pads.last_error));
+        }
+      } else {
+        run.pads.input(i, 0);
+      }
+    }
+    if (!all) Sleep(100);
+  }
+  if (all) {
+    pass("sleep-recover", "%d long-lived pad(s) usable %.0f ms after resume (%d attempt(s))", run.pad_count,
+         ms_since(start), attempts);
+  } else {
+    fail("sleep-recover", "pads not usable 15 s after resume");
+  }
+}
+
+int cmd_sleep(const std::string &mode, int wake_seconds, const char *log_path) {
+  timeBeginPeriod(1);
+  if (log_path != nullptr) {
+    g_tee = CreateFileA(log_path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_FLAG_WRITE_THROUGH,
+                        nullptr);
+    if (g_tee == INVALID_HANDLE_VALUE) g_tee = nullptr;
+  }
+  if (mode != "none" && mode != "idle" && mode != "churn" && mode != "aware") {
+    std::fprintf(stderr, "sleep mode must be none|idle|churn|aware\n");
+    return 2;
+  }
+  sleep_run run;
+  run.aware = mode == "aware";
+  run.pad_count = mode == "none" ? 0 : 2;
+  info("sleep test mode=%s wake=%d s, started %s; console session %s", mode.c_str(), wake_seconds,
+       wall_clock().c_str(), console_locked() ? "LOCKED" : "unlocked");
+
+  lwpad_client probe;
+  if (!open_driver(probe)) return 1;
+  print_stats(probe, "before");
+
+  DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS subscribe {on_power_event, &run};
+  HPOWERNOTIFY registration = nullptr;
+  const DWORD reg = PowerRegisterSuspendResumeNotification(DEVICE_NOTIFY_CALLBACK, &subscribe, &registration);
+  info("PowerRegisterSuspendResumeNotification -> %lu", reg);
+
+  if (!run.pads.open()) {
+    fail("open-driver", "error=%lu", run.pads.last_error);
+    return 1;
+  }
+  if (run.pad_count) {
+    std::lock_guard<std::mutex> lock(run.pads_lock);
+    if (!create_long_lived(run)) {
+      fail("sleep-setup", "could not create the long-lived pads");
+      return 1;
+    }
+  }
+  if (mode == "churn" || mode == "aware") run.churn = std::thread(churn_loop, &run);
+  Sleep(1000);  // let the pads settle (HID children started, xinputhid attached)
+  if (run.churn.joinable()) info("t=%.3f churn running: %ld cycles in the first second", run.t(), run.churn_cycles.load());
+
+  if (!enable_shutdown_privilege()) {
+    fail("sleep-privilege", "could not enable SeShutdownPrivilege (run elevated)");
+    return 1;
+  }
+  HANDLE timer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+  LARGE_INTEGER due {};
+  due.QuadPart = -static_cast<LONGLONG>(wake_seconds) * 10'000'000;
+  if (timer == nullptr || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, TRUE)) {
+    fail("sleep-timer", "SetWaitableTimer failed: %lu", GetLastError());
+    return 1;
+  }
+  info("wake timer armed (SetWaitableTimer resume=TRUE, last error %lu)", GetLastError());
+  info("t=%.3f [%s] calling SetSuspendState(sleep)", run.t(), wall_clock().c_str());
+  const auto before_sleep = clock_type::now();
+  const BOOLEAN slept = SetSuspendState(FALSE, FALSE, FALSE);
+  const DWORD sleep_error = GetLastError();
+  info("t=%.3f [%s] SetSuspendState returned %d (error %lu) after %.1f s", run.t(), wall_clock().c_str(), slept,
+       sleep_error, ms_since(before_sleep) / 1000);
+  // The resume notification can trail SetSuspendState's return a little.
+  wait_for(5000, [&] { return run.resume_seen > 0; });
+  CloseHandle(timer);
+
+  if (run.suspend_seen && run.resume_seen) {
+    pass("sleep-cycle", "suspended and resumed (suspend notifications=%d resume=%d)", run.suspend_seen.load(),
+         run.resume_seen.load());
+  } else {
+    fail("sleep-cycle", "suspend notifications=%d resume=%d (did the PC sleep?)", run.suspend_seen.load(),
+         run.resume_seen.load());
+  }
+
+  if (run.churn.joinable()) {
+    run.churn_paused = false;
+    Sleep(1000);  // a second of churn after resume, to see it recover too
+    run.churn_stop = true;
+    run.churn.join();
+    std::string errors;
+    for (const auto &[code, count] : run.churn_create_errors) {
+      errors += " " + std::to_string(code) + "x" + std::to_string(count);
+    }
+    info("churn: %ld cycles, create errors {code x count}:%s, input failures %ld, destroy failures %ld",
+         run.churn_cycles.load(), errors.empty() ? " none" : errors.c_str(), run.churn_input_failures.load(),
+         run.churn_destroy_failures.load());
+  }
+  if (run.pad_count) check_long_lived_after_resume(run);
+  print_stats(probe, "after resume");
+
+  // A fresh pad must work end to end: XInput slot, input, removal.
+  {
+    lwpad_client fresh;
+    if (open_driver(fresh)) {
+      // The long-lived Xbox pad, if just recreated, takes a slot a few ms
+      // later; wait for it so its slot isn't mistaken for the fresh pad's.
+      if (run.pad_count) {
+        wait_for(3000, [] { return xinput_connected_mask() != 0; });
+        Sleep(200);
+      }
+      double appear_ms = 0;
+      const int slot = create_xbox_and_find_slot(fresh, 3, &appear_ms);
+      XINPUT_STATE xs {};
+      // Keep sending, as a host would, and measure how long until XInput
+      // shows it: right after a resume the HID stack can take a while to start
+      // reading from a new pad.
+      const auto sent_at = clock_type::now();
+      const bool input_ok = slot >= 0 && wait_for(10000, [&] {
+                              fresh.input(3, lvg::south, 32767);
+                              return XInputGetState(slot, &xs) == ERROR_SUCCESS &&
+                                     (xs.Gamepad.wButtons & XINPUT_GAMEPAD_A) && xs.Gamepad.sThumbLX > 32000;
+                            });
+      const double input_ms = ms_since(sent_at);
+      info("fresh pad: XInput slot %d after %.0f ms, input visible after %.0f ms", slot, appear_ms, input_ms);
+      print_stats(fresh, "fresh pad");
+      fresh.destroy(3);
+      const bool removed = slot >= 0 && wait_for(5000, [&] { return (xinput_connected_mask() & (1u << slot)) == 0; });
+      if (input_ok && removed) {
+        pass("sleep-fresh-pad", "new pad after resume: XInput slot %d, A + LX round trip (%.0f ms), removed", slot,
+             input_ms);
+      } else if (!input_ok && slot >= 0 && removed && console_locked()) {
+        skip("sleep-fresh-pad", "new pad after resume: XInput slot %d appeared and was removed, but the console "
+             "session is locked (sign-in after wake), so XInput reads zeros; see stats for reports the HID stack took",
+             slot);
+      } else {
+        fail("sleep-fresh-pad", "slot=%d input=%d removed=%d buttons=0x%04x LX=%d", slot, input_ok, removed,
+             xs.Gamepad.wButtons, xs.Gamepad.sThumbLX);
+      }
+    }
+  }
+  // And the long-lived Xbox pad must reach XInput again.
+  if (run.pad_count) {
+    std::lock_guard<std::mutex> lock(run.pads_lock);
+    XINPUT_STATE xs {};
+    bool seen = wait_for(10000, [&] {
+      run.pads.input(0, lvg::east | lvg::left_shoulder, 0, -20000);
+      for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+        if (XInputGetState(i, &xs) == ERROR_SUCCESS &&
+            xs.Gamepad.wButtons == (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_LEFT_SHOULDER) && xs.Gamepad.sThumbLY < -19000) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (seen) pass("sleep-xinput", "long-lived Xbox pad reads B+LB, LY=%d in XInput after resume", xs.Gamepad.sThumbLY);
+    else if (console_locked()) skip("sleep-xinput", "console session locked after wake; XInput reads zeros until sign-in");
+    else fail("sleep-xinput", "long-lived Xbox pad's input not seen in XInput after resume");
+    destroy_long_lived(run);
+  }
+  if (registration != nullptr) PowerUnregisterSuspendResumeNotification(registration);
+  print_stats(probe, "end");
+  info("sleep test done %s, %d failure(s)", wall_clock().c_str(), g_failures);
+  return g_failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -633,6 +1002,7 @@ int main(int argc, char **argv) {
   if (cmd == "hold") return cmd_hold(argc > 2 ? std::atoi(argv[2]) : 30);
   if (cmd == "probe") return cmd_probe();
   if (cmd == "cycle") return cmd_cycle(argc > 2 ? std::atoi(argv[2]) : 200);
-  std::fprintf(stderr, "usage: lwpad-test info|xinput|wgi|hold <s>|probe|cycle <n>\n");
+  if (cmd == "sleep" && argc > 2) return cmd_sleep(argv[2], argc > 3 ? std::atoi(argv[3]) : 45, argc > 4 ? argv[4] : nullptr);
+  std::fprintf(stderr, "usage: lwpad-test info|xinput|wgi|hold <s>|probe|cycle <n>|sleep none|idle|churn|aware [s] [log]\n");
   return 2;
 }

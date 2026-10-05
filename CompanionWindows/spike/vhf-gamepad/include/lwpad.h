@@ -47,7 +47,7 @@ struct stats_response {
   std::uint32_t output_reports;        // HID output reports received (rumble etc.)
   std::uint32_t feature_reads;         // HID GetFeature answered
   std::uint32_t closes_with_owned;     // file closes that had to tear down pads
-  std::uint32_t reserved;
+  std::uint32_t pads_lost_to_power;    // pads deleted because the device left D0 (sleep etc.)
 };
 #pragma pack(pop)
 static_assert(sizeof(stats_response) == 40);

@@ -76,7 +76,7 @@ Invoke-Cl ($common + $driverDefines + @(
     "$vendor\src\dualshock4.cpp", "$vendor\src\report_pump.cpp",
     "/LD", "/Fe$kit\driver\LongwaveVirtualGamepad.dll",
     "/link", "/DEBUG", "/OPT:REF", "/OPT:ICF", "/PDB:$out\LongwaveVirtualGamepad.pdb",
-    "$kits\Lib\wdf\umdf\x64\$umdfVer\WdfDriverStubUm.lib", "VhfUm.lib", "ntdll.lib"))
+    "$kits\Lib\wdf\umdf\x64\$umdfVer\WdfDriverStubUm.lib", "VhfUm.lib", "cfgmgr32.lib", "ntdll.lib"))
 
 # Tools.
 Invoke-Cl ($common + @("$root\tools\lwpad-devnode.cpp", "/Fe$kit\bin\lwpad-devnode.exe"))
@@ -107,7 +107,7 @@ if ($LASTEXITCODE) { throw "InfVerif failed ($LASTEXITCODE)" }
 if ($LASTEXITCODE) { throw "Inf2Cat failed ($LASTEXITCODE)" }
 
 # --- scripts and docs ---------------------------------------------------------------
-Copy-Item "$root\install.ps1", "$root\uninstall.ps1", "$root\run-gamepad-spike.ps1", "$root\README.md" $kit
+Copy-Item "$root\install.ps1", "$root\uninstall.ps1", "$root\run-gamepad-spike.ps1", "$root\run-sleep-test.ps1", "$root\README.md" $kit
 New-Item -ItemType Directory -Force "$kit\licenses" | Out-Null
 Copy-Item "$vendor\LICENSE" "$kit\licenses\libvirtualgamepad-LICENSE.txt"
 Copy-Item "$sdl\LICENSE.txt" "$kit\licenses\SDL3-LICENSE.txt" -ErrorAction SilentlyContinue

@@ -16,6 +16,15 @@
 //     interface and drives pads with fixed-size IOCTLs. When the feeder's
 //     handle closes - including when the process is killed - every pad it
 //     created is deleted, so a crash can't leave a ghost controller.
+//   * No pad outlives D0. Whenever our device leaves its working state (sleep,
+//     hibernate, shutdown, removal) every pad is deleted in EvtDeviceD0Exit,
+//     before vhf.sys sees the power IRP, and the feeder is told on its next
+//     request (STATUS_DEVICE_REMOVED for that pad) so it can recreate it. This
+//     is not optional: for each pad, VhfUm.dll keeps a "pull request notify"
+//     IOCTL pending in vhf.sys, vhf.sys holds it as a driver-owned request of
+//     its power-managed queue and has no EvtIoStop for it, so a pad that is
+//     alive when vhf.sys powers down blocks its D3 IRP until the watchdog
+//     bugchecks the PC (0x9F, subcode 3). See the README's sleep section.
 //
 // Design and code are adapted from libvirtualgamepad (MIT, Copyright (c) 2026
 // Chase Payne, https://github.com/Nonary/libvirtualgamepad). The report
@@ -30,6 +39,7 @@
 #undef WIN32_NO_STATUS
 #include <wdf.h>
 #include <vhf.h>
+#include <cfgmgr32.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -90,7 +100,10 @@ constexpr lvg::profile_mask_t k_available_profiles =
 // ---------------------------------------------------------------------------
 // State
 
-enum class slot_state : std::uint8_t { empty, starting, active, stopping };
+// `lost`: the pad was deleted because the device left D0 (see the header). The
+// slot keeps its owner, so the owner's next request says "removed" rather than
+// "unknown", and the owner may create it again (or destroy it to let go).
+enum class slot_state : std::uint8_t { empty, starting, active, stopping, lost };
 
 struct device_context;
 
@@ -125,8 +138,11 @@ struct device_context {
   HANDLE vhf_file;  // what VHF_CONFIG needs: a handle to our own stack
   bool target_open;
   bool stopping;
+  // True between EvtDeviceD0Entry and EvtDeviceD0Exit. VHF is called only
+  // while it is set (both under the lifetime gate).
+  bool powered;
   controller_slot slots[lvg::k_max_controllers];
-  volatile LONG created, destroyed, submitted, outputs, features, owned_closes;
+  volatile LONG created, destroyed, submitted, outputs, features, owned_closes, power_losses;
 };
 
 struct target_context {
@@ -163,6 +179,70 @@ void reset_slot(controller_slot *const slot) noexcept {
   slot->parent = parent;
   slot->controller_id = id;
   slot->state = slot_state::empty;
+}
+
+// Like reset_slot, but remembers who owned the pad and what it was.
+void lose_slot(controller_slot *const slot) noexcept {
+  const WDFFILEOBJECT owner = slot->owner;
+  const lvg::profile profile = slot->profile;
+  reset_slot(slot);
+  slot->owner = owner;
+  slot->profile = profile;
+  slot->state = slot_state::lost;
+}
+
+// A create from `owner` may use this slot. Caller holds state_lock.
+[[nodiscard]] bool slot_free_for(const controller_slot &slot, const WDFFILEOBJECT owner) noexcept {
+  return slot.state == slot_state::empty || (slot.state == slot_state::lost && slot.owner == owner);
+}
+
+// Why a request from `owner` for pad `id` can't be served, when the pad isn't
+// active. Caller holds state_lock.
+[[nodiscard]] NTSTATUS inactive_status(const device_context *const c, const WDFFILEOBJECT owner,
+                                       const std::uint32_t id) noexcept {
+  if (id >= lvg::k_max_controllers) return STATUS_INVALID_PARAMETER;
+  const controller_slot &slot = c->slots[id];
+  if (slot.owner == owner && slot.state == slot_state::lost) return STATUS_DEVICE_REMOVED;
+  if (!c->powered) return STATUS_DEVICE_POWERED_OFF;
+  return STATUS_DEVICE_NOT_READY;
+}
+
+// True while PnP still has the HID child of pad `id` (instance ID ending in
+// "&LongwavePad<id>") in the device tree. VhfDelete returns as soon as vhf.sys
+// has marked the child missing; PnP removes it a few milliseconds later, or,
+// when the delete happened during a power transition, only after resume. A new
+// child with the same instance ID must not be reported while the old one is
+// still there, so creates wait for this to turn false. Fails open (returns
+// false) if the device list can't be read.
+[[nodiscard]] bool child_still_present(const std::uint32_t id) noexcept {
+  wchar_t want[24] = L"LONGWAVEPAD";
+  std::size_t n = 11;
+  if (id >= 10) want[n++] = static_cast<wchar_t>(L'0' + id / 10);
+  want[n++] = static_cast<wchar_t>(L'0' + id % 10);
+  want[n] = L'\0';
+
+  const ULONG flags = CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    ULONG chars = 0;
+    if (CM_Get_Device_ID_List_SizeW(&chars, L"HID", flags) != CR_SUCCESS || chars == 0) return false;
+    auto *const list = static_cast<wchar_t *>(HeapAlloc(GetProcessHeap(), 0, chars * sizeof(wchar_t)));
+    if (list == nullptr) return false;
+    const CONFIGRET cr = CM_Get_Device_ID_ListW(L"HID", list, chars, flags);
+    bool found = false;
+    if (cr == CR_SUCCESS) {
+      for (const wchar_t *p = list; *p != L'\0'; p += wcslen(p) + 1) {
+        const wchar_t *const tail = wcsrchr(p, L'&');
+        if (tail != nullptr && _wcsicmp(tail + 1, want) == 0) {
+          found = true;
+          break;
+        }
+      }
+    }
+    HeapFree(GetProcessHeap(), 0, list);
+    if (cr == CR_SUCCESS) return found;
+    if (cr != CR_BUFFER_SMALL) return false;  // the list grew between the calls: retry
+  }
+  return false;
 }
 
 // Opening our own stack "by file" is how a UMDF source driver gets the handle
@@ -385,11 +465,23 @@ void evt_vhf_cleanup(PVOID) {}
   if (!find_profile(request.requested_profile, &profile)) return STATUS_NOT_SUPPORTED;
 
   controller_slot &slot = c->slots[request.controller_id];
+  {
+    state_guard lock(c);
+    if (!c->powered) return STATUS_DEVICE_POWERED_OFF;
+    if (!slot_free_for(slot, owner)) return STATUS_DEVICE_BUSY;
+  }
+  // Without the lifetime gate, so a slow PnP removal can't hold up D0Exit.
+  for (int waited_ms = 0; child_still_present(request.controller_id); waited_ms += 10) {
+    if (waited_ms >= 2000) return STATUS_DEVICE_BUSY;
+    Sleep(10);
+  }
+
   lifetime_guard life(c);
   {
     state_guard lock(c);
     if (c->stopping) return STATUS_DEVICE_NOT_READY;
-    if (slot.state != slot_state::empty) return STATUS_DEVICE_BUSY;
+    if (!c->powered) return STATUS_DEVICE_POWERED_OFF;
+    if (!slot_free_for(slot, owner)) return STATUS_DEVICE_BUSY;
     reset_slot(&slot);
     slot.owner = owner;
     slot.profile = profile.id;
@@ -464,7 +556,7 @@ void evt_vhf_cleanup(PVOID) {}
   bool adopted = false;
   {
     state_guard lock(c);
-    if (!c->stopping && slot.owner == owner && slot.state == slot_state::starting) {
+    if (!c->stopping && c->powered && slot.owner == owner && slot.state == slot_state::starting) {
       slot.vhf = vhf;
       slot.state = slot_state::active;
       adopted = true;
@@ -486,7 +578,12 @@ bool destroy_owned(device_context *const c, const WDFFILEOBJECT owner, const std
   VHFHANDLE vhf = nullptr;
   {
     state_guard lock(c);
-    if (slot.owner != owner || slot.state != slot_state::active) return false;
+    if (slot.owner != owner) return false;
+    if (slot.state == slot_state::lost) {  // already deleted by a power-down
+      reset_slot(&slot);
+      return true;
+    }
+    if (slot.state != slot_state::active) return false;
     slot.state = slot_state::stopping;
     slot.feedback_pending = false;
     vhf = slot.vhf;
@@ -530,7 +627,44 @@ void stop_all(device_context *const c, const bool forget_target) noexcept {
   }
   state_guard lock(c);
   for (auto &slot : c->slots) {
-    if (slot.state == slot_state::stopping) reset_slot(&slot);
+    if (slot.state == slot_state::stopping || slot.state == slot_state::lost) reset_slot(&slot);
+  }
+}
+
+// EvtDeviceD0Exit: delete every pad and refuse VHF work until D0Entry. This
+// runs before the power IRP is passed down to vhf.sys, which is what makes it
+// work (see the header). VhfDelete can't hang here: VhfUm stops each pad's
+// pumps by cancelling their pending IOCTLs (vhf.sys completes cancelled ones
+// at once), then sends a delete that vhf.sys handles in the caller's context
+// by marking the child missing. Nothing in that waits for PnP, which is held
+// off during a power transition, or for vhf.sys's power-managed queue. PnP
+// removes the children afterwards (after resume, for a sleep).
+void power_down(device_context *const c) noexcept {
+  VHFHANDLE handles[lvg::k_max_controllers] {};
+  lifetime_guard life(c);
+  {
+    state_guard lock(c);
+    c->powered = false;
+    for (std::uint32_t i = 0; i < lvg::k_max_controllers; ++i) {
+      controller_slot &slot = c->slots[i];
+      if (slot.state == slot_state::active) {
+        handles[i] = slot.vhf;
+        slot.vhf = nullptr;
+        slot.state = slot_state::stopping;
+        slot.feedback_pending = false;
+      }
+    }
+  }
+  for (const VHFHANDLE h : handles) {
+    if (h != nullptr) {
+      VhfDelete(h, TRUE);
+      InterlockedIncrement(&c->destroyed);
+      InterlockedIncrement(&c->power_losses);
+    }
+  }
+  state_guard lock(c);
+  for (auto &slot : c->slots) {
+    if (slot.state == slot_state::stopping) lose_slot(&slot);
   }
 }
 
@@ -541,7 +675,8 @@ void stop_all(device_context *const c, const bool forget_target) noexcept {
                                             const std::uint32_t id) noexcept {
   if (id >= lvg::k_max_controllers) return nullptr;
   controller_slot &slot = c->slots[id];
-  return (!c->stopping && slot.owner == owner && slot.state == slot_state::active) ? &slot : nullptr;
+  return (!c->stopping && c->powered && slot.owner == owner && slot.state == slot_state::active) ? &slot
+                                                                                                    : nullptr;
 }
 
 NTSTATUS submit_input(device_context *const c, const WDFFILEOBJECT owner,
@@ -556,7 +691,7 @@ NTSTATUS submit_input(device_context *const c, const WDFFILEOBJECT owner,
   {
     state_guard lock(c);
     slot = owned_active(c, owner, request.controller_id);
-    if (slot == nullptr) return STATUS_DEVICE_NOT_READY;
+    if (slot == nullptr) return inactive_status(c, owner, request.controller_id);
     slot->last_input = request;
     slot->have_input = true;
     // Button/trigger-threshold changes queue in order; analog-only changes
@@ -577,7 +712,7 @@ NTSTATUS submit_motion(device_context *const c, const WDFFILEOBJECT owner,
   {
     state_guard lock(c);
     slot = owned_active(c, owner, request.controller_id);
-    if (slot == nullptr) return STATUS_DEVICE_NOT_READY;
+    if (slot == nullptr) return inactive_status(c, owner, request.controller_id);
     if (slot->profile != lvg::profile::dualsense) return STATUS_NOT_SUPPORTED;
     if (!lvg::driver::apply_ds5_motion(request, &slot->ds5)) return STATUS_INVALID_PARAMETER;
     if (!slot->have_input) return STATUS_SUCCESS;  // goes out with the next input
@@ -663,7 +798,7 @@ void evt_io_device_control(WDFQUEUE queue, WDFREQUEST request, size_t, size_t, U
         state_guard lock(c);
         controller_slot *const slot = owned_active(c, owner, in->controller_id);
         if (slot == nullptr) {
-          status = STATUS_DEVICE_NOT_READY;
+          status = inactive_status(c, owner, in->controller_id);
         } else if (!slot->feedback_pending) {
           status = STATUS_NO_MORE_ENTRIES;
         } else {
@@ -686,6 +821,7 @@ void evt_io_device_control(WDFQUEUE queue, WDFREQUEST request, size_t, size_t, U
         out->output_reports = static_cast<std::uint32_t>(c->outputs);
         out->feature_reads = static_cast<std::uint32_t>(c->features);
         out->closes_with_owned = static_cast<std::uint32_t>(c->owned_closes);
+        out->pads_lost_to_power = static_cast<std::uint32_t>(c->power_losses);
         state_guard lock(c);
         for (const auto &slot : c->slots) {
           if (slot.state == slot_state::active) ++out->controllers_active;
@@ -737,6 +873,21 @@ NTSTATUS evt_prepare_hardware(WDFDEVICE device, WDFCMRESLIST, WDFCMRESLIST) {
   return STATUS_SUCCESS;
 }
 
+NTSTATUS evt_d0_entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE) {
+  device_context *const c = get_device_context(device);
+  lifetime_guard life(c);
+  state_guard lock(c);
+  c->powered = true;
+  return STATUS_SUCCESS;
+}
+
+// Every way out of D0 (sleep, hibernate, shutdown, stop, removal) comes
+// through here, and a failure would only make things worse, so it never fails.
+NTSTATUS evt_d0_exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE) {
+  power_down(get_device_context(device));
+  return STATUS_SUCCESS;
+}
+
 NTSTATUS evt_release_hardware(WDFDEVICE device, WDFCMRESLIST) {
   device_context *const c = get_device_context(device);
   stop_all(c, false);
@@ -764,6 +915,8 @@ NTSTATUS evt_device_add(WDFDRIVER, PWDFDEVICE_INIT init) {
   WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
   pnp.EvtDevicePrepareHardware = evt_prepare_hardware;
   pnp.EvtDeviceReleaseHardware = evt_release_hardware;
+  pnp.EvtDeviceD0Entry = evt_d0_entry;
+  pnp.EvtDeviceD0Exit = evt_d0_exit;
   WdfDeviceInitSetPnpPowerEventCallbacks(init, &pnp);
 
   WDF_OBJECT_ATTRIBUTES attributes;
@@ -802,10 +955,14 @@ NTSTATUS evt_device_add(WDFDRIVER, PWDFDEVICE_INIT init) {
   if (!NT_SUCCESS(status)) return status;
 
   // Sequential: one feeder IOCTL at a time, which keeps reasoning simple.
-  // Power-managed so stop/resume can't race controller I/O.
+  // NOT power-managed: we sit above the power policy owner (vhf.sys), and WDF
+  // says such drivers must not use power-managed queues. Power is handled
+  // explicitly instead: D0Exit and every VHF call take the lifetime gate, and
+  // requests while out of D0 fail at once (STATUS_DEVICE_POWERED_OFF) rather
+  // than waiting in the queue for the whole sleep.
   WDF_IO_QUEUE_CONFIG queue_config;
   WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queue_config, WdfIoQueueDispatchSequential);
-  queue_config.PowerManaged = WdfTrue;
+  queue_config.PowerManaged = WdfFalse;
   queue_config.EvtIoDeviceControl = evt_io_device_control;
   return WdfIoQueueCreate(device, &queue_config, WDF_NO_OBJECT_ATTRIBUTES, nullptr);
 }

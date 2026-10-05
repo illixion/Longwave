@@ -1055,8 +1055,14 @@ nothing is ever loaded into a process that is already running.
   verification and game updates are unaffected. It starts as an allowlist
   (Cyberpunk 2077 first), not a guess. Every other game's audio is WASAPI
   process loopback, at most 7.1.
+- **Shortcuts.** The Companion exe takes a game itself (`--launch "<path>"`, or
+  a bare path, which is what dropping a game on the exe passes) and does what
+  Launch game… does for a browsed file, without the picker; a running instance
+  takes the request over. The picker writes such shortcuts for recent games.
 - **Order of work.** The menu, the consent box, launching, profiles and PCVR
-  routing need nothing new and come first. The audio component waits for the
+  routing need nothing new and come first (phase 1, built 2026-10-05: the
+  consent text's effect list in `game-launcher.js` is where the audio sentence
+  goes). The audio component waits for the
   v3 audio channel (§4.4): today nothing could carry its 12 channels to the
   headset, since Moonlight stops at 8.
 

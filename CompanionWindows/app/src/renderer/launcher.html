@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+  <title>Launch game — Longwave</title>
+  <link rel="stylesheet" href="launcher.css" />
+</head>
+<body>
+  <main class="picker">
+    <header class="picker-head">
+      <p class="silk">Longwave</p>
+      <h1>Launch game</h1>
+      <p class="mode" id="mode" role="status" aria-live="polite">
+        <span class="lamp" id="modeLamp" data-state="off" aria-hidden="true"></span>
+        <span id="modeText">Checking PCVR…</span>
+      </p>
+    </header>
+
+    <button id="browse" class="key" type="button">Browse for a game…</button>
+    <p class="hint">Any program, shortcut or internet shortcut — Steam games keep their Steam identity.</p>
+
+    <section id="recentsSection" class="group hidden" aria-labelledby="recentsTitle">
+      <h2 class="silk" id="recentsTitle">Recent</h2>
+      <ul id="recents" class="list" role="list"></ul>
+    </section>
+
+    <section id="librarySection" class="group hidden" aria-labelledby="libraryTitle">
+      <div class="group-head">
+        <h2 class="silk" id="libraryTitle">PCVR library</h2>
+        <input id="filter" type="search" placeholder="Filter" aria-label="Filter the PCVR library" />
+      </div>
+      <ul id="library" class="list" role="list"></ul>
+      <p id="libraryEmpty" class="hint hidden">No titles match.</p>
+    </section>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+
+    <footer class="picker-foot">
+      <label class="check">
+        <input id="ask" type="checkbox" />
+        <span>Ask before launching games</span>
+      </label>
+      <button id="close" class="chip" type="button">Close</button>
+    </footer>
+  </main>
+  <script src="launcher.js"></script>
+</body>
+</html>

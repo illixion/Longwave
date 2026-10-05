@@ -489,10 +489,15 @@ at all is **unverified**. `ISpatialAudioClient` takes a bed of up to 8.1.4.4
 plus dynamic objects (Atmos over HDMI: 7.1.4 + 20 objects on recent builds)
 [W5], but the objects go to the endpoint's spatial renderer, and WASAPI
 loopback captures the mixed engine output [W4]; nothing documented exposes
-object metadata to a capturing process, so the likely route is a virtual audio
-endpoint that *is* the spatial renderer (a driver). The protocol slot costs nothing until a host
-announces the capability; the Moonlight-side `MoonlightSoundStage` work already
-proves the client can place channel beds as virtual speakers.
+object metadata to a capturing process. *Measured since (§9 risk 7):* no driver
+is needed. A component loaded into the game wraps its `ISpatialAudioClient`
+and receives the bed (and any objects) before Windows renders them; Cyberpunk
+2077 sends a 7.1.4 bed and no objects. Loading that component is only safe in
+games without anti-cheat, so it happens only when the user starts the game
+through Longwave (§7.6); every other game gets WASAPI process loopback, at most
+7.1. The protocol slot costs nothing until a host announces the capability; the
+Moonlight-side `MoonlightSoundStage` work already proves the client can place
+channel beds as virtual speakers.
 
 ### 4.5 Control, clipboard, inventory
 
@@ -922,6 +927,31 @@ physical, while the console session is locked, which it is after a wake until
 someone signs in. Details: `CompanionWindows/spike/vhf-gamepad/README.md`,
 "Sleep and power".
 
+**Controller layering.** One pad pipeline with two possible inputs and one
+output, so a second input source never means a second driver:
+
+- *Inputs.* The headset bridge (the client's GameController devices: Xbox,
+  DualSense, Switch Pro, with gyro, accelerometer and battery where visionOS
+  exposes them) is the product path. A *local* input, a physical controller on
+  the PC read through SDL3 (zlib), which already speaks the Switch Pro,
+  Joy-Con, DualShock 4, DualSense and Xbox protocols including IMU calibration
+  and HD-rumble encoding, can be added later as a small extra. It is not a
+  Steam Input replacement: per-game profiles, remapping UI and gyro-to-mouse
+  are a separate product and out of scope. Hiding the physical device from
+  games that read it natively needs a kernel filter (HidHide); without one,
+  SDL-aware games see both, and XInput games, which never see a Switch Pro,
+  are unaffected.
+- *Output.* The VHF driver with per-session profiles: **Xbox Series** (XInput
+  games), **DualSense** (PlayStation-aware games, Steam gyro), and later **Switch
+  Pro** (emulators, Steam gyro with Nintendo layout) and DualShock 4.
+  Upstream libvirtualgamepad already implements the Switch Pro handshake,
+  subcommands, calibration flash, IMU reports and battery, so the plan is to
+  consume upstream rather than grow our reduced copy, contributing back the
+  sleep fix and a two-band rumble feedback event (upstream reduces Switch HD
+  rumble to amplitude; the client maps low and high bands onto two CoreHaptics
+  continuous events per side, an approximation, since CoreHaptics cannot replay
+  the Pro's waveform exactly).
+
 **Process model:** the Electron Companion and its C# backend stay — they own
 Hotspot NAT, PCVR install/supervision and the UI. The C# backend launches and
 supervises `longwave-host.exe` (as it supervises other processes), talks to it
@@ -998,6 +1028,37 @@ change to DebugTrace and lands before the core's first non-Apple build.
 - **Real-world A/B.** The same game, client and AP, alternating Moonlight and
   v3 sessions, metrics from §1. The comparison that decides Moonlight's
   retirement.
+
+### 7.6 Windows: launching games
+
+The tray menu gets **Launch game…**, the one way a game gets Longwave's
+in-process extras. Starting the game ourselves is what makes them safe to
+offer: the user chose it, we know which title it is before it runs, and
+nothing is ever loaded into a process that is already running.
+
+- **What it does.** Picks a game (the PCVR library's titles when the PCVR host
+  is installed, or any executable or shortcut), then starts it unelevated with
+  the title's optimised launch profile if one exists, through the PCVR host
+  when a PCVR session is on, so the title runs in VR, and with the game audio
+  component when the title qualifies (below). Without PCVR it is a plain
+  launch plus whatever applies.
+- **First use asks.** A message box says what the launch does: profile, PCVR
+  routing, and loading Longwave's audio component into games without
+  anti-cheat, and that games with anti-cheat are started without it. It has
+  Yes/No and a "Don't ask again" checkbox. Declining launches nothing.
+- **Which titles get the audio component.** Only titles with no anti-cheat. The
+  launcher refuses to load it when the install shows an anti-cheat (Easy
+  Anti-Cheat, BattlEye, Vanguard, Ricochet, nProtect, PunkBuster, XIGNCODE,
+  FACEIT and similar files or services), and starts such games without it.
+  The component is loaded at process start (created suspended, loaded,
+  resumed), never written into the game's folder, so Steam's file
+  verification and game updates are unaffected. It starts as an allowlist
+  (Cyberpunk 2077 first), not a guess. Every other game's audio is WASAPI
+  process loopback, at most 7.1.
+- **Order of work.** The menu, the consent box, launching, profiles and PCVR
+  routing need nothing new and come first. The audio component waits for the
+  v3 audio channel (§4.4): today nothing could carry its 12 channels to the
+  headset, since Moonlight stops at 8.
 
 ## 8. Phased roadmap
 
@@ -1353,8 +1414,29 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    power-down and the host recreates them (§7.2). *Open:* feature updates, real games, Steam
    Input, and Vanguard-class anti-cheat, which is reported to reject any
    virtual pad.
-9. **Anti-cheat** may reject injected input or virtual pads in some games;
-   Sunshine faces the same.
+9. **Anti-cheat** is three separate risks, none tested yet:
+   - *Virtual pads.* Games may refuse controllers they can identify as virtual,
+     because of aim-assist abuse (Cronus, XIM, mouse-to-controller
+     converters). Mainstream titles behind Easy Anti-Cheat and BattlEye have
+     accepted ViGEmBus pads for years (Sunshine, Parsec, DS4Windows), and
+     Steam Remote Play uses its own virtual pad; Vanguard is reported to reject
+     them, though Valorant has no PC controller support anyway. Ours is
+     identifiable as virtual by design (parent `Root\LongwaveVirtualGamepad`;
+     XInput itself can't tell), and ships no kernel driver, so it can't land
+     on a vulnerable-driver blocklist as ViGEmBus could. Using a virtual pad is
+     not cheating; bans come from macros and injection.
+   - *Injected keyboard and mouse.* `SendInput` input is flagged as injected
+     and some games, especially with kernel anti-cheat, ignore it — a
+     functionality problem Moonlight/Sunshine users already meet, not a ban
+     risk. The fix, if needed, is a VHF keyboard and mouse beside the pads.
+   - *Code in the game's process* (the game audio component, §7.6) is the
+     real ban risk in anything with anti-cheat. Hence: only through Launch
+     game…, only titles with no anti-cheat, an allowlist first, never into a
+     running process; everything else uses process loopback.
+   *Test before relying on either:* one Easy Anti-Cheat and one BattlEye title
+   the user owns, pad only (input works, nothing flagged), one with Steam Input
+   running (does Steam grab or double the pad), and mouse injection in the
+   same titles. The audio component is never run in any of them.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on
     everyone; simulcast is only partly possible on single-engine Macs.
 11. **swift-crypto on x64 Windows** isn't claimed by its README [S1]. *Closed

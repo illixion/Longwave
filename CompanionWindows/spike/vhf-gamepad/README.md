@@ -7,15 +7,20 @@ see the pad? **Answer on Windows 10 22H2 (Secure Boot on): yes.** **On Windows
 11 26H2 (Secure Boot on, fresh install): yes while Smart App Control is in
 evaluation or off; with Smart App Control on, not reliably** — Windows ignores
 the local certificate there and judges each file by Microsoft's cloud
-reputation, which blocked our feeder tool in one of two fresh builds. Results
-are at the end.
+reputation, which blocked our feeder tool in one of two fresh builds. **On Windows
+11 bare metal with Memory Integrity (HVCI) on, built on the machine itself: yes,
+HVCI changes nothing**, but putting the PC to sleep while pads were being created
+and destroyed blue-screened it (0x9F in Microsoft's `vhf.sys`), which is an open
+risk. Results are at the end.
 
 ## What it is, in plain Windows terms
 
 - **A user-mode driver (UMDF2).** It's a DLL that Windows loads into
-  `WUDFHost.exe`, an ordinary process. If it crashes, that process restarts; the
-  PC can't blue-screen. Only *kernel* drivers need Microsoft's signature, so a
-  user-mode driver is what makes "no paid certificate" possible at all.
+  `WUDFHost.exe`, an ordinary process. If it crashes, that process restarts; our
+  code can't blue-screen the PC. (The kernel stack it drives can: see the sleep
+  crash in the Windows 11 bare-metal results.) Only *kernel* drivers need
+  Microsoft's signature, so a user-mode driver is what makes "no paid
+  certificate" possible at all.
 - **On the inbox Virtual HID Framework (VHF).** `vhf.sys` and `VhfUm.dll` ship
   with Windows 10 1709 and later. Our driver asks VHF to create a HID device
   (the USB-less version of what a real controller is), with the report
@@ -84,7 +89,7 @@ install.ps1 / uninstall.ps1       see above (inbox PowerShell only)
 run-gamepad-spike.ps1             baseline + install + tests + uninstall -> results\*.log
 vm/New-Win11TestVM.ps1            Hyper-V host: stock Windows 11 VM, unattended (+ autounattend.template.xml)
 vm/Run-KitInVM.ps1                Hyper-V host: run the kit in that VM's desktop, reboot, run again, fetch logs
-evidence/                         result logs worth keeping (Windows 10 PC, Windows 11 VM)
+evidence/                         result logs worth keeping (Windows 10 PC, Windows 11 VM and bare metal)
 ```
 
 `spike/` is gitignored in this repo; files here are force-added.
@@ -336,6 +341,95 @@ present.
   per-user builds can't use it.
 - The kernel half is unaffected by SAC: VHF, `WUDFRd` and `xinputhid` are
   Microsoft's, and the UMDF DLL loaded in every run.
+
+## Results: Windows 11 bare metal (HVCI on), 2026-10-05
+
+Log: `evidence/win11-baremetal-2026-10-05.log`.
+
+Baseline: Windows 11 Pro 26H2 build 26300.9457 installed on gaming-pc's own
+hardware (Ryzen 5 5600X, RTX 3080). **Memory Integrity (HVCI) running** with VBS,
+the first run with it on. **Smart App Control: Evaluation**, Secure Boot on, test
+signing off, firewall on, Defender signatures from the same day. Nothing for
+development was installed beforehand. The kit was built on that PC from a plain
+copy of this folder, the way a user would build it, then installed and tested
+there.
+
+### Building it yourself
+
+- **Prerequisites, all non-interactive through winget, ~3 minutes, no reboot:**
+  ```powershell
+  winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+  winget install --id Microsoft.WindowsWDK.10.0.26100 --exact
+  ```
+  Build Tools 17.14 took 141 s and the WDK (10.0.26100.6584) 48 s. Together they
+  use 6.2 GB. The recommended C++ components already include Windows SDK
+  10.0.26100.7705, so `winget install Microsoft.WindowsSDK.10.0.26100` only
+  answers "No available upgrade found" (0x8A15002B). That's harmless, but it
+  reads like an error. From an elevated shell nothing prompts; from a normal one
+  each installer asks UAC once.
+- **Installing developer tools did not change Smart App Control.** It stayed in
+  evaluation through the installs, the build and every run, and was still there
+  at the end.
+- `build.ps1` in a **normal, unelevated** PowerShell: ~30 s, clean under
+  `/W4 /WX`, InfVerif valid, Inf2Cat fine. (MSVC's `vctip.exe` telemetry helper
+  lingers after the build. That only matters to a wrapper that waits for the
+  whole process tree.)
+
+### Facts
+
+- **HVCI changes nothing.** The install is silent (6 s, "signed with an
+  Authenticode catalog from a trusted publisher") and `WUDFHost.exe` loads the
+  driver DLL. No CodeIntegrity 3033/3034/3076/3077 appeared for any kit file in
+  any run. The day's only 3004 was for Defender's own `DefenderSessionHelper.exe`.
+- **Works and survives a reboot:** the second `-KeepInstalled` run gave 54 PASS
+  0 FAIL 2 SKIP. After a graceful reboot, `-AfterReboot` gave 56 PASS 0 FAIL
+  0 SKIP, with the device back by itself, then a clean uninstall. That uninstall
+  left no node, pad nodes, package, DriverStore folder, DLL, certificate in any
+  store, CNG key or task. Early in that boot Kernel-PnP logged event 219 once
+  ("`\Driver\WUDFRd` failed to load", 0xC0000365) for our node, which then
+  started normally.
+- **Sleep while pads are being created and destroyed blue-screens the PC.** On
+  the first attempt, someone at the PC chose Sleep from the Start menu (System
+  log: `winlogon.exe` called `SetSuspendState`) while the 250-cycle
+  create/destroy test was running. The system-sleep D3 `IRP_MN_SET_POWER` for
+  `ROOT\LONGWAVEVIRTUALGAMEPAD\0000` went through our filter (`WudfRd`) and was
+  held pending by Microsoft's `vhf.sys` (10.0.26100.8972). Five minutes later the
+  power watchdog bugchecked: **0x9F, subcode 3** (bucket
+  `0x9F_3_POWER_DOWN_IMAGE_ntkrnlmp`). After the crash the device node and the
+  DLL copy were gone, as in the VM's hard reset, but the package and the
+  certificate remained, and `uninstall.ps1` removed them cleanly. Our user-mode
+  code didn't crash. The kernel stack it drives couldn't finish a power
+  transition while pad add/remove was in flight. Why exactly isn't visible in a
+  triage minidump.
+- First attempt only: **XInput input read zeros** (26 FAIL, and SDL's Xbox input
+  too) while the slot appeared and rumble arrived. It didn't come back in the
+  repeat run, after the reboot, over SSH (session 0), from a background desktop
+  process, or with the monitor switched off. Unexplained. It may be related to
+  the sleep that came a minute later.
+- **Windows.Gaming.Input unelevated passes whenever its window gets the
+  foreground:** input, vibration and impulse triggers, 3 of 3 standalone, 4 of 4
+  nested under an elevated parent as the kit does it, and the counted run after
+  the reboot. In the second `-KeepInstalled` run the window didn't get the
+  foreground, so it was a SKIP. Elevated, vibration still fails as in the VM,
+  and input failed once too. The parent calling
+  `AllowSetForegroundWindow(ASFW_ANY)` first made it worse (SKIP 4 of 4), so the
+  kit is unchanged.
+- XInput slot 23-244 ms after create (cycles: mean 8-9 ms), input within
+  0.3 ms. Kill-the-feeder 16-48 ms. 250 cycles in 2.8 s with no handle growth
+  and +28-116 KB private memory. SDL3 Xbox and DualSense (gyro exact, rumble,
+  lightbar) pass as on Windows 10 and in the VM.
+
+### Differences from the VM, and what is still open
+
+- New here: HVCI on (no effect), a real S3 sleep (the VM never slept), and the
+  elevated WGI input failure. Same as the VM: SAC evaluation logs nothing for
+  our files.
+- **Open: sleep.** Not yet known: whether sleep with pads present but idle is
+  safe, and whether a driver change avoids the hang. One option is to refuse or
+  defer create/destroy while a power-down is pending; another is to not wait in
+  `VhfDelete`. The Longwave host creates pads when a session starts and destroys
+  them when it ends, so a PC put to sleep at that moment is a realistic case. It
+  needs a deliberate sleep test (S3, then Wake-on-LAN) before this ships.
 
 ## Licences
 

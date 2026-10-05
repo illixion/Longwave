@@ -623,7 +623,7 @@ async function dispatchControl(method, params = {}) {
 //     something other than a program is opened by the shell.
 // Nothing here elevates: this process is asInvoker, spawn cannot raise a UAC prompt, and a game
 // that demands administrator rights fails with a message instead. Desktop games are children of
-// this process, detached, so they outlive it; the backend never starts them because it is
+// this process (not tree-killed: nothing kills this process's tree), so they outlive it; the backend never starts them because it is
 // tree-killed on quit.
 
 const userDataDir = () => app.getPath('userData');
@@ -698,8 +698,12 @@ function spawnDetached(exe, args, cwd, env) {
     try {
       // Verbatim, so a shortcut's or Steam's argument string reaches the game exactly as written;
       // argv0 carries its own quotes for the same reason.
+      // Not `detached`: on Windows that is DETACHED_PROCESS, which leaves a console program with
+      // no console at all (found on gaming-pc: a console game's child tools ran and printed nothing).
+      // Without it a console game gets its own window, as from Explorer, and Windows never ties
+      // a child's lifetime to its parent's, so the game still outlives the Companion.
       child = spawn(exe, args ? [args] : [], {
-        cwd, env, detached: true, stdio: 'ignore', windowsVerbatimArguments: true, argv0: `"${exe}"`,
+        cwd, env, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, argv0: `"${exe}"`,
       });
     } catch (e) {
       reject(e);

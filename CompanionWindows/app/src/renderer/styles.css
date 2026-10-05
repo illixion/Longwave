@@ -747,7 +747,7 @@ select { cursor: pointer; }
 .view-games .view-head { padding-bottom: 12px; }
 
 .lib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
-.lib-toolbar input[type="search"] { flex: 1 1 200px; min-width: 160px; }
+.lib-toolbar input[type="search"] { flex: 1 1 140px; min-width: 120px; }
 .lib-sort { display: flex; align-items: center; gap: 7px; }
 .lib-sort select { padding: 8px 10px; font-size: 12.5px; }
 .lib-count { margin: -4px 0 0; }

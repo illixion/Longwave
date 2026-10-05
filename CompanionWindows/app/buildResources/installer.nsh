@@ -21,6 +21,7 @@
 
 !include nsDialogs.nsh
 !include LogicLib.nsh
+!include FileFunc.nsh
 ; electron-builder prepends this file to its own script, ahead of the template's
 ; `!include MUI2.nsh`, so MUI_HEADER_TEXT below would not exist yet and makensis aborts with
 ; 'macro named "MUI_HEADER_TEXT" not found'. MUI2.nsh is include-guarded, so pulling it in
@@ -114,6 +115,27 @@ FunctionEnd
     WriteRegDWORD HKLM "Software\Longwave\Companion" "PcvrOptIn" 0
   ${EndIf}
   SetRegView lastused
+
+  !insertmacro removeUpdaterCache
+!macroend
+
+; electron-builder's template copies the whole installer (~130 MB) to
+; %LOCALAPPDATA%\<package>-updater\installer.exe on every install, for electron-updater's
+; differential updates. electron-updater is deliberately absent here (see src/release-trust.js),
+; so the copy is dead weight that nothing ever reads or cleans up. Removed on install (which also
+; clears copies left by older installers) and on uninstall. Per-user, like the template's copy.
+!macro removeUpdaterCache
+  !ifdef APP_INSTALLER_STORE_FILE
+    ${if} $installMode == "all"
+      SetShellVarContext current
+    ${endif}
+    Delete "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
+    ${GetParent} "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}" $0
+    RMDir "$0"
+    ${if} $installMode == "all"
+      SetShellVarContext all
+    ${endif}
+  !endif
 !macroend
 
 !macro customUnInstall
@@ -135,5 +157,24 @@ FunctionEnd
   ; too, and removing the rules would make Windows ask again after every update.
   ${ifNot} ${isUpdated}
     nsExec::Exec '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name=all program="$INSTDIR\resources\backend\LongwaveCompanionBackend.exe"'
+
+    ; The template's `RMDir /r $INSTDIR` runs before this macro, while the backend could still
+    ; hold its own exe open, so it can leave the install directory (or locked files in it)
+    ; behind. The processes are stopped now; try again. The template's un.onInit also does
+    ; `SetOutPath $INSTDIR`, which makes the directory the uninstaller's own working directory,
+    ; and Windows will not remove a process's current directory — so step out of it first, or
+    ; an empty "Longwave Companion" folder stays in Program Files.
+    SetOutPath "$TEMP"
+    Sleep 500
+    RMDir /r "$INSTDIR"
+
+    ; The backend's per-user settings: the screen-streaming pairing token, whether streaming is
+    ; on, and the input toggles. Leaving the token behind would let a reinstall accept a headset
+    ; paired before the uninstall without the user pairing it again. HKCU of the user running
+    ; the uninstaller — the one who installed, in the normal case.
+    DeleteRegKey HKCU "Software\Longwave\Companion"
+    DeleteRegKey /ifempty HKCU "Software\Longwave"
+
+    !insertmacro removeUpdaterCache
   ${endIf}
 !macroend

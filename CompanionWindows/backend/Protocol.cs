@@ -181,6 +181,8 @@ public sealed class LibraryAddCustomParams
     [JsonPropertyName("name")] public string? Name { get; set; }
     [JsonPropertyName("arguments")] public string? Arguments { get; set; }
     [JsonPropertyName("kind")] public string? Kind { get; set; }
+    /// <summary>The Steam game the file belongs to, when it is a non-entry file in its folder.</summary>
+    [JsonPropertyName("linkedSteamAppId")] public uint? LinkedSteamAppId { get; set; }
 }
 
 public sealed class LibraryPathParams

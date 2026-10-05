@@ -269,6 +269,8 @@ public sealed class PipeServer : BackgroundService
                 "LibraryAddCustom" => AddCustomGame(ParseParams<LibraryAddCustomParams>(req)),
                 "LibraryRemoveCustom" => _games.RemoveCustomTitle(RequireId(ParseParams<LibraryIdParams>(req)?.Id)),
                 "LibraryMatchPath" => _games.MatchPath(ParseParams<LibraryPathParams>(req)?.Path),
+                // Before running a picked file as a Steam app (not through a title's entry).
+                "LibraryEnsureSteam" => await _games.EnsureSteamRunningAsync(),
                 "LibraryResolveLaunch" => await ResolveLaunchAsync(ParseParams<LibraryResolveParams>(req)),
                 "LibraryMarkPlayed" => _games.MarkPlayed(RequireId(ParseParams<LibraryIdParams>(req)?.Id)),
                 "LibraryArt" => ParseParams<LibraryArtParams>(req) is { } art
@@ -305,7 +307,8 @@ public sealed class PipeServer : BackgroundService
     private object AddCustomGame(LibraryAddCustomParams? p)
     {
         if (p is null || string.IsNullOrWhiteSpace(p.Path)) throw new ArgumentException("A path is required.");
-        return _games.AddCustomTitle(p.Path, p.Name, p.Arguments, Games.GameKinds.Parse(p.Kind) ?? Games.GameKind.Flat);
+        return _games.AddCustomTitle(p.Path, p.Name, p.Arguments, Games.GameKinds.Parse(p.Kind) ?? Games.GameKind.Flat,
+            p.LinkedSteamAppId);
     }
 
     /// <summary>

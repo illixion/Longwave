@@ -280,7 +280,7 @@
     el.dName.textContent = t.name;
     el.dMeta.textContent = [
       LV.KIND_LABEL[t.kind] + (t.kindOverridden ? ' (your choice)' : ''),
-      t.source === 'steam' ? 'Steam' : 'Added by you',
+      t.source === 'steam' ? 'Steam' : t.linkedSteamAppId ? `Added by you, runs as Steam app ${t.linkedSteamAppId}` : 'Added by you',
       LV.formatSize(t.sizeBytes),
       t.lastPlayed ? `Played ${LV.formatPlayed(t.lastPlayed).toLowerCase()}` : 'Never played',
     ].filter(Boolean).join(' · ');

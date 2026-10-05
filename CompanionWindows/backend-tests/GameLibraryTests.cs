@@ -14,6 +14,7 @@ public sealed class GameLibraryTests : IDisposable
     private static readonly App Cyberpunk = new(1091501, "Cyberpunk 2077", "Cyberpunk 2077",
         new[] { new Entry(@"bin\x64\Cyberpunk2077.exe", Type: "default", Description: "Play"),
                 new Entry(@"REDprelauncher.exe", Type: "option1", Description: "Launcher") },
+        Files: new[] { @"bin\x64\Cyberpunk2077_dx11.exe" },
         LastPlayed: 1_700_000_000);
     private static readonly App Both = new(620, "Portal-ish", "Portal",
         new[] { new Entry("portal.exe", Type: "default"),
@@ -130,8 +131,7 @@ public sealed class GameLibraryTests : IDisposable
     {
         var lib = Library();
         var exe = Path.Combine(_steam.InstallDirOf(Cyberpunk), "bin", "x64", "Cyberpunk2077.exe");
-        Assert.Equal("steam:1091501", lib.MatchPath(exe)!.Id);
-        Assert.Equal("steam:1091501", lib.MatchPath(exe.ToUpperInvariant())?.Id ?? "steam:1091501"); // case-insensitive on Windows
+        Assert.Equal("steam:1091501", lib.MatchPath(exe)!.Title.Id);
         Assert.Null(lib.MatchPath(Path.Combine(_steam.InstallDirOf(Cyberpunk) + " 2", "x.exe")));
 
         var game = Path.Combine(_stateDir, "Indie", "indie.exe");
@@ -140,7 +140,8 @@ public sealed class GameLibraryTests : IDisposable
         Assert.Null(lib.MatchPath(game));
         var added = lib.AddCustomTitle(game, null, "-windowed", GameKind.Flat);
         Assert.Equal("indie", added.Name);
-        Assert.Equal(added.Id, lib.MatchPath(game)!.Id);
+        Assert.Equal(added.Id, lib.MatchPath(game)!.Title.Id);
+        Assert.True(lib.MatchPath(game)!.Exact);
         Assert.Equal(added.Id, lib.AddCustomTitle(game, "Other", "-windowed", GameKind.Vr).Id);
         var plan = lib.ResolveLaunch(added.Id, vr: false, exposedOnly: false);
         Assert.Equal(game, plan.Executable);
@@ -203,5 +204,63 @@ public sealed class GameLibraryTests : IDisposable
         var before = lib.Find("steam:1091501")!.LastPlayed;
         lib.MarkPlayed("steam:1091501");
         Assert.True(lib.Find("steam:1091501")!.LastPlayed > before);
+    }
+
+    [Fact]
+    public void MatchPath_TheEntryExecutableIsTheTitle()
+    {
+        var lib = Library();
+        var entry = lib.MatchPath(Path.Combine(_steam.InstallDirOf(Cyberpunk), "bin", "x64", "Cyberpunk2077.exe"))!;
+        Assert.Equal("steam:1091501", entry.Title.Id);
+        Assert.False(entry.Exact);
+        Assert.True(entry.DesktopEntry);
+
+        var alyx = lib.MatchPath(Path.Combine(_steam.InstallDirOf(Alyx), "game", "bin", "win64", "hlvr.exe"))!;
+        Assert.True(alyx.VrEntry);
+        Assert.True(lib.ResolveLaunch(alyx.Title.Id, vr: true, exposedOnly: false).ProfileApplied);
+    }
+
+    [Fact]
+    public void MatchPath_AnotherFileInTheFolderIsNotTheEntry()
+    {
+        var lib = Library();
+        foreach (var other in new[] { Path.Combine("bin", "x64", "Cyberpunk2077_dx11.exe"), "REDprelauncher.exe" })
+        {
+            var m = lib.MatchPath(Path.Combine(_steam.InstallDirOf(Cyberpunk), other))!;
+            Assert.Equal(1091501u, m.Title.SteamAppId);
+            Assert.False(m.Exact);
+            Assert.False(m.DesktopEntry);
+            Assert.False(m.VrEntry);
+        }
+    }
+
+    [Fact]
+    public void LinkedCustomEntry_RunsTheExactFileWithTheSteamIdentity()
+    {
+        Directory.CreateDirectory(Path.Combine(_steam.Root, "appcache", "librarycache", "1091501"));
+        var art = Path.Combine(_steam.Root, "appcache", "librarycache", "1091501", "library_600x900.jpg");
+        File.WriteAllText(art, "");
+        var lib = Library();
+        var dx11 = Path.Combine(_steam.InstallDirOf(Cyberpunk), "bin", "x64", "Cyberpunk2077_dx11.exe");
+        var added = lib.AddCustomTitle(dx11, "Cyberpunk 2077 (DX11)", "--launcher-skip", GameKind.Flat, 1091501);
+        Assert.Equal(1091501u, added.LinkedSteamAppId);
+        Assert.Null(added.SteamAppId);
+        Assert.Equal(art, added.PortraitArt);
+
+        var reloaded = Library().Find(added.Id)!;
+        Assert.Equal(1091501u, reloaded.LinkedSteamAppId);
+        var match = lib.MatchPath(dx11)!;
+        Assert.True(match.Exact);
+        Assert.Equal(added.Id, match.Title.Id);
+
+        var plan = lib.ResolveLaunch(added.Id, vr: false, exposedOnly: false);
+        Assert.Equal(dx11, plan.Executable);
+        Assert.Equal("--launcher-skip", plan.Arguments);
+        Assert.Equal(Path.GetDirectoryName(dx11), plan.WorkingDirectory);
+        Assert.Equal(1091501u, plan.SteamAppId);
+        Assert.False(plan.ProfileApplied);
+
+        // The plain Steam title still launches through Steam's entry.
+        Assert.EndsWith("Cyberpunk2077.exe", lib.ResolveLaunch("steam:1091501", vr: false, exposedOnly: false).Executable);
     }
 }

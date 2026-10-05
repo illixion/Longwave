@@ -50,6 +50,10 @@ public sealed record GameTitle
     /// <summary>"steam" or "custom".</summary>
     [JsonPropertyName("source")] public required string Source { get; init; }
     [JsonPropertyName("steamAppId")] public uint? SteamAppId { get; init; }
+    /// <summary>Custom titles only: the Steam game this executable belongs to (a file inside its
+    /// folder that is not its launch entry). Launches carry that app's Steam identity, and art
+    /// comes from it.</summary>
+    [JsonPropertyName("linkedSteamAppId")] public uint? LinkedSteamAppId { get; init; }
     /// <summary>Custom titles only: exactly what runs.</summary>
     [JsonPropertyName("executable")] public string? Executable { get; init; }
     [JsonPropertyName("arguments")] public string? Arguments { get; init; }
@@ -89,6 +93,19 @@ public sealed record LaunchPlan
     [JsonPropertyName("vrEntry")] public bool VrEntry { get; init; }
     [JsonPropertyName("profileApplied")] public bool ProfileApplied { get; init; }
 }
+
+/// <summary>
+/// What a file on disk is to the library (<see cref="GameLibrary.MatchPath"/>). <c>Exact</c>: it is a
+/// custom title's own executable. Otherwise the title is the Steam game whose folder holds it, and
+/// <c>DesktopEntry</c> / <c>VrEntry</c> say whether it is the executable Steam's desktop or VR launch
+/// entry would start (VR includes an optimised profile's executable) — only then does launching the
+/// title run the file that was picked.
+/// </summary>
+public sealed record PathMatch(
+    [property: JsonPropertyName("title")] GameTitle Title,
+    [property: JsonPropertyName("exact")] bool Exact,
+    [property: JsonPropertyName("desktopEntry")] bool DesktopEntry,
+    [property: JsonPropertyName("vrEntry")] bool VrEntry);
 
 /// <summary>Art for one title. A missing cover is a normal answer, not an error.</summary>
 public sealed record ArtResult(

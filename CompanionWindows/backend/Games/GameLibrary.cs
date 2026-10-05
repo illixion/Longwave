@@ -77,7 +77,8 @@ public sealed class GameLibrary
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("executable")] string Executable,
         [property: JsonPropertyName("arguments")] string? Arguments,
-        [property: JsonPropertyName("kind")] GameKind Kind);
+        [property: JsonPropertyName("kind")] GameKind Kind,
+        [property: JsonPropertyName("linkedSteamAppId")] uint? LinkedSteamAppId = null);
 
     internal sealed record LibraryState
     {
@@ -266,6 +267,7 @@ public sealed class GameLibrary
         foreach (var t in state.CustomTitles)
         {
             var id = t.Id;
+            var linked = t.LinkedSteamAppId;
             all.Add(Finish(new GameTitle
             {
                 Id = id, Name = t.Name, Source = "custom",
@@ -273,6 +275,9 @@ public sealed class GameLibrary
                 InstallDir = Path.GetDirectoryName(t.Executable),
                 DetectedKind = t.Kind, Kind = t.Kind,
                 Icon = t.Executable,
+                LinkedSteamAppId = linked,
+                PortraitArt = linked is uint a1 ? SteamLibrary.FindArt(artRoot, a1, SteamLibrary.PortraitCandidates) : null,
+                LandscapeArt = linked is uint a2 ? SteamLibrary.FindArt(artRoot, a2, SteamLibrary.LandscapeCandidates) : null,
             }, state, exposed, disabledOptimized));
         }
         foreach (var app in installed)
@@ -346,21 +351,38 @@ public sealed class GameLibrary
         ListAllTitles().FirstOrDefault(t => string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// The library title a file on disk belongs to: a custom title with exactly that executable,
-    /// or the Steam title whose install directory contains it. This is how a browsed exe under
-    /// <c>steamapps\common\&lt;game&gt;</c> gets its Steam identity — by path, no guessing.
+    /// What a file on disk is to the library, by path: a custom title with exactly that executable
+    /// (<c>Exact</c>), or else the Steam title whose install folder contains it, with whether the file
+    /// is the executable that title's desktop or VR launch entry would start. A different file in
+    /// the same folder (a launcher, a DX11 build, a tool) is still that Steam game for its identity,
+    /// but the caller must run that file, not the title. Null when the file belongs to nothing.
     /// </summary>
-    public GameTitle? MatchPath(string? path)
+    public PathMatch? MatchPath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         string full;
         try { full = Path.GetFullPath(path); } catch { return null; }
         var titles = ListAllTitles();
-        return titles.FirstOrDefault(t => t.Executable is not null
-                   && string.Equals(Path.GetFullPath(t.Executable), full, StringComparison.OrdinalIgnoreCase))
-            ?? titles.Where(t => t.Source == "steam" && t.InstallDir is not null && IsInside(full, t.InstallDir))
-                     .OrderByDescending(t => t.InstallDir!.Length)
-                     .FirstOrDefault();
+        var custom = titles.FirstOrDefault(t => t.Executable is not null
+            && string.Equals(Path.GetFullPath(t.Executable), full, StringComparison.OrdinalIgnoreCase));
+        if (custom is not null) return new PathMatch(custom, Exact: true, DesktopEntry: false, VrEntry: false);
+        var steam = titles.Where(t => t.Source == "steam" && t.InstallDir is not null && IsInside(full, t.InstallDir))
+                          .OrderByDescending(t => t.InstallDir!.Length)
+                          .FirstOrDefault();
+        if (steam is null) return null;
+        bool Same(string? exe) => exe is not null && string.Equals(exe, full, StringComparison.OrdinalIgnoreCase);
+        bool Starts(bool vr)
+        {
+            try
+            {
+                var plan = ResolveSteam(steam, steam.SteamAppId!.Value, vr);
+                if (Same(plan.Executable)) return true;
+                // The entry's own executable counts too when a profile swapped it for another.
+                return vr && plan.ProfileApplied && Same(ResolveSteam(steam with { Optimized = false }, steam.SteamAppId.Value, true).Executable);
+            }
+            catch (LaunchRefusedException) { return false; }
+        }
+        return new PathMatch(steam, Exact: false, DesktopEntry: Starts(false), VrEntry: Starts(true));
     }
 
     private static bool IsInside(string full, string dir)
@@ -420,7 +442,10 @@ public sealed class GameLibrary
     /// was chosen locally — but it is still validated, because an entry that cannot launch is
     /// worse than a rejected add. Re-adding the same executable returns the existing entry.
     /// </summary>
-    public GameTitle AddCustomTitle(string executablePath, string? name, string? arguments, GameKind kind)
+    /// <param name="linkedSteamAppId">The Steam game the file belongs to (a non-entry file in its
+    /// folder): launches then carry that app's identity, and art comes from it.</param>
+    public GameTitle AddCustomTitle(string executablePath, string? name, string? arguments, GameKind kind,
+                                    uint? linkedSteamAppId = null)
     {
         if (string.IsNullOrWhiteSpace(executablePath))
             throw new ArgumentException("Executable path is required.", nameof(executablePath));
@@ -437,7 +462,7 @@ public sealed class GameLibrary
             id = "custom:" + Guid.NewGuid().ToString("N")[..12];
             var title = new CustomTitle(id,
                 string.IsNullOrWhiteSpace(name) ? Path.GetFileNameWithoutExtension(full) : name.Trim(),
-                full, string.IsNullOrWhiteSpace(arguments) ? null : arguments, kind);
+                full, string.IsNullOrWhiteSpace(arguments) ? null : arguments, kind, linkedSteamAppId);
             return s with { CustomTitles = new List<CustomTitle>(s.CustomTitles) { title } };
         });
         _log?.LogInformation("Added custom {Kind} title {Id}.", kind.Name(), id);
@@ -502,6 +527,9 @@ public sealed class GameLibrary
             TitleId = title.Id, Name = title.Name, Executable = title.Executable!,
             Arguments = title.Arguments,
             WorkingDirectory = Path.GetDirectoryName(title.Executable!)!,
+            // A file from a Steam game's folder runs as is, but as that Steam app, so its DRM
+            // does not quit and relaunch it through Steam. No profile: profiles target the entry.
+            SteamAppId = title.LinkedSteamAppId,
             VrEntry = vr && title.Kind.CanRunInVr(),
         };
     }

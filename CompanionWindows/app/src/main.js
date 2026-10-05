@@ -616,9 +616,11 @@ async function dispatchControl(method, params = {}) {
 //   * flat titles always start on the desktop, here;
 //   * VR / both titles go to the PCVR host (GamesLaunchResolved: the CloudXR-specific start) while a
 //     PCVR session is on; a session still starting is waited for (bounded), then desktop;
-//   * a browsed .exe (or .lnk to one) is matched to its library title by path — which is how a
-//     game under steamapps\common gets its Steam identity — and otherwise offered "Add to
-//     library" in the picker, or started as is from the command line;
+//   * a browsed .exe (or .lnk to one) is matched to the library by path. A custom title's own
+//     exe, or the exe a Steam title's launch entry would start, launches that title. Any other
+//     file in a Steam game's folder runs exactly as picked, with that game's Steam identity (so
+//     its DRM does not relaunch it through Steam). A file the library does not know is offered
+//     "Add to library" in the picker, or started as is from the command line;
 //   * a .url opens the library title its steam:// id names, else its scheme's handler; a .lnk to
 //     something other than a program is opened by the shell.
 // Nothing here elevates: this process is asInvoker, spawn cannot raise a UAC prompt, and a game
@@ -776,8 +778,31 @@ async function resolveFile(filePath, { addToLibrary = null } = {}) {
   if (!fs.existsSync(filePath)) throw new Error(`${filePath} no longer exists.`);
 
   const forExe = async (exe, args, cwd) => {
-    const title = client.connected ? await libraryRpc('LibraryMatchPath', { path: exe }).catch(() => null) : null;
-    if (title) return { kind: 'title', id: title.id, name: title.name };
+    const plain = { kind: 'exe', name, exe, args: args || '', cwd: cwd || path.dirname(exe) };
+    const match = client.connected ? await libraryRpc('LibraryMatchPath', { path: exe }).catch(() => null) : null;
+    if (match && match.exact) return { kind: 'title', id: match.title.id, name: match.title.name };
+    if (match) {
+      // A Steam game's folder. Its launch entry's own exe is the title; anything else runs as
+      // picked, as that Steam app.
+      const title = match.title;
+      await refreshFoveatedStatus();
+      const mode = gameLauncher.launchModeFor(pcvrClient.connected, lastFoveatedStatus, title.kind);
+      const usesVrEntry = mode !== 'flat' || title.kind === 'vr';
+      if (usesVrEntry ? match.vrEntry : match.desktopEntry) {
+        return { kind: 'title', id: title.id, name: title.name };
+      }
+      if (addToLibrary) {
+        const answer = await addToLibrary({ name, exe, linkedTitle: title });
+        if (answer === null) return { kind: 'cancel' };
+        if (answer === 'flat' || answer === 'vr') {
+          const added = await libraryRpc('LibraryAddCustom', {
+            path: exe, name, arguments: args || null, kind: answer, linkedSteamAppId: title.steamAppId,
+          });
+          return { kind: 'title', id: added.id, name: added.name };
+        }
+      }
+      return { ...plain, steamAppId: title.steamAppId };
+    }
     if (addToLibrary) {
       const answer = await addToLibrary({ name, exe });
       if (answer === null) return { kind: 'cancel' };
@@ -786,7 +811,7 @@ async function resolveFile(filePath, { addToLibrary = null } = {}) {
         return { kind: 'title', id: added.id, name: added.name };
       }
     }
-    return { kind: 'exe', name, exe, args: args || '', cwd: cwd || path.dirname(exe) };
+    return plain;
   };
 
   if (kind === 'exe') return forExe(filePath);
@@ -815,7 +840,10 @@ async function performResolved(r) {
   switch (r.kind) {
     case 'title': return launchLibraryTitle(r.id);
     case 'exe':
-      await startDesktop(r.exe, r.args, r.cwd, null, r.name);
+      if (r.steamAppId && !await libraryRpc('LibraryEnsureSteam', null, RESOLVE_TIMEOUT_MS)) {
+        throw new Error(`${r.name} is part of a Steam game and Steam could not be started. Start Steam, then try again.`);
+      }
+      await startDesktop(r.exe, r.args, r.cwd, r.steamAppId || null, r.name);
       return { name: r.name, where: 'on the desktop' };
     case 'url':
       await shell.openExternal(r.url);
@@ -847,15 +875,18 @@ function showLaunchError(owner, message) {
   return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
 }
 
-async function askAddToLibrary(owner, { name }) {
+async function askAddToLibrary(owner, { name, linkedTitle = null }) {
   const options = {
     type: 'question',
     title: 'Add to library',
     message: `Add ${name} to your game library?`,
-    detail: 'Games in the library keep their launch settings, appear in the Games tab and the '
+    detail: (linkedTitle
+      ? `It is part of ${linkedTitle.name}, so it will run as that Steam game, exactly this file. `
+      : '')
+      + 'Games in the library keep their launch settings, appear in the Games tab and the '
       + 'tray, and can get a desktop shortcut. Choose how it is played.',
     buttons: ['Add as a desktop game', 'Add as a VR game', 'Launch without adding', 'Cancel'],
-    defaultId: 0,
+    defaultId: linkedTitle && linkedTitle.kind === 'vr' ? 1 : 0,
     cancelId: 3,
     noLink: true,
   };
@@ -1106,14 +1137,19 @@ ipcMain.handle('library-add', async (event) => {
     exe = link.target;
     args = link.args || null;
   }
-  const existing = await libraryRpc('LibraryMatchPath', { path: exe });
-  if (existing) return existing;
+  const match = await libraryRpc('LibraryMatchPath', { path: exe });
+  // Already there: a custom title's exe, or the exe a Steam title's own entry starts.
+  if (match && (match.exact || match.desktopEntry || match.vrEntry)) return match.title;
+  // Any other file in a Steam game's folder becomes a custom entry linked to that game: it runs
+  // exactly this file, with the game's Steam identity and art.
+  const linked = match ? match.title : null;
   const options = {
     type: 'question',
     title: 'Add a game',
     message: `How is ${gameLauncher.displayName(filePath)} played?`,
+    detail: linked ? `It is part of ${linked.name}, so it will run as that Steam game, exactly this file.` : undefined,
     buttons: ['On the desktop', 'In VR', 'Cancel'],
-    defaultId: 0,
+    defaultId: linked && linked.kind === 'vr' ? 1 : 0,
     cancelId: 2,
     noLink: true,
   };
@@ -1124,6 +1160,7 @@ ipcMain.handle('library-add', async (event) => {
     name: gameLauncher.displayName(filePath),
     arguments: args,
     kind: response === 1 ? 'vr' : 'flat',
+    linkedSteamAppId: linked ? linked.steamAppId : null,
   });
 });
 

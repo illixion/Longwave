@@ -378,7 +378,11 @@ with or without the PCVR component.
 - **What is in it.** Every installed Steam game, found through `libraryfolders.vdf` and each
   library's `appmanifest_*.acf` (SteamVR and the redistributables are left out), plus anything you
   add with **Add a game…** (a program or a shortcut to one; you say whether it is played in VR or
-  on the desktop, and the entry runs exactly that program with exactly those arguments). Each
+  on the desktop, and the entry runs exactly that program with exactly those arguments). A
+  program inside a Steam game's folder that is not the one Steam's launch option starts (a
+  launcher, a DX11 build, a tool) is added **linked to that Steam game**: it runs exactly that
+  file, but as that Steam app (Steam identity, Steam started first) and with its art. Adding the
+  file Steam's own launch option starts just finds the Steam title that is already there. Each
   title has a **kind** — VR, desktop, or both — read from Steam's `appinfo.vdf` (VR-only titles,
   VR launch options next to desktop ones); change it in the title's panel if Steam is wrong.
 - **Views.** **Grid** shows box art and is the default when most of the library is VR;
@@ -410,10 +414,16 @@ title then starts the way Steam's Play button would).
 
 The tray icon's menu has **Launch game…**: a small picker with your recent games, a search over
 the whole library, and **Browse for a game…** for any program (`.exe`), shortcut (`.lnk`) or
-internet shortcut (`.url`). A browsed program that belongs to a library title is launched as that
-title — a program inside a Steam game's folder is that Steam game, with its Steam identity. One
-that isn't in the library is offered **Add to library** (as a desktop or a VR game) before it
-starts, or can be launched without adding. A `.url` to `steam://rungameid/<id>` launches that
+internet shortcut (`.url`). A browsed program is matched to the library by its path:
+- a title you added, or the program a Steam title's launch option starts (its desktop or VR
+  option, whichever this launch would use) → that title, with its optimised profile if any;
+- any other program inside a Steam game's folder → exactly that program, in its own folder, with
+  no extra arguments, but as that Steam app (`SteamAppId`/`SteamGameId`, Steam started first), so
+  Steam's DRM doesn't quit it and relaunch it through Steam. No optimised profile: profiles are
+  for the launch option's own program. The picker offers to add it to the library, linked to
+  that Steam game;
+- anything else → offered **Add to library** (as a desktop or a VR game) before it starts, or
+  launched without adding. A `.url` to `steam://rungameid/<id>` launches that
 library title; other `.url`s open through their scheme's handler (Steam, Epic, …), and `file:`
 URLs are refused. Each recent game has a **Shortcut** button.
 
@@ -435,8 +445,9 @@ can start one through Longwave:
 **Create desktop shortcut** writes the first form for a library title and the second for any
 other file, with the game's name and icon. The bare form is what Windows passes when a game is
 dropped onto the exe or its shortcut. Only an existing `.exe`, `.lnk` or `.url` counts as a game;
-switches are ignored. A path is resolved against the library first and otherwise started as it
-is (no "Add to library" question on the command line). Nothing comes forward but the consent box
+switches are ignored. A path is matched to the library the same way as in the picker (a Steam
+game's other programs run as picked, with its Steam identity), and otherwise started as it is (no
+"Add to library" question on the command line). Nothing comes forward but the consent box
 or an error. If the Companion is already running, the new process hands the game to it and exits;
 if not, it starts in the tray, waits up to 10 s for its backend and the PCVR component, and then
 launches with whatever connected.

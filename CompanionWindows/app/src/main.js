@@ -192,6 +192,17 @@ function resolvePcvrHostExe() {
  * stays in the same medium-integrity desktop session. If the backend is already running,
  * the spawn simply fails to bind the pipe and exits; we connect to whichever instance owns it.
  */
+/* Where this process's own logs go. A dev checkout keeps them beside the tree (logs\ under
+   CompanionWindows\, as deploy-windows-companion.sh and the docs expect). A packaged install
+   cannot: it lives in Program Files, which the unelevated app may not write, so every log
+   failed to open and the backend's output went nowhere — on exactly the machines where nobody
+   can attach a debugger. userData is per-user and always writable. */
+function logDirectory() {
+  return app.isPackaged
+    ? path.join(app.getPath('userData'), 'logs')
+    : path.join(__dirname, '..', '..', 'logs');
+}
+
 function startBackend() {
   if (process.env.LONGWAVE_NO_SPAWN === '1') return;
   const exe = resolveBackendExe();
@@ -206,7 +217,7 @@ function startBackend() {
      "Client disconnected (0 remain)" looked like live evidence and was hours stale. */
   let backendLog = null;
   try {
-    const logPath = path.join(__dirname, '..', '..', 'logs', 'backend.log');
+    const logPath = path.join(logDirectory(), 'backend.log');
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     backendLog = fs.createWriteStream(logPath, { flags: 'w' });
     backendLog.on('error', (e) => {
@@ -243,7 +254,7 @@ function startPcvrHost() {
   console.log('[main] launching PCVR host:', exe);
   let hostLog = null;
   try {
-    const logPath = path.join(__dirname, '..', '..', 'logs', 'pcvr-host.log');
+    const logPath = path.join(logDirectory(), 'pcvr-host.log');
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     hostLog = fs.createWriteStream(logPath, { flags: 'w' });
     hostLog.on('error', (e) => {
@@ -821,6 +832,7 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
   startPcvrHost();
   supervisor = new Supervisor({
     appRoot: path.join(__dirname, '..'),
+    logDirectory: logDirectory(),
     // The CloudXR runtime manifest is staged next to the PCVR host, not the public backend
     // (provision-pc.ps1's own staging target since the host split) — falling back to the
     // backend path only covers a pre-split leftover layout.

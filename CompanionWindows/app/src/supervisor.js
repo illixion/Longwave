@@ -115,8 +115,8 @@ function waitForCloudXrPipe(timeoutMs) {
 }
 
 /** Where service logs go: the install's `logs\`, beside the backend's own. */
-function resolveLogDirectory(appRoot) {
-  const candidates = [
+function resolveLogDirectory(appRoot, { exact = false } = {}) {
+  const candidates = exact ? [appRoot] : [
     path.join(appRoot, '..', 'logs'),
     path.join(appRoot, 'logs'),
   ];
@@ -251,10 +251,14 @@ class Supervisor extends EventEmitter {
    * @param {string|null} options.backendExe resolved backend executable, for runtime paths
    * @param {string|null} options.bridgeRoot directory holding the broker binaries and any
    *                                         optional services.json
+   * @param {string} [options.logDirectory]  where service logs go; derived from appRoot when
+   *                                         omitted (a packaged appRoot is inside app.asar)
    */
-  constructor({ appRoot, backendExe, bridgeRoot }) {
+  constructor({ appRoot, backendExe, bridgeRoot, logDirectory }) {
     super();
-    this.logDirectory = resolveLogDirectory(appRoot);
+    this.logDirectory = logDirectory
+      ? resolveLogDirectory(logDirectory, { exact: true })
+      : resolveLogDirectory(appRoot);
     this.runtimeJson = resolveCloudXrRuntimeJson(backendExe);
     this.bridgeRoot = bridgeRoot;
     /* Per-start broker settings from the panel, read when the broker is spawned. Defaulted

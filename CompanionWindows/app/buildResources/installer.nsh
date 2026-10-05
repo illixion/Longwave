@@ -127,5 +127,13 @@ FunctionEnd
   nsExec::Exec 'taskkill /F /IM LongwaveSessionBroker.exe'
   SetRegView 64
   DeleteRegKey HKLM "Software\Longwave\Companion"
+  DeleteRegKey /ifempty HKLM "Software\Longwave"
   SetRegView lastused
+  ; The inbound rules Windows Firewall created when the user answered its "allow access" prompt
+  ; for the backend (screen streaming listens on 4857). They name the backend's path, so they
+  ; would otherwise outlive the app. Not on an update: the old version's uninstaller runs then
+  ; too, and removing the rules would make Windows ask again after every update.
+  ${ifNot} ${isUpdated}
+    nsExec::Exec '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name=all program="$INSTDIR\resources\backend\LongwaveCompanionBackend.exe"'
+  ${endIf}
 !macroend

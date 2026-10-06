@@ -723,8 +723,46 @@ estimator is told the encoder is outrunning the link.
 
 ### 6.5 Multi-viewer fan-out
 
-One encode per stream is shared, so viewers on different links can't each get
-their own bitrate. Rules:
+**Channels (proposed 2026-10-07, replaces "one encode per stream").** A viewer
+subscribes to a *channel*, not to a stream: the host's capture of a source
+(desktop, window) at one resolution and codec. Viewers asking for the same
+thing share a channel; one asking for something different gets its own encode.
+The headset, an iPad and an Apple Watch on the same desktop then each get a
+picture sized for them, and none is paced by another. Rules:
+
+- **One capture, many encodes.** A source is captured once, at the largest
+  size any of its channels needs, and downscaled on the GPU per channel
+  (`VTPixelTransferSession`). Never a second ScreenCaptureKit stream of the
+  same display.
+- **Resolutions snap to a ladder**: native, ½, ¼ and a small tier around
+  400 px for the watch. Five viewers asking for five slightly different sizes
+  get one channel, not five sessions.
+- **Frame rate is not part of a channel.** A channel encodes at the rate its
+  fastest viewer wants. Slower viewers get frames dropped at the pacer. That is
+  only safe for frames nothing references, so channels encode with **temporal
+  layers** (`kVTCompressionPropertyKey_BaseLayerFrameRateFraction`): a 30 fps
+  viewer of a 60 fps channel takes the base layer only. Unverified: whether the
+  hardware encoder keeps hardware with layers on, or falls back to software as
+  it does for low-latency rate control (see risk 14).
+- **Encoders are allocated by pixel rate, not by count.** VideoToolbox has no
+  "how many engines" API, and one engine runs many sessions time-sliced. The
+  limit is throughput: one 4K60 HEVC stream already costs ~15 ms of every
+  16.7 ms frame on an M1 ([[vt-hevc-encode-latency-benchmarks]]). So the host
+  ranks channels by pixels per second. The largest go to the media engines
+  (`AppleAVE2Driver` instances: one on an M1, two on an M2 Max) while the
+  measured per-frame encode time stays inside the frame budget, and the rest go
+  to the software encoder.
+- **Small channels belong on the CPU anyway.** A watch-sized H.264 channel is
+  about 1/40 of a 4K frame's pixels, cheap in software, and keeps the engine
+  free for the channels that need it. Always check
+  `UsingHardwareAcceleratedVideoEncoder` after creating a session rather than
+  assuming what was asked for.
+- **A codec is part of a channel**, picked from the viewer's capabilities
+  (HEVC 4:2:2 for a headset that decodes it, H.264 for a watch if that is all
+  it can do).
+
+Within one channel the encode is still shared, so viewers on different links
+can't each get their own bitrate. Rules:
 
 - The stream's encoder bitrate is the **minimum** of its viewers' allocations,
   floored at a quality minimum; a viewer whose estimate is under that floor
@@ -1460,6 +1498,7 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
    same titles. The audio component is never run in any of them.
 10. **Multi-viewer on one encoder** forces the slowest viewer's bitrate on
     everyone; simulcast is only partly possible on single-engine Macs.
+    Channels (§6.5) narrow this to viewers *of the same channel*.
 11. **swift-crypto on x64 Windows** isn't claimed by its README [S1]. *Closed
     2026-10-04:* 4.5.2 builds there and passes the RFC 7748, 8439 and 5869
     vectors (Phase 2 spike), so no CNG fallback is needed.
@@ -1473,6 +1512,11 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
 13. **WMM limits.** Vendor material reports WMM video/voice queues degrading
     with more than one or two active users [C6]; marking helps on a quiet AP,
     not a busy one.
+14. **Temporal layers on the hardware encoder are unverified.** If
+    `BaseLayerFrameRateFraction` drops HEVC or H.264 to software, the way
+    `EnableLowLatencyRateControl` does, a slower viewer needs its own
+    frame-rate channel on single-engine Macs instead of a dropped layer.
+    Measure it with the same harness as the encode-latency numbers.
 
 ### Sources
 

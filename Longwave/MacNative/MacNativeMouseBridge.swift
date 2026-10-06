@@ -1,9 +1,12 @@
 #if os(visionOS)
 import DebugTrace
-import GameController
+import Foundation
+import Observation
+import RAVEInput
 
 /// Drives the Mac's cursor from a Bluetooth/USB mouse read raw through
-/// GameController's `GCMouse`, the way a game reads one: motion deltas move
+/// GameController's `GCMouse` (via RAVEInput's `RAVEMouseSource`, which owns
+/// the device handlers app-wide), the way a game reads one: motion deltas move
 /// the cursor relative to where it is, and buttons and the wheel act there.
 /// It bypasses the desktop's touch paths entirely, flat or curved, in either
 /// touch mode.
@@ -55,10 +58,9 @@ final class MacNativeMouseBridge {
     }
 
     @ObservationIgnored private let manager: MacNativeStreamManager
-    @ObservationIgnored private var mice: [GCMouse] = []
-    @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    @ObservationIgnored private var heldButtons: Set<UInt8> = []
-    @ObservationIgnored private var scrollRemainder: (x: Float, y: Float) = (0, 0)
+    @ObservationIgnored private var subscription: RAVEMouseSubscription?
+    @ObservationIgnored private var heldButtons = RAVEMouseButtonGate()
+    @ObservationIgnored private var scrollRemainder = (x: RAVEMouseStepAccumulator(), y: RAVEMouseStepAccumulator())
     @ObservationIgnored private var motionEvents = 0
     @ObservationIgnored private var motionLogTask: Task<Void, Never>?
 
@@ -80,17 +82,11 @@ final class MacNativeMouseBridge {
     // MARK: Lifecycle
 
     func start() {
-        guard observers.isEmpty else { return }
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: .GCMouseDidConnect, object: nil, queue: .main) { [weak self] note in
-            guard let mouse = note.object as? GCMouse else { return }
-            MainActor.assumeIsolated { self?.connected(mouse) }
-        })
-        observers.append(center.addObserver(forName: .GCMouseDidDisconnect, object: nil, queue: .main) { [weak self] note in
-            guard let mouse = note.object as? GCMouse else { return }
-            MainActor.assumeIsolated { self?.disconnected(mouse) }
-        })
-        for mouse in GCMouse.mice() { connected(mouse) }
+        guard subscription == nil else { return }
+        // Delivered on the main queue; picks up mice already connected.
+        subscription = RAVEMouseSource.shared.subscribe { [weak self] event in
+            self?.handle(event)
+        }
         // How much motion actually arrives, for on-device checks: a line a
         // second while the mouse moves.
         motionLogTask = Task { @MainActor [weak self] in
@@ -109,65 +105,34 @@ final class MacNativeMouseBridge {
         releaseHeldButtons()
         motionLogTask?.cancel()
         motionLogTask = nil
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
-        observers.removeAll()
-        for mouse in mice { clearHandlers(mouse) }
-        mice.removeAll()
+        subscription?.cancel()
+        subscription = nil
         isConnected = false
-    }
-
-    // MARK: Devices
-
-    private func connected(_ mouse: GCMouse) {
-        guard !mice.contains(where: { $0 === mouse }) else { return }
-        mice.append(mouse)
-        mouse.handlerQueue = .main
-        setHandlers(mouse)
-        isConnected = true
-        AppLog.macNativeMouse.info("Mouse connected (\(self.mice.count, privacy: .public) total)")
-    }
-
-    private func disconnected(_ mouse: GCMouse) {
-        clearHandlers(mouse)
-        mice.removeAll { $0 === mouse }
-        isConnected = !mice.isEmpty
-        if mice.isEmpty { releaseHeldButtons() }
-        AppLog.macNativeMouse.info("Mouse disconnected (\(self.mice.count, privacy: .public) left)")
     }
 
     // MARK: Input
 
-    private func setHandlers(_ mouse: GCMouse) {
-        guard let input = mouse.mouseInput else { return }
-        input.mouseMovedHandler = { [weak self] _, dx, dy in
-            MainActor.assumeIsolated { self?.moved(dx: dx, dy: dy) }
-        }
-        input.leftButton.pressedChangedHandler = buttonHandler(.left)
-        input.rightButton?.pressedChangedHandler = buttonHandler(.right)
-        input.middleButton?.pressedChangedHandler = buttonHandler(.other)
-        input.scroll.yAxis.valueChangedHandler = { [weak self] _, value in
-            MainActor.assumeIsolated { self?.scrolled(x: 0, y: value) }
-        }
-        input.scroll.xAxis.valueChangedHandler = { [weak self] _, value in
-            MainActor.assumeIsolated { self?.scrolled(x: value, y: 0) }
-        }
-    }
-
-    private func clearHandlers(_ mouse: GCMouse) {
-        guard let input = mouse.mouseInput else { return }
-        input.mouseMovedHandler = nil
-        input.leftButton.pressedChangedHandler = nil
-        input.rightButton?.pressedChangedHandler = nil
-        input.middleButton?.pressedChangedHandler = nil
-        input.scroll.xAxis.valueChangedHandler = nil
-        input.scroll.yAxis.valueChangedHandler = nil
-    }
-
-    private func buttonHandler(
-        _ button: MacNativeStreamProtocol.MouseButton
-    ) -> GCControllerButtonValueChangedHandler {
-        { [weak self] _, _, pressed in
-            MainActor.assumeIsolated { self?.buttonChanged(button, pressed: pressed) }
+    private func handle(_ event: RAVEMouseEvent) {
+        switch event {
+        case .connected(_, let count):
+            isConnected = true
+            AppLog.macNativeMouse.info("Mouse connected (\(count, privacy: .public) total)")
+        case .disconnected(_, let count):
+            isConnected = count > 0
+            if count == 0 { releaseHeldButtons() }
+            AppLog.macNativeMouse.info("Mouse disconnected (\(count, privacy: .public) left)")
+        case .moved(let dx, let dy):
+            moved(dx: dx, dy: dy)
+        case .button(.left, let pressed):
+            buttonChanged(.left, pressed: pressed)
+        case .button(.right, let pressed):
+            buttonChanged(.right, pressed: pressed)
+        case .button(.middle, let pressed):
+            buttonChanged(.other, pressed: pressed)
+        case .button(.auxiliary, _):
+            break
+        case .scroll(let x, let y):
+            scrolled(x: x, y: y)
         }
     }
 
@@ -185,11 +150,11 @@ final class MacNativeMouseBridge {
             let onControls = pointerOverControls || menuOpen
             let sent = forwarding && !onControls
             AppLog.macNativeMouse.debug("Button \(button.rawValue, privacy: .public) down — \(sent ? "sent" : (onControls ? "held back: on the controls" : "held back: not streaming"), privacy: .public)")
-            guard sent, heldButtons.insert(button.rawValue).inserted else { return }
+            guard heldButtons.press(Self.key(button), allowed: sent) else { return }
             manager.pressMouseAtVirtualCursor(button: button)
         } else {
             // Release only what was pressed here, so nothing sticks.
-            guard heldButtons.remove(button.rawValue) != nil else { return }
+            guard heldButtons.release(Self.key(button)) else { return }
             manager.releaseMouseAtVirtualCursor(button: button)
         }
     }
@@ -197,14 +162,10 @@ final class MacNativeMouseBridge {
     /// Wheel detents arrive as whole units (a trackpad's as fractions), +Y
     /// away from the user — the host's "content moves down" sign already.
     private func scrolled(x: Float, y: Float) {
-        guard forwarding else { scrollRemainder = (0, 0); return }
-        scrollRemainder.x += x
-        scrollRemainder.y += y
-        let stepsX = Int(scrollRemainder.x)
-        let stepsY = Int(scrollRemainder.y)
+        guard forwarding else { resetScroll(); return }
+        let stepsX = scrollRemainder.x.add(x)
+        let stepsY = scrollRemainder.y.add(y)
         guard stepsX != 0 || stepsY != 0 else { return }
-        scrollRemainder.x -= Float(stepsX)
-        scrollRemainder.y -= Float(stepsY)
         manager.scrollAtVirtualCursor(
             deltaX: Int16(clamping: max(-10, min(10, stepsX))),
             deltaY: Int16(clamping: max(-10, min(10, stepsY)))
@@ -212,13 +173,28 @@ final class MacNativeMouseBridge {
     }
 
     private func releaseHeldButtons() {
-        for raw in heldButtons {
-            if let button = MacNativeStreamProtocol.MouseButton(rawValue: raw) {
-                manager.releaseMouseAtVirtualCursor(button: button)
+        for held in heldButtons.releaseAll() {
+            switch held {
+            case .left: manager.releaseMouseAtVirtualCursor(button: .left)
+            case .right: manager.releaseMouseAtVirtualCursor(button: .right)
+            case .middle: manager.releaseMouseAtVirtualCursor(button: .other)
+            case .auxiliary: break
             }
         }
-        heldButtons.removeAll()
-        scrollRemainder = (0, 0)
+        resetScroll()
+    }
+
+    private func resetScroll() {
+        scrollRemainder.x.reset()
+        scrollRemainder.y.reset()
+    }
+
+    private static func key(_ button: MacNativeStreamProtocol.MouseButton) -> RAVEMouseButton {
+        switch button {
+        case .left: .left
+        case .right: .right
+        case .other: .middle
+        }
     }
 }
 #endif

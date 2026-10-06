@@ -40,7 +40,7 @@ nonisolated enum BroadcastShared {
     }()
 
     /// The App Group both processes actually share. Sideload re-signing
-    /// (scripts/build-and-sign.sh) replaces our entitlements with the
+    /// (build-and-sign) replaces our entitlements with the
     /// provisioning profile's, whose group IDs we don't control — so resolve
     /// the group from the bundle's embedded.mobileprovision at runtime
     /// (the script embeds the same profile in app and extension, and both

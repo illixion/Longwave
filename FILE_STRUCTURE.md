@@ -184,7 +184,6 @@ scripts/
 ├── edition-settings.sh                 — The ONLY definition of oss / oss-moonlight / pro
 ├── setup-deps.sh                       — Clone+patch repos/ deps (local Moonlight builds)
 ├── verify-moonlight-instances.sh       — Checks the built objects: every copy fully prefixed, rename list complete (--regenerate)
-├── build-and-sign.sh                   — Config-driven device build/sign/deploy (build-signing.conf, gitignored)
 ├── install-companion.sh                — Build the macOS companion + install to /Applications (quit/relaunch)
 ├── build-mediaremote-helper.sh          — Universal build+sign of MediaRemoteHelper/ (script phase on both mac targets)
 └── release.sh                          — Local Moonlight-enabled GitHub release (gh CLI)

@@ -120,4 +120,4 @@ fi
 
 echo ""
 echo "Done. Build with Moonlight via:"
-echo "  ./scripts/build-and-sign.sh   (PRE_BUILD_HOOK runs this script automatically)"
+echo "  build-and-sign   (PRE_BUILD_HOOK runs this script automatically)"

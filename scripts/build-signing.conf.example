@@ -1,7 +1,7 @@
 # Build & sign configuration — copy to build-signing.conf and edit.
 # build-signing.conf is gitignored and will never be committed.
 #
-# This configures signing for scripts/build-and-sign.sh. The script imports
+# This configures signing for build-and-sign. The script imports
 # the .p12 certs into a temporary keychain, so signing works over SSH without
 # any login-keychain setup. Nothing needs to be pre-installed on the machine.
 #

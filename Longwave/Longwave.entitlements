@@ -7,7 +7,7 @@
   (LONGWAVE_APP_ENTITLEMENTS in scripts/edition-settings.sh): a team whose
   provisioning profile does not grant it cannot sign an app that declares it.
 
-  build-and-sign.sh re-signs with the entitlements extracted from the
+  build-and-sign re-signs with the entitlements extracted from the
   provisioning profile, so dev sideloads pick the capability up from the
   profile regardless of this file.
 -->

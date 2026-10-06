@@ -42,7 +42,10 @@ public sealed class GameLibrary
     private readonly Func<string?> _steamRoot;
     private readonly object _stateLock = new();
     private readonly object _appInfoLock = new();
-    private (string Path, DateTime Mtime, long Length, IReadOnlyDictionary<uint, SteamAppInfo.AppInfo> Apps)? _appInfoCache;
+    // Searched, not just found: an installed app appinfo.vdf does not list (a tool, a
+    // redistributable) is a normal answer, and must not force a re-read of the whole file.
+    private (string Path, DateTime Mtime, long Length, HashSet<uint> Searched,
+             IReadOnlyDictionary<uint, SteamAppInfo.AppInfo> Apps)? _appInfoCache;
     private readonly int _syntheticCount;
 
     /// <summary>Where the PCVR host kept its curation before the library moved (every install
@@ -119,8 +122,10 @@ public sealed class GameLibrary
                 catch (Exception ex)
                 {
                     // Reported, not thrown: a corrupt file must not take the library down, and
-                    // Steam titles are rediscoverable regardless.
+                    // Steam titles are rediscoverable regardless. But the next save replaces the
+                    // file, so keep a copy first — custom titles and the exposed set are not.
                     _log?.LogWarning(ex, "Could not read game library state from {Path}", _statePath);
+                    PreserveCorruptState();
                     return new LibraryState();
                 }
             }
@@ -132,6 +137,28 @@ public sealed class GameLibrary
                 return migrated;
             }
             return new LibraryState();
+        }
+    }
+
+    private (DateTime Mtime, long Length)? _preservedCorrupt;
+
+    /// <summary>Copies an unreadable state file aside, once per version of it (every listing
+    /// reloads the state, so a read-only session would otherwise copy it again each time).</summary>
+    private void PreserveCorruptState()
+    {
+        try
+        {
+            var info = new FileInfo(_statePath);
+            var version = (info.LastWriteTimeUtc, info.Length);
+            if (_preservedCorrupt == version) return;
+            var copy = $"{_statePath}.corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}";
+            File.Copy(_statePath, copy, overwrite: true);
+            _preservedCorrupt = version;
+            _log?.LogWarning("Kept the unreadable library state as {Copy}.", copy);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Could not keep a copy of the unreadable library state.");
         }
     }
 
@@ -201,29 +228,39 @@ public sealed class GameLibrary
 
     public static string SteamTitleId(uint appId) => $"steam:{appId}";
 
+    private static bool IsSteamTitleId(string id) =>
+        id.StartsWith("steam:", StringComparison.OrdinalIgnoreCase) && uint.TryParse(id.AsSpan(6), out _);
+
     /// <summary>appinfo for every given app, from one pass over the file, cached until Steam
     /// rewrites it.</summary>
     private IReadOnlyDictionary<uint, SteamAppInfo.AppInfo> AppInfos(string? steamRoot, IReadOnlySet<uint> ids)
     {
         var path = steamRoot is null ? null : Path.Combine(steamRoot, "appcache", "appinfo.vdf");
         if (path is null || !File.Exists(path)) return new Dictionary<uint, SteamAppInfo.AppInfo>();
+        try { return ReadAppInfos(path, ids); }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "Could not read Steam's appinfo.vdf; kinds fall back to flat.");
+            return new Dictionary<uint, SteamAppInfo.AppInfo>();
+        }
+    }
+
+    /// <summary>The cached read behind <see cref="AppInfos"/>; throws when the file cannot be
+    /// parsed. A miss re-reads everything searched so far as well, so listing and launching
+    /// share one cache instead of evicting each other.</summary>
+    private IReadOnlyDictionary<uint, SteamAppInfo.AppInfo> ReadAppInfos(string path, IReadOnlySet<uint> ids)
+    {
         var info = new FileInfo(path);
         lock (_appInfoLock)
         {
-            if (_appInfoCache is { } c && c.Path == path && c.Mtime == info.LastWriteTimeUtc
-                && c.Length == info.Length && ids.All(c.Apps.ContainsKey))
-                return c.Apps;
-            try
-            {
-                var apps = SteamAppInfo.ReadApps(path, ids);
-                _appInfoCache = (path, info.LastWriteTimeUtc, info.Length, apps);
-                return apps;
-            }
-            catch (Exception ex)
-            {
-                _log?.LogWarning(ex, "Could not read Steam's appinfo.vdf; kinds fall back to flat.");
-                return new Dictionary<uint, SteamAppInfo.AppInfo>();
-            }
+            var c = _appInfoCache;
+            var fresh = c is { } f && f.Path == path && f.Mtime == info.LastWriteTimeUtc && f.Length == info.Length;
+            if (fresh && ids.All(c!.Value.Searched.Contains)) return c.Value.Apps;
+            var searched = new HashSet<uint>(ids);
+            if (fresh) searched.UnionWith(c!.Value.Searched);
+            var apps = SteamAppInfo.ReadApps(path, searched);
+            _appInfoCache = (path, info.LastWriteTimeUtc, info.Length, searched, apps);
+            return apps;
         }
     }
 
@@ -331,21 +368,30 @@ public sealed class GameLibrary
         };
     }
 
+    /// <summary>What the art fields carry to the headset in place of a path: the visionOS app
+    /// only checks that one is present before asking for the art by title id.</summary>
+    private const string ArtAvailableMarker = "available";
+
     /// <summary>
-    /// The headset's view: exposed and VR-capable, and only the fields the visionOS app decodes
-    /// (no executable paths leave the PC). Flat titles can be exposed in the state for a future
-    /// "launch from headset" over Native/v3, but the PCVR gallery has no flat mode.
+    /// The headset's view: exposed and VR-capable, and only the fields the visionOS app decodes.
+    /// No local path leaves the PC — not executables, not install folders, not art files — so the
+    /// art fields say only whether there is art. Flat titles can be exposed in the state for a
+    /// future "launch from headset" over Native/v3, but the PCVR gallery has no flat mode.
     /// </summary>
     public IReadOnlyList<GameTitle> ListExposedTitles() =>
-        ListAllTitles()
-            .Where(t => t.Exposed && t.Kind.CanRunInVr())
+        ExposedVrTitles()
             .Select(t => new GameTitle
             {
                 Id = t.Id, Name = t.Name, Source = t.Source, SteamAppId = t.SteamAppId,
-                InstallDir = t.InstallDir, PortraitArt = t.PortraitArt, LandscapeArt = t.LandscapeArt,
+                PortraitArt = string.IsNullOrEmpty(t.PortraitArt) ? null : ArtAvailableMarker,
+                LandscapeArt = string.IsNullOrEmpty(t.LandscapeArt) ? null : ArtAvailableMarker,
                 Kind = t.Kind, DetectedKind = t.DetectedKind, Exposed = true,
             })
             .ToList();
+
+    /// <summary>The headset's bound, with every field (for resolving its requests locally).</summary>
+    private IEnumerable<GameTitle> ExposedVrTitles() =>
+        ListAllTitles().Where(t => t.Exposed && t.Kind.CanRunInVr());
 
     public GameTitle? Find(string id) =>
         ListAllTitles().FirstOrDefault(t => string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
@@ -393,12 +439,15 @@ public sealed class GameLibrary
 
     // ---- Curation ---------------------------------------------------------
 
-    /// <summary>Replaces the exposed set. Ids that match nothing are dropped, so uninstalling a
-    /// game does not leave dead entries behind.</summary>
+    /// <summary>Replaces the exposed set. Unknown ids are dropped, but only those that could
+    /// never come back: a Steam id that is not installed right now may be on a library drive
+    /// that is unplugged, and stays exposed for when it returns. A removed custom title is
+    /// already unexposed by <see cref="RemoveCustomTitle"/>.</summary>
     public IReadOnlyList<GameTitle> SetExposed(IEnumerable<string> ids)
     {
         var known = ListAllTitles().Select(t => t.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var wanted = ids.Where(known.Contains).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var wanted = ids.Where(id => known.Contains(id) || IsSteamTitleId(id))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         Update(s => s with { ExposedIds = wanted });
         _log?.LogInformation("Exposed set is now {Count} titles.", wanted.Count);
         return ListAllTitles();
@@ -440,7 +489,8 @@ public sealed class GameLibrary
     /// <summary>
     /// Adds a user-picked executable. The path comes from the Companion's own file dialog, so it
     /// was chosen locally — but it is still validated, because an entry that cannot launch is
-    /// worse than a rejected add. Re-adding the same executable returns the existing entry.
+    /// worse than a rejected add. Re-adding the same executable and arguments returns the existing
+    /// entry, updated to the kind and Steam link chosen this time (the user just said so).
     /// </summary>
     /// <param name="linkedSteamAppId">The Steam game the file belongs to (a non-entry file in its
     /// folder): launches then carry that app's identity, and art comes from it.</param>
@@ -458,7 +508,13 @@ public sealed class GameLibrary
             var existing = s.CustomTitles.FirstOrDefault(
                 t => string.Equals(t.Executable, full, StringComparison.OrdinalIgnoreCase)
                      && string.Equals(t.Arguments ?? "", arguments ?? "", StringComparison.Ordinal));
-            if (existing is not null) { id = existing.Id; return s; }
+            if (existing is not null)
+            {
+                id = existing.Id;
+                if (existing.Kind == kind && existing.LinkedSteamAppId == linkedSteamAppId) return s;
+                var updated = existing with { Kind = kind, LinkedSteamAppId = linkedSteamAppId };
+                return s with { CustomTitles = s.CustomTitles.Select(t => t == existing ? updated : t).ToList() };
+            }
             id = "custom:" + Guid.NewGuid().ToString("N")[..12];
             var title = new CustomTitle(id,
                 string.IsNullOrWhiteSpace(name) ? Path.GetFileNameWithoutExtension(full) : name.Trim(),
@@ -508,7 +564,7 @@ public sealed class GameLibrary
     /// </summary>
     public LaunchPlan ResolveLaunch(string titleId, bool vr, bool exposedOnly)
     {
-        var title = (exposedOnly ? ListAllTitles().Where(t => t.Exposed && t.Kind.CanRunInVr()) : ListAllTitles())
+        var title = (exposedOnly ? ExposedVrTitles() : ListAllTitles())
             .FirstOrDefault(t => string.Equals(t.Id, titleId, StringComparison.OrdinalIgnoreCase));
         if (title is null)
         {
@@ -542,7 +598,11 @@ public sealed class GameLibrary
             throw new LaunchRefusedException("Steam's app cache (appinfo.vdf) was not found, so Longwave cannot start Steam games directly.");
 
         IReadOnlyList<SteamAppInfo.LaunchEntry> entries;
-        try { entries = SteamAppInfo.ReadLaunchEntries(appInfoPath, appId); }
+        try
+        {
+            entries = ReadAppInfos(appInfoPath, new HashSet<uint> { appId }).TryGetValue(appId, out var app)
+                ? app.Entries : Array.Empty<SteamAppInfo.LaunchEntry>();
+        }
         catch (Exception ex)
         {
             _log?.LogError(ex, "Could not read Steam launch metadata for {Id}.", title.Id);
@@ -622,7 +682,7 @@ public sealed class GameLibrary
     /// </summary>
     public async Task<bool> EnsureSteamRunningAsync(CancellationToken ct = default)
     {
-        if (Process.GetProcessesByName("steam").Length > 0) return true;
+        if (IsSteamRunning()) return true;
         var root = _steamRoot();
         var exe = root is null ? null : Path.Combine(root, "steam.exe");
         if (exe is null || !File.Exists(exe))
@@ -647,7 +707,7 @@ public sealed class GameLibrary
         }
         for (var i = 0; i < 60 && !ct.IsCancellationRequested; i++)
         {
-            if (Process.GetProcessesByName("steam").Length > 0)
+            if (IsSteamRunning())
             {
                 // Steam needs a moment past process start before Steamworks clients can connect.
                 await Task.Delay(2000, ct).ConfigureAwait(false);
@@ -657,6 +717,13 @@ public sealed class GameLibrary
         }
         _log?.LogError("Steam did not start within 30 s.");
         return false;
+    }
+
+    private static bool IsSteamRunning()
+    {
+        var found = Process.GetProcessesByName("steam");
+        foreach (var p in found) p.Dispose();
+        return found.Length > 0;
     }
 
     // ---- Art --------------------------------------------------------------
@@ -675,7 +742,7 @@ public sealed class GameLibrary
     public async Task<ArtResult> GetArtAsync(string titleId, string? orientation, bool exposedOnly,
                                              CancellationToken ct = default)
     {
-        var source = exposedOnly ? ListExposedTitles() : ListAllTitles();
+        var source = exposedOnly ? ExposedVrTitles() : ListAllTitles();
         var title = source.FirstOrDefault(t => string.Equals(t.Id, titleId, StringComparison.OrdinalIgnoreCase));
         if (title is null) return new ArtResult(titleId, null, null, "no such exposed title");
 

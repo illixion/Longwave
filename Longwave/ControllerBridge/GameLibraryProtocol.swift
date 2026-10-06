@@ -223,9 +223,12 @@ struct GameLibraryTitle: Decodable, Identifiable, Hashable {
     var name: String
     var source: String
     var steamAppId: UInt32?
+    /// No longer sent (the host keeps local paths to itself); kept so an
+    /// older host's answer still decodes.
     var installDir: String?
-    /// Host-side paths. Useless to the headset as paths — their presence is what
-    /// matters: it says whether asking for art is worth a round trip.
+    /// Whether there is art: the host sends a marker, not its file path
+    /// (older hosts sent the path). Presence is all that matters — it says
+    /// whether asking for art is worth a round trip.
     var portraitArt: String?
     var landscapeArt: String?
 

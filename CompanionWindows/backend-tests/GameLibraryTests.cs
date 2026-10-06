@@ -127,6 +127,76 @@ public sealed class GameLibraryTests : IDisposable
     }
 
     [Fact]
+    public async Task HeadsetBound_SendsNoLocalPaths_ButStillServesArt()
+    {
+        Directory.CreateDirectory(Path.Combine(_steam.Root, "appcache", "librarycache", "546560"));
+        File.WriteAllBytes(Path.Combine(_steam.Root, "appcache", "librarycache", "546560", "library_600x900.jpg"),
+                           new byte[] { 1, 2, 3 });
+        var lib = Library();
+        lib.SetExposed(new[] { "steam:546560" });
+        var alyx = lib.ListExposedTitles().Single();
+        Assert.Null(alyx.InstallDir);
+        Assert.False(string.IsNullOrEmpty(alyx.PortraitArt));
+        Assert.DoesNotContain(_steam.Root, JsonSerializer.Serialize(alyx));
+        var art = await lib.GetArtAsync("steam:546560", "portrait", exposedOnly: true);
+        Assert.Null(art.Unavailable);
+        Assert.NotNull(art.Data);
+    }
+
+    [Fact]
+    public void SetExposed_KeepsSteamTitlesThatAreNotInstalledRightNow()
+    {
+        var lib = Library();
+        // 2001 is on a drive that is unplugged: not discovered, but it may come back.
+        lib.SetExposed(new[] { "steam:546560", "steam:2001", "custom:gone", "steam:x" });
+        lib.SetExposed(new[] { "steam:546560", "steam:620", "steam:2001" });
+        var state = File.ReadAllText(Path.Combine(_stateDir, "game-library.json"));
+        Assert.Contains("steam:2001", state);
+        Assert.DoesNotContain("custom:gone", state);
+        Assert.DoesNotContain("steam:x", state);
+        Assert.Equal(new[] { "steam:546560", "steam:620" }, lib.ListExposedTitles().Select(t => t.Id));
+    }
+
+    [Fact]
+    public void CorruptState_IsKeptAsideBeforeTheNextSave()
+    {
+        Directory.CreateDirectory(_stateDir);
+        var path = Path.Combine(_stateDir, "game-library.json");
+        File.WriteAllText(path, "{\"customTitles\": [ {\"id\": ");
+        var lib = Library();
+        Assert.Equal(3, lib.ListAllTitles().Count);
+        Assert.Equal(3, lib.ListAllTitles().Count);
+        lib.MarkPlayed("steam:620");
+        var kept = Directory.GetFiles(_stateDir, "game-library.json.corrupt-*");
+        Assert.Single(kept);
+        Assert.Equal("{\"customTitles\": [ {\"id\": ", File.ReadAllText(kept[0]));
+        Assert.Contains("steam:620", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void AppInfoCache_HitsWhenAnInstalledAppIsMissingFromAppInfo()
+    {
+        // An installed tool appinfo.vdf has no entry for — common for redistributables.
+        File.WriteAllText(Path.Combine(_steam.Root, "steamapps", "appmanifest_2002.acf"),
+            "\"AppState\"\n{\n\"appid\" \"2002\"\n\"name\" \"A tool\"\n\"StateFlags\" \"4\"\n"
+            + "\"installdir\" \"Tool\"\n}\n");
+        Directory.CreateDirectory(Path.Combine(_steam.Root, "steamapps", "common", "Tool"));
+        var lib = Library();
+        Assert.Equal(GameKind.Vr, lib.Find("steam:546560")!.Kind);
+        if (OperatingSystem.IsWindows()) return; // The proof below needs Unix permissions.
+        var appInfo = Path.Combine(_steam.Root, "appcache", "appinfo.vdf");
+        var mode = File.GetUnixFileMode(appInfo);
+        // Unreadable but unchanged: only a cache hit can still answer.
+        File.SetUnixFileMode(appInfo, UnixFileMode.None);
+        try
+        {
+            Assert.Equal(GameKind.Vr, lib.Find("steam:546560")!.Kind);
+            Assert.EndsWith("hlvr.exe", lib.ResolveLaunch("steam:546560", vr: true, exposedOnly: false).Executable);
+        }
+        finally { File.SetUnixFileMode(appInfo, mode); }
+    }
+
+    [Fact]
     public void MatchPath_SteamInstallDirAndExactCustomExecutable()
     {
         var lib = Library();
@@ -142,7 +212,11 @@ public sealed class GameLibraryTests : IDisposable
         Assert.Equal("indie", added.Name);
         Assert.Equal(added.Id, lib.MatchPath(game)!.Title.Id);
         Assert.True(lib.MatchPath(game)!.Exact);
-        Assert.Equal(added.Id, lib.AddCustomTitle(game, "Other", "-windowed", GameKind.Vr).Id);
+        // Re-adding returns the same entry, as the kind chosen this time.
+        var readded = lib.AddCustomTitle(game, "Other", "-windowed", GameKind.Vr);
+        Assert.Equal(added.Id, readded.Id);
+        Assert.Equal(GameKind.Vr, readded.Kind);
+        Assert.Single(lib.ListAllTitles(), t => t.Source == "custom");
         var plan = lib.ResolveLaunch(added.Id, vr: false, exposedOnly: false);
         Assert.Equal(game, plan.Executable);
         Assert.Equal("-windowed", plan.Arguments);

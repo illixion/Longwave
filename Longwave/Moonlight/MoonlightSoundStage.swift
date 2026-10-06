@@ -36,7 +36,9 @@
 
  Rebuilt from scratch on an interruption ending, a media-services reset or
  an output device change, as RAVEFilm's PHASE stage does: PHASE's engine
- does not survive those (tvOS, 2026-09-27).
+ does not survive those (tvOS, 2026-09-27). A rebuild that fails leaves the
+ stream on the flat path and says so through `onRunningChange`; the next of
+ those events tries again, until the renderer stops the stage.
  */
 
 import AVFAudio
@@ -76,6 +78,12 @@ final class MoonlightSoundStage {
     private var stage: RAVEPhaseStage?
     private var feed: RAVEChannelFeed?
     private var observers: [NSObjectProtocol] = []
+    /// Between `start()` and `stop()`: rebuilds are attempted, even after one
+    /// failed and left `stage` nil.
+    private var active = false
+    /// Told when a rebuild takes the stage down for good or brings it back
+    /// (main actor). `start()`'s own result is not reported here.
+    var onRunningChange: ((Bool) -> Void)?
 
     init?(channelCount: Int, sampleRate: Double, publish: @escaping Publish) {
         guard MoonlightSoundStagePolicy.wants(channelCount: channelCount),
@@ -91,11 +99,17 @@ final class MoonlightSoundStage {
     /// PHASE refused; the stream stays on the flat path.
     @discardableResult
     func start() -> Bool {
+        active = true
         observe()
-        return build()
+        guard build() else {
+            stop()
+            return false
+        }
+        return true
     }
 
     func stop() {
+        active = false
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         teardown()
@@ -142,10 +156,12 @@ final class MoonlightSoundStage {
     }
 
     private func rebuild(_ reason: String) {
-        guard stage != nil else { return }
+        guard active else { return }
+        let wasRunning = isRunning
         AppLog.moonlightAudio.notice("Rebuilding sound stage: \(reason, privacy: .public)")
         teardown()
-        _ = build()
+        let running = build()
+        if running != wasRunning { onRunningChange?(running) }
     }
 
     private func observe() {

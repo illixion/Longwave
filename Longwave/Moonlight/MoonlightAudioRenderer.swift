@@ -293,13 +293,23 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
     private func reconcileSoundStage() {
         if wantsStage.withLock({ $0 }) {
-            guard soundStage == nil else { return }
             guard #available(macOS 15.0, *) else { return }
+            // One whose rebuild failed is replaced, so asking again (the
+            // spatial toggle) retries now rather than at the next route change.
+            if let dead = soundStage as? MoonlightSoundStage, !dead.isRunning {
+                dead.stop()
+                soundStage = nil
+            }
+            guard soundStage == nil else { return }
             let slot = stageFeed
             let stage = MoonlightSoundStage(channelCount: channelCount, sampleRate: Double(sampleRate)) { feed in
                 slot.withLock { $0 = feed }
             }
             guard let stage, stage.start() else { return }
+            // A rebuild after a route change or interruption can fail, and
+            // a later one recover: the UI follows, so Recenter is offered
+            // only while the stage is really playing.
+            stage.onRunningChange = { [weak self] running in self?.onSoundStageChange?(running) }
             soundStage = stage
             onSoundStageChange?(true)
         } else {
@@ -317,7 +327,10 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         (soundStage as? MoonlightSoundStage)?.recenter()
     }
 
-    var isSoundStageActive: Bool { soundStage != nil }
+    var isSoundStageActive: Bool {
+        guard #available(macOS 15.0, *) else { return false }
+        return (soundStage as? MoonlightSoundStage)?.isRunning ?? false
+    }
 
     /// Leaving the flat path for the stage: drop what the player node still
     /// has queued so the two paths never play at once, and leave it ready to

@@ -33,4 +33,4 @@ Configuration/BuildInfo.xcconfig
 .pcvr-bundle-out/
 
 # Temp files
-spike/
+/spike/

@@ -81,6 +81,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// last change of a burst is never lost. Both only touched on
     /// `outputQueue`.
     nonisolated(unsafe) var canEncode: (@Sendable () -> Bool)?
+    /// Every captured frame's pixels, for viewers that take JPEG stills
+    /// instead of video. Called on `outputQueue`.
+    nonisolated(unsafe) var onPixelBuffer: (@Sendable (CVPixelBuffer) -> Void)?
+    /// Whether anyone takes the HEVC stream; when not, frames skip the encoder.
+    nonisolated(unsafe) var wantsVideo: (@Sendable () -> Bool)?
     private nonisolated(unsafe) var heldFrame: CMSampleBuffer?
     /// The last frame encoded, and a counter that cancels pending
     /// refinements of it — see `encodeAndRefine`. Only touched on
@@ -250,6 +255,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// without waiting out the key-frame interval.
     func requestKeyFrame() {
         encoder?.requestKeyFrame()
+        // A still desktop sends no new frame, and while only still viewers
+        // were connected the encoder was not being fed at all.
+        outputQueue.async { [self] in
+            guard let frame = lastFrame else { return }
+            encoder?.encode(frame, presentationTime: CMClockGetTime(CMClockGetHostTimeClock()))
+        }
     }
 
     func stop() async {
@@ -481,6 +492,13 @@ extension MacNativeScreenCapture: SCStreamOutput {
             averageCaptureMilliseconds = averageCaptureMilliseconds == 0
                 ? elapsed
                 : averageCaptureMilliseconds * 0.95 + elapsed * 0.05
+        }
+        if let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            onPixelBuffer?(pixels)
+        }
+        guard wantsVideo?() ?? true else {
+            lastFrame = sampleBuffer
+            return
         }
         guard canEncode?() ?? true else {
             heldFrame = sampleBuffer

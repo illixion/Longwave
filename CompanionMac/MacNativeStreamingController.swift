@@ -338,6 +338,15 @@ final class MacNativeStreamingController {
 
     private var token = ""
     private var server: MacNativeStreamServer?
+    /// The Apple Watch's HTTP lane (`WatchLinkProtocol`), up whenever the
+    /// Native server is.
+    private var watchServer: MacWatchServer?
+    /// A watch asked for a still recently.
+    private var watchActive = false
+    /// The running capture was started for watches alone, so it skipped the
+    /// virtual display: a glance from the wrist must not create one, let alone
+    /// switch the Mac's own displays off. A headset joining restarts it.
+    private var captureIsWatchOnly = false
     private var capture: MacNativeScreenCapture?
     /// Per-window (Unity-style) streams for the active v2 viewer.
     private let windowStreams = MacNativeWindowStreamCoordinator()
@@ -400,6 +409,9 @@ final class MacNativeStreamingController {
         let generation = serverGeneration
         let previousServer = server
         server = nil
+        watchServer?.stop()
+        watchServer = nil
+        watchActive = false
         connectedDeviceNames = []
         viewersDecodeHEVC422 = false
         stopCapture()
@@ -516,6 +528,9 @@ final class MacNativeStreamingController {
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
                     if self.capture == nil {
                         self.startCapture()
+                    } else if self.captureIsWatchOnly, self.server?.hasVideoViewers() == true {
+                        self.stopCapture()
+                        self.startCapture()
                     }
                 } else {
                     self.windowStreams.startStream(windowID: windowID)
@@ -527,6 +542,9 @@ final class MacNativeStreamingController {
                 guard let self, self.serverGeneration == generation else { return }
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
                     self.stopCapture()
+                    // A watch still looking keeps a capture going — without
+                    // the virtual display, which belonged to the headset.
+                    if self.watchActive { self.startCapture() }
                 } else {
                     self.windowStreams.stopStream(windowID: windowID)
                 }
@@ -651,6 +669,26 @@ final class MacNativeStreamingController {
             }
         }
 
+        let watchServer = MacWatchServer(token: token)
+        watchServer.onActiveChanged = { [weak self] active in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                self.watchActive = active
+                if active, self.capture == nil {
+                    self.startCapture()
+                } else if !active, self.captureIsWatchOnly, self.capture != nil,
+                          self.server?.hasDesktopStillViewers() != true {
+                    self.stopCapture()
+                }
+            }
+        }
+        do {
+            try watchServer.start()
+            self.watchServer = watchServer
+        } catch {
+            log.error("Watch server failed to start: \(error.localizedDescription, privacy: .public)")
+        }
+
         do {
             self.server = server
             try server.start()
@@ -668,6 +706,9 @@ final class MacNativeStreamingController {
         let oldServer = server
         server = nil
         oldServer?.stop()
+        watchServer?.stop()
+        watchServer = nil
+        watchActive = false
         connectedDeviceNames = []
         viewersDecodeHEVC422 = false
         stopCapture()
@@ -768,8 +809,10 @@ final class MacNativeStreamingController {
         // which is Mac VD's, and the pane says why.
         var virtualDisplay: MacNativeVirtualDisplay?
         var skippedReason: String?
+        let watchOnly = server?.hasVideoViewers() != true
+        captureIsWatchOnly = watchOnly
         refreshVirtualDisplayConflict()
-        if let configuration = virtualDisplayConfiguration {
+        if !watchOnly, let configuration = virtualDisplayConfiguration {
             if let conflict = virtualDisplayConflict {
                 skippedReason = conflict
             } else {
@@ -832,6 +875,12 @@ final class MacNativeStreamingController {
             }
         }
         capture.canEncode = { [weak server] in server?.desktopCanAcceptFrame() ?? true }
+        let watchServer = self.watchServer
+        capture.onPixelBuffer = { [weak server, weak watchServer] buffer in
+            server?.offerStillFrame(buffer)
+            watchServer?.offer(buffer)
+        }
+        capture.wantsVideo = { [weak server] in server?.hasVideoViewers() ?? true }
         server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
         self.capture = capture
 
@@ -882,6 +931,7 @@ final class MacNativeStreamingController {
         captureGeneration += 1
         let capture = self.capture
         self.capture = nil
+        captureIsWatchOnly = false
         isCapturing = false
         desktopVideoSummary = nil
         latencySummary = nil

@@ -101,6 +101,11 @@ nonisolated enum MacNativeStreamProtocol {
         /// actually has, rather than by what the Mac's socket buffer accepted
         /// (which can hold a second of video), and measure the link's latency.
         case frameAck = 0x58
+        /// Client → server (a `stillsOnly` viewer): which part of the desktop
+        /// to send and at what size. See `StillViewport`.
+        case stillViewport = 0x59
+        /// Server → client: one JPEG of the viewer's viewport. See `StillFrame`.
+        case stillFrame = 0x5A
 
         /// Client → server: UInt32 stream ID + the v1 `mouseMove` payload,
         /// with (x, y) in that stream's own pixel space.
@@ -134,19 +139,27 @@ nonisolated enum MacNativeStreamProtocol {
         /// Whether this viewer sends `frameAck` for every desktop frame.
         /// Absent ⇒ no, and the host paces it by socket backpressure alone.
         var acksFrames: Bool?
+        /// The viewer cannot decode video at all (Apple Watch: no VideoToolbox,
+        /// no sample-buffer layer) and wants JPEG stills of a viewport instead
+        /// — `stillViewport` / `stillFrame`, paced by `frameAck`. A host that
+        /// predates the field ignores it, so a viewer must check the ack's
+        /// `supportsStills` before relying on it.
+        var stillsOnly: Bool?
 
         init(
             deviceName: String,
             protocolVersion: Int? = nil,
             wantsScreen: Bool? = nil,
             decodesHEVC422: Bool? = nil,
-            acksFrames: Bool? = nil
+            acksFrames: Bool? = nil,
+            stillsOnly: Bool? = nil
         ) {
             self.deviceName = deviceName
             self.protocolVersion = protocolVersion
             self.wantsScreen = wantsScreen
             self.decodesHEVC422 = decodesHEVC422
             self.acksFrames = acksFrames
+            self.stillsOnly = stillsOnly
         }
     }
 
@@ -176,6 +189,8 @@ nonisolated enum MacNativeStreamProtocol {
         /// `AudioStreamProtocol.defaultPort`. Optional so an older host that
         /// predates the field still decodes — see `servesAudioStream`.
         let supportsAudioStream: Bool?
+        /// Whether this host serves `stillsOnly` viewers. Absent ⇒ no.
+        var supportsStills: Bool? = nil
 
         /// Audio availability, with the pre-capability fallback: only the
         /// macOS companion ever served audio, so an absent flag means
@@ -303,7 +318,8 @@ nonisolated enum MacNativeStreamProtocol {
         protocolVersion: Int = protocolVersion,
         wantsScreen: Bool? = nil,
         decodesHEVC422: Bool? = nil,
-        acksFrames: Bool? = nil
+        acksFrames: Bool? = nil,
+        stillsOnly: Bool? = nil
     ) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hello = Hello(
@@ -311,7 +327,8 @@ nonisolated enum MacNativeStreamProtocol {
             protocolVersion: protocolVersion,
             wantsScreen: wantsScreen,
             decodesHEVC422: decodesHEVC422,
-            acksFrames: acksFrames
+            acksFrames: acksFrames,
+            stillsOnly: stillsOnly
         )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)
@@ -338,6 +355,91 @@ nonisolated enum MacNativeStreamProtocol {
 
     static func decodeWindowInventory(_ payload: Data) -> [WindowInfo]? {
         (try? JSONDecoder().decode(WindowInventory.self, from: payload))?.windows
+    }
+
+    // MARK: - Stills (viewers that cannot decode video)
+
+    /// The region of the desktop a still viewer is looking at, in 0…65535
+    /// fractions of the display, and the pixel size it wants the picture at.
+    /// The host crops before scaling, so zooming in gains real detail.
+    struct StillViewport: Sendable, Equatable {
+        var x: UInt16
+        var y: UInt16
+        var width: UInt16
+        var height: UInt16
+        var outputWidth: UInt16
+        var outputHeight: UInt16
+        /// JPEG quality, 1…100.
+        var quality: UInt8
+
+        static let full = StillViewport(
+            x: 0, y: 0, width: .max, height: .max,
+            outputWidth: 396, outputHeight: 484, quality: 60
+        )
+        static let wireSize = 13
+    }
+
+    static func encodeStillViewport(_ viewport: StillViewport) -> Data {
+        var payload = Data(capacity: StillViewport.wireSize)
+        payload.appendLittleEndian(viewport.x)
+        payload.appendLittleEndian(viewport.y)
+        payload.appendLittleEndian(viewport.width)
+        payload.appendLittleEndian(viewport.height)
+        payload.appendLittleEndian(viewport.outputWidth)
+        payload.appendLittleEndian(viewport.outputHeight)
+        payload.append(viewport.quality)
+        return encodeFrame(.stillViewport, payload)
+    }
+
+    static func decodeStillViewport(_ payload: Data) -> StillViewport? {
+        guard payload.count >= StillViewport.wireSize else { return nil }
+        let bytes = [UInt8](payload.prefix(StillViewport.wireSize))
+        func word(_ index: Int) -> UInt16 { UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8 }
+        return StillViewport(
+            x: word(0), y: word(2), width: word(4), height: word(6),
+            outputWidth: word(8), outputHeight: word(10), quality: bytes[12]
+        )
+    }
+
+    /// One JPEG, with what the viewer needs to turn a tap on it into a point
+    /// in the stream's pixel space (the space `mouseMove` uses): the full
+    /// display's pixel size and the region this picture shows.
+    struct StillFrame: Sendable {
+        var sequence: UInt64
+        var sourceWidth: UInt16
+        var sourceHeight: UInt16
+        var region: StillViewport
+        var jpeg: Data
+        static let headerSize = 8 + 4 + 8
+    }
+
+    static func encodeStillFrame(_ frame: StillFrame) -> Data {
+        var payload = Data(capacity: StillFrame.headerSize + frame.jpeg.count)
+        payload.appendLittleEndian(frame.sequence)
+        payload.appendLittleEndian(frame.sourceWidth)
+        payload.appendLittleEndian(frame.sourceHeight)
+        payload.appendLittleEndian(frame.region.x)
+        payload.appendLittleEndian(frame.region.y)
+        payload.appendLittleEndian(frame.region.width)
+        payload.appendLittleEndian(frame.region.height)
+        payload.append(frame.jpeg)
+        return encodeFrame(.stillFrame, payload)
+    }
+
+    static func decodeStillFrame(_ payload: Data) -> StillFrame? {
+        guard payload.count > StillFrame.headerSize else { return nil }
+        let bytes = [UInt8](payload.prefix(StillFrame.headerSize))
+        var sequence: UInt64 = 0
+        for index in 0..<8 { sequence |= UInt64(bytes[index]) << (8 * index) }
+        func word(_ index: Int) -> UInt16 { UInt16(bytes[index]) | UInt16(bytes[index + 1]) << 8 }
+        var region = StillViewport.full
+        region.x = word(12); region.y = word(14); region.width = word(16); region.height = word(18)
+        return StillFrame(
+            sequence: sequence,
+            sourceWidth: word(8), sourceHeight: word(10),
+            region: region,
+            jpeg: payload.dropFirst(StillFrame.headerSize)
+        )
     }
 
     static func encodeFrameAck(windowID: UInt32, sequence: UInt64) -> Data {

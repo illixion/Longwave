@@ -1,5 +1,6 @@
 import DebugTrace
 import Foundation
+import CoreVideo
 import Network
 
 /// Authenticated multi-viewer server for the native Mac stream. Every client
@@ -109,6 +110,17 @@ final class MacNativeStreamServer: @unchecked Sendable {
         /// hello said otherwise.
         var wantsDesktopV1 = true
         var decodesHEVC422 = false
+        /// A viewer that cannot decode video and takes JPEG stills of
+        /// `stillViewport` instead (Apple Watch). It never subscribes to the
+        /// HEVC desktop stream, but its presence keeps the capture running.
+        var isStill = false
+        var stillViewport = MacNativeStreamProtocol.StillViewport.full
+        /// Something changed (a new frame, a new viewport) since the last still.
+        var stillDirty = false
+        var stillSequence: UInt64 = 0
+        /// Uptime ns when the unacknowledged still went out; nil when none is.
+        var stillSentAt: UInt64?
+        var lastStillAt: UInt64 = 0
         /// Per stream ID; the v1 desktop stream uses `desktopStreamID`.
         var awaitingKeyFrame: [UInt32: Bool] = [MacNativeStreamProtocol.desktopStreamID: true]
         /// v2 stream subscriptions. A v1 client is implicitly subscribed to
@@ -118,6 +130,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         var isV2: Bool { protocolVersion >= 2 }
 
         func wantsStream(_ windowID: UInt32) -> Bool {
+            if isStill { return false }
             if isV2 {
                 return subscriptions.contains(windowID)
             }
@@ -172,6 +185,20 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var mouseAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var keyboardAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var stoppingListener: NWListener?
+    /// The newest captured desktop frame, kept for still viewers: the screen
+    /// only produces frames when it changes, but a viewport change must be
+    /// answered from the picture already there.
+    private nonisolated(unsafe) var lastStillBuffer: CVPixelBuffer?
+    private let stillEncoder = MacNativeStillEncoder()
+    private let stillQueue = DispatchQueue(label: "pro.longwave.companion.mac-native.stills", qos: .userInteractive)
+    private nonisolated(unsafe) var stillRetryScheduled = false
+    /// Whether any viewer takes the HEVC desktop stream — read from the
+    /// capture's queue to skip encoding for a Mac that only has still viewers.
+    private let videoViewerLock = NSLock()
+    private nonisolated(unsafe) var videoViewerStorage = false
+    /// Fastest rate a still viewer is sent pictures at.
+    private static let minStillIntervalNanos: UInt64 = 80_000_000
+    private static let stillLossTimeoutNanos: UInt64 = 1_500_000_000
     private nonisolated(unsafe) var stopCompletion: (@Sendable () -> Void)?
 
     nonisolated init(port: UInt16, token: String) {
@@ -489,6 +516,90 @@ final class MacNativeStreamServer: @unchecked Sendable {
         })
     }
 
+    // MARK: - Stills
+
+    nonisolated func hasVideoViewers() -> Bool {
+        videoViewerLock.lock()
+        defer { videoViewerLock.unlock() }
+        return videoViewerStorage
+    }
+
+    /// Whether a Native-stream (fast-lane) still viewer is connected.
+    nonisolated func hasDesktopStillViewers() -> Bool {
+        queue.sync { clients.contains(where: \.isStill) }
+    }
+
+    private nonisolated func refreshVideoViewerFlag() {
+        let any = clients.contains { $0.wantsStream(MacNativeStreamProtocol.desktopStreamID) }
+        videoViewerLock.lock()
+        videoViewerStorage = any
+        videoViewerLock.unlock()
+    }
+
+    /// The capture produced a frame. Cheap when nobody takes stills.
+    nonisolated func offerStillFrame(_ buffer: CVPixelBuffer) {
+        queue.async { [self] in
+            guard clients.contains(where: \.isStill) else {
+                lastStillBuffer = nil
+                return
+            }
+            lastStillBuffer = buffer
+            for client in clients where client.isStill { client.stillDirty = true }
+            pumpStills()
+        }
+    }
+
+    /// Sends every still viewer that is idle and out of date its next picture.
+    private nonisolated func pumpStills() {
+        guard let buffer = lastStillBuffer else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        var nextWake: UInt64?
+        for client in clients where client.isStill && client.stillDirty {
+            if let sent = client.stillSentAt {
+                // A viewer that stopped acking must not stall for good.
+                guard now &- sent > Self.stillLossTimeoutNanos else {
+                    nextWake = min(nextWake ?? .max, Self.stillLossTimeoutNanos - (now &- sent))
+                    continue
+                }
+                client.stillSentAt = nil
+            }
+            let wait = now &- client.lastStillAt
+            guard wait >= Self.minStillIntervalNanos else {
+                nextWake = min(nextWake ?? .max, Self.minStillIntervalNanos - wait)
+                continue
+            }
+            client.stillDirty = false
+            client.stillSentAt = now
+            client.lastStillAt = now
+            client.stillSequence &+= 1
+            let viewport = client.stillViewport
+            let sequence = client.stillSequence
+            let source = (UInt16(clamping: CVPixelBufferGetWidth(buffer)), UInt16(clamping: CVPixelBufferGetHeight(buffer)))
+            stillQueue.async { [self] in
+                let jpeg = stillEncoder.encode(buffer, viewport: viewport)
+                queue.async { [self] in
+                    guard let jpeg else {
+                        client.stillSentAt = nil
+                        return
+                    }
+                    let frame = MacNativeStreamProtocol.encodeStillFrame(.init(
+                        sequence: sequence,
+                        sourceWidth: source.0, sourceHeight: source.1,
+                        region: viewport, jpeg: jpeg
+                    ))
+                    sendRequired(frame, to: client)
+                }
+            }
+        }
+        if let nextWake, !stillRetryScheduled {
+            stillRetryScheduled = true
+            queue.asyncAfter(deadline: .now() + .nanoseconds(Int(nextWake) + 1_000_000)) { [self] in
+                stillRetryScheduled = false
+                pumpStills()
+            }
+        }
+    }
+
     private nonisolated func accept(_ connection: NWConnection) {
         let client = Client(connection: connection)
         pendingClients.append(client)
@@ -543,7 +654,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     protocolVersion: hello.protocolVersion ?? 1,
                     wantsScreen: hello.wantsScreen ?? true,
                     decodesHEVC422: hello.decodesHEVC422 ?? false,
-                    acksFrames: hello.acksFrames ?? false
+                    acksFrames: hello.acksFrames ?? false,
+                    stillsOnly: hello.stillsOnly ?? false
                 )
             case MacNativeStreamProtocol.FrameType.keepAlive.rawValue:
                 break
@@ -575,6 +687,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 guard !client.subscriptions.contains(windowID) else { break }
                 let wasRunning = subscriberCount(windowID) > 0
                 client.subscriptions.insert(windowID)
+                refreshVideoViewerFlag()
                 client.awaitingKeyFrame[windowID] = true
                 if wasRunning {
                     // Someone else already has this stream going, so the
@@ -591,12 +704,28 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 guard client.isActive, client.isV2,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 guard client.subscriptions.remove(windowID) != nil else { break }
+                defer { refreshVideoViewerFlag() }
                 client.awaitingKeyFrame[windowID] = nil
                 // Only when the last viewer of this stream lets go.
-                if subscriberCount(windowID) == 0 {
+                if subscriberCount(windowID) == 0,
+                   !(windowID == MacNativeStreamProtocol.desktopStreamID && clients.contains(where: \.isStill)) {
                     onWindowStreamStop?(windowID)
                 }
+            case MacNativeStreamProtocol.FrameType.stillViewport.rawValue:
+                guard client.isActive, client.isStill,
+                      let viewport = MacNativeStreamProtocol.decodeStillViewport(frame.payload),
+                      viewport != client.stillViewport else { break }
+                client.stillViewport = viewport
+                client.stillDirty = true
+                pumpStills()
             case MacNativeStreamProtocol.FrameType.frameAck.rawValue:
+                if client.isActive, client.isStill,
+                   let ack = MacNativeStreamProtocol.decodeFrameAck(frame.payload),
+                   ack.sequence >= client.stillSequence {
+                    client.stillSentAt = nil
+                    pumpStills()
+                    break
+                }
                 guard client.isActive, client.acksFrames,
                       let ack = MacNativeStreamProtocol.decodeFrameAck(frame.payload),
                       ack.windowID == MacNativeStreamProtocol.desktopStreamID else { break }
@@ -670,7 +799,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         protocolVersion: Int,
         wantsScreen: Bool,
         decodesHEVC422: Bool,
-        acksFrames: Bool
+        acksFrames: Bool,
+        stillsOnly: Bool
     ) {
         guard !client.isActive,
               let pendingIndex = pendingClients.firstIndex(where: { $0 === client }) else { return }
@@ -680,6 +810,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         client.decodesHEVC422 = decodesHEVC422
         // Only a v2 viewer gets sequenced desktop frames it could ack.
         client.acksFrames = acksFrames && client.isV2
+        client.isStill = stillsOnly && client.isV2
         client.wantsDesktopV1 = wantsScreen
         client.awaitingKeyFrame = [MacNativeStreamProtocol.desktopStreamID: true]
         client.subscriptions = []
@@ -697,7 +828,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 keyCodeSpace: .macVirtual,
                 supportsWindowStreams: true,
                 supportsTransparentDesktop: false,
-                supportsAudioStream: true
+                supportsAudioStream: true,
+                supportsStills: true
             )), to: client)
             if let currentInventoryFrame {
                 sendRequired(currentInventoryFrame, to: client)
@@ -720,6 +852,13 @@ final class MacNativeStreamServer: @unchecked Sendable {
         // the capture at the old set's chroma and immediately restart it.
         onClientConnected?(deviceName, wantsScreen)
         onClientsChanged?(clients.map(\.summary))
+        refreshVideoViewerFlag()
+        if client.isStill, wantsScreen {
+            client.stillDirty = true
+            // Capture is shared: this is a no-op when it is already running.
+            onWindowStreamStart?(MacNativeStreamProtocol.desktopStreamID)
+            pumpStills()
+        }
         if !client.isV2, wantsScreen {
             if desktopWasRunning {
                 sendCachedFormat(of: MacNativeStreamProtocol.desktopStreamID, to: client)
@@ -814,16 +953,21 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 return
             }
             log.notice("Viewer \(client.deviceName ?? "unknown", privacy: .private(mask: .hash)) left: \(reason, privacy: .public)")
-            let streams = client.isV2
+            var streams = client.isV2
                 ? client.subscriptions
                 : (client.wantsDesktopV1 ? [MacNativeStreamProtocol.desktopStreamID] : [])
+            if client.isStill, client.wantsDesktopV1 {
+                streams.insert(MacNativeStreamProtocol.desktopStreamID)
+            }
             clients.remove(at: index)
             client.isActive = false
+            refreshVideoViewerFlag()
             client.connection.cancel()
             updateDesktopGate()
             if desktopCanAcceptFrame() { onDesktopPipeClear?() }
             // Stop only what no other viewer still wants.
-            for streamID in streams where subscriberCount(streamID) == 0 {
+            for streamID in streams where subscriberCount(streamID) == 0
+                && !(streamID == MacNativeStreamProtocol.desktopStreamID && clients.contains(where: \.isStill)) {
                 onWindowStreamStop?(streamID)
             }
             onClientsChanged?(clients.map(\.summary))

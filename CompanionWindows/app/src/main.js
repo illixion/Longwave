@@ -615,7 +615,8 @@ async function dispatchControl(method, params = {}) {
 // when needed. This process decides where the title runs and starts it:
 //   * flat titles always start on the desktop, here;
 //   * VR / both titles go to the PCVR host (GamesLaunchResolved: the CloudXR-specific start) while a
-//     PCVR session is on; a session still starting is waited for (bounded), then desktop;
+//     headset is connected to the PCVR session; a session still starting, or one no headset has
+//     joined yet, is waited for (bounded), then desktop;
 //   * a browsed .exe (or .lnk to one) is matched to the library by path. A custom title's own
 //     exe, or the exe a Steam title's launch entry would start, launches that title. Any other
 //     file in a Steam game's folder runs exactly as picked, with that game's Steam identity (so
@@ -900,7 +901,15 @@ async function askAddToLibrary(owner, { name, linkedTitle = null }) {
  * the game started.
  */
 async function runLaunch(resolve, { owner = null, recent = null } = {}) {
-  if (launchInFlight) return false;
+  if (launchInFlight) {
+    // Said, not swallowed: a shortcut launch has no window, so silence reads as a broken shortcut.
+    console.log('[launcher] launch refused: another one is still starting');
+    new Notification({
+      title: 'Another game is still starting',
+      body: 'Longwave starts one game at a time. Try again once the first one has started.',
+    }).show();
+    return false;
+  }
   launchInFlight = true;
   try {
     if (!await confirmLaunch(owner)) return false;
@@ -1139,7 +1148,10 @@ ipcMain.handle('library-add', async (event) => {
   }
   const match = await libraryRpc('LibraryMatchPath', { path: exe });
   // Already there: a custom title's exe, or the exe a Steam title's own entry starts.
-  if (match && (match.exact || match.desktopEntry || match.vrEntry)) return match.title;
+  if (match && (match.exact || match.desktopEntry || match.vrEntry)) {
+    rememberLibraryArt(match.title);
+    return match.title;
+  }
   // Any other file in a Steam game's folder becomes a custom entry linked to that game: it runs
   // exactly this file, with the game's Steam identity and art.
   const linked = match ? match.title : null;
@@ -1155,13 +1167,16 @@ ipcMain.handle('library-add', async (event) => {
   };
   const { response } = await dialog.showMessageBox(mainWindow, options);
   if (response === 2) return null;
-  return libraryRpc('LibraryAddCustom', {
+  const added = await libraryRpc('LibraryAddCustom', {
     path: exe,
     name: gameLauncher.displayName(filePath),
     arguments: args,
     kind: response === 1 ? 'vr' : 'flat',
     linkedSteamAppId: linked ? linked.steamAppId : null,
   });
+  // The Games tab shows it straight away, before its next LibraryList: let its cover through.
+  rememberLibraryArt(added);
+  return added;
 });
 
 ipcMain.handle('library-ask-state', (event) => {
@@ -1179,7 +1194,7 @@ ipcMain.handle('rpc', async (_e, method, params) => {
     lastFoveatedStatus = result;
     syncPairingWindow(result);
   }
-  if (method === 'LibraryList') rememberLibraryArt(result);
+  if (typeof method === 'string' && method.startsWith('Library')) rememberLibraryArt(result, method === 'LibraryList');
   return result;
 });
 // Whether the closed-source PCVR host is installed and its pipe is up right now — the
@@ -1284,9 +1299,12 @@ const ART_CACHE_LIMIT = 400;
 const artCache = new Map();
 const allowedArt = new Set();
 
-function rememberLibraryArt(titles) {
-  if (!Array.isArray(titles)) return;
-  allowedArt.clear();
+/** Records the art paths of library titles: a whole LibraryList replaces the set (`replace`),
+ *  while one title or list from any other library answer (an add, a kind change) only adds. */
+function rememberLibraryArt(titles, replace = false) {
+  if (!titles || typeof titles !== 'object') return;
+  if (!Array.isArray(titles)) titles = [titles];
+  if (replace) allowedArt.clear();
   for (const t of titles) {
     if (t && typeof t.portraitArt === 'string') allowedArt.add(t.portraitArt);
     if (t && typeof t.landscapeArt === 'string') allowedArt.add(t.landscapeArt);

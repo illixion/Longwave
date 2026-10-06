@@ -54,15 +54,20 @@ test('recents: newest first, de-duplicated (paths case-insensitively), capped', 
   assert.deepStrictEqual(gl.loadRecents(dir), []);
 });
 
-test('launch mode: flat stays flat; VR goes to PCVR when on, waits while starting', () => {
-  assert.strictEqual(gl.launchModeFor(true, { state: 'on' }, 'flat'), 'flat');
-  assert.strictEqual(gl.launchModeFor(false, { state: 'on' }, 'vr'), 'flat');
+test('launch mode: flat stays flat; VR goes to PCVR with a headset in, waits for one otherwise', () => {
+  const live = { state: 'on', clientConnected: true, sessionStatus: 'CONNECTED' };
+  assert.strictEqual(gl.launchModeFor(true, live, 'flat'), 'flat');
+  assert.strictEqual(gl.launchModeFor(false, live, 'vr'), 'flat');
   assert.strictEqual(gl.launchModeFor(true, null, 'vr'), 'flat');
   assert.strictEqual(gl.launchModeFor(true, { state: 'off' }, 'both'), 'flat');
   assert.strictEqual(gl.launchModeFor(true, { state: 'error' }, 'vr'), 'flat');
-  assert.strictEqual(gl.launchModeFor(true, { state: 'on' }, 'vr'), 'vr');
-  assert.strictEqual(gl.launchModeFor(true, { state: 'on' }, 'both'), 'vr');
+  assert.strictEqual(gl.launchModeFor(true, live, 'vr'), 'vr');
+  assert.strictEqual(gl.launchModeFor(true, live, 'both'), 'vr');
   assert.strictEqual(gl.launchModeFor(true, { state: 'starting' }, 'vr'), 'wait');
+  // The host is up but no headset has joined (or it left): not a VR launch yet.
+  assert.strictEqual(gl.launchModeFor(true, { state: 'on' }, 'vr'), 'wait');
+  assert.strictEqual(gl.launchModeFor(true, { ...live, clientConnected: false }, 'vr'), 'wait');
+  assert.strictEqual(gl.launchModeFor(true, { ...live, sessionStatus: 'CONNECTING' }, 'both'), 'wait');
 });
 
 test('picker search: prefix, then word start, then substring; capped', () => {

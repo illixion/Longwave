@@ -405,9 +405,10 @@ a program that demands administrator rights fails with a message rather than a U
 Steam game starts from its own launch entry in `appinfo.vdf` with `SteamAppId`/`SteamGameId` set,
 after starting Steam (unelevated, `-silent`) if it isn't running, so Steam's DRM doesn't quit it
 and relaunch it through Steam. A **desktop** title always starts on the desktop. A **VR** or
-**both** title starts in VR through the PCVR component while a PCVR session is on; while one is
-still starting, the launch waits up to a minute for the headset and otherwise starts on the
-desktop, with a notification saying so. With no PCVR session it starts on the desktop (a VR-only
+**both** title starts in VR through the PCVR component while a headset is connected to a PCVR
+session; while the session is still starting, or no headset has joined it yet, the launch waits up
+to a minute for the headset and otherwise starts on the desktop, with a notification saying so.
+One launch runs at a time; a second one asked for meanwhile is refused with a notification. With no PCVR session it starts on the desktop (a VR-only
 title then starts the way Steam's Play button would).
 
 ## Launch game…

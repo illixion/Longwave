@@ -113,16 +113,23 @@ function displayName(filePath) {
   return win.basename(filePath, win.extname(filePath));
 }
 
+/** Whether a headset is actually streaming — the same test as waitForFoveatedConnected in
+ *  main.js. The session being 'on' only means the host is up. */
+function headsetConnected(foveatedStatus) {
+  return !!foveatedStatus && !!foveatedStatus.clientConnected && foveatedStatus.sessionStatus === 'CONNECTED';
+}
+
 /**
  * How a title starts. Flat titles always start on the desktop. A VR or both title goes through
- * PCVR while its session is on; while the session is still starting the caller waits (bounded)
- * for the headset and then decides again ('wait'); with no session it starts on the desktop —
- * for a VR-only title that is Steam's own behaviour, its VR entry with no headset streaming.
+ * PCVR while a headset is connected to the session; while the session is on but no headset has
+ * joined yet, or it is still starting, the caller waits (bounded) for the headset and then
+ * decides again ('wait'); with no session it starts on the desktop — for a VR-only title that is
+ * Steam's own behaviour, its VR entry with no headset streaming.
  */
 function launchModeFor(pcvrConnected, foveatedStatus, kind = 'vr') {
   if (kind === 'flat') return 'flat';
   if (!pcvrConnected || !foveatedStatus) return 'flat';
-  if (foveatedStatus.state === 'on') return 'vr';
+  if (foveatedStatus.state === 'on') return headsetConnected(foveatedStatus) ? 'vr' : 'wait';
   if (foveatedStatus.state === 'starting') return 'wait';
   return 'flat';
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import DebugTraceServer
+import DebugTraceUI
 #if FOVEATED_ENABLED && !targetEnvironment(simulator)
 import FoveatedStreaming
 #endif
@@ -55,6 +56,7 @@ struct LongwaveApp: App {
                 .environment(moonlightSessions)
                 #endif
                 .trackMainWindow()
+                .debugApprovalPrompts()
                 #if DEBUG
                 .unityControlsLayoutDemo(macNativeSessions, audioManager)
                 .nativeDesktopDemo(macNativeSessions)
@@ -90,6 +92,13 @@ struct LongwaveApp: App {
             .shared
         }
         .modelContainer(for: SavedConnection.self)
+
+        // The debug server's access and code-change prompts, in a window of
+        // their own that opens in front of the person (DebugTraceUI), rather
+        // than a system alert that 3D content or an immersive space can hide.
+        #if os(visionOS)
+        DebugApprovalWindow()
+        #endif
 
         WindowGroup("Console", id: "console") {
             ConsoleWindowView()

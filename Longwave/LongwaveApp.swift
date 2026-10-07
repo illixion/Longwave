@@ -286,6 +286,42 @@ struct LongwaveApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        // The Native desktop's controls as a window of their own, while a
+        // mouse drives the Mac — see `NativeDesktopControls`. Closing it
+        // hands the mouse back to visionOS, which brings the ornament back.
+        WindowGroup("Desktop Controls", id: "mac-native-controls", for: MacNativeSessionID.self) { $sessionID in
+            if let sessionID {
+                let manager = macNativeSessions.session(for: sessionID)
+                NativeDesktopControls(sessionID: sessionID)
+                    .environment(manager)
+                    .environment(macNativeSessions)
+                    .environment(macNativeSessions.audioPlayer(for: sessionID))
+                    .trackWindowSession(
+                        id: "mac-native-controls",
+                        instance: sessionID.registryInstance
+                    )
+                    .onDisappear {
+                        // Closed by hand while the desktop still wants it
+                        // detached: give the mouse back rather than leave the
+                        // desktop with no controls at all.
+                        let bridge = MacNativeMouseBridge.shared(for: manager)
+                        if bridge.ownsPointer, manager.liveEnabled {
+                            bridge.captureEnabled = false
+                        }
+                    }
+            }
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.plain)
+        .defaultWindowPlacement { _, context in
+            if let desktop = context.windows.first(where: { $0.id == "mac-native-stream" }) {
+                return WindowPlacement(.below(desktop))
+            }
+            return WindowPlacement(.utilityPanel)
+        }
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         WindowGroup("Native Keyboard", id: "mac-native-keyboard", for: MacNativeSessionID.self) { $sessionID in
             if let sessionID {
                 MacNativeKeyboardView()

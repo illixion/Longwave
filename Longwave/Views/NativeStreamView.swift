@@ -92,43 +92,13 @@ struct NativeStreamView: View {
     /// gestures stand down — see `TwoHandPointerGesture`.
     @State private var twoHandEngaged = false
     /// A Bluetooth/USB mouse, read raw and sent straight to the Mac — see
-    /// `MacNativeMouseBridge`. Made on first appearance, since the manager
-    /// it drives comes from the environment.
-    @State private var mouseBridge: MacNativeMouseBridge?
-    /// The Display popover is showing — it lives outside the ornament, so
-    /// the mouse's clicks must neither be caught by the hit target nor
-    /// reach the Mac.
-    @State private var displaySettingsShown = false
+    /// `MacNativeMouseBridge`. The session's, shared with its controls.
+    private var mouseBridge: MacNativeMouseBridge { .shared(for: screenManager) }
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
     /// arbitrated inside `AudioStreamManager`.
     private var audioLive: Bool { audioManager.liveEnabled }
-
-    /// The Audio toggle. Turning it on points this session's player at this
-    /// session's host — `prepareTarget` first, because the window can be
-    /// opened with Audio off and the player then has nothing to reconnect to.
-    private var audioBinding: Binding<Bool> {
-        Binding(
-            get: { audioLive },
-            set: { on in
-                guard on else {
-                    audioManager.liveEnabled = false
-                    return
-                }
-                if let connection = screenManager.connection {
-                    audioManager.prepareTarget(
-                        hostname: connection.companionHost,
-                        port: AudioStreamProtocol.defaultPort,
-                        token: connection.companionToken,
-                        title: connection.displayName,
-                        lowLatency: connection.lowLatencyAudio
-                    )
-                }
-                audioManager.liveEnabled = true
-            }
-        )
-    }
 
     /// Registry keys for this session's windows — `mac-native-stream` alone
     /// would answer for every session's.
@@ -175,7 +145,9 @@ struct NativeStreamView: View {
                 emptyContent
             }
         }
-        .ornament(attachmentAnchor: .scene(.bottom)) {
+        // Below the window, not straddling its bottom edge: half the bar
+        // covered the bottom of the desktop, the Dock or the Start menu.
+        .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
             if screenManager.unityEnabled {
                 EmptyView()
             } else if audioLive, !screenManager.liveEnabled {
@@ -186,7 +158,11 @@ struct NativeStreamView: View {
                 // `audioUtilityRow` instead, as it did there).
                 homeOnlyControls
             } else {
-                controls(screenOn: $screenManager.liveEnabled, audioOn: audioBinding)
+                // While a mouse drives the Mac the controls are a window of
+                // their own — see `NativeDesktopControls` for why.
+                if !controlsDetached {
+                    NativeDesktopControls(sessionID: sessionID)
+                }
             }
         }
         // The music widget beside the window rather than on top of it: over
@@ -208,8 +184,11 @@ struct NativeStreamView: View {
         .onAppear {
             audioManager.presenterAppeared(Self.audioPresenterID)
             resumeIfNeeded()
+            syncDetachedControls()
         }
+        .onChange(of: controlsDetached) { syncDetachedControls() }
         .onDisappear {
+            dismissWindow(id: "mac-native-controls", value: sessionID)
             // Soft teardown only — visionOS also fires this on transient
             // hides (space restore, snapping); a full forget happens only
             // from the explicit Disconnect button below.
@@ -494,7 +473,7 @@ struct NativeStreamView: View {
                     if mouseOwnsPointer {
                         // Gone while the Display menu is open, so the mouse
                         // can work the menu.
-                        if !displaySettingsShown, let rect = mouseHitRect {
+                        if !mouseBridge.menuOpen, let rect = mouseHitRect {
                             MouseHitTarget()
                                 .frame(width: rect.width, height: rect.height)
                                 .position(x: rect.midX, y: rect.midY)
@@ -562,10 +541,10 @@ struct NativeStreamView: View {
             .frame(width: 1, height: 1)
             .onAppear(perform: startMouseBridge)
             .onChange(of: screenManager.state) {
-                mouseBridge?.streaming = screenManager.state == .streaming
+                mouseBridge.streaming = screenManager.state == .streaming
             }
             .onDisappear {
-                mouseBridge?.stop()
+                mouseBridge.stop()
                 // Screen off: the audio and picker panels size themselves.
                 aspectLockTask?.cancel()
                 windowScene?.lockAspect(nil)
@@ -688,11 +667,24 @@ struct NativeStreamView: View {
     /// Whether a physical mouse drives the Mac's cursor: the view's own
     /// taps, drags and hover then stand aside, since visionOS also delivers
     /// each physical click to them (Moonlight's rule too).
-    private var mouseOwnsPointer: Bool { mouseBridge?.ownsPointer ?? false }
+    private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
+
+    /// The controls live in their own window while a mouse drives the
+    /// desktop (and the desktop is showing).
+    private var controlsDetached: Bool {
+        mouseOwnsPointer && screenManager.liveEnabled && !screenManager.unityEnabled
+    }
+
+    private func syncDetachedControls() {
+        if controlsDetached {
+            openWindow(id: "mac-native-controls", value: sessionID)
+        } else {
+            dismissWindow(id: "mac-native-controls", value: sessionID)
+        }
+    }
 
     private func startMouseBridge() {
-        let bridge = mouseBridge ?? MacNativeMouseBridge(manager: screenManager)
-        mouseBridge = bridge
+        let bridge = mouseBridge
         bridge.streaming = screenManager.state == .streaming
         bridge.start()
     }
@@ -1132,197 +1124,6 @@ struct NativeStreamView: View {
         .glassBackgroundEffect()
     }
 
-    // MARK: - Controls ornament
-
-    private func controls(screenOn: Binding<Bool>, audioOn: Binding<Bool>) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                openWindow(id: "main", value: MainWindowID.shared)
-            } label: {
-                Label("Connections", systemImage: "house")
-            }
-
-            Toggle(isOn: screenOn) {
-                Label("Screen", systemImage: "macwindow.on.rectangle")
-            }
-            .toggleStyle(.button)
-
-            if screenManager.liveEnabled {
-                Button {
-                    screenManager.touchMode = screenManager.touchMode == .absolute ? .relative : .absolute
-                } label: {
-                    Label(
-                        screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
-                        systemImage: screenManager.touchMode == .absolute
-                            ? "hand.tap" : "rectangle.and.hand.point.up.left"
-                    )
-                }
-
-                Button(action: rightClickAtCursor) {
-                    Label("Right-click", systemImage: "cursorarrow.click.2")
-                }
-
-                if let mouseBridge, mouseBridge.isConnected {
-                    Toggle(isOn: Binding(
-                        get: { mouseBridge.captureEnabled },
-                        set: { mouseBridge.captureEnabled = $0 }
-                    )) {
-                        Label("Mouse", systemImage: "computermouse")
-                    }
-                    .toggleStyle(.button)
-                    .help(mouseBridge.captureEnabled
-                        ? "The mouse controls the Mac; hand gestures are off until you turn this off"
-                        : "Use the mouse on the Mac's desktop")
-                }
-
-                displayMenu
-
-                Button(action: toggleKeyboardWindow) {
-                    Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
-                }
-                .tint(isKeyboardWindowOpen ? .accentColor : nil)
-            }
-
-            Toggle(isOn: audioOn) {
-                Label(
-                    "Audio",
-                    systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash"
-                )
-            }
-            .toggleStyle(.button)
-            .disabled(!screenManager.hostServesAudio)
-
-            Button(action: disconnectAll) {
-                Label("Disconnect", systemImage: "xmark.circle")
-            }
-        }
-        .buttonStyle(.bordered)
-        .padding(12)
-        .glassBackgroundEffect()
-        .onHover { hovering in
-            mouseBridge?.pointerOverControls = hovering
-        }
-    }
-
-    /// Which desktop the host streams and how it is shown, in a popover
-    /// rather than a menu: a popover's open state is ours to know, and the
-    /// mouse hit target has to stand aside for exactly as long as it shows.
-    /// A menu offers no such signal, and inferring one from its content
-    /// appearing went stale after choices that changed the content.
-    private var displayMenu: some View {
-        Button {
-            setDisplaySettingsShown(!displaySettingsShown)
-        } label: {
-            Label("Display", systemImage: "display.2")
-        }
-        .help("Choose which Mac desktop to show, and how much it curves around you")
-        .popover(isPresented: Binding(
-            get: { displaySettingsShown },
-            set: { setDisplaySettingsShown($0) }
-        ), arrowEdge: .top) {
-            displaySettings
-                .padding(20)
-                .frame(width: 380)
-        }
-    }
-
-    private var displaySettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if screenManager.virtualDisplaySettings != nil {
-                virtualDisplayControls
-            } else if screenManager.displays.count > 1 {
-                // A host that doesn't publish its virtual display's settings:
-                // just the list it offers.
-                Picker("Desktop", selection: Binding(
-                    get: { screenManager.selectedDisplayID ?? "" },
-                    set: { screenManager.selectDisplay($0) }
-                )) {
-                    ForEach(screenManager.displays) { display in
-                        Text(display.name).tag(display.id)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Curve").font(.headline)
-                Picker("Curve", selection: $curvatureSetting) {
-                    ForEach(NativeScreenCurvature.allCases) { curvature in
-                        Text(curvature.title).tag(curvature.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
-        }
-    }
-
-    /// The host's virtual display: on (a desktop that exists only for the
-    /// headset — its resolution, and whether the Mac's own screens go dark)
-    /// or off (mirror one of the Mac's physical displays).
-    @ViewBuilder
-    private var virtualDisplayControls: some View {
-        let virtualID = MacNativeStreamProtocol.virtualDisplayID
-        let physical = screenManager.displays.filter { !$0.isVirtual }
-        if let settings = screenManager.virtualDisplaySettings {
-            let virtualOn = screenManager.selectedDisplayID == virtualID
-            Toggle(isOn: Binding(
-                get: { virtualOn },
-                set: { on in
-                    if on {
-                        screenManager.selectDisplay(virtualID)
-                    } else if let main = physical.first {
-                        // The host lists the main display first.
-                        screenManager.selectDisplay(main.id)
-                    }
-                }
-            )) {
-                Label("Virtual Display", systemImage: "rectangle.on.rectangle")
-            }
-            .disabled(!virtualOn && physical.isEmpty)
-
-            if virtualOn {
-                Picker(selection: Binding(
-                    get: { settings.resolution },
-                    set: { screenManager.configureVirtualDisplay(.init(resolution: $0)) }
-                )) {
-                    ForEach(settings.resolutions) { resolution in
-                        Text(resolution.title).tag(resolution.id)
-                    }
-                } label: {
-                    Label("Resolution", systemImage: "aspectratio")
-                }
-                .pickerStyle(.menu)
-
-                Toggle(isOn: Binding(
-                    get: { settings.hostDisplaysOff },
-                    set: { screenManager.configureVirtualDisplay(.init(hostDisplaysOff: $0)) }
-                )) {
-                    Label("Turn Off Mac Displays", systemImage: "power")
-                }
-            } else if physical.count > 1 {
-                Picker(selection: Binding(
-                    get: { screenManager.selectedDisplayID ?? "" },
-                    set: { screenManager.selectDisplay($0) }
-                )) {
-                    ForEach(physical) { display in
-                        Text(display.name).tag(display.id)
-                    }
-                } label: {
-                    Label("Mirror", systemImage: "display")
-                }
-                .pickerStyle(.menu)
-            } else if let only = physical.first {
-                Label("Mirroring \(only.name)", systemImage: "display")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func setDisplaySettingsShown(_ shown: Bool) {
-        displaySettingsShown = shown
-        mouseBridge?.menuOpen = shown
-    }
 
     /// Minimal ornament for the audio-only views — the old standalone Audio
     /// Stream window had no ornament at all, just a home button alongside its
@@ -1359,22 +1160,7 @@ struct NativeStreamView: View {
         .glassBackgroundEffect()
     }
 
-    // MARK: - Keyboard Window
-
-    /// True while the on-screen keyboard has been opened in its own window —
-    /// tracked live off `WindowSessionRegistry`, so the button reads as a real
-    /// toggle instead of only ever opening it (mirrors `RemoteDesktopView`).
-    private var isKeyboardWindowOpen: Bool {
-        WindowSessionRegistry.shared.sessions[keyboardWindowKey] != nil
-    }
-
-    private func toggleKeyboardWindow() {
-        if isKeyboardWindowOpen {
-            dismissWindow(id: "mac-native-keyboard", value: sessionID)
-        } else {
-            openWindow(id: "mac-native-keyboard", value: sessionID)
-        }
-    }
+    // MARK: - Disconnect
 
     private func disconnectAll() {
         // Take the per-window scenes down first — their sessions die with
@@ -1390,13 +1176,17 @@ struct NativeStreamView: View {
         // audio included. `end` disconnects this session's player.
         sessions.end(sessionID)
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
-            closing: [keyboardWindowKey, streamWindowKey, unityControlsWindowKey, audioWindowKey],
+            closing: [
+                keyboardWindowKey, streamWindowKey, unityControlsWindowKey, audioWindowKey,
+                WindowSessionRegistry.key("mac-native-controls", instance: sessionID.registryInstance),
+            ],
             using: openWindow
         ) {
             dismissWindow(id: "mac-native-keyboard", value: sessionID)
             dismissWindow(id: "mac-native-stream", value: sessionID)
             dismissWindow(id: "mac-native-unity-controls", value: sessionID)
             dismissWindow(id: "mac-native-audio", value: sessionID)
+            dismissWindow(id: "mac-native-controls", value: sessionID)
         }
     }
 }

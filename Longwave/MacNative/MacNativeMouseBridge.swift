@@ -48,9 +48,10 @@ final class MacNativeMouseBridge {
         }
     }
 
-    /// Set while one of the ornament's menus is open; its items sit outside
-    /// the ornament, so its hover doesn't cover them. Holds back presses too.
-    @ObservationIgnored var menuOpen = false
+    /// The Display popover is showing. It sits outside the controls, so
+    /// their hover doesn't cover it: presses are held back, and the desktop
+    /// takes its hit target down so the popover is never behind it.
+    var menuOpen = false
 
     /// Mouse input counts only while the window is streaming.
     @ObservationIgnored var streaming = false {
@@ -195,6 +196,19 @@ final class MacNativeMouseBridge {
         case .right: .right
         case .other: .middle
         }
+    }
+}
+extension MacNativeMouseBridge {
+    private static var bridges: [ObjectIdentifier: MacNativeMouseBridge] = [:]
+
+    /// The session's bridge — one per manager, shared by the desktop window
+    /// and its controls, which may be in a window of their own.
+    static func shared(for manager: MacNativeStreamManager) -> MacNativeMouseBridge {
+        let key = ObjectIdentifier(manager)
+        if let bridge = bridges[key] { return bridge }
+        let bridge = MacNativeMouseBridge(manager: manager)
+        bridges[key] = bridge
+        return bridge
     }
 }
 #endif

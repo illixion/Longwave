@@ -2,9 +2,7 @@ import DebugTrace
 import Foundation
 import AVFoundation
 import CoreMedia
-#if canImport(UIKit)
-import UIKit
-#endif
+import RAVEMedia
 
 /// Reconstructs the exact alpha-bearing HEVC format sent by the Mac and feeds
 /// compressed samples to the display layer for hardware decoding — or, for
@@ -32,9 +30,6 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
     private var surfaceDecoder: MacNativeSurfaceDecoder?
     private var formatDescription: CMVideoFormatDescription?
     private var hasDisplayedFrame = false
-    /// Set when the decoder changes: a fresh one can't use delta frames
-    /// predicted from pictures it never saw.
-    private var awaitingKeyFrame = false
 
     // MARK: Decoder loss
     //
@@ -42,133 +37,58 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
     // immersive space is open: the display layer's renderer goes `.failed`
     // with `requiresFlushToResumeDecoding`, a `VTDecompressionSession`
     // answers `kVTInvalidSessionErr`. Either way the decoder has to be reset
-    // and then fed a key frame — and the host encodes key frames only when
+    // and then fed a key frame, and the host encodes key frames only when
     // asked (`MacHEVCEncoder`'s interval is an hour), so not asking left the
-    // picture frozen on its last frame for good.
+    // picture frozen on its last frame for good. RAVEMedia's
+    // `RAVEDecoderRecovery` does the noticing, waiting and retrying (shared
+    // with Convolution's players); this renderer only resets and asks. It
+    // also gates on the key frame after any reset, asking again if only
+    // delta frames keep coming.
 
-    /// Uptime of the last flush-and-ask, so a decoder that is still not
-    /// allowed to run is retried about once a second, not on every frame.
-    private var lastRecoveryNanos: UInt64 = 0
-    private static let recoveryIntervalNanos: UInt64 = 1_000_000_000
-    /// The app is in the background: decoding isn't permitted, so a loss is
-    /// only noted, and recovered when the app comes back.
-    private var appInBackground = false
-    /// A loss noted while recovery was deferred (background or rate limit).
-    private var decoderLossPending = false
-    /// One of the app's scenes went to the background since the last
-    /// recovery check; the surface decoder may have been reset silently.
-    private var interruptedSinceRecovery = false
-    /// `.failed` without `requiresFlushToResumeDecoding` — something other
-    /// than lost resources, such as a stream this decoder can't take.
-    /// Retried a few times, then reported as before.
-    private var unexplainedFailures = 0
-    private static let unexplainedFailuresBeforeError = 3
-    private var observers: [NSObjectProtocol] = []
+    /// Made in `init`; never nil after.
+    private var recovery: RAVEDecoderRecovery!
 
     init(displayLayer: AVSampleBufferDisplayLayer) {
         self.displayLayer = displayLayer
         self.sink = displayLayer.sampleBufferRenderer
-        observeDecoderAvailability()
+        recovery = RAVEDecoderRecovery(
+            renderer: sink,
+            // A display layer that fails while decoding is available is a
+            // stream it can't take; three tries, then the old error.
+            maximumAttempts: 3,
+            onGiveUp: { [weak self] _ in
+                guard let self else { return }
+                let message = self.sink.error?.localizedDescription ?? "unknown display-layer error"
+                self.sink.flush()
+                self.onError?("HEVC-alpha display failed: \(message)")
+            }
+        ) { [weak self] reason in
+            self?.recoverFromLoss(reason)
+        }
     }
 
     deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
+        recovery.cancel()
     }
 
-    private func observeDecoderAvailability() {
-        let center = NotificationCenter.default
-        // A stream that is idle — a static desktop sends nothing — would
-        // never reach the check in `enqueue`, so react to the change itself.
-        observers.append(center.addObserver(
-            forName: AVSampleBufferVideoRenderer.requiresFlushToResumeDecodingDidChangeNotification,
-            object: sink,
-            queue: nil
-        ) { [weak self] _ in
-            // Posted from inside `flush`/`enqueue`, which run under `lock`:
-            // take it on another thread rather than deadlock.
-            DispatchQueue.global(qos: .userInitiated).async {
-                self?.decoderAvailabilityChanged()
+    /// On the recovery's queue: reset whichever decoder is in use, then ask
+    /// the host for a key frame.
+    private func recoverFromLoss(_ reason: RAVEDecoderRecovery.Reason) {
+        lock.lock()
+        guard formatDescription != nil else {
+            lock.unlock()
+            return
+        }
+        if !reason.needsKeyFrameOnly {
+            if let surfaceDecoder {
+                surfaceDecoder.invalidate()
+            } else {
+                sink.flush()
             }
-        })
-        #if canImport(UIKit)
-        observers.append(center.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            self?.enteredBackground(appWide: true)
-        })
-        observers.append(center.addObserver(
-            forName: UIScene.didEnterBackgroundNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            self?.enteredBackground(appWide: false)
-        })
-        for name in [
-            UIApplication.willEnterForegroundNotification,
-            UIApplication.didBecomeActiveNotification,
-            UIScene.willEnterForegroundNotification,
-            UIScene.didActivateNotification,
-        ] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
-                self?.resumeAfterInterruption()
-            })
         }
-        #endif
-    }
-
-    private func enteredBackground(appWide: Bool) {
-        lock.lock()
-        if appWide { appInBackground = true }
-        interruptedSinceRecovery = true
         lock.unlock()
-    }
-
-    private func decoderAvailabilityChanged() {
-        lock.lock()
-        let requested = sink.requiresFlushToResumeDecoding
-            && recoverDecoderLocked(reason: "decoder needs a flush to resume", force: false)
-        lock.unlock()
-        if requested { onKeyFrameNeeded?() }
-    }
-
-    /// The app (or one of its scenes) is back: reset whatever decoder was
-    /// lost while it was away and ask for a key frame now, rather than when
-    /// the next frame happens to arrive.
-    private func resumeAfterInterruption() {
-        lock.lock()
-        appInBackground = false
-        let interrupted = interruptedSinceRecovery
-        let lost = decoderLossPending
-            || sink.status == .failed
-            || sink.requiresFlushToResumeDecoding
-            // A reset VT session says so only on the next decode.
-            || (interrupted && surfaceDecoder != nil)
-        let requested = lost && recoverDecoderLocked(reason: "app returned", force: true)
-        if !lost { interruptedSinceRecovery = false }
-        lock.unlock()
-        if requested { onKeyFrameNeeded?() }
-    }
-
-    /// Resets the active decoder and arms the key-frame gate. Returns whether
-    /// the caller should ask the host for a key frame (outside the lock).
-    /// Caller holds `lock`.
-    private func recoverDecoderLocked(reason: StaticString, force: Bool) -> Bool {
-        guard formatDescription != nil else { return false }
-        let now = DispatchTime.now().uptimeNanoseconds
-        guard force
-              || (!appInBackground && now &- lastRecoveryNanos >= Self.recoveryIntervalNanos) else {
-            decoderLossPending = true
-            return false
-        }
-        lastRecoveryNanos = now
-        decoderLossPending = false
-        interruptedSinceRecovery = false
-        if let surfaceDecoder {
-            surfaceDecoder.invalidate()
-        } else {
-            sink.flush()
-        }
-        awaitingKeyFrame = true
-        AppLog.macNativeVideo.info("Decoder reset (\(reason, privacy: .public)); asking the host for a key frame")
-        return true
+        AppLog.macNativeVideo.info("Decoder reset (\(reason.description, privacy: .public)); asking the host for a key frame")
+        onKeyFrameNeeded?()
     }
 
     /// Routes decoding to `decoder`, or back to the display layer with nil.
@@ -180,9 +100,11 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         }
         let previous = surfaceDecoder
         surfaceDecoder = decoder
-        awaitingKeyFrame = formatDescription != nil
-        let wantsKeyFrame = awaitingKeyFrame
-        if wantsKeyFrame { lastRecoveryNanos = DispatchTime.now().uptimeNanoseconds }
+        let wantsKeyFrame = formatDescription != nil
+        if wantsKeyFrame { recovery.expectKeyFrame() }
+        // A session reports its loss only on its next decode, so a still
+        // desktop wouldn't notice; treat any time away as a loss.
+        recovery.assumesLossOnInterruption = decoder != nil
         previous?.invalidate()
         lock.unlock()
         if decoder != nil {
@@ -214,9 +136,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         lock.lock()
         formatDescription = description
         hasDisplayedFrame = false
-        awaitingKeyFrame = false
-        decoderLossPending = false
-        unexplainedFailures = 0
+        recovery.reset()
         surfaceDecoder?.invalidate()
         let sink = sink
         lock.unlock()
@@ -320,51 +240,16 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
 
     func enqueue(_ frame: MacNativeStreamProtocol.VideoFrame) {
         lock.lock()
-        let wantsKeyFrame = enqueueLocked(frame)
+        enqueueLocked(frame)
         lock.unlock()
-        if wantsKeyFrame { onKeyFrameNeeded?() }
     }
 
-    /// Returns whether to ask the host for a key frame.
-    private func enqueueLocked(_ frame: MacNativeStreamProtocol.VideoFrame) -> Bool {
-        guard let formatDescription else { return false }
+    private func enqueueLocked(_ frame: MacNativeStreamProtocol.VideoFrame) {
+        guard let formatDescription else { return }
         let sampleBufferRenderer = sink
-        if surfaceDecoder == nil {
-            if sampleBufferRenderer.requiresFlushToResumeDecoding {
-                return recoverDecoderLocked(reason: "decoder needs a flush to resume", force: false)
-            }
-            switch sampleBufferRenderer.status {
-            case .failed:
-                unexplainedFailures += 1
-                if unexplainedFailures > Self.unexplainedFailuresBeforeError {
-                    let message = sampleBufferRenderer.error?.localizedDescription
-                        ?? "unknown display-layer error"
-                    sampleBufferRenderer.flush()
-                    onError?("HEVC-alpha display failed: \(message)")
-                    return false
-                }
-                return recoverDecoderLocked(reason: "display layer failed", force: false)
-            case .rendering:
-                unexplainedFailures = 0
-            default:
-                break
-            }
-        }
-        if decoderLossPending {
-            // Deferred by the rate limit; retry once it allows.
-            return recoverDecoderLocked(reason: "retrying a lost decoder", force: false)
-        }
-        if awaitingKeyFrame {
-            guard frame.isKeyFrame else {
-                // Delta frames still coming a second after asking: the
-                // request went missing (or the host predates it). Ask again.
-                let now = DispatchTime.now().uptimeNanoseconds
-                guard now &- lastRecoveryNanos >= Self.recoveryIntervalNanos else { return false }
-                lastRecoveryNanos = now
-                return true
-            }
-            awaitingKeyFrame = false
-        }
+        // A lost decoder is recovered asynchronously (see `recoverFromLoss`).
+        if surfaceDecoder == nil, recovery.checkRenderer() { return }
+        guard recovery.admit(isKeyFrame: frame.isKeyFrame) else { return }
 
         var blockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
@@ -378,7 +263,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             flags: 0,
             blockBufferOut: &blockBuffer
         )
-        guard status == noErr, let blockBuffer else { return false }
+        guard status == noErr, let blockBuffer else { return }
         status = frame.data.withUnsafeBytes { bytes -> OSStatus in
             guard let baseAddress = bytes.baseAddress else { return -1 }
             return CMBlockBufferReplaceDataBytes(
@@ -388,7 +273,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
                 dataLength: frame.data.count
             )
         }
-        guard status == noErr else { return false }
+        guard status == noErr else { return }
 
         var timing = CMSampleTimingInfo(
             duration: .invalid,
@@ -411,7 +296,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             sampleSizeArray: &sampleSize,
             sampleBufferOut: &sampleBuffer
         )
-        guard status == noErr, let sampleBuffer else { return false }
+        guard status == noErr, let sampleBuffer else { return }
 
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(
             sampleBuffer,
@@ -437,7 +322,8 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
 
         if let surfaceDecoder {
             if surfaceDecoder.decode(sampleBuffer) == .decoderLost {
-                return recoverDecoderLocked(reason: "surface decoder lost", force: false)
+                recovery.noteLoss(.sessionLost)
+                return
             }
         } else {
             sampleBufferRenderer.enqueue(sampleBuffer)
@@ -446,16 +332,13 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             hasDisplayedFrame = true
             onFirstFrame?()
         }
-        return false
     }
 
     func reset() {
         lock.lock()
         formatDescription = nil
         hasDisplayedFrame = false
-        awaitingKeyFrame = false
-        decoderLossPending = false
-        unexplainedFailures = 0
+        recovery.reset()
         let sink = sink
         lock.unlock()
         sink.flush(

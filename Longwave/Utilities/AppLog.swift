@@ -29,6 +29,7 @@ nonisolated enum AppLog {
     static let nvHTTPClient = DebugLogger(subsystem: subsystem, category: "NvHTTPClient")
     static let app = DebugLogger(subsystem: subsystem, category: "App")
     static let macNativeMouse = DebugLogger(subsystem: subsystem, category: "MacNativeMouse")
+    static let macNativeVideo = DebugLogger(subsystem: subsystem, category: "MacNativeVideo")
 
     /// Every subsystem the app logs under: the bundle id (`AppLog`, the
     /// broadcast core), the fixed `pro.longwave` most feature loggers use, and

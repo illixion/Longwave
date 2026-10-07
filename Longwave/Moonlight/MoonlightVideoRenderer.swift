@@ -99,6 +99,8 @@ class MoonlightVideoRenderer: @unchecked Sendable {
     nonisolated(unsafe) var totalDecodeTimeMs: Double = 0
     nonisolated(unsafe) var lastDecodeTimeMs: Double = 0
     nonisolated(unsafe) var droppedFrames: UInt64 = 0
+    /// When the display layer was last flushed after a decoder failure.
+    private nonisolated(unsafe) var lastDecoderResetTime: CFTimeInterval = 0
 
     /// Whether the current stream has HDR active (set by server callback)
     nonisolated(unsafe) var isHDRContent: Bool = false
@@ -381,8 +383,19 @@ class MoonlightVideoRenderer: @unchecked Sendable {
     private nonisolated func enqueueToDisplayLayer(_ sampleBuffer: CMSampleBuffer) -> Int32 {
         guard let layer = displayLayer else { return DR_NEED_IDR }
 
-        if layer.status == .failed {
-            AppLog.moonlightVideo.log("Display layer failed: \(layer.error?.localizedDescription ?? "unknown")")
+        // visionOS takes video decoding away while another app's immersive
+        // space is open: the layer goes `.failed` and wants a flush, then an
+        // IDR (which DR_NEED_IDR makes moonlight-common-c request). While
+        // decoding is still not permitted the IDR fails too, so retry about
+        // once a second instead of flushing and asking on every frame.
+        if layer.status == .failed || layer.requiresFlushToResumeDecoding {
+            let now = CACurrentMediaTime()
+            guard now - lastDecoderResetTime >= 1.0 else {
+                droppedFrames += 1
+                return DR_OK
+            }
+            lastDecoderResetTime = now
+            AppLog.moonlightVideo.log("Display layer failed (requiresFlush: \(layer.requiresFlushToResumeDecoding)): \(layer.error?.localizedDescription ?? "unknown")")
             layer.flush()
             formatDescription = nil
             return DR_NEED_IDR

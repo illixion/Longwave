@@ -1,3 +1,4 @@
+import DebugTrace
 import Foundation
 import CoreMedia
 import CoreVideo
@@ -13,37 +14,73 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
     var onFrame: (@Sendable (CVPixelBuffer) -> Void)?
     var onError: (@Sendable (String) -> Void)?
 
+    enum DecodeResult {
+        case decoded
+        /// The decoder is gone — visionOS takes video decoding away from an
+        /// app while another app's immersive space is open, and a reset
+        /// session answers `kVTInvalidSessionErr`. The session has been
+        /// dropped; the next one needs a key frame, which the host only
+        /// sends when asked.
+        case decoderLost
+    }
+
     private var session: VTDecompressionSession?
     private var format: CMFormatDescription?
+    /// Set from the output callback (another thread) when a frame came back
+    /// with a decoder-loss status; consumed by the next `decode`.
+    private let lossLock = NSLock()
+    private var lostInCallback = false
 
     /// Only ever called from `MacNativeVideoRenderer`, under its lock.
-    func decode(_ sampleBuffer: CMSampleBuffer) {
-        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+    @discardableResult
+    func decode(_ sampleBuffer: CMSampleBuffer) -> DecodeResult {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return .decoded }
+        lossLock.lock()
+        let lost = lostInCallback
+        lostInCallback = false
+        lossLock.unlock()
+        if lost {
+            invalidate()
+            return .decoderLost
+        }
         if let session, let format,
            !CMFormatDescriptionEqual(format, otherFormatDescription: description),
            !VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: description) {
             invalidate()
         }
         if session == nil {
-            createSession(description)
+            // Creating one fails too while decoding isn't permitted; that is
+            // the same loss, retried by the renderer, not a broken stream.
+            guard createSession(description) else { return .decoderLost }
         }
-        guard let session else { return }
+        guard let session else { return .decoded }
         let status = VTDecompressionSessionDecodeFrame(
             session,
             sampleBuffer: sampleBuffer,
             flags: [._1xRealTimePlayback],
             infoFlagsOut: nil
         ) { [weak self] status, _, imageBuffer, _, _ in
+            guard let self else { return }
+            if Self.isDecoderLoss(status) {
+                self.lossLock.lock()
+                self.lostInCallback = true
+                self.lossLock.unlock()
+                return
+            }
             guard status == noErr, let imageBuffer else { return }
-            self?.onFrame?(imageBuffer)
+            self.onFrame?(imageBuffer)
         }
-        if status == kVTInvalidSessionErr {
-            // The media server reset it (e.g. after the app was backgrounded);
-            // the next key frame rebuilds it.
+        if Self.isDecoderLoss(status) {
             invalidate()
+            return .decoderLost
         } else if status != noErr {
             onError?("Desktop decode failed (\(status)).")
         }
+        return .decoded
+    }
+
+    private static func isDecoderLoss(_ status: OSStatus) -> Bool {
+        status == kVTInvalidSessionErr || status == kVTVideoDecoderMalfunctionErr
     }
 
     func invalidate() {
@@ -54,7 +91,7 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
         format = nil
     }
 
-    private func createSession(_ description: CMFormatDescription) {
+    private func createSession(_ description: CMFormatDescription) -> Bool {
         let destination: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferIOSurfacePropertiesKey: [CFString: Any]() as CFDictionary,
@@ -72,12 +109,13 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
             decompressionSessionOut: &newSession
         )
         guard status == noErr, let newSession else {
-            onError?("Could not start the desktop decoder (\(status)).")
-            return
+            AppLog.macNativeVideo.error("Could not start the desktop decoder (\(status, privacy: .public))")
+            return false
         }
         VTSessionSetProperty(newSession, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         session = newSession
         format = description
+        return true
     }
 }
 

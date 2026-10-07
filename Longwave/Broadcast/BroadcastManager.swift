@@ -348,8 +348,21 @@ final class BroadcastManager {
 final class BroadcastPreviewTarget: @unchecked Sendable {
     nonisolated(unsafe) weak var layer: AVSampleBufferDisplayLayer?
 
+    /// When the layer was last flushed after failing (decoding is taken
+    /// away while another app's immersive space is open; a flush is what
+    /// resumes it). Rate-limited so a still-forbidden decoder isn't flushed
+    /// on every frame. Capture frames are self-contained, so no key frame
+    /// is needed afterwards.
+    private nonisolated(unsafe) var lastResetTime: CFTimeInterval = 0
+
     nonisolated func enqueue(_ sampleBuffer: CMSampleBuffer) {
-        guard let layer, layer.status != .failed else { return }
+        guard let layer else { return }
+        if layer.status == .failed || layer.requiresFlushToResumeDecoding {
+            let now = CACurrentMediaTime()
+            guard now - lastResetTime >= 1.0 else { return }
+            lastResetTime = now
+            layer.flush()
+        }
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
            CFArrayGetCount(attachments) > 0 {
             let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)

@@ -151,6 +151,11 @@ final class MacNativeStreamClient: @unchecked Sendable {
     /// Registers (or, with nil, removes) the renderer that receives a window
     /// stream's format/video frames.
     func setWindowRenderer(_ renderer: MacNativeVideoRenderer?, for windowID: UInt32) {
+        // A window renderer that loses its decoder (see
+        // `MacNativeVideoRenderer`) asks for its own stream's key frame.
+        renderer?.onKeyFrameNeeded = { [weak self] in
+            self?.sendRequestKeyFrame(windowID: windowID)
+        }
         queue.async { [self] in
             if let renderer {
                 windowRenderers[windowID] = renderer

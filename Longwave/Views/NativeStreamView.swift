@@ -446,7 +446,7 @@ struct NativeStreamView: View {
             // reached the window bar, which visionOS pulls the pointer onto
             // by proximity. Diagonal pushes into a corner can still escape;
             // otherwise the pointer stops at the edges (headset, 2026-10-08).
-            VStack(spacing: mouseOwnsPointer ? 16 : 0) {
+            VStack(spacing: mouseOwnsPointer ? mousePaneGap : 0) {
                 HStack(spacing: 0) {
                 GeometryReader { geometry in
                     ZStack {
@@ -557,7 +557,7 @@ struct NativeStreamView: View {
                     connectionStrip
                 }
             }
-            .padding(mouseOwnsPointer ? 16 : 0)
+            .padding(mouseOwnsPointer ? mousePaneInset : 0)
 
             WindowSceneReader { scene in
                 windowScene = scene
@@ -662,7 +662,7 @@ struct NativeStreamView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 32)
-        .frame(height: 60)
+        .frame(height: mouseStripHeight)
         .frame(maxWidth: .infinity)
         .glassBackgroundEffect()
         // Presses on these stay off the Mac while the pointer is here.
@@ -713,24 +713,35 @@ struct NativeStreamView: View {
         aspectLockTask?.cancel()
         aspectLockTask = Task { @MainActor in
             if delay > .zero { try? await Task.sleep(for: delay) }
-            if mouseOwnsPointer {
-                // The window is free-form in mouse mode: the desktop is a tile
-                // in it and letterboxes inside its own pane.
-                windowScene?.lockAspect(nil)
-                lockedAspect = nil
-                return
-            }
-            guard !Task.isCancelled, screenManager.liveEnabled, let aspect = desktopAspect,
+            guard !Task.isCancelled, screenManager.liveEnabled, let desktop = desktopAspect,
                   viewSize.width > 0, viewSize.height > 0 else { return }
+            // In mouse mode the desktop is a pane inside padding and a strip,
+            // fixed amounts, so the window's aspect that puts the desktop's
+            // own on the pane depends on the width. A resize re-fits (the
+            // caller debounces it), so the drift between sizes settles.
+            let extras = mouseOwnsPointer ? mouseLayoutExtras : .zero
+            let windowWidth = viewSize.width + extras.width
+            let aspect = windowWidth / (viewSize.width / desktop + extras.height)
             // Within 1% of both the lock and the window is close enough;
             // re-requesting would only jitter.
-            let windowAspect = viewSize.width / viewSize.height
+            let windowAspect = windowWidth / (viewSize.height + extras.height)
             if let lockedAspect, abs(lockedAspect - aspect) / aspect < 0.01,
                abs(windowAspect - aspect) / aspect < 0.01 { return }
             guard let windowScene else { return }
             windowScene.lockAspect(aspect)
             lockedAspect = aspect
         }
+    }
+
+    /// The mouse layout's padding, the gap above its strip and the strip's
+    /// height. The layout and the aspect lock both read these.
+    private var mousePaneInset: CGFloat { 16 }
+    private var mousePaneGap: CGFloat { 16 }
+    private var mouseStripHeight: CGFloat { 60 }
+
+    /// What the mouse layout adds around the desktop's pane.
+    private var mouseLayoutExtras: CGSize {
+        CGSize(width: 2 * mousePaneInset, height: 2 * mousePaneInset + mousePaneGap + mouseStripHeight)
     }
 
     /// The window-wide pointer gestures run only on the flat desktop; on the

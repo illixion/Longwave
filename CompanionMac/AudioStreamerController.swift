@@ -20,6 +20,12 @@ final class AudioStreamerController {
     private static let autoStartKey = "autoStartStreaming"
 
     init() {
+        // Wired here, not when streaming starts, so the window shows an
+        // installed loopback driver before (and without) any streaming.
+        microphone.onStatusChange = { [weak self] status in
+            self?.microphoneStatus = status
+        }
+        microphone.refreshStatus()
         macNativeStreaming.listenGateOpen = allowConnectionsByAddress
         macNativeStreaming.configure(token: token)
         presence.onKnockChange = { [weak self] in self?.applyListenGate() }

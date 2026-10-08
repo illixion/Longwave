@@ -48,7 +48,19 @@ nonisolated final class MicrophoneRelay: @unchecked Sendable {
 
     private let jitter = JitterBuffer()
 
-    init() {}
+    init() {
+        // Plugging in or installing a loopback driver changes the device list;
+        // without this the status stays at whatever it was when streaming began.
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue) { [weak self] _, _ in
+            guard let self, self.engine == nil else { return }
+            self.publishIdleStatus(force: true)
+        }
+    }
 
     /// The loopback device the relay plays into, if one is installed.
     static func findLoopbackDevice() -> (id: AudioDeviceID, name: String)? {
@@ -60,7 +72,7 @@ nonisolated final class MicrophoneRelay: @unchecked Sendable {
 
     func refreshStatus() {
         queue.async { [self] in
-            if engine == nil { publishIdleStatus() }
+            if engine == nil { publishIdleStatus(force: true) }
         }
     }
 
@@ -216,16 +228,18 @@ nonisolated final class MicrophoneRelay: @unchecked Sendable {
         idleTimer = timer
     }
 
-    private func publishIdleStatus() {
+    private func publishIdleStatus(force: Bool = false) {
         if let device = Self.findLoopbackDevice() {
-            publish(.ready(deviceName: device.name))
+            publish(.ready(deviceName: device.name), force: force)
         } else {
-            publish(.noDevice)
+            publish(.noDevice, force: force)
         }
     }
 
-    private func publish(_ new: Status) {
-        guard new != status else { return }
+    /// `force` re-sends an unchanged status: the controller's copy starts at
+    /// `.noDevice` and a new `onStatusChange` has never seen ours.
+    private func publish(_ new: Status, force: Bool = false) {
+        guard force || new != status else { return }
         status = new
         guard let onStatusChange else { return }
         Task { @MainActor in onStatusChange(new) }

@@ -49,9 +49,12 @@ final class MacNativeMouseBridge {
     }
 
     /// The Display popover is showing. It sits outside the controls, so
-    /// their hover doesn't cover it: presses are held back, and the desktop
-    /// takes its hit target down so the popover is never behind it.
-    var menuOpen = false
+    /// their hover doesn't cover it: presses, motion and the wheel are held
+    /// back, so working the menu leaves the Mac's cursor where it was, and
+    /// the desktop takes its hit target down so the popover is never behind it.
+    var menuOpen = false {
+        didSet { if menuOpen { resetScroll() } }
+    }
 
     /// Mouse input counts only while the window is streaming.
     @ObservationIgnored var streaming = false {
@@ -139,7 +142,7 @@ final class MacNativeMouseBridge {
 
     private func moved(dx: Float, dy: Float) {
         motionEvents += 1
-        guard forwarding else { return }
+        guard forwarding, !menuOpen else { return }
         let speed = (dx * dx + dy * dy).squareRoot()
         let gain = Self.baseSpeed * min(1 + Self.acceleration * speed, Self.maxGain)
         // GCMouse is +Y up; the desktop is +Y down.
@@ -163,7 +166,7 @@ final class MacNativeMouseBridge {
     /// Wheel detents arrive as whole units (a trackpad's as fractions), +Y
     /// away from the user — the host's "content moves down" sign already.
     private func scrolled(x: Float, y: Float) {
-        guard forwarding else { resetScroll(); return }
+        guard forwarding, !menuOpen else { resetScroll(); return }
         let stepsX = scrollRemainder.x.add(x)
         let stepsY = scrollRemainder.y.add(y)
         guard stepsX != 0 || stepsY != 0 else { return }

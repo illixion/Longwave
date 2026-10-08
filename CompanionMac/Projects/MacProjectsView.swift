@@ -282,6 +282,8 @@ private struct ProjectRow: View {
                 .buttonStyle(.borderedProminent)
             Button("Fetch back") { Task { await sandbox.fetchBack(project) } }
                 .disabled(project.checkout == nil)
+            Button("Copy packages") { Task { await sandbox.copyDependencies(for: project) } }
+                .disabled(project.checkout == nil)
         }
         .onAppear { agent = sandbox.agentChoice(for: project) }
         .disabled(sandbox.busy != nil)

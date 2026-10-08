@@ -154,16 +154,69 @@ enum LocalSandbox {
     /// repo is owned by the owner, so the agent's git needs it marked safe or
     /// every operation fails with "dubious ownership"; the setting is re-added
     /// here because a reset wipes the agent's global config.
-    static func sandboxCloneScript(bareRepo name: String) -> String {
+    /// `destination` (a `~/…` path) clones a local package somewhere else, where a
+    /// checkout's relative reference expects it; nil keeps the project's own place.
+    static func sandboxCloneScript(bareRepo name: String, destination: String? = nil) -> String {
         let src = AgentSessionCommands.shellSingleQuote(bareRepoPath(named: name))
         let safe = AgentSessionCommands.shellSingleQuote(exchangeDir + "/*")
-        let dest = sandboxProjectPath(forBareRepo: name)
+        let dest = destination ?? sandboxProjectPath(forBareRepo: name)
         let destQ = "\"$HOME\"/" + AgentSessionCommands.shellSingleQuote(String(dest.dropFirst(2)))
+        let parent = destination == nil ? "\"$HOME/Projects\"" : "\"$(dirname \(destQ))\""
         return "git config --global --get-all safe.directory 2>/dev/null | grep -qxF \(safe) "
             + "|| git config --global --add safe.directory \(safe); "
-            + "mkdir -p \"$HOME/Projects\"; "
+            + "mkdir -p \(parent); "
             + "[ -d \(destQ)/.git ] || git clone -q \(src) \(destQ); "
             + "cd \(destQ) && pwd"
+    }
+
+    // MARK: - Local packages
+
+    /// Collapses `.` and `..` in a path such as `~/Projects/App/../RAVESDK`. Nil when
+    /// a `..` would climb past the first component, so it never writes above `~`.
+    static func normalizedPath(_ path: String) -> String? {
+        var parts: [String] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) where part != "." {
+            if part == ".." {
+                guard parts.count > 1 else { return nil }
+                parts.removeLast()
+            } else {
+                parts.append(String(part))
+            }
+        }
+        return parts.joined(separator: "/")
+    }
+
+    /// `target` relative to the directory `base`, both absolute: `../RAVESDK`.
+    static func relativePath(from base: String, to target: String) -> String {
+        let from = base.split(separator: "/").map(String.init)
+        let to = target.split(separator: "/").map(String.init)
+        var common = 0
+        while common < from.count, common < to.count, from[common] == to[common] { common += 1 }
+        return (Array(repeating: "..", count: from.count - common) + to[common...]).joined(separator: "/")
+    }
+
+    /// Where a local package goes in the sandbox: the same place relative to the
+    /// checkout, under the checkout's sandbox path. So a project's `../RAVESDK`
+    /// resolves there too, whichever folder the Mac kept the packages in.
+    static func sandboxDependencyPath(package: String, repo: String, sandboxProject: String) -> String? {
+        normalizedPath(sandboxProject + "/" + relativePath(from: repo, to: package))
+    }
+
+    /// Local package references in an Xcode project's `project.pbxproj`, as written.
+    static func xcodePackageRelativePaths(_ pbxproj: String) -> [String] {
+        capturedGroups(#"isa = XCLocalSwiftPackageReference;\s*relativePath = "?([^";\n]+)"?;"#, in: pbxproj)
+    }
+
+    /// Local `.package(path:)` dependencies in a `Package.swift`, as written.
+    static func swiftPackageRelativePaths(_ manifest: String) -> [String] {
+        capturedGroups(#"\.package\(\s*(?:name:\s*"[^"]*"\s*,\s*)?path:\s*"([^"]+)""#, in: manifest)
+    }
+
+    private static func capturedGroups(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            Range(match.range(at: 1), in: text).map { String(text[$0]) }
+        }
     }
 
     /// The command Terminal.app runs to attach a sandbox tmux session. It

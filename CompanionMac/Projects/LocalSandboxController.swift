@@ -355,11 +355,126 @@ final class LocalSandboxController {
         loadProjects()
         do {
             _ = try await sandboxClone(bareName)
-            lastError = nil
-            lastMessage = "Imported \(repo.lastPathComponent) (\(branch)) into the sandbox."
         } catch {
             lastError = "Published, but the sandbox clone failed: \(error.localizedDescription)"
+            return
         }
+        let sandboxProject = LocalSandbox.sandboxProjectPath(forBareRepo: bareName)
+        do {
+            let copied = try await copyPackages(of: repo, sandboxProject: sandboxProject)
+            lastError = nil
+            lastMessage = "Imported \(repo.lastPathComponent) (\(branch)) into the sandbox"
+                + (copied.isEmpty ? "." : ", with \(copied.joined(separator: ", ")) beside it.")
+        } catch {
+            lastError = "Imported \(repo.lastPathComponent), but copying its packages failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Copies the local packages a project builds against into the sandbox, for a project already imported.
+    func copyDependencies(for project: Project) async {
+        guard let repo = project.checkout else {
+            lastError = "No host checkout is recorded for \(project.displayName)."
+            return
+        }
+        busy = "Copying packages for \(project.displayName)…"
+        defer { busy = nil }
+        do {
+            let copied = try await copyPackages(of: repo, sandboxProject: LocalSandbox.sandboxProjectPath(forBareRepo: project.bareName))
+            lastError = nil
+            lastMessage = copied.isEmpty
+                ? "\(project.displayName) has no local packages to copy."
+                : "Copied \(copied.joined(separator: ", ")) into the sandbox beside \(project.displayName)."
+        } catch {
+            lastError = "Couldn't copy the packages: \(error.localizedDescription)"
+        }
+    }
+
+    /// Publishes each local package the checkout builds against (transitively) to the
+    /// exchange, and clones it into the sandbox where the checkout's relative references
+    /// expect it. A package already in the exchange is reused as it is, so an agent's
+    /// commits in it are never overwritten. Returns the names of the packages placed.
+    private func copyPackages(of repo: URL, sandboxProject: String) async throws -> [String] {
+        let checkout = repo.resolvingSymlinksInPath().standardizedFileURL.path
+        var copied: [String] = []
+        for package in await Self.packageRepos(of: repo) {
+            guard let destination = LocalSandbox.sandboxDependencyPath(
+                package: package.path, repo: checkout, sandboxProject: sandboxProject) else {
+                throw SandboxError.message("\(package.lastPathComponent) would be placed outside the sandbox's home.")
+            }
+            let bare = try await publishPackage(package)
+            let out = try await ssh(AgentSessionCommands.loginShellCommand(
+                LocalSandbox.sandboxCloneScript(bareRepo: bare, destination: destination)))
+            guard out.split(separator: "\n").last?.hasPrefix("/") == true else {
+                throw SandboxError.message("The sandbox couldn't clone \(package.lastPathComponent).")
+            }
+            copied.append(package.lastPathComponent)
+        }
+        return copied
+    }
+
+    /// Publishes a package's current branch as a bare repo in the exchange, unless one is already there.
+    private func publishPackage(_ package: URL) async throws -> String {
+        let bare = LocalSandbox.bareRepoName(forRepoAt: package)
+        guard !FileManager.default.fileExists(atPath: LocalSandbox.bareRepoPath(named: bare)) else { return bare }
+        let branchResult = await Self.run("/usr/bin/git", ["-C", package.path, "rev-parse", "--abbrev-ref", "HEAD"])
+        guard branchResult.status == 0 else {
+            throw SandboxError.message("\(package.lastPathComponent) isn't a git repository.")
+        }
+        var branch = branchResult.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if branch.isEmpty || branch == "HEAD" { branch = "main" }
+        for args in LocalSandbox.importCommands(repo: package, branch: branch) {
+            let r = await Self.run("/usr/bin/git", args)
+            guard r.status == 0 else {
+                // Don't strand a half-made bare repo that would be reused next time.
+                try? FileManager.default.removeItem(atPath: LocalSandbox.bareRepoPath(named: bare))
+                throw SandboxError.message("publishing \(package.lastPathComponent) failed: \(Self.firstLine(r.err) ?? "")")
+            }
+        }
+        return bare
+    }
+
+    /// Git checkouts of the local packages a checkout references, transitively. The
+    /// checkout itself is left out.
+    nonisolated static func packageRepos(of repo: URL) async -> [URL] {
+        let main = repo.resolvingSymlinksInPath().standardizedFileURL.path
+        var seen: Set<String> = [main]
+        var repos: [URL] = []
+        var queue = [repo.resolvingSymlinksInPath().standardizedFileURL]
+        while let current = queue.popLast() {
+            for directory in localPackageDirectories(in: current) {
+                let top = await run("/usr/bin/git", ["-C", directory.path, "rev-parse", "--show-toplevel"])
+                guard top.status == 0 else { continue }  // not a checkout, so nothing to copy
+                let root = URL(fileURLWithPath: top.out.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .resolvingSymlinksInPath().standardizedFileURL
+                guard seen.insert(root.path).inserted else { continue }
+                repos.append(root)
+                queue.append(root)
+            }
+        }
+        return repos
+    }
+
+    /// Directories of the local packages that the Xcode projects and `Package.swift`
+    /// manifests under `root` reference, each resolved from its own project's folder.
+    nonisolated static func localPackageDirectories(in root: URL) -> [URL] {
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                          options: [.skipsHiddenFiles]) else { return [] }
+        var found: [URL] = []
+        for case let url as URL in walker {
+            let name = url.lastPathComponent
+            if ["build", "DerivedData", ".build", "node_modules"].contains(name) {
+                walker.skipDescendants()
+                continue
+            }
+            let base = url.deletingLastPathComponent()
+            if name.hasSuffix(".xcodeproj"),
+               let text = try? String(contentsOf: url.appendingPathComponent("project.pbxproj"), encoding: .utf8) {
+                found += LocalSandbox.xcodePackageRelativePaths(text).map { URL(fileURLWithPath: $0, relativeTo: base) }
+            } else if name == "Package.swift", let text = try? String(contentsOf: url, encoding: .utf8) {
+                found += LocalSandbox.swiftPackageRelativePaths(text).map { URL(fileURLWithPath: $0, relativeTo: base) }
+            }
+        }
+        return found.map { $0.resolvingSymlinksInPath().standardizedFileURL }
     }
 
     /// Fetches the sandbox's branches back into the host checkout as the

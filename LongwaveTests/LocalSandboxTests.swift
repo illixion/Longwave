@@ -75,6 +75,47 @@ final class LocalSandboxTests: XCTestCase {
         XCTAssertTrue(script.hasSuffix("&& pwd"))
     }
 
+    func testSandboxCloneCanPlaceAPackageAtADestination() {
+        let script = LocalSandbox.sandboxCloneScript(bareRepo: "RAVESDK.git", destination: "~/Projects/RAVESDK")
+        XCTAssertTrue(script.contains("mkdir -p \"$(dirname \"$HOME\"/'Projects/RAVESDK')\""))
+        XCTAssertTrue(script.contains("[ -d \"$HOME\"/'Projects/RAVESDK'/.git ] || git clone -q '/Library/Longwave/exchange/RAVESDK.git' \"$HOME\"/'Projects/RAVESDK'"))
+    }
+
+    func testNormalizedPathCollapsesAndNeverWritesAboveHome() {
+        XCTAssertEqual(LocalSandbox.normalizedPath("~/Projects/Longwave/../RAVESDK"), "~/Projects/RAVESDK")
+        XCTAssertEqual(LocalSandbox.normalizedPath("~/Projects/./Hypnos/Hypnos/../../RAVEEngine"), "~/Projects/RAVEEngine")
+        XCTAssertNil(LocalSandbox.normalizedPath("~/../etc"))
+    }
+
+    func testRelativePathMatchesTheHouseLayout() {
+        XCTAssertEqual(LocalSandbox.relativePath(from: "/Users/me/Projects/Longwave",
+                                                 to: "/Users/me/Projects/RAVESDK"), "../RAVESDK")
+        XCTAssertEqual(LocalSandbox.relativePath(from: "/Users/me/Projects/Hypnos/Hypnos",
+                                                 to: "/Users/me/Projects/RAVESDK"), "../../RAVESDK")
+    }
+
+    func testSandboxDependencyPathMirrorsTheCheckoutLayout() {
+        XCTAssertEqual(LocalSandbox.sandboxDependencyPath(package: "/Users/me/Projects/RAVEEngine",
+                                                          repo: "/Users/me/Projects/Longwave",
+                                                          sandboxProject: "~/Projects/Longwave"), "~/Projects/RAVEEngine")
+        // A project one level deeper reaches the same sibling through `../../`.
+        XCTAssertEqual(LocalSandbox.sandboxDependencyPath(package: "/Users/me/Projects/RAVESDK",
+                                                          repo: "/Users/me/Projects/Hypnos",
+                                                          sandboxProject: "~/Projects/Hypnos"), "~/Projects/RAVESDK")
+    }
+
+    func testReadsLocalPackageReferencesFromXcodeAndSwiftPM() {
+        let pbxproj = """
+                \t\tRA0 /* XCLocalSwiftPackageReference "../RAVESDK" */ = {
+                \t\t\tisa = XCLocalSwiftPackageReference;
+                \t\t\trelativePath = ../RAVESDK;
+                \t\t};
+                """
+        XCTAssertEqual(LocalSandbox.xcodePackageRelativePaths(pbxproj), ["../RAVESDK"])
+        let manifest = #".package(path: "../DebugTrace"), .package(name: "X", path: "../../Other"), .package(url: "https://example.com/x.git", from: "1.0.0")"#
+        XCTAssertEqual(LocalSandbox.swiftPackageRelativePaths(manifest), ["../DebugTrace", "../../Other"])
+    }
+
     func testTerminalAttachCarriesNoSecretsAndAttachesExactly() {
         let cmd = LocalSandbox.terminalAttachCommand(keyPath: "/Users/me/.ssh/longwave_sandbox_ed25519",
                                                      agentUser: "longwave-agent", tmuxSession: "proj-codex")

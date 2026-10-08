@@ -170,10 +170,16 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
     /// Exclusive as soon as anyone is in Music mode; mixable otherwise.
     /// Recording adds the input and nothing else, so a microphone sent to the
     /// Mac coexists with a call in another app just as playback does.
+    ///
+    /// The category is `.playAndRecord` whether or not anything is recording:
+    /// moving between `.playback` and `.playAndRecord` pauses the Music app on
+    /// visionOS even with `.mixWithOthers` (measured on the headset, both
+    /// directions, with no capture running), so the mic starting and stopping
+    /// would pause it. An idle `.playAndRecord` session opens no input.
     /// Under `lock`.
     private func resolveLocked() -> Resolved {
         Resolved(
-            category: recorders.isEmpty ? .playback : .playAndRecord,
+            category: .playAndRecord,
             options: participants.values.contains(.music) ? [] : [.mixWithOthers]
         )
     }

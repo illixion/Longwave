@@ -759,11 +759,10 @@ struct NativeStreamView: View {
     /// each physical click to them (Moonlight's rule too).
     private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
-    /// The controls live in their own window while a mouse drives the
-    /// desktop (and the desktop is showing).
-    private var controlsDetached: Bool {
-        mouseOwnsPointer && screenManager.liveEnabled && !screenManager.unityEnabled
-    }
+    /// The controls used to live in a window of their own while a mouse drove
+    /// the desktop, so the pointer couldn't slide onto them. The padded
+    /// layout does that job now, and they stay the window's ornament.
+    private var controlsDetached: Bool { false }
 
     private func syncDetachedControls() {
         if controlsDetached {

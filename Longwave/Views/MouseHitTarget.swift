@@ -17,8 +17,9 @@ import DebugTrace
 /// gaps between tiles, because nothing there takes a pointer. So in mouse mode
 /// `NativeStreamView` lays the desktop out as a tile in a padded window, makes
 /// the window-wide layer untargetable, and leaves this hover region as the
-/// one thing over the desktop. Standing it off the window plane, a frame
-/// around it and a bigger gap each did nothing alone.
+/// one thing over the desktop, on the window plane: in front of it, on a curve,
+/// the pointer left for whatever lay behind at once. Standing it off the plane
+/// on a flat desktop, a frame around it and a bigger gap did nothing.
 struct MouseHitTarget: View {
     var body: some View {
         MouseHitSurface()

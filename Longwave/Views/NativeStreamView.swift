@@ -496,7 +496,6 @@ struct NativeStreamView: View {
                                 MouseHitTarget()
                                     .frame(width: rect.width, height: rect.height)
                                     .position(x: rect.midX, y: rect.midY)
-                                    .offset(z: mouseLayerDepth)
                             }
                         } else {
                             IndirectScrollSurface(
@@ -778,13 +777,14 @@ struct NativeStreamView: View {
         bridge.start()
     }
 
-    /// The hit target sits just in front of the curve's forward edges: the
-    /// gaze decides what the pointer may land on, and it has to find this
-    /// before the mesh.
-    /// The picture's outline and nothing more, so the pointer is free to
-    /// move onto the ornament and visionOS hands it focus there. On the
-    /// curve that's the outline in the plane of its forward edges, where
-    /// the target sits.
+    /// The hit target is the picture's outline and nothing more, on the
+    /// window plane, flat or curved. It used to stand in front of the curve's
+    /// forward edges, so it would be found before the mesh; but a pointer
+    /// leaving a target at that depth landed on whatever lay behind it at
+    /// once (the strip, then the ornament), whatever dead space lay between.
+    /// With the mesh taking no input in mouse mode, the plane is enough
+    /// (headset, 2026-10-08). On the curve the outline is the one in the
+    /// plane of its forward edges.
     private var mouseHitRect: CGRect? {
         guard screenManager.streamSize.width > 0, viewSize.width > 0 else { return nil }
         guard let curve = activeCurve else {
@@ -797,10 +797,6 @@ struct NativeStreamView: View {
             width: width,
             height: curve.contentRect.height
         )
-    }
-
-    private var mouseLayerDepth: Double {
-        activeCurve.map { $0.sagitta + 2 } ?? 0
     }
 
     /// Bluetooth-mouse / gaze pointer motion without a button held — a

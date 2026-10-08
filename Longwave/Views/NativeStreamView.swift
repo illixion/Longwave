@@ -710,9 +710,17 @@ struct NativeStreamView: View {
         )
     }
 
+    /// Off the window plane on the flat desktop too: the pointer stays on a
+    /// surface standing proud of the window, where on the plane itself it
+    /// roams the whole window and slides onto the window bar and the resize
+    /// corners. Hypnos's 3D thumbnails showed it (2026-10-08): the pointer
+    /// stays inside each tile's raised input target and never reaches the
+    /// chrome.
     private var mouseLayerDepth: Double {
-        activeCurve.map { $0.sagitta + 2 } ?? 0
+        activeCurve.map { $0.sagitta + 2 } ?? Self.mouseLayerLift
     }
+
+    private static let mouseLayerLift: Double = 2
 
     /// Bluetooth-mouse / gaze pointer motion without a button held — a
     /// DragGesture only fires while a button is down.

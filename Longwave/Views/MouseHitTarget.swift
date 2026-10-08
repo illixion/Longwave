@@ -13,10 +13,6 @@ import DebugTrace
 /// the pointer to be hidden over it, since the Mac draws its own cursor into
 /// the stream, but on device (2026-10-03) visionOS still showed it — the
 /// pointer isn't locked the way Moonlight's appears to be. Open question.
-///
-/// It also has to stand off the window plane (`NativeStreamView`'s
-/// `mouseLayerDepth`): the pointer stays on a raised surface, but on the plane
-/// it wanders onto the window bar and the resize corners.
 struct MouseHitTarget: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()

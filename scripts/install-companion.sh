@@ -13,7 +13,8 @@ set -euo pipefail
 # VNC/Moonlight/Native/audio client, no host features) when passed "full".
 # The two are separate apps; install both to have both halves.
 #
-# Usage:   scripts/install-companion.sh [companion|full]   (default: companion)
+# Usage:   [VERBOSE=1] scripts/install-companion.sh [companion|full]   (default: companion)
+#          Build output goes to build/install-<scheme>.log; VERBOSE=1 streams it.
 #   companion  the menu-bar host app (MIT)
 #   full       the LongwaveMac client app (links Moonlight → GPLv3;
 #              runs scripts/setup-deps.sh first to fetch the real dependencies)
@@ -115,17 +116,33 @@ fi
 # for provisioning profiles, which a local app doesn't need. Ad-hoc
 # still requires CODE_SIGN_STYLE=Manual + a literal "-" identity.
 echo "▶ Building $SCHEME ($CONFIG, signing: $SIGN_IDENTITY)…"
-xcodebuild \
-  -project Longwave.xcodeproj \
-  -scheme "$SCHEME" \
-  -configuration "$CONFIG" \
-  -destination 'generic/platform=macOS' \
-  -derivedDataPath "$DERIVED" \
-  CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
-  CODE_SIGN_STYLE=Manual \
-  CODE_SIGNING_REQUIRED=YES \
-  CODE_SIGNING_ALLOWED=YES \
+# xcodebuild prints every compile command and environment export (hundreds of
+# KB); keep that in a log and show only the errors on failure.
+# VERBOSE=1 streams it all again.
+BUILD_LOG="$PROJECT_DIR/build/install-${SCHEME}.log"
+mkdir -p "$(dirname "$BUILD_LOG")"
+build_cmd=(
+  xcodebuild
+  -project Longwave.xcodeproj
+  -scheme "$SCHEME"
+  -configuration "$CONFIG"
+  -destination 'generic/platform=macOS'
+  -derivedDataPath "$DERIVED"
+  CODE_SIGN_IDENTITY="$SIGN_IDENTITY"
+  CODE_SIGN_STYLE=Manual
+  CODE_SIGNING_REQUIRED=YES
+  CODE_SIGNING_ALLOWED=YES
   build
+)
+if [ "${VERBOSE:-0}" = 1 ]; then
+  "${build_cmd[@]}"
+elif ! "${build_cmd[@]}" >"$BUILD_LOG" 2>&1; then
+  grep -E 'error:|\*\* BUILD' "$BUILD_LOG" | sort -u | head -30 >&2 || true
+  echo "✗ Build failed. Full log: $BUILD_LOG" >&2
+  exit 1
+else
+  echo "  build succeeded (log: $BUILD_LOG)"
+fi
 
 BUILT="$DERIVED/Build/Products/$CONFIG/$APP_NAME"
 if [ ! -d "$BUILT" ]; then

@@ -168,7 +168,7 @@ struct NativeStreamView: View {
         // The music widget beside the window rather than on top of it: over
         // the video it hid a corner of the Mac's desktop for nothing.
         .ornament(
-            visibility: showsAudioOrnament ? .visible : .hidden,
+            visibility: showsAudioOrnament && !mouseOwnsPointer ? .visible : .hidden,
             attachmentAnchor: .scene(.bottomTrailing),
             contentAlignment: .bottomLeading
         ) {
@@ -187,6 +187,7 @@ struct NativeStreamView: View {
             syncDetachedControls()
         }
         .onChange(of: controlsDetached) { syncDetachedControls() }
+        .onChange(of: mouseOwnsPointer) { scheduleAspectLock() }
         .onDisappear {
             dismissWindow(id: "mac-native-controls", value: sessionID)
             // Soft teardown only — visionOS also fires this on transient
@@ -434,105 +435,130 @@ struct NativeStreamView: View {
             MacNativeHardwareKeyboardView(screenManager: screenManager)
                 .frame(width: 1, height: 1)
 
-            GeometryReader { geometry in
-                ZStack {
-                    if curvature != .off {
-                        if let curve = activeCurve {
-                            curvedDesktop(curve)
-                        }
-                    } else if let displayLayer = screenManager.displayLayer {
-                        MacNativeVideoView(displayLayer: displayLayer)
-                            .ignoresSafeArea()
-                    }
-
-                    if screenManager.state != .streaming {
-                        VStack(spacing: 16) {
-                            if case .disconnected = screenManager.state {
-                                Image(systemName: "exclamationmark.triangle")
-                                    .font(.system(size: 42))
-                                    .foregroundStyle(.orange)
-                            } else {
-                                ProgressView()
-                                    .controlSize(.large)
+            // In mouse mode the desktop is one tile of a padded layout, the way
+            // Hypnos's thumbnail grid is: dead space around it and between it
+            // and its neighbours, which is what holds the system pointer on a
+            // tile instead of letting it slide onto the window bar and
+            // corners. Everything below sizes from the pane's geometry, so
+            // the curve and the pointer mapping follow the pane.
+            // 16pt of dead space around and between the tiles. More (32pt
+            // outside, 44pt above the strip) did not help: fast motion still
+            // reached the window bar, which visionOS pulls the pointer onto
+            // by proximity. Diagonal pushes into a corner can still escape;
+            // otherwise the pointer stops at the edges (headset, 2026-10-08).
+            VStack(spacing: mouseOwnsPointer ? 16 : 0) {
+                HStack(spacing: 0) {
+                GeometryReader { geometry in
+                    ZStack {
+                        if curvature != .off {
+                            if let curve = activeCurve {
+                                curvedDesktop(curve)
                             }
-                            Text(desktopStatusText)
-                                .font(.headline)
+                        } else if let displayLayer = screenManager.displayLayer {
+                            MacNativeVideoView(displayLayer: displayLayer)
+                                .ignoresSafeArea()
                         }
-                        .padding(24)
-                        .glassBackgroundEffect()
-                        // In front of the curve's forward edges, or a dropped
-                        // session showed only as a frozen frame.
-                        .offset(z: (activeCurve?.sagitta ?? 0) + 8)
-                    }
-                }
-                .overlay {
-                    // Topmost, and deliberately hit-testable: a scroll event is
-                    // routed to the view under the pointer, so it has to be the
-                    // one that's there. It claims no touches, which leaves the
-                    // gestures below untouched.
-                    if mouseOwnsPointer {
-                        // Gone while the Display menu is open, so the mouse
-                        // can work the menu.
-                        if !mouseBridge.menuOpen, let rect = mouseHitRect {
-                            MouseHitTarget()
-                                .frame(width: rect.width, height: rect.height)
-                                .position(x: rect.midX, y: rect.midY)
-                                .offset(z: mouseLayerDepth)
+
+                        if screenManager.state != .streaming {
+                            VStack(spacing: 16) {
+                                if case .disconnected = screenManager.state {
+                                    Image(systemName: "exclamationmark.triangle")
+                                        .font(.system(size: 42))
+                                        .foregroundStyle(.orange)
+                                } else {
+                                    ProgressView()
+                                        .controlSize(.large)
+                                }
+                                Text(desktopStatusText)
+                                    .font(.headline)
+                            }
+                            .padding(24)
+                            .glassBackgroundEffect()
+                            // In front of the curve's forward edges, or a dropped
+                            // session showed only as a frozen frame.
+                            .offset(z: (activeCurve?.sagitta ?? 0) + 8)
                         }
-                    } else {
-                        IndirectScrollSurface(
-                            onScroll: indirectScroll,
-                            onScrollEnded: { scrollSteps.reset() }
-                        )
+                    }
+                    // The picture and its gestures take no pointer while a mouse
+                    // drives the Mac: the hit target below is the only thing the
+                    // pointer may land on, and the dead space around it is what
+                    // keeps it off the window bar and the resize corners.
+                    .allowsHitTesting(!mouseOwnsPointer)
+                    .overlay {
+                        // Topmost, and deliberately hit-testable: a scroll event is
+                        // routed to the view under the pointer, so it has to be the
+                        // one that's there. It claims no touches, which leaves the
+                        // gestures below untouched.
+                        if mouseOwnsPointer {
+                            // Gone while the Display menu is open, so the mouse
+                            // can work the menu.
+                            if !mouseBridge.menuOpen, let rect = mouseHitRect {
+                                MouseHitTarget()
+                                    .frame(width: rect.width, height: rect.height)
+                                    .position(x: rect.midX, y: rect.midY)
+                                    .offset(z: mouseLayerDepth)
+                            }
+                        } else {
+                            IndirectScrollSurface(
+                                onScroll: indirectScroll,
+                                onScrollEnded: { scrollSteps.reset() }
+                            )
+                        }
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .contentShape(mouseOwnsPointer ? Path() : Path(CGRect(origin: .zero, size: geometry.size)))
+                    // Press and hold = begin click+drag lock; single tap = left click
+                    // (or release a drag lock). Right click is the toolbar button.
+                    // On the curved desktop the mesh takes these itself, as hits
+                    // on its surface — see `curvedDesktop`.
+                    .gesture(dragLockGesture, including: flatInputMask)
+                    .gesture(tapGesture(), including: flatInputMask)
+                    .gesture(dragGesture(), including: flatInputMask)
+                    // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
+                    .twoHandPointerGesture(
+                        isEngaged: $twoHandEngaged,
+                        onEngage: cancelImplicitDrag,
+                        onScroll: indirectScroll,
+                        onSecondaryClick: rightClickAtCursor
+                    )
+                    .onContinuousHover { phase in
+                        // With a mouse connected the bridge moves the Mac's
+                        // cursor by its raw motion; a hover position would
+                        // fight it.
+                        guard !mouseOwnsPointer else { return }
+                        // A mouse hovering the window plane; on the curve it
+                        // follows the ray from the circle's centre.
+                        if let curve = activeCurve {
+                            hover(phase, curve.flatPoint(forPlanePoint:))
+                        } else {
+                            hover(phase)
+                        }
+                    }
+                    .onAppear {
+                        viewSize = geometry.size
+                        screenManager.setCurvedSurface(curvature != .off)
+                    }
+                    .onChange(of: geometry.size) { _, newSize in
+                        viewSize = newSize
+                        // A curve's outline changes shape slightly as it grows;
+                        // re-fit once the resize settles.
+                        scheduleAspectLock(after: .milliseconds(600))
+                    }
+                    .onChange(of: curvatureSetting) {
+                        screenManager.setCurvedSurface(curvature != .off)
+                        scheduleAspectLock()
+                    }
+                    .onChange(of: screenManager.streamSize) {
+                        scheduleAspectLock()
                     }
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .contentShape(Rectangle())
-                // Press and hold = begin click+drag lock; single tap = left click
-                // (or release a drag lock). Right click is the toolbar button.
-                // On the curved desktop the mesh takes these itself, as hits
-                // on its surface — see `curvedDesktop`.
-                .gesture(dragLockGesture, including: flatInputMask)
-                .gesture(tapGesture(), including: flatInputMask)
-                .gesture(dragGesture(), including: flatInputMask)
-                // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
-                .twoHandPointerGesture(
-                    isEngaged: $twoHandEngaged,
-                    onEngage: cancelImplicitDrag,
-                    onScroll: indirectScroll,
-                    onSecondaryClick: rightClickAtCursor
-                )
-                .onContinuousHover { phase in
-                    // With a mouse connected the bridge moves the Mac's
-                    // cursor by its raw motion; a hover position would
-                    // fight it.
-                    guard !mouseOwnsPointer else { return }
-                    // A mouse hovering the window plane; on the curve it
-                    // follows the ray from the circle's centre.
-                    if let curve = activeCurve {
-                        hover(phase, curve.flatPoint(forPlanePoint:))
-                    } else {
-                        hover(phase)
-                    }
+                    .clipShape(RoundedRectangle(cornerRadius: mouseOwnsPointer ? 20 : 0, style: .continuous))
                 }
-                .onAppear {
-                    viewSize = geometry.size
-                    screenManager.setCurvedSurface(curvature != .off)
-                }
-                .onChange(of: geometry.size) { _, newSize in
-                    viewSize = newSize
-                    // A curve's outline changes shape slightly as it grows;
-                    // re-fit once the resize settles.
-                    scheduleAspectLock(after: .milliseconds(600))
-                }
-                .onChange(of: curvatureSetting) {
-                    screenManager.setCurvedSurface(curvature != .off)
-                    scheduleAspectLock()
-                }
-                .onChange(of: screenManager.streamSize) {
-                    scheduleAspectLock()
+                if mouseOwnsPointer {
+                    connectionStrip
                 }
             }
+            .padding(mouseOwnsPointer ? 16 : 0)
 
             WindowSceneReader { scene in
                 windowScene = scene
@@ -591,6 +617,63 @@ struct NativeStreamView: View {
         )
     }
 
+    /// What streams, for the strip under the desktop in mouse mode.
+    private var connectionStrip: some View {
+        HStack(spacing: 28) {
+            Label(screenManager.state.statusText, systemImage: "dot.radiowaves.left.and.right")
+            if screenManager.streamSize.width > 0 {
+                Text("\(Int(screenManager.streamSize.width)) × \(Int(screenManager.streamSize.height))")
+                    .monospacedDigit()
+            }
+            Spacer()
+            // The audio controls live in the strip, not in a tile beside the
+            // desktop or a bar of their own: a tile let the pointer cross
+            // onto it and off the window, and a second bar below a dead one
+            // didn't help either (headset, 2026-10-08). visionOS pulls the
+            // pointer onto the window bar by proximity, not by what is
+            // targetable, so no layout of ours is a complete guard.
+            if showsAudioOrnament, !audioPoppedOut {
+                Text(compactAudioStatusText)
+                    .lineLimit(1)
+                    .frame(maxWidth: 200, alignment: .trailing)
+                AudioVolumeRow()
+                    .frame(width: 170)
+                HStack(spacing: 26) {
+                    Button {
+                        audioManager.toggleAudioMode()
+                    } label: {
+                        Image(systemName: audioManager.audioModeSymbol)
+                    }
+                    #if canImport(UIKit)
+                    MicrophoneToggleButton()
+                    #endif
+                    Button {
+                        showEQ.toggle()
+                    } label: {
+                        Image(systemName: "waveform")
+                    }
+                    .tint(audioManager.eqSettings.enabled ? .accentColor : nil)
+                    Button(action: popOutAudio) {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 32)
+        .frame(height: 60)
+        .frame(maxWidth: .infinity)
+        .glassBackgroundEffect()
+        // Presses on these stay off the Mac while the pointer is here.
+        .onHover { mouseBridge.pointerOverControls = $0 }
+        .sheet(isPresented: $showEQ) {
+            @Bindable var audioManager = audioManager
+            EQEditorView(settings: $audioManager.eqSettings)
+        }
+    }
+
     private static let screenIdealWidth: CGFloat = 1440
     private static let screenIdealHeight: CGFloat = 900
 
@@ -631,6 +714,13 @@ struct NativeStreamView: View {
         aspectLockTask?.cancel()
         aspectLockTask = Task { @MainActor in
             if delay > .zero { try? await Task.sleep(for: delay) }
+            if mouseOwnsPointer {
+                // The window is free-form in mouse mode: the desktop is a tile
+                // in it and letterboxes inside its own pane.
+                windowScene?.lockAspect(nil)
+                lockedAspect = nil
+                return
+            }
             guard !Task.isCancelled, screenManager.liveEnabled, let aspect = desktopAspect,
                   viewSize.width > 0, viewSize.height > 0 else { return }
             // Within 1% of both the lock and the window is close enough;

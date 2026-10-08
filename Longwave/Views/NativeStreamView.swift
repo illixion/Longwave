@@ -158,11 +158,7 @@ struct NativeStreamView: View {
                 // `audioUtilityRow` instead, as it did there).
                 homeOnlyControls
             } else {
-                // While a mouse drives the Mac the controls are a window of
-                // their own — see `NativeDesktopControls` for why.
-                if !controlsDetached {
-                    NativeDesktopControls(sessionID: sessionID)
-                }
+                NativeDesktopControls(sessionID: sessionID)
             }
         }
         // The music widget beside the window rather than on top of it: over
@@ -184,12 +180,9 @@ struct NativeStreamView: View {
         .onAppear {
             audioManager.presenterAppeared(Self.audioPresenterID)
             resumeIfNeeded()
-            syncDetachedControls()
         }
-        .onChange(of: controlsDetached) { syncDetachedControls() }
         .onChange(of: mouseOwnsPointer) { scheduleAspectLock() }
         .onDisappear {
-            dismissWindow(id: "mac-native-controls", value: sessionID)
             // Soft teardown only — visionOS also fires this on transient
             // hides (space restore, snapping); a full forget happens only
             // from the explicit Disconnect button below.
@@ -769,19 +762,6 @@ struct NativeStreamView: View {
     /// each physical click to them (Moonlight's rule too).
     private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
-    /// The controls used to live in a window of their own while a mouse drove
-    /// the desktop, so the pointer couldn't slide onto them. The padded
-    /// layout does that job now, and they stay the window's ornament.
-    private var controlsDetached: Bool { false }
-
-    private func syncDetachedControls() {
-        if controlsDetached {
-            openWindow(id: "mac-native-controls", value: sessionID)
-        } else {
-            dismissWindow(id: "mac-native-controls", value: sessionID)
-        }
-    }
-
     private func startMouseBridge() {
         let bridge = mouseBridge
         bridge.streaming = screenManager.state == .streaming
@@ -1274,7 +1254,6 @@ struct NativeStreamView: View {
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
             closing: [
                 keyboardWindowKey, streamWindowKey, unityControlsWindowKey, audioWindowKey,
-                WindowSessionRegistry.key("mac-native-controls", instance: sessionID.registryInstance),
             ],
             using: openWindow
         ) {
@@ -1282,7 +1261,6 @@ struct NativeStreamView: View {
             dismissWindow(id: "mac-native-stream", value: sessionID)
             dismissWindow(id: "mac-native-unity-controls", value: sessionID)
             dismissWindow(id: "mac-native-audio", value: sessionID)
-            dismissWindow(id: "mac-native-controls", value: sessionID)
         }
     }
 }

@@ -2,15 +2,10 @@
 import SwiftUI
 
 /// The Native desktop's controls: Screen, touch mode, right-click, Mouse,
-/// Display, Keyboard, Audio, Disconnect. Shown as the desktop window's
-/// bottom ornament, or, while a mouse drives the Mac, as a window of its own
-/// (`mac-native-controls`).
-///
-/// Detached because visionOS has no pointer lock for an app (it isn't a
-/// feature of the platform; found in LambdaVision's mouse work, 2026-10-07).
-/// The system pointer keeps moving alongside the Mac's cursor. Pushed past
-/// the desktop's bottom edge, it slid onto an ornament and the next click hit
-/// a button. A separate window is reached only by looking at it.
+/// Display, Keyboard, Audio, Disconnect. The desktop window's bottom
+/// ornament. (While a mouse drove the Mac they were briefly a window of their
+/// own, so the pointer couldn't slide onto them; the padded desktop layout
+/// holds the pointer now, and the window is gone.)
 struct NativeDesktopControls: View {
     let sessionID: MacNativeSessionID
 
@@ -272,7 +267,7 @@ struct NativeDesktopControls: View {
         // Ends this session only: another host's Native window keeps streaming,
         // audio included. `end` disconnects this session's player.
         sessions.end(sessionID)
-        let ids = ["mac-native-keyboard", "mac-native-stream", "mac-native-unity-controls", "mac-native-audio", "mac-native-controls"]
+        let ids = ["mac-native-keyboard", "mac-native-stream", "mac-native-unity-controls", "mac-native-audio"]
         WindowSessionRegistry.shared.closeAfterSurfacingMain(
             closing: Set(ids.map(key)),
             using: openWindow

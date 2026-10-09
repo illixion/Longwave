@@ -18,6 +18,7 @@ enum ClaudeCredentialStore {
 
     private static let service = "pro.longwave.claudeOAuthCredential"
     private static let log = DebugLogger(subsystem: "pro.longwave", category: "ClaudeCredentials")
+    private static var refreshes: [UUID: Task<ClaudeOAuth.Credential?, Never>] = [:]
 
     // MARK: - Storage
 
@@ -27,10 +28,11 @@ enum ClaudeCredentialStore {
         return try? JSONDecoder().decode(ClaudeOAuth.Credential.self, from: data)
     }
 
-    static func save(_ credential: ClaudeOAuth.Credential, connectionID: UUID) {
+    @discardableResult
+    static func save(_ credential: ClaudeOAuth.Credential, connectionID: UUID) -> Bool {
         guard let data = try? JSONEncoder().encode(credential),
-              let json = String(data: data, encoding: .utf8) else { return }
-        KeychainStore.set(service: service, account: connectionID.uuidString, value: json)
+              let json = String(data: data, encoding: .utf8) else { return false }
+        return KeychainStore.set(service: service, account: connectionID.uuidString, value: json)
     }
 
     static func delete(connectionID: UUID) {
@@ -61,20 +63,34 @@ enum ClaudeCredentialStore {
     /// refusing to launch, and if it really is dead the agent's own auth error is
     /// a clearer signal than a launch that silently didn't happen.
     static func validCredential(connectionID: UUID) async -> ClaudeOAuth.Credential? {
+        if let pending = refreshes[connectionID] { return await pending.value }
         guard let credential = load(connectionID: connectionID) else { return nil }
         guard !credential.isFresh() else { return credential }
         guard credential.canRefresh else {
             log.log("Credential stale and not refreshable; using it as-is")
             return credential
         }
-        do {
-            let refreshed = try await ClaudeOAuth.refresh(credential)
-            save(refreshed, connectionID: connectionID)
-            return refreshed
-        } catch {
-            log.log("Refresh failed (\(error.localizedDescription)); falling back to stored credential")
-            return credential
+        let task = Task<ClaudeOAuth.Credential?, Never> {
+            do {
+                let refreshed = try await ClaudeOAuth.refresh(credential)
+                // A sign-out or new sign-in while awaiting the network must
+                // not be undone by an older refresh finishing afterwards.
+                guard load(connectionID: connectionID)?.refreshToken == credential.refreshToken else {
+                    return load(connectionID: connectionID)
+                }
+                guard save(refreshed, connectionID: connectionID) else {
+                    log.error("Couldn't persist refreshed Claude credential")
+                    return nil
+                }
+                return refreshed
+            } catch {
+                log.log("Refresh failed; using the currently stored credential")
+                return load(connectionID: connectionID)
+            }
         }
+        refreshes[connectionID] = task
+        defer { refreshes.removeValue(forKey: connectionID) }
+        return await task.value
     }
 
     /// Convenience for callers that only need the token itself.

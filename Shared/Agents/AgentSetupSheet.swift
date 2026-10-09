@@ -36,10 +36,11 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
     var body: some View {
         Form {
             Section {
-                Text(agent.setupInstructions(envName: envName))
+                Text(host.credentialSetupInstructions(for: agent))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            if let flowError { Text(flowError).foregroundStyle(.red).font(.caption) }
 
             if agent.supportsWebOAuth {
                 webOAuthSection
@@ -78,7 +79,9 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                         .font(.caption)
                         .foregroundStyle(.green)
                     Button("Remove Pasted Token", role: .destructive) {
-                        host.setSSHAuthToken(nil, for: agent)
+                        guard host.setSSHAuthToken(nil, for: agent) else {
+                            flowError = "Couldn't remove the token from Keychain."; return
+                        }
                         host.persistCredentialChanges()
                         token = ""
                     }
@@ -89,7 +92,9 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
-                    host.setSSHAuthToken(token, for: agent)
+                    guard host.setSSHAuthToken(token, for: agent) else {
+                        flowError = "Couldn't save the token in Keychain."; return
+                    }
                     host.persistCredentialChanges()
                     dismiss()
                 }
@@ -103,14 +108,18 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
         .onDisappear { flowTask?.cancel() }
         .sheet(isPresented: $showingWebLogin) {
             ClaudeLoginSheet { credential in
-                host.setClaudeCredential(credential)
+                guard host.setClaudeCredential(credential) else {
+                    flowError = "Couldn't save the Claude login in Keychain. Sign in again after checking Keychain access."; return
+                }
                 host.persistCredentialChanges()
                 reloadClaudeCredential()
             }
         }
         .sheet(isPresented: $showingCodexWebLogin) {
             CodexLoginSheet { credential in
-                host.setCodexCredential(credential)
+                guard host.setCodexCredential(credential) else {
+                    flowError = "Couldn't save the Codex login in Keychain. Sign in again after checking Keychain access."; return
+                }
                 host.persistCredentialChanges()
                 reloadCodexCredential()
             }
@@ -155,7 +164,12 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .disabled(!credential.canRefresh)
+                .disabled(!credential.canRefresh || !host.allowsRefreshTokenDelegation)
+
+                if !host.allowsRefreshTokenDelegation {
+                    Text("Sandbox refresh credentials stay in the Companion's Keychain. Sessions receive only an access token.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
 
                 Button("Sign Out of Claude", role: .destructive) {
                     Task {
@@ -248,9 +262,6 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                 }
                 .disabled(signingIn)
             }
-            if let flowError {
-                Text(flowError).font(.caption).foregroundStyle(.red)
-            }
         }
     }
 
@@ -311,7 +322,7 @@ private final class CopilotDeviceSignIn: AgentDeviceSignIn {
     func awaitAuthorization(storingInto host: any AgentCredentialHost, agent: SSHAgent) async throws {
         guard let code else { return }
         let minted = try await GitHubDeviceFlow.pollForToken(code)
-        host.setSSHAuthToken(minted, for: agent)
+        guard host.setSSHAuthToken(minted, for: agent) else { throw ProjectsProtocol.Failure("Couldn't save the GitHub login in Keychain.") }
     }
 }
 
@@ -330,6 +341,6 @@ private final class CodexDeviceSignIn: AgentDeviceSignIn {
 
     func awaitAuthorization(storingInto host: any AgentCredentialHost, agent: SSHAgent) async throws {
         guard let code else { return }
-        host.setCodexCredential(try await CodexOAuth.pollForCredential(code))
+        guard host.setCodexCredential(try await CodexOAuth.pollForCredential(code)) else { throw ProjectsProtocol.Failure("Couldn't save the Codex login in Keychain.") }
     }
 }

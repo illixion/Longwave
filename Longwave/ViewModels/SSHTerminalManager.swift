@@ -53,6 +53,10 @@ final class SSHSession: Identifiable {
     weak var terminalView: TerminalView?
     private var pendingOutput: [UInt8] = []
     private var connection: SSHConnection?
+    private var projectsRelay: ProjectsClient?
+    private(set) var projectsInvitation: ProjectsProtocol.Invitation?
+    private(set) var projectsSessionName: String?
+    var isCompanionSession: Bool { projectsInvitation != nil }
 
     // Output pacing. Every `feed` drives UIKit hard — SwiftTerm rewrites its
     // scroll offset per emitted line, repaints through CoreText and runs a
@@ -147,6 +151,9 @@ final class SSHSession: Identifiable {
         retryTask?.cancel()
         retryTask = nil
         connection?.close()
+        let oldRelay = projectsRelay
+        projectsRelay = nil
+        oldRelay?.disconnect()
         // Full terminal reset (RIS) so stale output from the dead connection
         // doesn't mix with the relaunch.
         let reset: [UInt8] = [0x1B, 0x63]
@@ -218,6 +225,27 @@ final class SSHSession: Identifiable {
     }
 
     private func connect() {
+        if let invitation = projectsInvitation, let name = projectsSessionName {
+            state = .connecting
+            let relay = ProjectsClient(invitation: invitation)
+            projectsRelay = relay
+            relay.onTerminalEvent = { [weak self, weak relay] event in
+                guard let self, let relay, self.projectsRelay === relay else { return }
+                self.handle(event)
+            }
+            Task { [weak self, weak relay] in
+                guard let self, let relay else { return }
+                do {
+                    try await relay.connect()
+                    guard self.projectsRelay === relay, !self.userTerminated else { relay.disconnect(); return }
+                    relay.attach(session: name, cols: self.lastCols, rows: self.lastRows)
+                } catch {
+                    guard self.projectsRelay === relay else { return }
+                    self.handle(.failed(error.localizedDescription))
+                }
+            }
+            return
+        }
         guard let privateKey, let group, config != nil else { return }
         state = .connecting
         connectGeneration += 1
@@ -278,6 +306,7 @@ final class SSHSession: Identifiable {
             // Belt-and-braces: replay the live size in case the PTY opened at
             // the config default (idempotent — tmux ignores no-op resizes).
             connection?.resize(cols: lastCols, rows: lastRows)
+            projectsRelay?.resize(cols: lastCols, rows: lastRows)
             if let queued = queuedComposerText {
                 queuedComposerText = nil
                 _ = sendText(queued)
@@ -369,10 +398,13 @@ final class SSHSession: Identifiable {
     private(set) var queuedComposerText: String?
 
     @discardableResult
-    func sendBytes(_ bytes: [UInt8]) -> Bool { connection?.send(bytes) ?? false }
+    func sendBytes(_ bytes: [UInt8]) -> Bool {
+        if let projectsRelay { return projectsRelay.send(bytes) }
+        return connection?.send(bytes) ?? false
+    }
 
     @discardableResult
-    func sendText(_ text: String) -> Bool { connection?.send(Array(text.utf8)) ?? false }
+    func sendText(_ text: String) -> Bool { sendBytes(Array(text.utf8)) }
 
     /// Send composer text and submit it, or queue it for delivery on the next
     /// `.ready` when the connection is down. Returns whether it was sent
@@ -409,6 +441,7 @@ final class SSHSession: Identifiable {
         lastCols = cols
         lastRows = rows
         connection?.resize(cols: cols, rows: rows)
+        projectsRelay?.resize(cols: cols, rows: rows)
     }
 
     func terminate() {
@@ -419,7 +452,18 @@ final class SSHSession: Identifiable {
         pendingDetachTask = nil
         isAutoReconnecting = false
         connection?.close()
+        let oldRelay = projectsRelay
+        projectsRelay = nil
+        oldRelay?.disconnect()
     }
+
+    func prepareProjects(invitation: ProjectsProtocol.Invitation, session: String) {
+        projectsInvitation = invitation
+        projectsSessionName = session
+        state = .closed(nil)
+    }
+
+    func reportFailure(_ reason: String) { state = .failed(reason) }
 }
 
 /// Owns the device SSH key, the shared NIO event-loop group, and the set of
@@ -443,6 +487,19 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
 
     func session(_ id: SSHSessionID) -> SSHSession? {
         sessions.first { $0.id == id }
+    }
+
+    @discardableResult
+    func openProjectsSession(_ found: ProjectsProtocol.Session, invitation: ProjectsProtocol.Invitation,
+                             account: String) -> SSHSessionID {
+        let id = SSHSessionID(raw: "projects-\(invitation.id.uuidString)-\(found.id)")
+        if let existing = session(id) { existing.ensureConnected(); return id }
+        let session = SSHSession(id: id, title: found.title, host: invitation.host, port: Int(invitation.port),
+            username: account, kind: .claude, cwd: found.folder)
+        session.prepareProjects(invitation: invitation, session: found.id)
+        sessions.append(session)
+        session.ensureConnected()
+        return id
     }
 
     /// Open or re-attach a generic interactive SSH terminal. Empty `command`
@@ -525,6 +582,18 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
     /// running (the user previously had to Ctrl+C on the Mac) and it would be
     /// resurrected by the next rediscovery pass.
     func stopSession(_ id: SSHSessionID) {
+        if let s = session(id), let invitation = s.projectsInvitation {
+            // The relay's server validates the tagged session before stopping
+            // it. Never try SSH using the device key against a Companion peer.
+            guard let name = s.projectsSessionName else { return }
+            Task {
+                let client = ProjectsClient(invitation: invitation)
+                defer { client.disconnect() }
+                do { try await client.connect(); try await client.stop(session: name); remove(id) }
+                catch { s.reportFailure(error.localizedDescription) }
+            }
+            return
+        }
         if let s = session(id) {
             killTmux(host: s.host, port: s.port, username: s.username, name: s.tmuxSessionName)
         }
@@ -537,6 +606,7 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
     /// land before restarting so `tmux new -A` can't re-attach the dead pane.
     func forceRestartSession(_ id: SSHSessionID) {
         guard let s = session(id) else { return }
+        guard !s.isCompanionSession else { s.restart(); return }
         let host = s.host, port = s.port, user = s.username, name = s.tmuxSessionName
         Task { [weak self] in
             _ = try? await self?.runTmux(

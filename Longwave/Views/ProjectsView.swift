@@ -29,6 +29,7 @@ struct ProjectsView: View {
     @State private var error: String?
     @State private var keyStatus: String?
     @State private var showingAgentSetup = false
+    @AppStorage("projects.accessMode") private var accessMode = "companion"
 
     #if !os(visionOS)
     /// A running session the user asked to return to, presented as a cover
@@ -45,12 +46,24 @@ struct ProjectsView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if sshConnections.isEmpty {
+            VStack(spacing: 0) {
+                Picker("Session access", selection: $accessMode) {
+                    Text("Companion Sandbox").tag("companion")
+                    Text("SSH Account").tag("ssh")
+                }
+                .pickerStyle(.segmented)
+                .padding()
+                if accessMode == "companion" {
+                    CompanionProjectsView { id in
+                        #if !os(visionOS)
+                        reenteredSession = id
+                        #endif
+                    }
+                } else if sshConnections.isEmpty {
                     ContentUnavailableView {
                         Label("No SSH Hosts", systemImage: "terminal")
                     } description: {
-                        Text("Add an SSH connection in the Connections tab to run Claude on that machine.")
+                        Text("Add an SSH connection in the Connections tab. Sessions run with that account's full user access.")
                     }
                 } else {
                     content
@@ -59,7 +72,9 @@ struct ProjectsView: View {
             .navigationTitle("Projects")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Copy Public Key", systemImage: "key") { copyPublicKey() }
+                    if accessMode == "ssh" {
+                        Button("Copy Public Key", systemImage: "key") { copyPublicKey() }
+                    }
                 }
             }
         }
@@ -82,6 +97,8 @@ struct ProjectsView: View {
     private var content: some View {
         List {
             Section {
+                Text("Sessions run as the selected SSH account and can access that user's files. Agent credentials are supplied from this device.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Host", selection: Binding(
                     get: { selectedHost?.id },
                     set: { lastHostID = $0?.uuidString ?? "" }

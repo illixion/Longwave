@@ -34,6 +34,8 @@ protocol AgentCredentialHost: AnyObject {
     /// Hand Claude sessions the refresh token too (off by default — see
     /// `SavedConnection.sshInjectClaudeRefreshToken`).
     var sshInjectClaudeRefreshToken: Bool { get set }
+    var allowsRefreshTokenDelegation: Bool { get }
+    func credentialSetupInstructions(for agent: SSHAgent) -> String
 
     var sshHasAuthToken: Bool { get set }
     var sshHasCopilotToken: Bool { get set }
@@ -46,6 +48,10 @@ protocol AgentCredentialHost: AnyObject {
 }
 
 extension AgentCredentialHost {
+    var allowsRefreshTokenDelegation: Bool { true }
+    func credentialSetupInstructions(for agent: SSHAgent) -> String {
+        agent.setupInstructions(envName: effectiveEnvName(for: agent))
+    }
     /// Command launched in the project folder for `agent`. Built-ins use their
     /// fixed command line (binary + `SSHAgent.defaultFlags`); `.custom` uses the
     /// free-form `sshClientCommand` field, unflagged — its fallback is the bare
@@ -119,15 +125,17 @@ extension AgentCredentialHost {
 
     /// Store (or clear) `agent`'s token in the Keychain and update its UI flag.
     /// An empty/nil value clears the stored secret.
-    func setSSHAuthToken(_ value: String?, for agent: SSHAgent) {
+    @discardableResult
+    func setSSHAuthToken(_ value: String?, for agent: SSHAgent) -> Bool {
         let v = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        KeychainStore.set(service: agentTokenService, account: tokenAccount(agent), value: v)
+        guard KeychainStore.set(service: agentTokenService, account: tokenAccount(agent), value: v) else { return false }
         // Clearing the pasted token doesn't mean Claude/Codex is unconfigured —
         // an in-app credential is a separate, sufficient way to be set up.
         let stillConfigured = !v.isEmpty
             || (agent == .claude && ClaudeCredentialStore.load(connectionID: id) != nil)
             || (agent == .codex && CodexCredentialStore.load(connectionID: id) != nil)
         setHasToken(stillConfigured, for: agent)
+        return true
     }
 
     /// Re-derive every agent's "configured" flag from the keychain. A
@@ -183,9 +191,11 @@ extension AgentCredentialHost {
 
     /// Persist a freshly minted credential and light up the same UI flag a pasted
     /// token sets, so every existing "is Claude set up?" check keeps working.
-    func setClaudeCredential(_ credential: ClaudeOAuth.Credential) {
-        ClaudeCredentialStore.save(credential, connectionID: id)
+    @discardableResult
+    func setClaudeCredential(_ credential: ClaudeOAuth.Credential) -> Bool {
+        guard ClaudeCredentialStore.save(credential, connectionID: id) else { return false }
         setHasToken(true, for: .claude)
+        return true
     }
 
     /// Remove the credential and revoke it upstream. The flag stays lit if a
@@ -206,9 +216,11 @@ extension AgentCredentialHost {
         CodexCredentialStore.load(connectionID: id)
     }
 
-    func setCodexCredential(_ credential: CodexOAuth.Credential) {
-        CodexCredentialStore.save(credential, connectionID: id)
+    @discardableResult
+    func setCodexCredential(_ credential: CodexOAuth.Credential) -> Bool {
+        guard CodexCredentialStore.save(credential, connectionID: id) else { return false }
         setHasToken(true, for: .codex)
+        return true
     }
 
     /// Remove the credential and revoke it upstream; the flag stays lit if a
@@ -263,7 +275,7 @@ extension AgentCredentialHost {
         var env = sshEnvironmentVariables()
         if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
             Self.merge(&env, credential.sessionEnvironment(
-                includeRefreshToken: sshInjectClaudeRefreshToken))
+                includeRefreshToken: sshInjectClaudeRefreshToken && allowsRefreshTokenDelegation))
             return env
         }
         // A ChatGPT credential wins over a pasted PAT, and replaces it rather
@@ -306,7 +318,7 @@ extension AgentCredentialHost {
             return env
         }
         Self.merge(&env, credential.sessionEnvironment(
-            includeRefreshToken: sshInjectClaudeRefreshToken))
+            includeRefreshToken: sshInjectClaudeRefreshToken && allowsRefreshTokenDelegation))
         return env
     }
 
@@ -314,8 +326,9 @@ extension AgentCredentialHost {
     /// needs, if any — today only a Codex ChatGPT credential, which must be
     /// written to `auth.json` because the CLI reads it from no variable.
     func sessionSetup(for agent: SSHAgent,
-                      environment: [(name: String, value: String)]) -> AgentSessionSetup? {
-        agent == .codex ? CodexOAuth.sessionSetup(for: environment) : nil
+                      environment: [(name: String, value: String)],
+                      sessionID: String? = nil) -> AgentSessionSetup? {
+        agent == .codex ? CodexOAuth.sessionSetup(for: environment, sessionID: sessionID) : nil
     }
 
     /// Back-compat: the Claude session environment.

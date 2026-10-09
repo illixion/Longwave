@@ -159,28 +159,31 @@ enum CodexOAuth {
     /// JSON, so it never appears in an argv; the write is atomic (temp file +
     /// `mv`) under `umask 077`. User config is linked in from `~/.codex` when
     /// absent, never copied, so edits there keep applying.
-    static let sessionSetupScript: String = {
-        let home = "\"$HOME/\(Constants.sessionHomeDirectory)\""
+    static let sessionSetupScript: String = makeSessionSetupScript()
+
+    private static func makeSessionSetupScript(sessionID: String? = nil) -> String {
+        let path = Constants.sessionHomeDirectory + (sessionID.map { "/sessions/" + AgentSessionCommands.slug($0) } ?? "")
+        let home = "\"$HOME/\(path)\""
         let shared = Constants.sharedHomeEntries.joined(separator: " ")
         return "if [ -n \"$\(Constants.authJSONEnvName)\" ]; then "
             + "export CODEX_HOME=\(home); "
-            + "(umask 077; mkdir -p \"$CODEX_HOME\" && "
+            + "(umask 077; mkdir -p \"$CODEX_HOME\" && [ ! -L \"$CODEX_HOME\" ] || exit 1; "
             + "for f in \(shared); do "
             + "[ -e \"$HOME/.codex/$f\" ] && [ ! -e \"$CODEX_HOME/$f\" ] && ln -s \"$HOME/.codex/$f\" \"$CODEX_HOME/$f\"; "
             + "done; "
             + "printf %s \"$\(Constants.authJSONEnvName)\" > \"$CODEX_HOME/auth.json.tmp\" && "
-            + "mv -f \"$CODEX_HOME/auth.json.tmp\" \"$CODEX_HOME/auth.json\"); "
+            + "mv -f \"$CODEX_HOME/auth.json.tmp\" \"$CODEX_HOME/auth.json\") || exit 1; "
             + "fi; unset \(Constants.authJSONEnvName); "
-    }()
+    }
 
     /// The session setup to pair with `environment`, or nil when it carries no
     /// OAuth credential (a pasted PAT needs none — `CODEX_ACCESS_TOKEN` is read
     /// straight from the environment). Registering `CODEX_HOME` with tmux when
     /// nothing sets it would *remove* a user-set one from the session, so it's
     /// only exported alongside a credential.
-    static func sessionSetup(for environment: [(name: String, value: String)]) -> AgentSessionSetup? {
+    static func sessionSetup(for environment: [(name: String, value: String)], sessionID: String? = nil) -> AgentSessionSetup? {
         guard environment.contains(where: { $0.name == Constants.authJSONEnvName }) else { return nil }
-        return AgentSessionSetup(script: sessionSetupScript,
+        return AgentSessionSetup(script: makeSessionSetupScript(sessionID: sessionID),
                                  exportedNames: ["CODEX_HOME"],
                                  consumedNames: [Constants.authJSONEnvName])
     }

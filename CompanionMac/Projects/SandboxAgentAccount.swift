@@ -14,8 +14,19 @@ final class SandboxAgentAccount: AgentCredentialHost {
     var sshClientCommand: String { didSet { store(sshClientCommand, Keys.clientCommand) } }
     var sshAuthEnvName: String { didSet { store(sshAuthEnvName, Keys.authEnvName) } }
     var sshEnvVars: String { didSet { store(sshEnvVars, Keys.envVars) } }
-    var sshInjectClaudeRefreshToken: Bool {
-        didSet { UserDefaults.standard.set(sshInjectClaudeRefreshToken, forKey: Keys.injectRefresh) }
+    /// Sandbox processes never receive the owner's refresh credential. Ignore
+    /// an older preference or a shared login sheet trying to enable delegation.
+    var sshInjectClaudeRefreshToken: Bool { get { false } set {} }
+    var allowsRefreshTokenDelegation: Bool { false }
+
+    func credentialSetupInstructions(for agent: SSHAgent) -> String {
+        let common = "The login is stored in the Companion's Keychain on this Mac. Mobile Projects clients control sessions without receiving agent credentials. "
+        switch agent {
+        case .claude, .codex:
+            return common + "Sign in below. The Companion renews access tokens before launch; refresh tokens stay here. The access token is still readable by code running as the sandbox account."
+        case .copilot, .custom:
+            return common + "Sign in or paste a token below. The token is passed to the sandbox CLI at launch and is readable by code running as that account. Its lifetime is determined by the provider."
+        }
     }
 
     var sshHasAuthToken = false
@@ -36,7 +47,7 @@ final class SandboxAgentAccount: AgentCredentialHost {
         sshClientCommand = defaults.string(forKey: Keys.clientCommand) ?? ""
         sshAuthEnvName = defaults.string(forKey: Keys.authEnvName) ?? ""
         sshEnvVars = defaults.string(forKey: Keys.envVars) ?? ""
-        sshInjectClaudeRefreshToken = defaults.bool(forKey: Keys.injectRefresh)
+        defaults.removeObject(forKey: Keys.injectRefresh)
     }
 
     /// Everything persists as it changes; nothing to flush.

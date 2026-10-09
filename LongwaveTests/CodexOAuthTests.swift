@@ -151,4 +151,15 @@ final class CodexOAuthTests: XCTestCase {
         XCTAssertTrue(CodexOAuth.claims(ofJWT: "a.%%%.c").isEmpty)
         XCTAssertEqual(CodexOAuth.claims(ofJWT: Self.jwt(["k": "v"]))["k"] as? String, "v")
     }
+
+    func testSandboxSessionsHaveSeparateCredentialFilesAndFailClosed() throws {
+        let env = Self.credential().sessionEnvironment()
+        let first = try XCTUnwrap(CodexOAuth.sessionSetup(for: env, sessionID: "project-one"))
+        let second = try XCTUnwrap(CodexOAuth.sessionSetup(for: env, sessionID: "project-two"))
+        XCTAssertTrue(first.script.contains(".codex-longwave/sessions/project-one"))
+        XCTAssertTrue(second.script.contains(".codex-longwave/sessions/project-two"))
+        XCTAssertNotEqual(first.script, second.script)
+        XCTAssertTrue(first.script.contains("|| exit 1"), "a failed credential write cannot fall back to another login")
+        XCTAssertFalse(first.script.contains("rt-secret"))
+    }
 }

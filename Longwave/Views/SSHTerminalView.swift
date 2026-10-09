@@ -203,12 +203,16 @@ struct SSHTerminalView: View {
                     dismissWindow(id: "ssh-terminal", value: sessionID)
                 }
             }
-            Button("Force Restart") {
-                manager.forceRestartSession(sessionID)
+            if !session.isCompanionSession {
+                Button("Force Restart") {
+                    manager.forceRestartSession(sessionID)
+                }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Close this session, or force a fresh restart if the shell is frozen (e.g. bash stopped responding).")
+            Text(session.isCompanionSession
+                 ? "Close stops the agent in the Companion sandbox. Leaving the terminal window keeps it running."
+                 : "Close this session, or force a fresh restart if the shell is frozen (e.g. bash stopped responding).")
         }
     }
 

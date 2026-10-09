@@ -13,18 +13,25 @@ enum KeychainStore {
 
     /// Stores `value` for `(service, account)`, replacing any existing item.
     /// An empty value deletes the item (no empty secrets persisted).
-    static func set(service: String, account: String, value: String) {
+    @discardableResult
+    static func set(service: String, account: String, value: String) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
-        guard !value.isEmpty else { return }
+        guard !value.isEmpty else {
+            let status = SecItemDelete(base as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        let data = Data(value.utf8)
+        let updated = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
         var add = base
-        add[kSecValueData as String] = Data(value.utf8)
+        add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
     static func get(service: String, account: String) -> String? {

@@ -14,6 +14,21 @@ the LongwaveMac connection app are clients of it.
 
 ## Status
 
+Progress (2026-10-09): the Companion owns sandbox credentials and launches; a
+typed Projects service on port 4860 now lets visionOS and iOS clients list
+imported projects, create/stop sessions and relay terminals through the Companion.
+Each device receives a separate revocable invitation, stored in Keychain and
+authenticated with a domain-separated TLS PSK and TLS-bound device proof. Native
+pairing does not grant Projects access. Mobile devices receive no sandbox SSH
+private key, password or agent credentials. The existing SSH account mode remains
+available for full user access. Sandbox Claude refresh delegation is disabled;
+Codex access-only files are per session; credential writes are checked and
+concurrent refreshes are serialized. See `docs/PROJECTS_REMOTE_ACCESS.md` for the
+design and delivered scope. Enrollment by native-paired approval notification,
+host repository APIs, task worktrees and schedule/memory management APIs below
+remain future work. Terminals now relay over Projects rather than requiring the
+mobile device's SSH key to be authorized on the sandbox account.
+
 Built and committed (Phases 0–5 of the first plan, `2ec68f7`…`2629f2f`):
 
 - Hidden non-admin `longwave-agent` account, root helper

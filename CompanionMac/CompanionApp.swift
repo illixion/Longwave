@@ -17,6 +17,7 @@ struct CompanionApp: App {
     // scheduler that fires recurring headless runs into it while the app runs.
     @State private var sandbox: LocalSandboxController
     @State private var scheduler: LocalScheduler
+    @State private var projectsServer: CompanionProjectsServer
 
     init() {
         // Before any controller reads its settings (see the type's comment).
@@ -27,6 +28,7 @@ struct CompanionApp: App {
         let scheduler = LocalScheduler(sandbox: sandbox)
         _sandbox = State(initialValue: sandbox)
         _scheduler = State(initialValue: scheduler)
+        _projectsServer = State(initialValue: CompanionProjectsServer(sandbox: sandbox))
         // Here rather than in a window's task: the Companion runs windowless
         // in the menu bar, and schedules must fire without any window open.
         // The agent's desktop session is *not* started here: it is logged in
@@ -90,6 +92,7 @@ struct CompanionApp: App {
             }
             .environment(sandbox)
             .environment(scheduler)
+            .environment(projectsServer)
             .frame(minWidth: 620, minHeight: 520)
             .companionWindowActivation()
         }

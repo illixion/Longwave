@@ -22,6 +22,7 @@ struct MacProjectsView: View {
                 agentsSection
                 projectsSection
                 sessionsSection
+                RemoteProjectsAccessSection()
                 SchedulesSection()
                 advancedSection
             case .unknown:

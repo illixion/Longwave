@@ -13,6 +13,7 @@ import Foundation
 enum CodexCredentialStore {
     private static let service = "pro.longwave.codexOAuthCredential"
     private static let log = DebugLogger(subsystem: "pro.longwave", category: "CodexCredentials")
+    private static var refreshes: [UUID: Task<CodexOAuth.Credential?, Never>] = [:]
 
     // MARK: - Storage
 
@@ -22,10 +23,11 @@ enum CodexCredentialStore {
         return try? JSONDecoder().decode(CodexOAuth.Credential.self, from: data)
     }
 
-    static func save(_ credential: CodexOAuth.Credential, connectionID: UUID) {
+    @discardableResult
+    static func save(_ credential: CodexOAuth.Credential, connectionID: UUID) -> Bool {
         guard let data = try? JSONEncoder().encode(credential),
-              let json = String(data: data, encoding: .utf8) else { return }
-        KeychainStore.set(service: service, account: connectionID.uuidString, value: json)
+              let json = String(data: data, encoding: .utf8) else { return false }
+        return KeychainStore.set(service: service, account: connectionID.uuidString, value: json)
     }
 
     static func delete(connectionID: UUID) {
@@ -52,20 +54,32 @@ enum CodexCredentialStore {
     /// dead one produces the agent's own auth error, which is clearer than a
     /// launch that silently didn't happen.
     static func validCredential(connectionID: UUID) async -> CodexOAuth.Credential? {
+        if let pending = refreshes[connectionID] { return await pending.value }
         guard let credential = load(connectionID: connectionID) else { return nil }
         guard !credential.isFresh() else { return credential }
         guard credential.canRefresh else {
             log.log("Codex credential stale and not refreshable; using it as-is")
             return credential
         }
-        do {
-            let refreshed = try await CodexOAuth.refresh(credential)
-            save(refreshed, connectionID: connectionID)
-            return refreshed
-        } catch {
-            log.log("Codex refresh failed (\(error.localizedDescription)); falling back to stored credential")
-            return credential
+        let task = Task<CodexOAuth.Credential?, Never> {
+            do {
+                let refreshed = try await CodexOAuth.refresh(credential)
+                guard load(connectionID: connectionID)?.refreshToken == credential.refreshToken else {
+                    return load(connectionID: connectionID)
+                }
+                guard save(refreshed, connectionID: connectionID) else {
+                    log.error("Couldn't persist refreshed Codex credential")
+                    return nil
+                }
+                return refreshed
+            } catch {
+                log.log("Codex refresh failed; using the currently stored credential")
+                return load(connectionID: connectionID)
+            }
         }
+        refreshes[connectionID] = task
+        defer { refreshes.removeValue(forKey: connectionID) }
+        return await task.value
     }
 
     /// Human-readable state for the setup sheet: account, plan, access-token life.

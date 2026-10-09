@@ -246,6 +246,7 @@ final class LocalSandboxController {
         if !force, isAuthFailed || isFailed { return }
         await refresh()
         guard availability == .ready, let status, !status.guiSession else { return }
+        guard desktop != .loggingIn else { return }
         // Shown while macOS may be asking to let this app read the password.
         desktop = .loggingIn
         guard let password = await agentPassword() else {
@@ -528,11 +529,23 @@ final class LocalSandboxController {
     /// — tokens go over the create channel's stdin, never an argv — then attaches
     /// it in Terminal.app.
     func launch(_ project: Project, agent: SSHAgent) async {
+        do {
+            let name = try await createSession(project, agent: agent)
+            try attach(tmuxSession: name)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Starts a session without choosing a viewer. Local Terminal.app and the
+    /// remote Projects relay share this path and the Companion's credentials.
+    func createSession(_ project: Project, agent: SSHAgent) async throws -> String {
+        guard busy == nil else { throw SandboxError.message("The sandbox is busy. Try again when the current operation finishes.") }
         busy = "Starting \(agent.displayName) in \(project.displayName)…"
         defer { busy = nil }
         do {
             let folder = try await sandboxClone(project.bareName)
-            let environment = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+            let environment = try await sessionEnvironment(for: agent)
             let base = AgentSessionCommands.slug(project.displayName)
             let slug = agent.sessionKey.isEmpty ? base : AgentSessionCommands.slug("\(base)-\(agent.sessionKey)")
             let launch = AgentSessionCommands.agentLaunch(
@@ -542,7 +555,7 @@ final class LocalSandboxController {
                 clientCommand: agent == .custom ? account.effectiveCommand(for: agent)
                                                 : agent.sandboxLaunchCommand,
                 environment: environment,
-                setup: account.sessionSetup(for: agent, environment: environment))
+                setup: account.sessionSetup(for: agent, environment: environment, sessionID: slug))
             let out = try await ssh(launch.create, stdin: launch.payload)
             if out.contains(AgentSessionCommands.agentNoTmuxMarker) {
                 throw SandboxError.message("tmux isn't on the sandbox's login PATH.")
@@ -550,11 +563,12 @@ final class LocalSandboxController {
             guard out.contains(AgentSessionCommands.agentCreatedMarker) else {
                 throw SandboxError.message("The session couldn't be created in the sandbox.")
             }
-            try attach(tmuxSession: slug)
             lastError = nil
             await refreshSessions()
+            return slug
         } catch {
             lastError = error.localizedDescription
+            throw error
         }
     }
 
@@ -566,13 +580,13 @@ final class LocalSandboxController {
     func startHeadlessRun(project bareName: String, agent: SSHAgent, runID: String,
                           prompt: String) async throws -> String {
         let folder = try await sandboxClone(bareName)
-        let credentials = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+        let credentials = try await sessionEnvironment(for: agent)
         let environment = AgentSchedule.environment(credentials: credentials, prompt: prompt)
         let launch = AgentSessionCommands.agentLaunch(
             tmuxSession: runID, folder: folder,
             clientCommand: AgentSchedule.paneCommand(agent: agent, runID: runID),
             environment: environment,
-            setup: account.sessionSetup(for: agent, environment: credentials))
+            setup: account.sessionSetup(for: agent, environment: credentials, sessionID: runID))
         let out = try await ssh(launch.create, stdin: launch.payload)
         if out.contains(AgentSessionCommands.agentNoTmuxMarker) {
             throw SandboxError.message("tmux isn't on the sandbox's login PATH.")
@@ -627,6 +641,18 @@ final class LocalSandboxController {
 
     // MARK: - Plumbing
 
+    private func sessionEnvironment(for agent: SSHAgent) async throws -> [(name: String, value: String)] {
+        let environment = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+        let required: String?
+        if agent == .claude, account.hasClaudeCredential { required = SSHAgent.claude.defaultEnvName }
+        else if agent == .codex, account.hasCodexCredential { required = CodexOAuth.Constants.authJSONEnvName }
+        else { required = nil }
+        if let required, !environment.contains(where: { $0.name == required && !$0.value.isEmpty }) {
+            throw SandboxError.message("Couldn't renew and store the \(agent.displayName) credential. Check its sign-in in Projects.")
+        }
+        return environment
+    }
+
     enum SandboxError: LocalizedError {
         case message(String)
         var errorDescription: String? {
@@ -643,6 +669,14 @@ final class LocalSandboxController {
         } catch {
             throw SandboxError.message("Can't read \(LocalSandbox.keyURL().path): \(error)")
         }
+    }
+
+    /// The private key remains in the owner's account. A relay only ever
+    /// attaches to an already-validated, tagged sandbox tmux session.
+    func terminalConnection(session name: String, cols: Int, rows: Int) throws -> SSHConnection {
+        SSHConnection(config: .init(host: LocalSandbox.host, port: LocalSandbox.sshPort,
+            username: agentUser, command: AgentSessionCommands.attachCommand(tmuxSession: name),
+            cols: cols, rows: rows), privateKey: try key(), group: group)
     }
 
     /// One command in the sandbox over SSH (non-PTY exec), optionally with stdin.

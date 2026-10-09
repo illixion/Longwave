@@ -15,8 +15,8 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
     /// (preferred over `GH_TOKEN`/`GITHUB_TOKEN` so it can't clobber other tools).
     case copilot
     /// OpenAI Codex CLI — signed in with ChatGPT through the CLI's own device
-    /// flow (`CodexOAuth`), delivered as a session-only `auth.json`; a pasted
-    /// personal access token rides as `CODEX_ACCESS_TOKEN` instead.
+    /// browser or device flow (`CodexOAuth`), delivered as a session-only
+    /// `auth.json`; a pasted personal access token rides as `CODEX_ACCESS_TOKEN`.
     case codex
     /// Any other CLI: free-form command + token env-var name, set per host.
     case custom
@@ -175,7 +175,7 @@ enum SSHAgent: String, CaseIterable, Identifiable, Sendable {
         case .copilot:
             "Sign in with GitHub below — Longwave runs the device-authorization flow on this headset, captures the token, and injects it into each session as \(envName). The Mac's keychain is never touched. (Prefer a token? Paste a fine-grained PAT with the “Copilot Requests” permission instead — classic ghp_ tokens aren't supported.)"
         case .codex:
-            "Sign in with ChatGPT below — Longwave runs Codex's device sign-in on this headset and keeps the credential here. Each session gets its own auth.json (in ~/\(CodexOAuth.Constants.sessionHomeDirectory) on the host, so your own Codex login there is untouched) without the refresh token, which never leaves this device; the token is renewed before a launch when under a day remains. (Prefer a token? Paste a ChatGPT personal access token, injected as \(envName).)"
+            "Sign in with ChatGPT below — the browser flow works when your organization disables device-code sign-in. Longwave keeps the credential on this headset and gives each session its own auth.json (in ~/\(CodexOAuth.Constants.sessionHomeDirectory) on the host, so your own Codex login there is untouched). The refresh token never leaves this device; access tokens are renewed before launch when under a day remains. Device-code sign-in is also available if your organization allows it. (Prefer a token? Paste a ChatGPT personal access token, injected as \(envName).)"
         case .custom:
             "Paste the credential your CLI reads from \(envName). It's stored only on this device and injected into each session as that environment variable."
         }

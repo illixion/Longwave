@@ -22,6 +22,7 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
 
     // In-app browser OAuth state (Claude).
     @State private var showingWebLogin = false
+    @State private var showingCodexWebLogin = false
     /// Mirrors the stored credential for display. Held in view state rather than
     /// read inline because it lives in the keychain, not SwiftData — no
     /// observation would fire when it changes, so sign-in/out refresh it by hand.
@@ -107,6 +108,13 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                 reloadClaudeCredential()
             }
         }
+        .sheet(isPresented: $showingCodexWebLogin) {
+            CodexLoginSheet { credential in
+                host.setCodexCredential(credential)
+                host.persistCredentialChanges()
+                reloadCodexCredential()
+            }
+        }
     }
 
     @ViewBuilder
@@ -185,6 +193,14 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
     private var deviceFlowSection: some View {
         let provider = deviceSignIn?.providerName ?? ""
         Section("Sign in with \(provider)") {
+            if agent == .codex {
+                Button {
+                    showingCodexWebLogin = true
+                } label: {
+                    Label(codexCredentialSummary == nil ? "Sign in with ChatGPT" : "Sign in with ChatGPT again",
+                          systemImage: "person.crop.circle.badge.checkmark")
+                }
+            }
             if agent == .codex, let summary = codexCredentialSummary {
                 Label(summary, systemImage: "checkmark.seal.fill")
                     .font(.caption)
@@ -224,8 +240,8 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                     startDeviceFlow()
                 } label: {
                     HStack {
-                        Label(agent == .codex && codexCredentialSummary != nil
-                              ? "Sign In Again" : "Sign in with \(provider)",
+                        Label(agent == .codex ? "Sign in with device code"
+                              : "Sign in with \(provider)",
                               systemImage: "person.crop.circle.badge.checkmark")
                         if signingIn { Spacer(); ProgressView() }
                     }

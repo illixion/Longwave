@@ -1,7 +1,8 @@
 import DebugTrace
 import Foundation
+import CryptoKit
 
-/// Runs the OpenAI Codex CLI's own **ChatGPT device-code sign-in** on this
+/// Runs the OpenAI Codex CLI's ChatGPT browser or device-code sign-in on this
 /// device, so a headset can sign a host's Codex sessions in without a browser on
 /// the Mac and without the refresh token ever leaving the headset.
 ///
@@ -60,6 +61,9 @@ enum CodexOAuth {
         /// Shown to the user; the page asks for the one-time code.
         static let verificationURL = "\(issuer)/codex/device"
         static let deviceRedirectURI = "\(issuer)/deviceauth/callback"
+        /// The Codex CLI's registered loopback callback for regular browser sign-in.
+        static let browserRedirectURI = "http://127.0.0.1:1455/auth/callback"
+        static let browserAuthorizeURL = "\(issuer)/oauth/authorize"
         static let tokenURL = "\(issuer)/oauth/token"
         static let revokeURL = "\(issuer)/oauth/revoke"
         /// The CLI's own device-flow deadline.
@@ -186,6 +190,7 @@ enum CodexOAuth {
     enum FlowError: LocalizedError {
         case http(Int, String?)
         case malformedResponse
+        case stateMismatch
         case expired
         case noRefreshToken
 
@@ -196,6 +201,8 @@ enum CodexOAuth {
                 return "OpenAI returned HTTP \(code)."
             case .malformedResponse:
                 return "Unexpected response from OpenAI's sign-in service."
+            case .stateMismatch:
+                return "The sign-in response did not match this request. Try again."
             case .expired:
                 return "The code expired before you approved it. Try again."
             case .noRefreshToken:
@@ -211,6 +218,72 @@ enum CodexOAuth {
         let userCode: String
         let interval: Int
         var verificationURL: String { Constants.verificationURL }
+    }
+
+    /// PKCE material for the regular ChatGPT browser flow. The verifier and
+    /// state remain on this device; only the challenge and state enter the URL.
+    struct BrowserPKCE: Sendable {
+        let verifier: String
+        let challenge: String
+        let state: String
+
+        init() {
+            verifier = (0..<4).map { _ in UUID().uuidString.replacingOccurrences(of: "-", with: "") }.joined()
+            challenge = Data(SHA256.hash(data: Data(verifier.utf8)))
+                .base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+            state = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+    }
+
+    /// Builds the same browser authorization request as the Codex CLI.
+    static func browserAuthorizationURL(pkce: BrowserPKCE) -> URL {
+        var components = URLComponents(string: Constants.browserAuthorizeURL)!
+        components.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: Constants.clientID),
+            URLQueryItem(name: "redirect_uri", value: Constants.browserRedirectURI),
+            URLQueryItem(name: "scope", value: "openid profile email offline_access api.connectors.read api.connectors.invoke"),
+            URLQueryItem(name: "code_challenge", value: pkce.challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: pkce.state),
+            URLQueryItem(name: "id_token_add_organizations", value: "true"),
+            URLQueryItem(name: "codex_cli_simplified_flow", value: "true"),
+            URLQueryItem(name: "originator", value: "codex_cli_rs"),
+        ]
+        return components.url!
+    }
+
+    /// Recognizes only the registered localhost callback and extracts either
+    /// the authorization code or the provider's error response.
+    static func browserCallback(from url: URL) -> (code: String?, state: String?, error: String?)? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "http", components.host == "127.0.0.1",
+              components.port == 1455, components.path == "/auth/callback" else { return nil }
+        let items = components.queryItems ?? []
+        return (
+            items.first(where: { $0.name == "code" })?.value,
+            items.first(where: { $0.name == "state" })?.value,
+            items.first(where: { $0.name == "error" })?.value
+        )
+    }
+
+    /// Exchanges the browser authorization code using the CLI's registered
+    /// loopback redirect. State is checked before any token request is made.
+    static func exchangeBrowserCode(_ code: String, returnedState: String?, pkce: BrowserPKCE) async throws -> Credential {
+        guard returnedState == pkce.state else { throw FlowError.stateMismatch }
+        var credential = try await postToken(form: [
+            "grant_type": "authorization_code",
+            "client_id": Constants.clientID,
+            "code": code,
+            "redirect_uri": Constants.browserRedirectURI,
+            "code_verifier": pkce.verifier,
+        ])
+        credential.applyClaims()
+        log.log("Browser sign-in approved; plan=\(credential.planType ?? "unknown", privacy: .public)")
+        return credential
     }
 
     static func userCodeBody() -> [String: Any] { ["client_id": Constants.clientID] }

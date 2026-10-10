@@ -207,7 +207,7 @@ final class AudioStreamerController {
         let server = PairingServer(context: .init(
             headsetID: headsetID, headsetName: name,
             macID: presence.macID, macName: presence.macName,
-            enroll: { [devices] id, name, grants in devices.enroll(id: id, name: name, grants: grants) }
+            enroll: { [devices] id, name, grants, key in devices.enroll(id: id, name: name, grants: grants, sshPublicKey: key) }
         ))
         server.onFinish = { [weak self] outcome, name in
             self?.pairingFinished(outcome, name: name)
@@ -246,42 +246,6 @@ final class AudioStreamerController {
         installedVisionKeys = AuthorizedKeysManager.read().filter { $0.comment.contains("longwave") }
         if macHostFingerprint == nil {
             macHostFingerprint = AuthorizedKeysManager.macHostFingerprint()
-        }
-    }
-
-    /// Reads a public key from the clipboard (Universal Clipboard from the
-    /// Vision Pro), prompts for explicit approval, then installs it.
-    func addKeyFromClipboard() {
-        guard let raw = NSPasteboard.general.string(forType: .string)?
-                .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            keyActionStatus = "Clipboard is empty."
-            return
-        }
-        guard let key = AuthorizedKeysManager.parse(raw) else {
-            keyActionStatus = "Clipboard isn't an SSH public key."
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = "Authorize this Vision Pro for SSH?"
-        alert.informativeText = """
-        \(key.type)
-        \(key.fingerprint)\(key.comment.isEmpty ? "" : "\n\(key.comment)")
-
-        Allowing adds it to ~/.ssh/authorized_keys, letting that device log in over SSH (key-based).
-        """
-        alert.addButton(withTitle: "Allow")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            keyActionStatus = "Cancelled."
-            return
-        }
-        do {
-            try AuthorizedKeysManager.add(line: raw)
-            refreshKeys()
-            keyActionStatus = "Authorized \(key.fingerprint)."
-        } catch {
-            keyActionStatus = "Failed: \(error.localizedDescription)"
         }
     }
 

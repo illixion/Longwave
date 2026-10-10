@@ -318,17 +318,13 @@ struct RemoteControlPane: View {
                     }
                 }
 
-                Button("Add Vision Pro Key from Clipboard") {
-                    controller.addKeyFromClipboard()
-                }
-
                 if let status = controller.keyActionStatus {
                     Text(status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("Copy the key from Longwave (Projects → Copy Public Key), then add it here. Enable Remote Login in System Settings → General → Sharing for SSH to work.")
+                Text("A device gets SSH by pairing with “Ask for SSH login” on: tick SSH in the pairing dialog (or later under Devices) and its key is added here; untick or revoke and it's removed. Remote Login must be on in System Settings → General → Sharing.")
             }
 
             if !controller.installedVisionKeys.isEmpty {

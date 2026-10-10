@@ -120,7 +120,7 @@ private struct DeviceRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            ForEach(CompanionGrant.allCases) { grant in
+            ForEach(CompanionGrant.allCases.filter { $0 != .sshKey || devices.offersSSH(device.id) }) { grant in
                 Toggle(grant.title, isOn: Binding(
                     get: { device.grants.contains(grant) },
                     set: { on in

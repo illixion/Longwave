@@ -10,6 +10,9 @@ struct CompanionDevice: Codable, Identifiable, Equatable, Sendable {
     var grants: Set<CompanionGrant>
     var pairedAt: Date
     var lastSeen: Date?
+    /// The SSH public key it offered at pairing. In `authorized_keys` exactly
+    /// while it holds the `sshKey` grant.
+    var sshPublicKey: String?
 }
 
 /// The paired devices and the one shared token from before per-device
@@ -62,14 +65,20 @@ final class CompanionDeviceRegistry {
 
     /// Pairing approved: a fresh token for this device (pairing again
     /// replaces the old one), with exactly the grants the user ticked.
-    func enroll(id: String, name: String, grants: Set<CompanionGrant>) -> String? {
+    func enroll(id: String, name: String, grants: Set<CompanionGrant>, sshPublicKey: String? = nil) -> String? {
         let token = CompanionCredential.generateToken()
         guard KeychainStore.set(service: Self.keychainService, account: id, value: token) else {
             log.error("Couldn't store a paired device's token in the keychain")
             return nil
         }
+        let previous = device(id)
         devices.removeAll { $0.id == id }
-        devices.append(CompanionDevice(id: id, name: String(name.prefix(80)), grants: grants, pairedAt: Date(), lastSeen: Date()))
+        // A device that pairs again without a key keeps the one it gave before.
+        let device = CompanionDevice(id: id, name: String(name.prefix(80)), grants: grants, pairedAt: Date(),
+                                     lastSeen: Date(), sshPublicKey: sshPublicKey ?? previous?.sshPublicKey)
+        if let old = previous?.sshPublicKey, old != device.sshPublicKey { removeSSHKey(old) }
+        devices.append(device)
+        applySSHKey(device)
         changed()
         return token
     }
@@ -77,6 +86,7 @@ final class CompanionDeviceRegistry {
     func setGrants(_ grants: Set<CompanionGrant>, for id: String) {
         guard let index = devices.firstIndex(where: { $0.id == id }), devices[index].grants != grants else { return }
         devices[index].grants = grants
+        applySSHKey(devices[index])
         changed()
     }
 
@@ -87,6 +97,7 @@ final class CompanionDeviceRegistry {
     }
 
     func revoke(_ id: String) {
+        if let key = device(id)?.sshPublicKey { removeSSHKey(key) }
         KeychainStore.delete(service: Self.keychainService, account: id)
         devices.removeAll { $0.id == id }
         changed()
@@ -125,6 +136,29 @@ final class CompanionDeviceRegistry {
         }
         if acceptsLegacyToken, let legacyToken { tokens.append(legacyToken) }
         return tokens
+    }
+
+    /// Whether a device can hold the SSH grant at all: only one that sent a key.
+    func offersSSH(_ id: String) -> Bool { device(id)?.sshPublicKey != nil }
+
+    /// Keeps `authorized_keys` in step with the grant. The line's comment
+    /// carries "longwave" so the Remote tab lists it.
+    private func applySSHKey(_ device: CompanionDevice) {
+        guard let line = device.sshPublicKey, let key = AuthorizedKeysManager.parse(line) else { return }
+        do {
+            if device.grants.contains(.sshKey) {
+                try AuthorizedKeysManager.add(line: "\(key.type) \(key.base64) longwave \(device.name.replacingOccurrences(of: "\n", with: " "))")
+            } else {
+                try AuthorizedKeysManager.remove(base64: key.base64)
+            }
+        } catch {
+            log.error("Couldn't update authorized_keys: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func removeSSHKey(_ line: String) {
+        guard let key = AuthorizedKeysManager.parse(line) else { return }
+        try? AuthorizedKeysManager.remove(base64: key.base64)
     }
 
     private func changed() {

@@ -181,8 +181,10 @@ nonisolated struct PairingExchange {
 /// headset `reveal`, Mac `accept` or `deny`.
 nonisolated enum PairingMessage: Codable, Sendable, Equatable {
     /// `requested`: the features the device asks for; the Mac's dialog
-    /// starts from them and the user decides.
-    case commit(headsetID: String, headsetName: String, commitment: Data, requested: [CompanionGrant]?)
+    /// starts from them and the user decides. `sshPublicKey`: an OpenSSH
+    /// public key line the Mac adds to `authorized_keys` if the user allows
+    /// `sshKey` — a public key, so it needs no sealing.
+    case commit(headsetID: String, headsetName: String, commitment: Data, requested: [CompanionGrant]?, sshPublicKey: String? = nil)
     case macHello(macID: String, macName: String, publicKey: Data, nonce: Data)
     case reveal(publicKey: Data, nonce: Data)
     case accept(sealedGrant: Data)

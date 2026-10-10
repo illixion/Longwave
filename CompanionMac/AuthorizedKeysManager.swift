@@ -23,8 +23,8 @@ struct AuthorizedKey: Identifiable, Hashable {
 /// un-sandboxed, so this is a plain file write the user's account already owns
 /// — no elevation needed (unlike enabling Remote Login, which is a system
 /// daemon). StrictModes-compatible perms are enforced (`~/.ssh` 0700, file
-/// 0600). Adding a key is always gated behind a user "Allow" prompt in the
-/// menu bar (see `AudioStreamerController.addKeyFromClipboard`).
+/// 0600). A key is only ever added for a paired device the user allowed SSH
+/// in the pairing dialog or the Devices tab (`CompanionDeviceRegistry`).
 enum AuthorizedKeysManager {
     enum KeyError: LocalizedError {
         case invalid

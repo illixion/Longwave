@@ -22,7 +22,7 @@ final class PairingServer {
         let macName: String
         /// Called once the user approves: enrolls the device with the grants
         /// they ticked and returns its fresh token (nil if that failed).
-        let enroll: @MainActor (_ id: String, _ name: String, _ grants: Set<CompanionGrant>) -> String?
+        let enroll: @MainActor (_ id: String, _ name: String, _ grants: Set<CompanionGrant>, _ sshPublicKey: String?) -> String?
     }
 
     enum Outcome {
@@ -49,6 +49,8 @@ final class PairingServer {
     private var headsetID: String?
     private var headsetName: String
     private var requested: Set<CompanionGrant> = CompanionGrant.defaults
+    /// The device's SSH public key, when it offered one.
+    private var sshPublicKey: String?
     private var finished = false
     private var timeout: Task<Void, Never>?
     private var alertShowing = false
@@ -179,12 +181,13 @@ final class PairingServer {
 
     private func handle(_ message: PairingMessage) async {
         switch message {
-        case .commit(let headsetID, let headsetName, let commitment, let requested):
+        case .commit(let headsetID, let headsetName, let commitment, let requested, let sshPublicKey):
             guard self.commitment == nil, !headsetID.isEmpty, headsetID.count <= 64,
                   context.headsetID == nil || headsetID == context.headsetID else { return finish(.abandoned) }
             self.headsetID = headsetID
             if context.headsetID == nil { self.headsetName = String(headsetName.prefix(80)) }
             if let requested { self.requested = Set(requested) }
+            self.sshPublicKey = sshPublicKey.flatMap { AuthorizedKeysManager.parse($0) == nil ? nil : $0 }
             self.commitment = commitment
             send(.macHello(macID: context.macID, macName: context.macName,
                            publicKey: exchange.publicKey, nonce: exchange.nonce))
@@ -199,7 +202,7 @@ final class PairingServer {
             }
             let (answer, grants) = approve(code: agreement.code)
             guard answer == .paired, let headsetID,
-                  let token = context.enroll(headsetID, headsetName, grants) else {
+                  let token = context.enroll(headsetID, headsetName, grants, sshPublicKey) else {
                 log.info("Pairing not approved")
                 send(.deny) { [weak self] in self?.finish(answer == .paired ? .abandoned : answer) }
                 return
@@ -234,12 +237,14 @@ final class PairingServer {
 
         \(PairingExchange.display(code))
 
-        Choose what it may do. You won't be asked again when it connects; change this any time under Devices in Longwave Companion.
+        Choose what it may do. You won't be asked again when it connects; change this any time under Devices in Longwave Companion.\(sshPublicKey.flatMap(AuthorizedKeysManager.parse).map { "\n\nSSH adds its key (\($0.fingerprint)) to your ~/.ssh/authorized_keys." } ?? "")
         """
         // One checkbox per grant, ticked as the device asked. A device asks for
         // Screen, Audio and Input unless the user requested more on it, e.g.
         // Projects → Request Access, so Projects is never ticked by default.
-        let boxes = CompanionGrant.allCases.map { grant in
+        // SSH only when the device sent a key to authorize.
+        let offered = CompanionGrant.allCases.filter { $0 != .sshKey || sshPublicKey != nil }
+        let boxes = offered.map { grant in
             let box = NSButton(checkboxWithTitle: grant.title, target: nil, action: nil)
             box.state = requested.contains(grant) ? .on : .off
             return box
@@ -270,7 +275,7 @@ final class PairingServer {
             alertShowing = false
         }
         let response = alert.runModal()
-        let grants = Set(zip(CompanionGrant.allCases, boxes).filter { $0.1.state == .on }.map(\.0))
+        let grants = Set(zip(offered, boxes).filter { $0.1.state == .on }.map(\.0))
         switch response {
         case .alertFirstButtonReturn: return (lost.withLock({ $0 }) ? .abandoned : .paired, grants)
         case .alertSecondButtonReturn: return (.declined, [])

@@ -47,6 +47,9 @@ struct ConnectionFormView: View {
     /// (COMPANION_ENROLLMENT_PLAN.md, step 4), so they still take one.
     @State private var windowsToken = ""
     @State private var savedGrants: Set<CompanionGrant> = []
+    /// Offer this device's SSH key when pairing, so the Mac can allow SSH
+    /// login as its user (the Projects tab's SSH Account mode).
+    @State private var askForSSH = false
     /// The paired Companion's identity, set by pairing (see `nearbyMacsSection`).
     @State private var companionMacID: String?
     @State private var pairing: CompanionPairingClient?
@@ -241,6 +244,10 @@ struct ConnectionFormView: View {
                 Text("Looking for Macs running Longwave Companion…")
                     .foregroundStyle(.secondary)
             }
+            #if !os(macOS)
+            Toggle("Ask for SSH login too", isOn: $askForSSH)
+                .disabled(isPairing)
+            #endif
             pairingStatus
         } header: {
             Text("Macs Nearby")
@@ -307,14 +314,14 @@ struct ConnectionFormView: View {
 
     private func startPairing(with mac: CompanionLocator.NearbyMac) {
         pairing?.cancel()
-        let client = CompanionPairingClient(mac: mac, requested: requestedGrants)
+        let client = CompanionPairingClient(mac: mac, requested: requestedGrants, sshPublicKey: offeredSSHKey)
         pairing = client
         client.start()
     }
 
     private func startPairing(with link: CompanionPairLink) {
         pairing?.cancel()
-        let client = CompanionPairingClient(link: link, requested: requestedGrants)
+        let client = CompanionPairingClient(link: link, requested: requestedGrants, sshPublicKey: offeredSSHKey)
         pairing = client
         client.start()
     }
@@ -322,7 +329,20 @@ struct ConnectionFormView: View {
     /// Pairing again keeps what the Mac already allowed this device, and asks
     /// for the usual set besides.
     private var requestedGrants: Set<CompanionGrant> {
-        CompanionGrant.defaults.union(savedGrants)
+        var grants = CompanionGrant.defaults.union(savedGrants)
+        if askForSSH { grants.insert(.sshKey) }
+        return grants
+    }
+
+    /// This device's Secure Enclave SSH key, the one SSH Account mode signs in
+    /// with — offered only when asked for.
+    private var offeredSSHKey: String? {
+        #if os(macOS)
+        return nil
+        #else
+        guard askForSSH || savedGrants.contains(.sshKey) else { return nil }
+        return try? SecureEnclaveSSHKey.loadOrCreate().openSSHPublicKeyLine(comment: "longwave")
+        #endif
     }
 
     static func grantSummary(_ grants: Set<CompanionGrant>) -> String {
@@ -712,6 +732,7 @@ struct ConnectionFormView: View {
         needsPairing = saved.companionNeedsPairing && saved.companionMacID != nil
         if saved.companionMacID == nil, saved.companionDeviceToken == nil { windowsToken = saved.companionToken }
         savedGrants = saved.companionGrants
+        askForSSH = saved.companionGrants.contains(.sshKey)
         companionMacID = saved.companionMacID
         nativeScreenEnabled = saved.nativeScreenEnabled
         nativeAudioEnabled = saved.nativeAudioEnabled

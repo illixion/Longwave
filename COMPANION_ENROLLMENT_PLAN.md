@@ -1,9 +1,11 @@
 # Companion enrollment, device grants and first-run setup
 
-Status (2026-10-10): steps 1 and 2 implemented — setup assistant, in-app
-sandbox install, per-device tokens and grants, the pairing dialog, Devices tab,
-address link and direct pairing port, Projects and the watch lane on device
-keys. Steps 3 (SSH key, watch credential sender) and 4 (Windows) are open.
+Status (2026-10-10): steps 1–3 implemented — setup assistant, in-app sandbox
+install, per-device tokens and grants, the pairing dialog, Devices tab, address
+link and direct pairing port, Projects and the watch lane on device keys, the
+SSH key offered in the pairing commit (added to authorized_keys exactly while
+the device holds `sshKey`), and the iPhone handing the watch its own device key.
+Step 4 (Windows) is open.
 Deviations: asking for more grants later pairs again (one code) rather than a
 code-less request; Projects invitations were removed outright instead of
 honoured for a transition (the feature was a day old).

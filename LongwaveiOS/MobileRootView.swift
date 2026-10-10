@@ -143,6 +143,7 @@ struct MobileRootView: View {
         .onAppear {
             knownSessions = Set(sshManager.sessions.map(\.id.raw))
         }
+        .background(WatchCredentialSyncView())
         .onOpenURL { url in
             // A Mac's address link from the Companion (no secret in it).
             // Broadcast setup is not handled here — this target has no

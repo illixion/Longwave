@@ -29,6 +29,7 @@ final class CompanionPairingClient {
 
     private let target: Target
     private let requested: Set<CompanionGrant>
+    private let sshPublicKey: String?
     /// The address the exchange ran over, for a direct pairing.
     private(set) var connectedAddress: String?
     private var remainingAddresses: [String] = []
@@ -49,14 +50,20 @@ final class CompanionPairingClient {
 
     /// - Parameter requested: what to ask the Mac for; its dialog starts from
     ///   these and the user decides.
-    init(mac: CompanionLocator.NearbyMac, requested: Set<CompanionGrant> = CompanionGrant.defaults) {
+    /// - Parameter sshPublicKey: this device's SSH key, offered when the user
+    ///   wants SSH login as well; the Mac adds it only if allowed.
+    init(mac: CompanionLocator.NearbyMac, requested: Set<CompanionGrant> = CompanionGrant.defaults,
+         sshPublicKey: String? = nil) {
         self.target = .nearby(mac)
         self.requested = requested
+        self.sshPublicKey = sshPublicKey
     }
 
-    init(link: CompanionPairLink, requested: Set<CompanionGrant> = CompanionGrant.defaults) {
+    init(link: CompanionPairLink, requested: Set<CompanionGrant> = CompanionGrant.defaults,
+         sshPublicKey: String? = nil) {
         self.target = .direct(link)
         self.requested = requested
+        self.sshPublicKey = sshPublicKey
     }
 
     func start() {
@@ -116,7 +123,8 @@ final class CompanionPairingClient {
             headsetID: CompanionLocator.headsetID,
             headsetName: DeviceName.current,
             commitment: commitment,
-            requested: requested.sorted { $0.rawValue < $1.rawValue }
+            requested: requested.sorted { $0.rawValue < $1.rawValue },
+            sshPublicKey: sshPublicKey
         ))
     }
 

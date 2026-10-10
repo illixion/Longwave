@@ -1,4 +1,7 @@
 import SwiftUI
+#if !os(macOS)
+import RAVEUI
+#endif
 
 /// Gives a host a per-agent login that works over SSH. The macOS Keychain is
 /// locked outside the desktop session, so each agent instead gets a long-lived
@@ -62,6 +65,9 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
 
             Section(agent.supportsDeviceFlow || agent.supportsWebOAuth ? "Or paste a token" : "Paste the token") {
                 SecureField(envName, text: $token)
+                    #if !os(macOS)
+                    .textFieldTapTarget()
+                    #endif
                     .font(.system(.body, design: .monospaced))
                     .autocorrectionDisabled()
                     #if !os(macOS)

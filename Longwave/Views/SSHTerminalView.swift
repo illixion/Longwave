@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import Combine
 
 /// Terminal window: status row, the SwiftTerm display, a gaze-friendly quick-key
@@ -433,6 +434,7 @@ struct SSHTerminalView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($composerFocused)
+                    .textFieldTapTarget(focus: $composerFocused)
                     .onSubmit { send(session) }
                 #if os(visionOS)
                 dictationButton

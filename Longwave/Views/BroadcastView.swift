@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import AVFoundation
 import ReplayKit
 
@@ -103,20 +104,26 @@ struct BroadcastView: View {
 
                     Section {
                         TextField("Host", text: $manager.host, prompt: Text("100.x.x.x or hostname"))
+                            .textFieldTapTarget()
                             .textContentType(.URL)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         TextField("Port", value: $manager.port, format: .number.grouping(.never))
+                            .textFieldTapTarget()
                         TextField("Stream path", text: $manager.streamPath)
+                            .textFieldTapTarget()
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         TextField("View stream path", text: $manager.viewStreamPath)
+                            .textFieldTapTarget()
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         TextField("Username", text: $manager.username)
+                            .textFieldTapTarget()
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                         SecureField("Password", text: $manager.password)
+                            .textFieldTapTarget()
                         LabeledContent("Encryption") {
                             Label(manager.certFingerprint.isEmpty ? "None — use Tailscale/VPN" : "RTSPS, pinned certificate",
                                   systemImage: manager.certFingerprint.isEmpty ? "lock.open" : "lock.fill")

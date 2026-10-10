@@ -20,6 +20,7 @@
 
 #if FOVEATED_ENABLED
 import SwiftUI
+import RAVEUI
 import SwiftData
 
 #if !targetEnvironment(simulator)
@@ -411,12 +412,14 @@ private struct PCVRSessionForm: View {
                 VStack(spacing: 10) {
                     LabeledContent("Host IP") {
                         TextField("192.168.1.20", text: $connection.hostname)
+                            .textFieldTapTarget()
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .textFieldStyle(.roundedBorder)
                     }
                     LabeledContent("Port") {
                         TextField("Port", value: $connection.port, format: .number.grouping(.never))
+                            .textFieldTapTarget()
                             .textFieldStyle(.roundedBorder)
                     }
                 }
@@ -643,11 +646,13 @@ private struct PCVRSessionForm: View {
 
                 LabeledContent("Warning at") {
                     TextField("GB", value: $stagedWarningGB, format: .number)
+                        .textFieldTapTarget()
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(commitBandwidthControl)
                 }
                 LabeledContent("Stop at") {
                     TextField("GB", value: $stagedStopGB, format: .number)
+                        .textFieldTapTarget()
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(commitBandwidthControl)
                 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import SwiftData
 
 struct ConnectionFormView: View {
@@ -248,6 +249,7 @@ struct ConnectionFormView: View {
             }
             HStack {
                 TextField("Pair by address", text: $pairAddress)
+                    .textFieldTapTarget()
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                 Button("Pair") {
@@ -391,6 +393,7 @@ struct ConnectionFormView: View {
         Section {
             DisclosureGroup("Connecting to a Windows PC") {
                 SecureField("Screen streaming token", text: $windowsToken)
+                    .textFieldTapTarget()
                     .font(.system(.body, design: .monospaced))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -430,6 +433,7 @@ struct ConnectionFormView: View {
     private var serverSection: some View {
         Section("Server") {
             TextField("Hostname or IP Address", text: $hostname)
+                .textFieldTapTarget()
                 .textContentType(.URL)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -438,6 +442,7 @@ struct ConnectionFormView: View {
             // never a user-edited one, so there's nothing to show here.
             if connectionType != .native {
                 TextField("Port", text: $port)
+                    .textFieldTapTarget()
                     .keyboardType(.numberPad)
             }
 
@@ -453,6 +458,7 @@ struct ConnectionFormView: View {
     private var labelSection: some View {
         Section("Label") {
             TextField("Display Name (optional)", text: $label)
+                .textFieldTapTarget()
         }
     }
 
@@ -465,11 +471,13 @@ struct ConnectionFormView: View {
 
             if autoLogin {
                 TextField("Username (optional)", text: $username)
+                    .textFieldTapTarget()
                     .textContentType(.username)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
 
                 SecureField("Password", text: $password)
+                    .textFieldTapTarget()
                     .textContentType(.password)
 
                 if isEditing && hasCredentials {
@@ -540,6 +548,7 @@ struct ConnectionFormView: View {
     private var sshSections: some View {
         Section("SSH") {
             TextField("Username", text: $sshUsername)
+                .textFieldTapTarget()
                 .textContentType(.username)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -551,6 +560,7 @@ struct ConnectionFormView: View {
 
         Section("Command") {
             TextField("Login shell (default)", text: $sshLaunchCommand)
+                .textFieldTapTarget()
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -568,6 +578,7 @@ struct ConnectionFormView: View {
 
         Section("Custom Agent Command (Projects tab)") {
             TextField("claude", text: $sshClientCommand)
+                .textFieldTapTarget()
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -579,6 +590,7 @@ struct ConnectionFormView: View {
 
         Section("Environment") {
             TextField("KEY=VALUE (one per line)", text: $sshEnvVars, axis: .vertical)
+                .textFieldTapTarget()
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(2...6)
                 .autocorrectionDisabled()

@@ -12,6 +12,7 @@
 #if FOVEATED_ENABLED
 import SwiftUI
 
+import RAVEUI
 struct PCVRWebPanelsSettings: View {
     @State private var store = PCVRWebPanelStore.shared
     @State private var channel = ""
@@ -31,6 +32,7 @@ struct PCVRWebPanelsSettings: View {
 
             HStack {
                 TextField("Twitch channel", text: $channel)
+                    .textFieldTapTarget()
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("Add chat") {
@@ -41,6 +43,7 @@ struct PCVRWebPanelsSettings: View {
             }
             HStack {
                 TextField("Any web address", text: $address)
+                    .textFieldTapTarget()
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)

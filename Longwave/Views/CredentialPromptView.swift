@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import RoyalVNCKit
 
 struct CredentialPromptView: View {
@@ -23,11 +24,13 @@ struct CredentialPromptView: View {
                 Section("The server requires authentication.") {
                     if requiresUsername {
                         TextField("Username", text: $username)
+                            .textFieldTapTarget()
                             .textContentType(.username)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
                     SecureField("Password", text: $password)
+                        .textFieldTapTarget()
                         .textContentType(.password)
                 }
 

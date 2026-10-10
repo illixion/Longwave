@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import SwiftData
 
 /// The managed-Claude tab: choose an SSH host, browse its folders, and launch
@@ -181,6 +182,7 @@ struct ProjectsView: View {
             Section("Environment Variables") {
                 if agent == .custom {
                     TextField("claude", text: clientCommandBinding)
+                        .textFieldTapTarget()
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -189,6 +191,7 @@ struct ProjectsView: View {
                         .foregroundStyle(.secondary)
 
                     TextField("TOKEN_ENV_NAME", text: authEnvNameBinding)
+                        .textFieldTapTarget()
                         .font(.system(.body, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -219,6 +222,7 @@ struct ProjectsView: View {
                 }
 
                 TextField("KEY=VALUE (one per line)", text: envVarsBinding, axis: .vertical)
+                    .textFieldTapTarget()
                     .font(.system(.body, design: .monospaced))
                     .lineLimit(2...8)
                     .autocorrectionDisabled()

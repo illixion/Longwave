@@ -1,4 +1,5 @@
 import SwiftUI
+import RAVEUI
 import SwiftData
 import UniformTypeIdentifiers
 
@@ -332,6 +333,7 @@ struct SettingsView: View {
                 get: { String(value.wrappedValue) },
                 set: { value.wrappedValue = Int($0) ?? value.wrappedValue }
             ))
+            .textFieldTapTarget()
             .labelsHidden()  // the LabeledContent already shows the title (avoids "Port Port")
             .keyboardType(.numberPad)
             .multilineTextAlignment(.trailing)

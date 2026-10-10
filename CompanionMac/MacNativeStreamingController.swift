@@ -336,7 +336,7 @@ final class MacNativeStreamingController {
         return listenGateOpen ? "Listening on port \(port)" : "Waiting for a paired headset nearby"
     }
 
-    private var token = ""
+    private var keyring = CompanionKeyring()
     private var server: MacNativeStreamServer?
     /// The Apple Watch's HTTP lane (`WatchLinkProtocol`), up whenever the
     /// Native server is.
@@ -370,18 +370,20 @@ final class MacNativeStreamingController {
         }
     }
 
-    func configure(token: String) {
-        self.token = token
+    func configure(keyring: CompanionKeyring) {
+        self.keyring = keyring
         if enabled {
             startServer()
         }
     }
 
-    func updateToken(_ token: String) {
-        self.token = token
-        if enabled {
-            startServer()
-        }
+    /// A device was paired, revoked or had its grants changed: the server
+    /// rebuilds its listener and keeps the viewers still allowed in.
+    /// A viewer proved which paired device it is, for the Devices tab.
+    var onDeviceIdentified: ((String?) -> Void)?
+
+    func reloadCredentials() {
+        server?.reloadCredentials()
     }
 
     /// Set by the owner: whether the listen gate lets the server listen now.
@@ -417,12 +419,6 @@ final class MacNativeStreamingController {
         stopCapture()
         stopWindowStreams()
 
-        guard !token.isEmpty else {
-            lastError = "The companion access token is empty."
-            previousServer?.stop()
-            return
-        }
-
         lastError = nil
         MacNativeStreamNotifications.shared.requestAuthorization()
 
@@ -442,7 +438,10 @@ final class MacNativeStreamingController {
     }
 
     private func launchServer(generation: Int) {
-        let server = MacNativeStreamServer(port: port, token: token)
+        let server = MacNativeStreamServer(port: port, keyring: keyring)
+        server.onDeviceIdentified = { [weak self] deviceID in
+            Task { @MainActor [weak self] in self?.onDeviceIdentified?(deviceID) }
+        }
         server.onClientConnected = { [weak self] deviceName, wantsScreen in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
@@ -669,7 +668,7 @@ final class MacNativeStreamingController {
             }
         }
 
-        let watchServer = MacWatchServer(token: token)
+        let watchServer = MacWatchServer(keyring: keyring)
         watchServer.onActiveChanged = { [weak self] active in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }

@@ -26,17 +26,6 @@ final class ProjectsProtocolTests: XCTestCase {
         }
     }
 
-    func testInvitationRejectsUnsupportedVersionAndWeakKeys() throws {
-        let invitation = ProjectsProtocol.Invitation(id: UUID(), name: "Phone", host: "mac.local",
-            key: Data(repeating: 7, count: 32).base64EncodedString())
-        XCTAssertEqual(try ProjectsProtocol.Invitation.parse(invitation.encoded).id, invitation.id)
-        var invalid = invitation
-        invalid.version += 1
-        XCTAssertThrowsError(try ProjectsProtocol.Invitation.parse(invalid.encoded))
-        invalid = .init(id: UUID(), name: "Phone", host: "mac.local", key: "password")
-        XCTAssertThrowsError(try ProjectsProtocol.Invitation.parse(invalid.encoded))
-    }
-
     /// Real TLS/Network.framework, with a data-only server. This catches PSK
     /// interoperability and exporter behavior that pure crypto tests cannot.
     func testSeparateDeviceKeysAndReconnectUseDistinctTLSBindings() async throws {
@@ -82,7 +71,7 @@ final class ProjectsProtocolTests: XCTestCase {
         let port = try XCTUnwrap(listener.port?.rawValue)
         XCTAssertGreaterThan(port, 0)
         for id in [a, b, a] {
-            let client = ProjectsClient(invitation: .init(id: id, name: "test", host: "127.0.0.1", port: port, key: keys[id]!))
+            let client = ProjectsClient(access: .init(id: id, name: "test", host: "127.0.0.1", port: port, key: keys[id]!))
             defer { client.disconnect() }
             try await client.connect()
             let snapshot = try await client.snapshot()
@@ -115,7 +104,7 @@ final class ProjectsProtocolTests: XCTestCase {
         XCTAssertFalse(ProjectsProtocol.validates(proof, key: keys[a]!, binding: bindings[2]), "a proof cannot be replayed on another connection")
         XCTAssertFalse(ProjectsProtocol.validates(proof, key: keys[b]!, binding: bindings[0]), "one device cannot claim another grant")
         revoked.insert(b)
-        let revokedClient = ProjectsClient(invitation: .init(id: b, name: "revoked", host: "127.0.0.1", port: port, key: keys[b]!))
+        let revokedClient = ProjectsClient(access: .init(id: b, name: "revoked", host: "127.0.0.1", port: port, key: keys[b]!))
         defer { revokedClient.disconnect() }
         do { try await revokedClient.connect(); XCTFail("A revoked grant must be rejected even with its old key") }
         catch { /* Authentication is denied before any RPC/terminal operation. */ }

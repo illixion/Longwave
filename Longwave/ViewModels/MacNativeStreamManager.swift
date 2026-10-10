@@ -215,7 +215,7 @@ final class MacNativeStreamManager {
             config: .init(
                 host: connection.companionHost,
                 port: MacNativeStreamProtocol.defaultPort,
-                token: connection.companionToken,
+                credential: connection.companionCredential ?? CompanionCredential(token: "", deviceID: nil),
                 deviceName: DeviceName.current,
                 wantsScreen: liveEnabled
             ),
@@ -231,7 +231,7 @@ final class MacNativeStreamManager {
         }
         self.client = client
         client.start()
-        startInjectClient(hostname: connection.companionHost, token: connection.companionToken)
+        startInjectClient(hostname: connection.companionHost, credential: connection.companionCredential)
         keepKnocking(for: connection)
     }
 
@@ -241,9 +241,8 @@ final class MacNativeStreamManager {
     @ObservationIgnored private var knockTask: Task<Void, Never>?
 
     private func keepKnocking(for connection: SavedConnection) {
-        guard let macID = connection.companionMacID, !connection.companionToken.isEmpty else { return }
+        guard let macID = connection.companionMacID, let token = connection.companionCredential?.token else { return }
         knockTask?.cancel()
-        let token = connection.companionToken
         knockTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, self.connection === connection,
@@ -256,15 +255,15 @@ final class MacNativeStreamManager {
 
     /// Opens the text-only typing fallback channel — same host/token as
     /// Screen, independent lifecycle (its own TLS-PSK connection).
-    private func startInjectClient(hostname: String, token: String) {
+    private func startInjectClient(hostname: String, credential: CompanionCredential?) {
         injectClient?.close()
         textInputAvailable = false
-        guard !token.isEmpty else {
+        guard let credential else {
             injectClient = nil
             return
         }
         let client = CompanionInjectClient(
-            config: .init(host: hostname, port: CompanionInjectProtocol.defaultPort, token: token)
+            config: .init(host: hostname, port: CompanionInjectProtocol.defaultPort, credential: credential)
         )
         client.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
@@ -631,6 +630,9 @@ final class MacNativeStreamManager {
         case .connected(let ack):
             serverAck = ack
             state = .connected
+            if let grants = ack?.grants, let connection {
+                connection.companionGrants = Set(grants.compactMap(CompanionGrant.init(rawValue:)))
+            }
             if let ack {
                 // v2 session: streams are subscription-based. Desktop rides
                 // the Screen toggle; open per-window scenes resubscribe so a

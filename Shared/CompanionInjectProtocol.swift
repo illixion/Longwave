@@ -12,8 +12,8 @@ import Foundation
 /// Transport: TLS 1.2-PSK over TCP (see `CompanionInjectCrypto`), keyed by the
 /// same companion token as audio but domain-separated, so a leaked audio PSK is
 /// not an inject PSK. Frames mirror the audio framing: `[UInt32 len][UInt8
-/// type][payload]`, little-endian. There is no app-layer auth — a wrong token
-/// fails the handshake before any frame.
+/// type][payload]`, little-endian. A wrong key fails the handshake before any
+/// frame; the `hello` then names the device, whose grants decide the rest.
 nonisolated enum CompanionInjectProtocol {
     static let defaultPort: UInt16 = 4856
     static let frameLengthPrefixSize = 4
@@ -21,7 +21,9 @@ nonisolated enum CompanionInjectProtocol {
     static let maxFrameBytes: UInt32 = 1 << 16
 
     enum FrameType: UInt8, Sendable {
-        /// Client → server handshake greeting (empty payload).
+        /// Client → server handshake greeting: a `CompanionIdentify` JSON
+        /// proving which paired device this is, bound to this TLS session. The
+        /// server answers only a device holding the `input` grant.
         case hello = 0x10
         /// Server → client: 1-byte `Status` for current injection availability.
         case helloAck = 0x11

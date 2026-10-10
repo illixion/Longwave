@@ -4,47 +4,24 @@ import Network
 import Security
 
 /// The sandbox control plane. No provider credential, owner path or shell command
-/// is a field in this protocol. A Projects invitation is independent of pairing.
+/// is a field in this protocol. Access comes from pairing: the device's own
+/// token, accepted only while the Companion grants it `projects`.
 nonisolated enum ProjectsProtocol {
     static let port: UInt16 = 4860
     static let version = 1
     static let maximumFrame = 256 * 1024
     static let maximumTerminalChunk = 16 * 1024
 
-    struct Invitation: Codable, Sendable {
-        var version = ProjectsProtocol.version
+    /// Where and as whom a device reaches a Companion's Projects service: the
+    /// paired Companion's address and this device's own pairing token. The
+    /// host only accepts it while the device holds the `projects` grant.
+    struct Access: Sendable, Equatable {
+        /// This device's id towards the Companion (its pairing identity).
         let id: UUID
         var name: String
         var host: String
         var port: UInt16 = ProjectsProtocol.port
         let key: String
-
-        var encoded: String {
-            "longwave-projects:" + ((try? JSONEncoder().encode(self)) ?? Data()).base64EncodedString()
-        }
-
-        static func parse(_ text: String) throws -> Self {
-            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard value.hasPrefix("longwave-projects:"), value.count < 8192,
-                  let data = Data(base64Encoded: String(value.dropFirst("longwave-projects:".count))) else {
-                throw Failure("Paste a Projects invitation from the Companion's Projects window.")
-            }
-            let invitation = try JSONDecoder().decode(Self.self, from: data)
-            guard invitation.version == ProjectsProtocol.version,
-                  !invitation.host.isEmpty, invitation.host.count < 256,
-                  invitation.port > 0, Data(base64Encoded: invitation.key)?.count == 32 else {
-                throw Failure("This Projects invitation is invalid or uses an unsupported version.")
-            }
-            return invitation
-        }
-    }
-
-    /// Safe to persist in preferences. The invitation key stays in Keychain.
-    struct Device: Codable, Identifiable, Sendable {
-        let id: UUID
-        var name: String
-        var host: String
-        var port: UInt16
     }
 
     struct Project: Codable, Identifiable, Sendable {
@@ -156,43 +133,5 @@ nonisolated enum ProjectsProtocol {
 
     static func validates(_ proof: Data, key: String, binding: Data) -> Bool {
         HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: binding, using: SymmetricKey(data: Data(key.utf8)))
-    }
-}
-
-/// Checked writes: a UI must never claim an invitation was stored when Keychain
-/// rejected it. Update first instead of deleting a working key before adding it.
-enum ProjectsKeyStore {
-    static let service = "pro.longwave.projectsAccess.v1"
-
-    static func save(_ key: String, id: UUID) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: id.uuidString]
-        let data = Data(key.utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw ProjectsProtocol.Failure("Couldn't store the Projects key in Keychain (\(status)).") }
-    }
-
-    static func load(_ id: UUID) -> String? { KeychainStore.get(service: service, account: id.uuidString) }
-
-    static func delete(_ id: UUID) throws {
-        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: id.uuidString] as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw ProjectsProtocol.Failure("Couldn't remove the Projects key from Keychain (\(status)).")
-        }
-    }
-
-    static func generate() throws -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw ProjectsProtocol.Failure("Couldn't generate a Projects key.")
-        }
-        return Data(bytes).base64EncodedString()
     }
 }

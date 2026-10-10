@@ -8,6 +8,8 @@ import SwiftUI
 struct MacProjectsView: View {
     @Environment(LocalSandboxController.self) private var sandbox
     @Environment(SandboxInstaller.self) private var installer
+    @Environment(CompanionProjectsServer.self) private var projectsServer
+    @Environment(\.openSettings) private var openSettings
 
     @State private var setupAgent: SSHAgent?
     @State private var keyLine = ""
@@ -23,7 +25,7 @@ struct MacProjectsView: View {
                 agentsSection
                 projectsSection
                 sessionsSection
-                RemoteProjectsAccessSection()
+                remoteAccessSection
                 SchedulesSection()
                 advancedSection
             case .unknown:
@@ -66,6 +68,25 @@ struct MacProjectsView: View {
     }
 
     // MARK: Sections
+
+    /// Which paired devices may use these projects from afar. Granted in the
+    /// pairing dialog or the Devices tab, never from here.
+    private var remoteAccessSection: some View {
+        Section {
+            if projectsServer.allowedDevices.isEmpty {
+                Text("No device may use Projects yet.").foregroundStyle(.secondary)
+            }
+            ForEach(projectsServer.allowedDevices) { device in
+                Text(device.name)
+            }
+            if let error = projectsServer.error { Text(error).foregroundStyle(.red) }
+            Button("Manage in Devices…") { openSettings() }
+        } header: {
+            Text("Remote Access")
+        } footer: {
+            Text("A paired device with Projects allowed can list these projects and start, attach to and stop their agent sessions. Agent sign-ins, the sandbox password and its SSH key stay on this Mac. On the device: Projects → Companion Sandbox → Request Access, or tick Projects when pairing.")
+        }
+    }
 
     private func installSection(reason: String) -> some View {
         Section {

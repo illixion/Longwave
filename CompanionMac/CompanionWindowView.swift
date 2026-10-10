@@ -20,8 +20,8 @@ struct CompanionWindowView: View {
         TabView {
             NativePane(controller: controller)
                 .tabItem { Label("Native", systemImage: "macwindow.on.rectangle") }
-            AccessTokenPane(controller: controller)
-                .tabItem { Label("Token", systemImage: "key") }
+            DevicesPane(controller: controller)
+                .tabItem { Label("Devices", systemImage: "visionpro") }
             BroadcastPane(broadcastServer: broadcastServer)
                 .tabItem { Label("Broadcast", systemImage: "dot.radiowaves.left.and.right") }
             RemoteControlPane(controller: controller)
@@ -49,7 +49,7 @@ struct CompanionWindowView: View {
 
 /// Combines what used to be separate "Mac Stream" (screen) and "Audio" tabs:
 /// one Native feature, two independent toggles, sharing the host/token shown
-/// in the Token tab (AirDrop included) — so pairing once covers both.
+/// in the Devices tab — so pairing once covers both.
 struct NativePane: View {
     @Bindable var controller: AudioStreamerController
 
@@ -77,7 +77,7 @@ struct NativePane: View {
                 Toggle("Screen", isOn: $controller.macNativeStreaming.enabled)
                 Toggle("Audio", isOn: $controller.isRunning)
             } footer: {
-                Text("Screen streams the Mac's visible windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Audio streams the Mac's system audio — playback on Longwave honors its own Spatial Audio setting (Mac Virtual Display forces it on). Both use the same host and token as shown in the Token tab; toggle either independently.")
+                Text("Screen streams the Mac's visible windows over a clear background using ScreenCaptureKit and HEVC with its native alpha channel. Audio streams the Mac's system audio — playback on Longwave honors its own Spatial Audio setting (Mac Virtual Display forces it on). A paired device gets each only if it was allowed it under Devices; toggle either independently.")
             }
 
             if controller.macNativeStreaming.enabled {
@@ -210,83 +210,6 @@ struct NativePane: View {
 }
 
 // MARK: - Access Token
-
-struct AccessTokenPane: View {
-    @Bindable var controller: AudioStreamerController
-    @State private var copied = false
-
-    var body: some View {
-        Form {
-            Section {
-                LabeledContent("Pairing") {
-                    Text("In Longwave on the headset, add a Native connection and pick this Mac under Macs Nearby. This Mac then asks you to compare a code.")
-                        .foregroundStyle(.secondary)
-                }
-                if controller.presence.localNetworkDenied {
-                    LabeledContent("Local Network") {
-                        Button("Allow in System Settings…") {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
-                        }
-                    }
-                    Text("macOS is blocking Longwave Companion from the local network, so headsets can't find this Mac. Turn it on under Privacy & Security → Local Network.")
-                        .foregroundStyle(.red)
-                }
-                if !controller.presence.knockingHeadsets.isEmpty {
-                    LabeledContent("Nearby", value: controller.presence.knockingHeadsets.joined(separator: ", "))
-                }
-                if let status = controller.pairingStatus {
-                    LabeledContent("Last pairing", value: status)
-                }
-                Toggle("Allow connections by address", isOn: $controller.allowConnectionsByAddress)
-            } header: {
-                Text("Headsets Nearby")
-            } footer: {
-                Text("Off, this Mac's stream ports stay closed until a paired headset on the same network asks for them, so a port scan finds nothing. Keep it on to connect over Tailscale, a VPN, or any network where headsets can't see this Mac.")
-            }
-
-            Section {
-                LabeledContent("Token") {
-                    Text(controller.token)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                HStack {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(controller.token, forType: .string)
-                        copied = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            copied = false
-                        }
-                    } label: {
-                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                    }
-
-                    Button {
-                        guard let url = controller.tokenShareURL,
-                              let service = NSSharingService(named: .sendViaAirDrop) else { return }
-                        service.perform(withItems: [url])
-                    } label: {
-                        Label("AirDrop to Device", systemImage: "square.and.arrow.up")
-                    }
-
-                    Spacer()
-
-                    Button("Regenerate", role: .destructive) {
-                        controller.regenerateToken()
-                    }
-                    .help("Invalidates the current token — connected devices must re-pair.")
-                }
-            } footer: {
-                Text("For connecting by address. Enter this token in Longwave as a Native connection, or AirDrop it to auto-fill — it covers both Screen and Audio. The token both authorizes the connection and encrypts it (TLS) — no VPN needed. Keep it secret; regenerate to revoke access for both.")
-            }
-        }
-    }
-}
 
 // MARK: - Broadcast (OBS)
 

@@ -2,70 +2,45 @@ import DebugTrace
 import Foundation
 import Network
 
-/// Remote sandbox access is a separate grant. No native-stream pairing token
-/// or mobile SSH key is accepted here. Secrets and launches stay in Companion.
+/// Remote sandbox access is a grant on a paired device (`CompanionGrant.projects`),
+/// chosen in the pairing dialog or the Devices tab. The listener holds only the
+/// keys of devices holding it; no other channel's connection is accepted here.
+/// Secrets and launches stay in Companion.
 @Observable
 @MainActor
 final class CompanionProjectsServer {
-    private(set) var devices: [ProjectsProtocol.Device] = []
     private(set) var listening = false
     var error: String?
     private let sandbox: LocalSandboxController
+    private let devices: CompanionDeviceRegistry
     private var listener: NWListener?
     private var peers: [UUID: Peer] = [:]
     private var keys: [UUID: String] = [:]
-    private static let devicesKey = "projects.remoteDevices.v1"
     private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "ProjectsServer")
 
-    init(sandbox: LocalSandboxController) {
+    init(sandbox: LocalSandboxController, devices: CompanionDeviceRegistry) {
         self.sandbox = sandbox
-        if let data = UserDefaults.standard.data(forKey: Self.devicesKey) {
-            devices = (try? JSONDecoder().decode([ProjectsProtocol.Device].self, from: data)) ?? []
-        }
+        self.devices = devices
+        devices.observe { [weak self] in self?.restartListener() }
         restartListener()
     }
 
-    /// Called only from local Mac UI. Issuing an invitation is the approval.
-    func invite(name: String, host: String) throws -> String {
-        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !host.isEmpty, host.count < 256, devices.count < 16 else {
-            throw ProjectsProtocol.Failure("Enter this Mac's address. Up to 16 Projects invitations are supported.")
-        }
-        let id = UUID(), key = try ProjectsKeyStore.generate()
-        try ProjectsKeyStore.save(key, id: id)
-        let device = ProjectsProtocol.Device(id: id, name: String(name.prefix(80)), host: host, port: ProjectsProtocol.port)
-        devices.append(device)
-        persist()
-        restartListener()
-        return ProjectsProtocol.Invitation(id: id, name: device.name, host: host, key: key).encoded
-    }
-
-    func invitation(for device: ProjectsProtocol.Device) throws -> String {
-        guard let key = ProjectsKeyStore.load(device.id) else { throw ProjectsProtocol.Failure("This invitation's key is unavailable. Revoke it and create another.") }
-        return ProjectsProtocol.Invitation(id: device.id, name: device.name, host: device.host, port: device.port, key: key).encoded
-    }
-
-    func revoke(_ device: ProjectsProtocol.Device) throws {
-        try ProjectsKeyStore.delete(device.id)
-        devices.removeAll { $0.id == device.id }
-        persist()
-        restartListener()
-    }
-
-    private func persist() {
-        UserDefaults.standard.set(try? JSONEncoder().encode(devices), forKey: Self.devicesKey)
-    }
+    /// Devices allowed Projects right now.
+    var allowedDevices: [CompanionDevice] { devices.devices.filter { $0.grants.contains(.projects) } }
 
     private func restartListener() {
+        let newKeys = Dictionary(uniqueKeysWithValues: devices.keyring.entries(with: .projects).compactMap { entry in
+            entry.credential.deviceID.flatMap(UUID.init(uuidString:)).map { ($0, entry.credential.token) }
+        })
+        // Another device's change doesn't concern the sessions running here.
+        guard newKeys != keys || (listener == nil && !newKeys.isEmpty) else { return }
         listener?.cancel()
         listener = nil
         listening = false
         let oldPeers = Array(peers.values)
         peers.removeAll()
         for peer in oldPeers { peer.channel.close("Projects access changed. Reconnect to continue.") }
-        keys = Dictionary(uniqueKeysWithValues: devices.compactMap { device in
-            ProjectsKeyStore.load(device.id).map { (device.id, $0) }
-        })
+        keys = newKeys
         guard !keys.isEmpty else { return }
         do {
             let listener = try NWListener(using: ProjectsProtocol.parameters(keys: keys), on: NWEndpoint.Port(rawValue: ProjectsProtocol.port)!)

@@ -47,7 +47,9 @@ final class CompanionPresence {
 
     private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "CompanionPresence")
     private let queue = DispatchQueue(label: "pro.longwave.companion.presence")
-    private var token = ""
+    /// The tokens a knock from a headset may be tagged with (its own device
+    /// token, and the shared one while that is still accepted).
+    var knockTokens: (String) -> [String] = { _ in [] }
     private var registration: DNSServiceRef?
     private var browser: NWBrowser?
     private var pathMonitor: NWPathMonitor?
@@ -60,8 +62,7 @@ final class CompanionPresence {
     private var lastResults: Set<NWBrowser.Result> = []
     private var recheckTimer: Timer?
 
-    func start(token: String) {
-        self.token = token
+    func start() {
         register()
         startBrowsing()
         let monitor = NWPathMonitor()
@@ -78,11 +79,9 @@ final class CompanionPresence {
         }
     }
 
-    func updateToken(_ token: String) {
-        self.token = token
-        validKnocks.removeAll()
-        browser?.cancel()
-        startBrowsing()
+    /// Paired devices changed: re-judge the knocks already seen.
+    func devicesChanged() {
+        handle(lastResults)
     }
 
     /// Whether the stream ports are listening, so a knocking headset knows
@@ -219,6 +218,31 @@ final class CompanionPresence {
         return results.sorted { $0.wired && !$1.wired }.map(\.address)
     }
 
+    /// Every IPv4 address a headset might reach this Mac on, for the address
+    /// link: the LAN ones first, then tunnels such as Tailscale (100.64/10)
+    /// and any other non-loopback interface.
+    static func reachableAddresses() -> [String] {
+        var others: [String] = []
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return lanAddresses() }
+        defer { freeifaddrs(head) }
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let entry = pointer.pointee
+            let flags = Int32(entry.ifa_flags)
+            guard let address = entry.ifa_addr, address.pointee.sa_family == UInt8(AF_INET),
+                  flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let text = String(cString: host)
+            guard !text.hasPrefix("169.254.") else { continue }
+            others.append(text)
+        }
+        let lan = lanAddresses()
+        var seen = Set(lan)
+        return lan + others.filter { seen.insert($0).inserted }
+    }
+
     // MARK: - Knocks
 
     private func startBrowsing() {
@@ -254,8 +278,10 @@ final class CompanionPresence {
                     log.info("Pairing request from a headset")
                     onPairRequest?(PairRequest(headsetID: headsetID, name: name))
                 }
-            } else if let tag = txt[CompanionDiscovery.Key.tag], !token.isEmpty,
-                      CompanionDiscovery.isValidKnock(tag: tag, token: token, macID: macID, headsetID: headsetID) {
+            } else if let tag = txt[CompanionDiscovery.Key.tag],
+                      knockTokens(headsetID).contains(where: {
+                          CompanionDiscovery.isValidKnock(tag: tag, token: $0, macID: macID, headsetID: headsetID)
+                      }) {
                 knocks[headsetID] = name
             }
         }

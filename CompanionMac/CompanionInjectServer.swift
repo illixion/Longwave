@@ -16,24 +16,25 @@ final class CompanionInjectServer: @unchecked Sendable {
     nonisolated(unsafe) var onInjectBackspace: (@Sendable (Int) -> Void)?
 
     private let port: UInt16
-    private let token: String
+    private let keyring: CompanionKeyring
     private let queue = DispatchQueue(label: "pro.longwave.companion.inject", qos: .userInitiated)
     private nonisolated(unsafe) var listener: NWListener?
     private nonisolated(unsafe) var client: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
+    /// Set once the client's `hello` proved a device holding the input grant.
+    private nonisolated(unsafe) var identified = false
     private nonisolated(unsafe) var availability = CompanionInjectProtocol.Status.disabled.rawValue
     private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "CompanionInjectServer")
 
-    nonisolated init(port: UInt16, token: String) {
+    nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
-        self.token = token
+        self.keyring = keyring
     }
 
     nonisolated func start() throws {
-        let listener = try NWListener(
-            using: CompanionInjectCrypto.tlsTCPParameters(token: token),
-            on: NWEndpoint.Port(rawValue: port)!
-        )
+        let parameters = CompanionInjectCrypto.tlsTCPParameters(credentials: keyring.credentials)
+        parameters.allowLocalEndpointReuse = true
+        let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
@@ -57,7 +58,7 @@ final class CompanionInjectServer: @unchecked Sendable {
     nonisolated func setAvailability(_ status: UInt8) {
         queue.async { [self] in
             availability = status
-            guard let client else { return }
+            guard let client, identified else { return }
             client.send(content: CompanionInjectProtocol.encodeFrame(.injectStatus, Data([status])),
                         completion: .contentProcessed { _ in })
         }
@@ -73,16 +74,15 @@ final class CompanionInjectServer: @unchecked Sendable {
         }
         client?.cancel()
         inbound.removeAll()
+        identified = false
         client = connection
 
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
-                self.log.info("Inject client ready")
-                self.client?.send(
-                    content: CompanionInjectProtocol.encodeFrame(.helloAck, Data([self.availability])),
-                    completion: .contentProcessed { _ in })
+                // Answered once its hello says which device it is.
+                self.log.info("Inject client connected; waiting for its hello")
             case .failed(let error):
                 self.log.error("Inject client failed: \(String(describing: error))")
                 self.remove(connection)
@@ -101,6 +101,7 @@ final class CompanionInjectServer: @unchecked Sendable {
         connection.cancel()
         client = nil
         inbound.removeAll()
+        identified = false
     }
 
     private nonisolated func receiveLoop(_ connection: NWConnection) {
@@ -121,6 +122,18 @@ final class CompanionInjectServer: @unchecked Sendable {
     private nonisolated func processInbound(_ connection: NWConnection) {
         guard client === connection else { return }
         for frame in CompanionInjectProtocol.drainFrames(&inbound) {
+            if frame.type == CompanionInjectProtocol.FrameType.hello.rawValue, !identified {
+                guard let identity = CompanionIdentify.decode(frame.payload),
+                      let binding = CompanionIdentify.binding(connection, channel: .inject),
+                      let entry = keyring.verify(identity, binding: binding),
+                      entry.grants.contains(.input) else {
+                    log.error("Inject client isn't a device allowed to type here")
+                    remove(connection)
+                    return
+                }
+                identified = true
+            }
+            guard identified else { continue }
             switch frame.type {
             case CompanionInjectProtocol.FrameType.injectText.rawValue:
                 if let text = String(data: frame.payload, encoding: .utf8), !text.isEmpty {

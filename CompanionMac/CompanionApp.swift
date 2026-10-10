@@ -24,13 +24,14 @@ struct CompanionApp: App {
     init() {
         // Before any controller reads its settings (see the type's comment).
         LongwaveMacSettingsMigration.runOnce()
-        _controller = State(initialValue: AudioStreamerController())
+        let controller = AudioStreamerController()
+        _controller = State(initialValue: controller)
         _broadcastServer = State(initialValue: BroadcastServerManager())
         let sandbox = LocalSandboxController()
         let scheduler = LocalScheduler(sandbox: sandbox)
         _sandbox = State(initialValue: sandbox)
         _scheduler = State(initialValue: scheduler)
-        _projectsServer = State(initialValue: CompanionProjectsServer(sandbox: sandbox))
+        _projectsServer = State(initialValue: CompanionProjectsServer(sandbox: sandbox, devices: controller.devices))
         // Here rather than in a window's task: the Companion runs windowless
         // in the menu bar, and schedules must fire without any window open.
         // The agent's desktop session is *not* started here: it is logged in

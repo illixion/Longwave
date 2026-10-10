@@ -79,7 +79,7 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
     struct AudioCompanion {
         let hostname: String
         let port: UInt16
-        let token: String
+        let credential: CompanionCredential
         let title: String
         let lowLatency: Bool
     }
@@ -110,7 +110,7 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
     struct CompanionInject {
         let hostname: String
         let port: UInt16
-        let token: String
+        let credential: CompanionCredential
     }
 
     /// User's preferred typing route. Defaults to the companion (modifier-safe,
@@ -278,7 +278,7 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
             audioManager.connect(
                 hostname: companion.hostname,
                 port: companion.port,
-                token: companion.token,
+                credential: companion.credential,
                 title: companion.title,
                 lowLatency: companion.lowLatency
             )
@@ -305,10 +305,10 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
         injectClient?.close()
         injectClient = nil
         companionInputAvailable = false
-        guard let inject = companionInject, !inject.token.isEmpty else { return }
+        guard let inject = companionInject, !inject.credential.token.isEmpty else { return }
 
         let client = CompanionInjectClient(
-            config: .init(host: inject.hostname, port: inject.port, token: inject.token)
+            config: .init(host: inject.hostname, port: inject.port, credential: inject.credential)
         )
         client.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in

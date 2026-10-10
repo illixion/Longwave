@@ -142,6 +142,11 @@ nonisolated enum AudioStreamProtocol {
         /// TCP, no payload), so the sender can let go of its output device
         /// at once rather than waiting out a silence timeout.
         case microphoneStopped = 0x09
+        /// The receiver's first frame (receiver → sender, TCP): a
+        /// `CompanionIdentify` JSON proving which paired device this is, bound
+        /// to this TLS session. The sender serves nothing before it, and only
+        /// a device holding the `audio` grant.
+        case identify = 0x0A
     }
 
     /// Wraps a payload in a typed, length-prefixed frame.

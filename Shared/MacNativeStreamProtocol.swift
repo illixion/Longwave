@@ -145,6 +145,10 @@ nonisolated enum MacNativeStreamProtocol {
         /// predates the field ignores it, so a viewer must check the ack's
         /// `supportsStills` before relying on it.
         var stillsOnly: Bool?
+        /// Which paired device this is, proved over this TLS session
+        /// (`CompanionIdentify`). The macOS Companion requires it and grants
+        /// what that device was allowed; the Windows host ignores it.
+        var identity: CompanionIdentify?
 
         init(
             deviceName: String,
@@ -152,8 +156,10 @@ nonisolated enum MacNativeStreamProtocol {
             wantsScreen: Bool? = nil,
             decodesHEVC422: Bool? = nil,
             acksFrames: Bool? = nil,
-            stillsOnly: Bool? = nil
+            stillsOnly: Bool? = nil,
+            identity: CompanionIdentify? = nil
         ) {
+            self.identity = identity
             self.deviceName = deviceName
             self.protocolVersion = protocolVersion
             self.wantsScreen = wantsScreen
@@ -191,6 +197,9 @@ nonisolated enum MacNativeStreamProtocol {
         let supportsAudioStream: Bool?
         /// Whether this host serves `stillsOnly` viewers. Absent ⇒ no.
         var supportsStills: Bool? = nil
+        /// `CompanionGrant` raw values this device holds on the host. Absent
+        /// (a Windows host, for now) ⇒ unknown, not none.
+        var grants: [String]? = nil
 
         /// Audio availability, with the pre-capability fallback: only the
         /// macOS companion ever served audio, so an absent flag means
@@ -319,7 +328,8 @@ nonisolated enum MacNativeStreamProtocol {
         wantsScreen: Bool? = nil,
         decodesHEVC422: Bool? = nil,
         acksFrames: Bool? = nil,
-        stillsOnly: Bool? = nil
+        stillsOnly: Bool? = nil,
+        identity: CompanionIdentify? = nil
     ) -> Data {
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         let hello = Hello(
@@ -328,7 +338,8 @@ nonisolated enum MacNativeStreamProtocol {
             wantsScreen: wantsScreen,
             decodesHEVC422: decodesHEVC422,
             acksFrames: acksFrames,
-            stillsOnly: stillsOnly
+            stillsOnly: stillsOnly,
+            identity: identity
         )
         let payload = (try? JSONEncoder().encode(hello)) ?? Data()
         return encodeFrame(.hello, payload)

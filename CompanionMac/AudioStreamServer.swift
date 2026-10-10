@@ -41,6 +41,9 @@ final class AudioStreamServer: @unchecked Sendable {
         /// supplied lazily once the audio tap starts; see `provideHeader`).
         var ready = false
         var headerSent = false
+        /// The paired device this client proved it is (its `identify` frame).
+        /// Nothing is served, and nothing it sends is acted on, before it.
+        var credential: CompanionCredential?
         /// Buffer for inbound frames (commands, udpHello) from the client.
         var inbound = Data()
         /// Low-latency UDP return path, established once the client sends a
@@ -72,7 +75,7 @@ final class AudioStreamServer: @unchecked Sendable {
     }
 
     private let port: UInt16
-    private let token: String
+    private let keyring: CompanionKeyring
     /// Stream header (sample rate / channel count), supplied lazily by the
     /// controller once the audio tap starts on the first client connecting —
     /// the tap (and thus the format) doesn't exist while idle. Mutated only
@@ -94,21 +97,57 @@ final class AudioStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var currentNowPlayingFrame: Data?
     private nonisolated(unsafe) var currentArtwork: Data?
 
-    nonisolated init(port: UInt16, token: String) {
+    nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
-        self.token = token
+        self.keyring = keyring
     }
 
-    nonisolated func start() throws {
-        let listener = try NWListener(
-            using: AudioCrypto.tlsTCPParameters(token: token),
-            on: NWEndpoint.Port(rawValue: port)!
-        )
-        self.listener = listener
-
+    private nonisolated func makeListener() throws -> NWListener {
+        let parameters = AudioCrypto.tlsTCPParameters(credentials: keyring.credentials)
+        parameters.allowLocalEndpointReuse = true
+        let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
+        return listener
+    }
+
+    /// Rebuilds the listener with the current device keys (they're fixed for
+    /// a listener's life), keeping a connected client that is still allowed
+    /// audio and dropping one that isn't.
+    nonisolated func reloadCredentials() {
+        queue.async { [self] in
+            for client in clients.values where client.credential != nil {
+                if !keyring.allows(client.credential?.deviceID, .audio) { remove(client.connection) }
+            }
+            guard let old = listener else { return }
+            old.newConnectionHandler = nil
+            old.cancel()
+            listener = nil
+            rebind(attempt: 0)
+        }
+    }
+
+    private nonisolated func rebind(attempt: Int) {
+        do {
+            let listener = try makeListener()
+            self.listener = listener
+            listener.start(queue: queue)
+        } catch {
+            guard attempt < 20, keepAliveTimer != nil else {
+                log.error("Audio listener couldn't restart: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [self] in
+                guard listener == nil, keepAliveTimer != nil else { return }
+                rebind(attempt: attempt + 1)
+            }
+        }
+    }
+
+    nonisolated func start() throws {
+        let listener = try makeListener()
+        self.listener = listener
         listener.start(queue: queue)
 
         // Heartbeat so a silent source still proves liveness. The source now
@@ -333,12 +372,17 @@ final class AudioStreamServer: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                // TLS-PSK handshake succeeded → the peer holds the token.
-                // Mark it connected; there is no app-layer auth. The header is
-                // sent once the controller starts the tap and calls
+                // TLS-PSK handshake succeeded → the peer holds an enrolled
+                // device's key. It is counted once its `identify` frame says
+                // which device, and that device holds the audio grant. The
+                // header is sent once the controller starts the tap and calls
                 // `provideHeader` (the tap only runs while a client is present).
-                self.log.info("TLS-PSK handshake ready — client connected")
-                self.markReady(client)
+                self.log.info("TLS-PSK handshake ready — waiting for the device to identify")
+                self.queue.asyncAfter(deadline: .now() + 10) { [weak self, weak client] in
+                    guard let self, let client, client.credential == nil else { return }
+                    self.log.error("Client never identified itself — dropping it")
+                    self.remove(client.connection)
+                }
             case .waiting(let error):
                 self.log.error("Client connection waiting: \(String(describing: error))")
             case .failed(let error):
@@ -369,7 +413,8 @@ final class AudioStreamServer: @unchecked Sendable {
             log.error("udpHello: could not resolve client IP from TCP connection")
             return
         }
-        let udp = NWConnection(host: host, port: port, using: AudioCrypto.dtlsUDPParameters(token: token))
+        guard let credential = client.credential else { return }
+        let udp = NWConnection(host: host, port: port, using: AudioCrypto.dtlsUDPParameters(credentials: [credential]))
         client.udp?.cancel()
         client.udp = udp
         udp.stateUpdateHandler = { [weak self] state in
@@ -446,6 +491,24 @@ final class AudioStreamServer: @unchecked Sendable {
             )
             client.inbound.removeFirst(frameEnd)
 
+            if type == AudioStreamProtocol.FrameType.identify.rawValue {
+                guard client.credential == nil,
+                      let identity = CompanionIdentify.decode(payload),
+                      let binding = CompanionIdentify.binding(client.connection, channel: .audio),
+                      let entry = keyring.verify(identity, binding: binding),
+                      entry.grants.contains(.audio) else {
+                    log.error("Client failed to identify as a device allowed audio")
+                    remove(client.connection)
+                    return
+                }
+                client.credential = entry.credential
+                markReady(client)
+                continue
+            }
+            guard client.credential != nil else {
+                // Nothing before `identify` is acted on.
+                continue
+            }
             if type == AudioStreamProtocol.FrameType.microphone.rawValue {
                 if let packet = MicrophonePacket(parsing: payload) { onMicrophone?(packet) }
             } else if type == AudioStreamProtocol.FrameType.microphoneStopped.rawValue {

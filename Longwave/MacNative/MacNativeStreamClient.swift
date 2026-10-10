@@ -5,7 +5,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
     struct Config: Sendable {
         let host: String
         let port: UInt16
-        let token: String
+        let credential: CompanionCredential
         let deviceName: String
         /// Whether Screen is on for this session at connect time — lets the
         /// Mac skip starting capture and skip its "connected" notification
@@ -77,15 +77,15 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func start() {
-        guard !config.token.isEmpty,
+        guard !config.credential.token.isEmpty,
               let port = NWEndpoint.Port(rawValue: config.port) else {
-            onEvent?(.closed("The companion token or port is invalid."))
+            onEvent?(.closed("This connection isn't paired, or its port is invalid."))
             return
         }
         let connection = NWConnection(
             host: NWEndpoint.Host(config.host),
             port: port,
-            using: MacNativeStreamCrypto.tlsTCPParameters(token: config.token)
+            using: MacNativeStreamCrypto.tlsTCPParameters(credentials: [config.credential])
         )
         self.connection = connection
         connection.stateUpdateHandler = { [weak self] state in
@@ -98,7 +98,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
                     // Measured, not assumed — a host only sends 4:2:2 to a
                     // headset whose own hardware decoder claimed the profile.
                     decodesHEVC422: MacNativeVideoCapability.decodesHEVC422InHardware,
-                    acksFrames: true
+                    acksFrames: true,
+                    identity: CompanionIdentify.make(self.config.credential, channel: .native, connection: connection)
                 ))
                 self.receiveLoop()
             case .failed(let error):

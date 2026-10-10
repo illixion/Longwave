@@ -14,11 +14,15 @@ import os
 @MainActor
 final class PairingServer {
     struct Context {
-        let headsetID: String
+        /// Nil when the headset dialled this Mac's direct pairing port (from
+        /// an AirDropped address link): its commit says who it is.
+        let headsetID: String?
         let headsetName: String
         let macID: String
         let macName: String
-        let token: String
+        /// Called once the user approves: enrolls the device with the grants
+        /// they ticked and returns its fresh token (nil if that failed).
+        let enroll: @MainActor (_ id: String, _ name: String, _ grants: Set<CompanionGrant>) -> String?
     }
 
     enum Outcome {
@@ -31,8 +35,9 @@ final class PairingServer {
         case abandoned
     }
 
-    /// Fired once, when the exchange is over either way.
-    var onFinish: ((Outcome) -> Void)?
+    /// Fired once, when the exchange is over either way, with the name the
+    /// headset gave.
+    var onFinish: ((Outcome, String) -> Void)?
 
     private let context: Context
     private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "Pairing")
@@ -41,6 +46,9 @@ final class PairingServer {
     private var connection: NWConnection?
     private let exchange = PairingExchange()
     private var commitment: Data?
+    private var headsetID: String?
+    private var headsetName: String
+    private var requested: Set<CompanionGrant> = CompanionGrant.defaults
     private var finished = false
     private var timeout: Task<Void, Never>?
     private var alertShowing = false
@@ -54,15 +62,24 @@ final class PairingServer {
 
     init(context: Context) {
         self.context = context
+        self.headsetID = context.headsetID
+        self.headsetName = context.headsetName
+    }
+
+    /// Runs the exchange on a connection the direct pairing listener accepted.
+    func start(accepting connection: NWConnection) {
+        startTimeout()
+        accept(connection)
     }
 
     func start() throws {
+        let headsetID = context.headsetID ?? ""
         let listener = try NWListener(using: .tcp)
         var txt = NWTXTRecord()
         txt[CompanionDiscovery.Key.macID] = context.macID
-        txt[CompanionDiscovery.Key.headsetID] = context.headsetID
+        txt[CompanionDiscovery.Key.headsetID] = headsetID
         listener.service = NWListener.Service(
-            name: "Longwave pairing \(context.headsetID.prefix(8))",
+            name: "Longwave pairing \(headsetID.prefix(8))",
             type: CompanionDiscovery.pairServiceType,
             txtRecord: txt
         )
@@ -79,6 +96,10 @@ final class PairingServer {
         }
         listener.start(queue: queue)
         self.listener = listener
+        startTimeout()
+    }
+
+    private func startTimeout() {
         timeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(120))
             guard !Task.isCancelled else { return }
@@ -158,8 +179,12 @@ final class PairingServer {
 
     private func handle(_ message: PairingMessage) async {
         switch message {
-        case .commit(let headsetID, _, let commitment):
-            guard self.commitment == nil, headsetID == context.headsetID else { return finish(.abandoned) }
+        case .commit(let headsetID, let headsetName, let commitment, let requested):
+            guard self.commitment == nil, !headsetID.isEmpty, headsetID.count <= 64,
+                  context.headsetID == nil || headsetID == context.headsetID else { return finish(.abandoned) }
+            self.headsetID = headsetID
+            if context.headsetID == nil { self.headsetName = String(headsetName.prefix(80)) }
+            if let requested { self.requested = Set(requested) }
             self.commitment = commitment
             send(.macHello(macID: context.macID, macName: context.macName,
                            publicKey: exchange.publicKey, nonce: exchange.nonce))
@@ -172,15 +197,17 @@ final class PairingServer {
                 log.error("Pairing reveal didn't match its commitment")
                 return finish(.abandoned)
             }
-            let answer = approve(code: agreement.code)
-            guard answer == .paired else {
+            let (answer, grants) = approve(code: agreement.code)
+            guard answer == .paired, let headsetID,
+                  let token = context.enroll(headsetID, headsetName, grants) else {
                 log.info("Pairing not approved")
-                send(.deny) { [weak self] in self?.finish(answer) }
+                send(.deny) { [weak self] in self?.finish(answer == .paired ? .abandoned : answer) }
                 return
             }
             let grant = PairingGrant(
-                token: context.token, macID: context.macID, macName: context.macName,
-                addresses: CompanionPresence.lanAddresses()
+                token: token, macID: context.macID, macName: context.macName,
+                addresses: CompanionPresence.lanAddresses(),
+                grants: grants.map(\.rawValue).sorted()
             )
             do {
                 let sealed = try PairingExchange.seal(grant, with: agreement.key)
@@ -199,16 +226,30 @@ final class PairingServer {
     /// Asks the user. The prompt closes itself (as abandoned) if the
     /// requesting device goes away while it's up, so nothing that merely
     /// started a pairing can leave a dialog behind.
-    private func approve(code: String) -> Outcome {
+    private func approve(code: String) -> (Outcome, Set<CompanionGrant>) {
         let alert = NSAlert()
-        alert.messageText = "Pair “\(context.headsetName)” with this Mac?"
+        alert.messageText = "Pair “\(headsetName)” with this Mac?"
         alert.informativeText = """
-        Check that the headset shows this code:
+        Check that the device shows this code:
 
         \(PairingExchange.display(code))
 
-        Once paired, it can stream this Mac's screen and audio and control it, as you allow in Longwave Companion.
+        Choose what it may do. You won't be asked again when it connects; change this any time under Devices in Longwave Companion.
         """
+        // One checkbox per grant, ticked as the device asked. A device asks for
+        // Screen, Audio and Input unless the user requested more on it, e.g.
+        // Projects → Request Access, so Projects is never ticked by default.
+        let boxes = CompanionGrant.allCases.map { grant in
+            let box = NSButton(checkboxWithTitle: grant.title, target: nil, action: nil)
+            box.state = requested.contains(grant) ? .on : .off
+            return box
+        }
+        let stack = NSStackView(views: boxes)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 300, height: CGFloat(boxes.count) * 24)
+        alert.accessoryView = stack
         alert.addButton(withTitle: "Pair")
         alert.addButton(withTitle: "Don't Pair")
         alert.addButton(withTitle: "Stop Asking for an Hour")
@@ -228,11 +269,13 @@ final class PairingServer {
             watchdog.invalidate()
             alertShowing = false
         }
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return lost.withLock({ $0 }) ? .abandoned : .paired
-        case .alertSecondButtonReturn: return .declined
-        case .alertThirdButtonReturn: return .silenced
-        default: return .abandoned
+        let response = alert.runModal()
+        let grants = Set(zip(CompanionGrant.allCases, boxes).filter { $0.1.state == .on }.map(\.0))
+        switch response {
+        case .alertFirstButtonReturn: return (lost.withLock({ $0 }) ? .abandoned : .paired, grants)
+        case .alertSecondButtonReturn: return (.declined, [])
+        case .alertThirdButtonReturn: return (.silenced, [])
+        default: return (.abandoned, [])
         }
     }
 
@@ -253,6 +296,6 @@ final class PairingServer {
         listener = nil
         connection?.cancel()
         connection = nil
-        onFinish?(outcome)
+        onFinish?(outcome, headsetName)
     }
 }

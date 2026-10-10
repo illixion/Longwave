@@ -356,17 +356,6 @@ final class AudioStreamManager {
     }
     #endif
 
-    /// Token delivered via an AirDropped x-callback URL, waiting to be
-    /// consumed by an open (or freshly opened) connection form. Set by the
-    /// app's onOpenURL handler; cleared once a form fills its field.
-    var pendingImportedToken: String?
-
-    /// Records a token imported from a `longwave://…/setAudioToken` URL so
-    /// the connection form can auto-fill it.
-    func importToken(_ token: String) {
-        pendingImportedToken = token
-    }
-
     /// Where this player's preferences and last target live.
     ///
     /// The app's shared player keeps the original, unsuffixed keys, so an
@@ -379,6 +368,7 @@ final class AudioStreamManager {
         let port: String
         let title: String
         let token: String
+        let deviceID: String
         let lowLatency: String
         let liveEnabled: String
         let audioMode: String
@@ -393,6 +383,7 @@ final class AudioStreamManager {
             port = key("lastAudioPort")
             title = key("lastAudioTitle")
             token = key("lastAudioToken")
+            deviceID = key("lastAudioDeviceID")
             lowLatency = key("lastAudioLowLatency")
             liveEnabled = key("nativeAudioLiveEnabled")
             audioMode = key("audioMode")
@@ -464,22 +455,23 @@ final class AudioStreamManager {
     /// starting the receiver — used when opening the Native window with
     /// Audio initially off, so `reconnectLast()` has something to start
     /// once the live toggle turns it on.
-    func prepareTarget(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool) {
-        rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
+    func prepareTarget(hostname: String, port: UInt16, credential: CompanionCredential, title: String, lowLatency: Bool) {
+        rememberTarget(hostname: hostname, port: port, credential: credential, title: title, lowLatency: lowLatency)
     }
 
-    private func rememberTarget(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool) {
+    private func rememberTarget(hostname: String, port: UInt16, credential: CompanionCredential, title: String, lowLatency: Bool) {
         // Remember the target so the stream can resume after the app is
         // relaunched by visionOS space restoration of a snapped window.
         let defaults = UserDefaults.standard
         defaults.set(hostname, forKey: keys.host)
         defaults.set(Int(port), forKey: keys.port)
         defaults.set(title, forKey: keys.title)
-        defaults.set(token, forKey: keys.token)
+        defaults.set(credential.token, forKey: keys.token)
+        defaults.set(credential.deviceID, forKey: keys.deviceID)
         defaults.set(lowLatency, forKey: keys.lowLatency)
     }
 
-    func connect(hostname: String, port: UInt16, token: String, title: String, lowLatency: Bool = false) {
+    func connect(hostname: String, port: UInt16, credential: CompanionCredential, title: String, lowLatency: Bool = false) {
         // Not `disconnect()`: a reconnect must not put the Music slot back in
         // the pool, or every rebuild (a reload, a health re-check) would hand
         // it to another session.
@@ -507,9 +499,9 @@ final class AudioStreamManager {
         // preserve the warning for the UI.
         if lowLatency { lowLatencyDegraded = false }
 
-        rememberTarget(hostname: hostname, port: port, token: token, title: title, lowLatency: lowLatency)
+        rememberTarget(hostname: hostname, port: port, credential: credential, title: title, lowLatency: lowLatency)
 
-        let receiver = AudioStreamReceiver(hostname: hostname, port: port, token: token, lowLatency: lowLatency, volume: Float(volume), mode: effectiveAudioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
+        let receiver = AudioStreamReceiver(hostname: hostname, port: port, credential: credential, lowLatency: lowLatency, volume: Float(volume), mode: effectiveAudioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
         receiver.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handle(event)
@@ -555,6 +547,7 @@ final class AudioStreamManager {
         defaults.removeObject(forKey: keys.port)
         defaults.removeObject(forKey: keys.title)
         defaults.removeObject(forKey: keys.token)
+        defaults.removeObject(forKey: keys.deviceID)
         defaults.removeObject(forKey: keys.lowLatency)
         liveEnabled = false
         disconnect()
@@ -572,7 +565,8 @@ final class AudioStreamManager {
         connect(
             hostname: host,
             port: port,
-            token: defaults.string(forKey: keys.token) ?? "",
+            credential: CompanionCredential(token: defaults.string(forKey: keys.token) ?? "",
+                                            deviceID: defaults.string(forKey: keys.deviceID)),
             title: defaults.string(forKey: keys.title) ?? "",
             lowLatency: lowLatency
         )
@@ -1033,7 +1027,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
 
     private let hostname: String
     private let port: UInt16
-    private let token: String
+    private let credential: CompanionCredential
     /// When true, PCM is carried over a parallel UDP socket with a smaller
     /// jitter buffer; the TCP connection still handles auth/header/metadata.
     private let lowLatency: Bool
@@ -1229,10 +1223,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// `setSpatialAudioMode`.
     private nonisolated(unsafe) var spatialAudioMode: SpatialAudioMode
 
-    nonisolated init(hostname: String, port: UInt16, token: String, lowLatency: Bool = false, volume: Float = 1.0, mode: AudioMode = .speaker, eq: EQSettings = EQSettings(), spatialAudioMode: SpatialAudioMode = .auto) {
+    nonisolated init(hostname: String, port: UInt16, credential: CompanionCredential, lowLatency: Bool = false, volume: Float = 1.0, mode: AudioMode = .speaker, eq: EQSettings = EQSettings(), spatialAudioMode: SpatialAudioMode = .auto) {
         self.hostname = hostname
         self.port = port
-        self.token = token
+        self.credential = credential
         self.lowLatency = lowLatency
         self.mode = mode
         let baseSeconds = lowLatency ? 0.040 : 0.100
@@ -1299,7 +1293,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         let connection = NWConnection(
             host: NWEndpoint.Host(hostname),
             port: nwPort,
-            using: AudioCrypto.tlsTCPParameters(token: token)
+            using: AudioCrypto.tlsTCPParameters(credentials: [credential])
         )
         self.connection = connection
 
@@ -1307,8 +1301,12 @@ final class AudioStreamReceiver: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                // TLS-PSK handshake succeeded → token matched. The sender
-                // sends the header next; just start draining.
+                // TLS-PSK handshake succeeded → the key matched. Say which
+                // paired device this is; the sender sends the header next.
+                if let identity = CompanionIdentify.make(self.credential, channel: .audio, connection: connection) {
+                    connection.send(content: AudioStreamProtocol.encodeFrame(.identify, identity.encoded()),
+                                    completion: .contentProcessed { _ in })
+                }
                 self.receiveLoop()
             case .waiting(let error):
                 // The connection can't proceed yet (refused, unreachable, or
@@ -1618,7 +1616,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 // Refresh liveness so the health probe doesn't mistake a
                 // quiet-but-live connection for a dead one.
                 onEvent?(.bytesReceived(totalBytes))
-            case .command, .udpHello, .microphone, .microphoneStopped, nil:
+            case .command, .udpHello, .microphone, .microphoneStopped, .identify, nil:
                 break // not receiver-bound / unknown — skip
             }
         }
@@ -1650,7 +1648,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         udpFramesReceived = 0
         let listener: NWListener
         do {
-            listener = try NWListener(using: AudioCrypto.dtlsUDPParameters(token: token))
+            listener = try NWListener(using: AudioCrypto.dtlsUDPParameters(credentials: [credential]))
         } catch {
             AppLog.audioStream.log("Low-latency UDP listener failed to open: \(error.localizedDescription) — staying on TCP")
             onEvent?(.lowLatencyUnavailable)

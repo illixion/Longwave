@@ -144,11 +144,12 @@ struct MobileRootView: View {
             knownSessions = Set(sshManager.sessions.map(\.id.raw))
         }
         .onOpenURL { url in
-            // AirDropped pairing URLs from the macOS Companion. Broadcast setup
-            // is not handled here — this target has no Broadcast tab.
-            if let token = AudioTokenURL.parseToken(from: url) {
+            // A Mac's address link from the Companion (no secret in it).
+            // Broadcast setup is not handled here — this target has no
+            // Broadcast tab.
+            if let link = CompanionPairLink(url: url) {
                 selectedTab = .connections
-                audioManager.importToken(token)
+                CompanionLocator.shared.pendingPairLink = link
             }
         }
     }

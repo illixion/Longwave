@@ -38,7 +38,15 @@ struct ConnectionFormView: View {
     @State private var hideLocalCursor: Bool = false
 
     // Native (Screen + Audio)
-    @State private var companionToken: String = ""
+    /// What pairing just handed this device — its own token and what the Mac
+    /// allowed — saved to the keychain with the connection.
+    @State private var pairedGrant: PairingGrant?
+    /// The saved connection still holds the old shared token.
+    @State private var needsPairing = false
+    /// A Windows PC's Screen streaming token. Windows hosts don't pair yet
+    /// (COMPANION_ENROLLMENT_PLAN.md, step 4), so they still take one.
+    @State private var windowsToken = ""
+    @State private var savedGrants: Set<CompanionGrant> = []
     /// The paired Companion's identity, set by pairing (see `nearbyMacsSection`).
     @State private var companionMacID: String?
     @State private var pairing: CompanionPairingClient?
@@ -164,7 +172,7 @@ struct ConnectionFormView: View {
         .onAppear {
             loadFromSavedConnection()
             if !isEditing { hideLocalCursor = defaultHideLocalCursor(for: connectionType) }
-            consumePendingImportedToken()
+            consumePendingPairLink()
             prefillHotspotHostIfAvailable()
         }
         .onChange(of: connectionType) { _, newType in
@@ -176,8 +184,8 @@ struct ConnectionFormView: View {
             if hostname.isEmpty { didDetectHotspotHost = false }
             prefillHotspotHostIfAvailable()
         }
-        .onChange(of: audioManager.pendingImportedToken) { _, _ in
-            consumePendingImportedToken()
+        .onChange(of: CompanionLocator.shared.pendingPairLink) { _, _ in
+            consumePendingPairLink()
         }
     }
 
@@ -246,9 +254,12 @@ struct ConnectionFormView: View {
         }
         .onChange(of: pairing?.state) { _, state in
             guard case .paired(let grant) = state else { return }
-            companionToken = grant.token
+            pairedGrant = grant
             companionMacID = grant.macID
-            if hostname.trimmingCharacters(in: .whitespaces).isEmpty, let address = grant.addresses.first {
+            // Paired by address: the address that answered is the one to keep.
+            if let address = pairing?.connectedAddress {
+                hostname = address
+            } else if hostname.trimmingCharacters(in: .whitespaces).isEmpty, let address = grant.addresses.first {
                 hostname = address
             }
             if label.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -280,8 +291,12 @@ struct ConnectionFormView: View {
                     .foregroundStyle(.secondary)
             }
         case .paired(let grant):
-            Label("Paired with \(grant.macName)", systemImage: "checkmark.seal.fill")
-                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Paired with \(grant.macName)", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                Text(Self.grantSummary(Set((grant.grants ?? []).compactMap(CompanionGrant.init(rawValue:)))))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         case .failed(let reason):
             Text(reason)
                 .foregroundStyle(.red)
@@ -292,15 +307,33 @@ struct ConnectionFormView: View {
 
     private func startPairing(with mac: CompanionLocator.NearbyMac) {
         pairing?.cancel()
-        let client = CompanionPairingClient(mac: mac)
+        let client = CompanionPairingClient(mac: mac, requested: requestedGrants)
         pairing = client
         client.start()
+    }
+
+    private func startPairing(with link: CompanionPairLink) {
+        pairing?.cancel()
+        let client = CompanionPairingClient(link: link, requested: requestedGrants)
+        pairing = client
+        client.start()
+    }
+
+    /// Pairing again keeps what the Mac already allowed this device, and asks
+    /// for the usual set besides.
+    private var requestedGrants: Set<CompanionGrant> {
+        CompanionGrant.defaults.union(savedGrants)
+    }
+
+    static func grantSummary(_ grants: Set<CompanionGrant>) -> String {
+        let names = CompanionGrant.allCases.filter { grants.contains($0) }.map(\.title)
+        return names.isEmpty ? "The Mac didn't allow anything yet — change that under Devices in Longwave Companion." : "Allowed: " + names.joined(separator: ", ")
     }
 
     @ViewBuilder
     private var nativeSections: some View {
         Section("Native") {
-            Text("Streams from the Longwave Companion menu bar app on your Mac — Screen (the Mac's visible windows composited over a transparent background, via ScreenCaptureKit and hardware HEVC with alpha) and Audio (uncompressed system audio) toggle independently, sharing the same host and token.")
+            Text("Streams from the Longwave Companion menu bar app on your Mac — Screen (the Mac's visible windows composited over a transparent background, via ScreenCaptureKit and hardware HEVC with alpha) and Audio (uncompressed system audio) toggle independently, sharing one pairing with the Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -321,15 +354,32 @@ struct ConnectionFormView: View {
 
         nearbyMacsSection
 
-        Section("Companion Token") {
-            TextField("Token", text: $companionToken)
-                .font(.system(.body, design: .monospaced))
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+        Section {
+            DisclosureGroup("Connecting to a Windows PC") {
+                SecureField("Screen streaming token", text: $windowsToken)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Text("Copy it from Longwave Companion on the PC (Screen streaming tab). Macs pair instead — pick one under Macs Nearby, or open its address link.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
 
-            Text("Filled in by pairing. To connect by address instead — over Tailscale or a VPN — copy the token from the Companion menu bar app, or AirDrop it to auto-fill this field. The same token and host authorize and encrypt (TLS) both Screen and Audio — no VPN needed. A new authenticated viewer replaces the previous one per feature.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        if needsPairing && pairedGrant == nil && windowsToken.isEmpty {
+            Section {
+                Label("Pair this connection again", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("It still uses the token every device used to share. Pair it with its Mac under Macs Nearby (or open the Mac's address link) so it gets a key of its own — the Mac stops accepting the shared one eventually.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if isEditing, pairedGrant == nil, !savedGrants.isEmpty {
+            Section {
+                Text(Self.grantSummary(savedGrants))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
 
         if nativeAudioEnabled {
@@ -659,7 +709,9 @@ struct ConnectionFormView: View {
         password = saved.savedPassword
         vncTouchMode = saved.vncTouchMode
         linkedAudioConnectionID = saved.linkedCompanionConnectionID
-        companionToken = saved.companionToken
+        needsPairing = saved.companionNeedsPairing && saved.companionMacID != nil
+        if saved.companionMacID == nil, saved.companionDeviceToken == nil { windowsToken = saved.companionToken }
+        savedGrants = saved.companionGrants
         companionMacID = saved.companionMacID
         nativeScreenEnabled = saved.nativeScreenEnabled
         nativeAudioEnabled = saved.nativeAudioEnabled
@@ -727,7 +779,12 @@ struct ConnectionFormView: View {
             connection.linkedCompanionConnectionID = linkedAudioConnectionID
 
         case .native:
-            connection.companionToken = companionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let pairedGrant, connection.setCompanionDeviceToken(pairedGrant.token) {
+                connection.companionGrants = Set((pairedGrant.grants ?? []).compactMap(CompanionGrant.init(rawValue:)))
+            } else if pairedGrant == nil, companionMacID == nil {
+                // Not a paired Mac: a Windows PC's token (or none).
+                connection.companionToken = windowsToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             connection.companionMacID = companionMacID
             connection.nativeScreenEnabled = nativeScreenEnabled
             connection.nativeAudioEnabled = nativeAudioEnabled
@@ -768,18 +825,19 @@ struct ConnectionFormView: View {
         }
     }
 
-    /// Consumes a token delivered via an AirDropped x-callback URL: switches
-    /// a new form to the Native type and fills the token field. For an
-    /// existing connection, only fills if it's already a Native connection.
-    private func consumePendingImportedToken() {
-        guard let token = audioManager.pendingImportedToken else { return }
+    /// Starts pairing with a Mac's address link (AirDropped, or a copied
+    /// link opened here): switches a new form to Native, or for an existing
+    /// connection only one already of that type.
+    private func consumePendingPairLink() {
+        guard let link = CompanionLocator.shared.pendingPairLink else { return }
         if isEditing {
             guard connectionType == .native else { return }
         } else {
             connectionType = .native
         }
-        companionToken = token
-        audioManager.pendingImportedToken = nil
+        CompanionLocator.shared.pendingPairLink = nil
+        if label.trimmingCharacters(in: .whitespaces).isEmpty { label = link.name }
+        startPairing(with: link)
     }
 }
 

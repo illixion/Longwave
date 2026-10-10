@@ -254,7 +254,7 @@ struct MacNativeUnityControlView: View {
                     audioManager.prepareTarget(
                         hostname: connection.companionHost,
                         port: AudioStreamProtocol.defaultPort,
-                        token: connection.companionToken,
+                        credential: connection.resolvedCompanionCredential,
                         title: connection.displayName,
                         lowLatency: connection.lowLatencyAudio
                     )

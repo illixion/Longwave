@@ -11,38 +11,20 @@ import CryptoKit
 /// from `AudioCrypto` so the audio path's crypto is never touched by changes
 /// here.
 nonisolated enum CompanionInjectCrypto {
-    private static let pskIdentity = Data("LongwaveInject/v1".utf8)
+    private static let pskIdentityBase = "LongwaveInject/v1"
     private static let hkdfSalt = Data("Longwave-Inject-PSK-v1".utf8)
     private static let hkdfInfo = Data("psk".utf8)
-
-    private static func derivePSK(token: String) -> DispatchData {
-        let derived = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: Data(token.utf8)),
-            salt: hkdfSalt,
-            info: hkdfInfo,
-            outputByteCount: 32
-        )
-        let raw = derived.withUnsafeBytes { Data($0) }
-        return raw.withUnsafeBytes { DispatchData(bytes: $0) }
-    }
-
-    private static func dispatchData(_ data: Data) -> DispatchData {
-        data.withUnsafeBytes { DispatchData(bytes: $0) }
-    }
 
     /// `TLS_PSK_WITH_AES_128_GCM_SHA256` — the only reliably-working external
     /// PSK path in Network.framework's boringssl (TLS 1.3 PSK is discarded).
     private static let pskCiphersuite = tls_ciphersuite_t(rawValue: 0x00A8)!
 
     /// TLS 1.2-PSK parameters for the TCP injection channel.
-    static func tlsTCPParameters(token: String) -> NWParameters {
+    static func tlsTCPParameters(credentials: [CompanionCredential]) -> NWParameters {
         let tls = NWProtocolTLS.Options()
         let options = tls.securityProtocolOptions
-        sec_protocol_options_add_pre_shared_key(
-            options,
-            derivePSK(token: token) as __DispatchData,
-            dispatchData(pskIdentity) as __DispatchData
-        )
+        // One PSK per credential (a server: every enrolled device's).
+        CompanionPSK.add(credentials, to: options, identityBase: pskIdentityBase, salt: hkdfSalt, info: hkdfInfo)
         sec_protocol_options_set_min_tls_protocol_version(options, .TLSv12)
         sec_protocol_options_set_max_tls_protocol_version(options, .TLSv12)
         sec_protocol_options_append_tls_ciphersuite(options, pskCiphersuite)

@@ -96,6 +96,8 @@ nonisolated struct PairingGrant: Codable, Sendable, Equatable {
     var macName: String
     /// LAN addresses, wired first, as a starting host for the connection.
     var addresses: [String]
+    /// `CompanionGrant` raw values the user allowed this device.
+    var grants: [String]? = nil
 }
 
 /// One numeric-comparison pairing, as both ends run it.
@@ -106,7 +108,8 @@ nonisolated struct PairingGrant: Codable, Sendable, Equatable {
 /// match. Something sitting between the two would have had to fix its keys on
 /// each side before learning what the other side would contribute, so its two
 /// codes match by chance one time in a million. The agreed key then seals the
-/// grant (the Companion's token) on its way to the headset.
+/// grant (a token minted for this device alone, and what the user allowed it)
+/// on its way to the headset.
 ///
 /// Messages are length-prefixed JSON (`PairingMessage`), on a plain TCP
 /// connection: everything that needs protecting is protected by the exchange.
@@ -177,7 +180,9 @@ nonisolated struct PairingExchange {
 /// The messages of a pairing, in order: headset `commit`, Mac `macHello`,
 /// headset `reveal`, Mac `accept` or `deny`.
 nonisolated enum PairingMessage: Codable, Sendable, Equatable {
-    case commit(headsetID: String, headsetName: String, commitment: Data)
+    /// `requested`: the features the device asks for; the Mac's dialog
+    /// starts from them and the user decides.
+    case commit(headsetID: String, headsetName: String, commitment: Data, requested: [CompanionGrant]?)
     case macHello(macID: String, macName: String, publicKey: Data, nonce: Data)
     case reveal(publicKey: Data, nonce: Data)
     case accept(sealedGrant: Data)

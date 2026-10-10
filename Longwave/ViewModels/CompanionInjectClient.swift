@@ -14,7 +14,7 @@ final class CompanionInjectClient: @unchecked Sendable {
     struct Config: Sendable {
         let host: String
         let port: UInt16
-        let token: String
+        let credential: CompanionCredential
     }
 
     enum Event: Sendable {
@@ -37,18 +37,19 @@ final class CompanionInjectClient: @unchecked Sendable {
     }
 
     func start() {
-        guard !config.token.isEmpty, let port = NWEndpoint.Port(rawValue: config.port) else { return }
+        guard !config.credential.token.isEmpty, let port = NWEndpoint.Port(rawValue: config.port) else { return }
         let connection = NWConnection(
             host: NWEndpoint.Host(config.host),
             port: port,
-            using: CompanionInjectCrypto.tlsTCPParameters(token: config.token)
+            using: CompanionInjectCrypto.tlsTCPParameters(credentials: [config.credential])
         )
         self.connection = connection
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
-                self.send(CompanionInjectProtocol.encodeFrame(.hello))
+                let identity = CompanionIdentify.make(self.config.credential, channel: .inject, connection: connection)
+                self.send(CompanionInjectProtocol.encodeFrame(.hello, identity?.encoded() ?? Data()))
                 self.receiveLoop()
             case .failed(let error):
                 self.log.error("Inject channel failed: \(String(describing: error))")

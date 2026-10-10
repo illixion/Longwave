@@ -46,10 +46,10 @@ struct MacMainView: View {
             }
         }
         .onOpenURL { url in
-            // AirDropped audio pairing URLs from the macOS companion.
-            if let token = AudioTokenURL.parseToken(from: url) {
+            // A Mac's address link from a Companion (no secret in it).
+            if let link = CompanionPairLink(url: url) {
                 selectedTab = .connections
-                audioManager.importToken(token)
+                CompanionLocator.shared.pendingPairLink = link
             } else if url.absoluteString == LocalSandbox.desktopURL {
                 Task { await openSandboxDesktop() }
             }

@@ -24,6 +24,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         var isV2: Bool { protocolVersion >= 2 }
     }
 
+    /// A viewer proved which paired device it is (nil: the shared token).
+    nonisolated(unsafe) var onDeviceIdentified: (@Sendable (String?) -> Void)?
     /// A viewer finished its handshake — for the "connected" notification.
     nonisolated(unsafe) var onClientConnected:
         (@Sendable (_ deviceName: String, _ wantsScreen: Bool) -> Void)?
@@ -94,6 +96,10 @@ final class MacNativeStreamServer: @unchecked Sendable {
         let connection: NWConnection
         var inbound = Data()
         var deviceName: String?
+        /// The enrolled device this viewer proved it is (inner nil: the
+        /// deprecated shared token), and what it may do.
+        var deviceID: String??
+        var grants: Set<CompanionGrant> = []
         var protocolVersion = 1
         var pendingBytes = 0
         var inFlightFrames = 0
@@ -151,7 +157,9 @@ final class MacNativeStreamServer: @unchecked Sendable {
     }
 
     private let port: UInt16
-    private let token: String
+    /// Every enrolled device's key; read when a listener is built and when a
+    /// viewer identifies itself.
+    private let keyring: CompanionKeyring
     private let queue = DispatchQueue(
         label: "pro.longwave.companion.mac-native.server",
         qos: .userInteractive
@@ -201,17 +209,62 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private static let stillLossTimeoutNanos: UInt64 = 1_500_000_000
     private nonisolated(unsafe) var stopCompletion: (@Sendable () -> Void)?
 
-    nonisolated init(port: UInt16, token: String) {
+    nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
-        self.token = token
+        self.keyring = keyring
     }
 
     nonisolated func start() throws {
-        let listener = try NWListener(
-            using: MacNativeStreamCrypto.tlsTCPParameters(token: token),
-            on: NWEndpoint.Port(rawValue: port)!
-        )
+        let listener = try makeListener()
         self.listener = listener
+        listener.start(queue: queue)
+    }
+
+    /// A listener holds its PSKs for life, so a device enrolled or revoked
+    /// needs a new one. Viewers already connected keep their connections —
+    /// those still enrolled with the same grants stay, the rest are told why
+    /// and dropped. The port is rebound right after the old listener goes, so
+    /// only a connection attempt in that instant can miss.
+    nonisolated func reloadCredentials() {
+        queue.async { [self] in
+            for client in clients where client.isActive {
+                guard let deviceID = client.deviceID,
+                      let entry = keyring.entry(deviceID: deviceID),
+                      entry.grants == client.grants else {
+                    sendError("This device's access to this Mac changed. Connect again.", to: client)
+                    continue
+                }
+            }
+            guard let old = listener else { return }
+            old.stateUpdateHandler = nil
+            old.newConnectionHandler = nil
+            old.cancel()
+            listener = nil
+            rebind(attempt: 0)
+        }
+    }
+
+    private nonisolated func rebind(attempt: Int) {
+        do {
+            let listener = try makeListener()
+            self.listener = listener
+            listener.start(queue: queue)
+        } catch {
+            guard attempt < 20 else {
+                onError?("Native stream listener couldn't restart: \(error.localizedDescription)")
+                return
+            }
+            queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [self] in
+                guard listener == nil, stopCompletion == nil else { return }
+                rebind(attempt: attempt + 1)
+            }
+        }
+    }
+
+    private nonisolated func makeListener() throws -> NWListener {
+        let parameters = MacNativeStreamCrypto.tlsTCPParameters(credentials: keyring.credentials)
+        parameters.allowLocalEndpointReuse = true
+        let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.service = NWListener.Service(
             name: Host.current().localizedName ?? "Longwave Mac",
             type: "_longwave-native._tcp"
@@ -230,7 +283,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 break
             }
         }
-        listener.start(queue: queue)
+        return listener
     }
 
     nonisolated func stop(completion: (@Sendable () -> Void)? = nil) {
@@ -265,9 +318,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated func setMouseAvailability(_ status: UInt8) {
         queue.async { [self] in
             mouseAvailability = status
-            let frame = MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([status]))
             for client in clients {
-                sendRequired(frame, to: client)
+                sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([inputStatus(status, for: client)])), to: client)
             }
         }
     }
@@ -277,11 +329,15 @@ final class MacNativeStreamServer: @unchecked Sendable {
     nonisolated func setKeyboardAvailability(_ status: UInt8) {
         queue.async { [self] in
             keyboardAvailability = status
-            let frame = MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([status]))
             for client in clients {
-                sendRequired(frame, to: client)
+                sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([inputStatus(status, for: client)])), to: client)
             }
         }
+    }
+
+    /// A viewer without the input grant sees remote control as switched off.
+    private nonisolated func inputStatus(_ status: UInt8, for client: Client) -> UInt8 {
+        client.grants.contains(.input) ? status : MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     }
 
     /// Ends the session of every viewer watching the *desktop* stream, with
@@ -648,6 +704,15 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     sendError("Invalid client greeting.", to: client)
                     return
                 }
+                guard let identity = hello.identity,
+                      let binding = CompanionIdentify.binding(client.connection, channel: .native),
+                      let entry = keyring.verify(identity, binding: binding) else {
+                    sendError("This device isn't paired with this Mac. Pair it again from Longwave's connection settings.", to: client)
+                    return
+                }
+                client.deviceID = .some(entry.credential.deviceID)
+                client.grants = entry.grants
+                onDeviceIdentified?(entry.credential.deviceID)
                 promote(
                     client,
                     deviceName: hello.deviceName,
@@ -663,26 +728,26 @@ final class MacNativeStreamServer: @unchecked Sendable {
             // the same authenticated user. A pending (pre-hello) socket is
             // ignored.
             case MacNativeStreamProtocol.FrameType.mouseMove.rawValue:
-                guard client.isActive, let point = MacNativeStreamProtocol.decodeMouseMove(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let point = MacNativeStreamProtocol.decodeMouseMove(frame.payload) else { break }
                 onMouseMove?(point.x, point.y)
             case MacNativeStreamProtocol.FrameType.mouseDown.rawValue:
-                guard client.isActive, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
                 onMouseDown?(event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.mouseUp.rawValue:
-                guard client.isActive, let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let event = MacNativeStreamProtocol.decodeMouseButton(frame.payload) else { break }
                 onMouseUp?(event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.scroll.rawValue:
-                guard client.isActive, let event = MacNativeStreamProtocol.decodeScroll(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let event = MacNativeStreamProtocol.decodeScroll(frame.payload) else { break }
                 onScroll?(event.x, event.y, event.deltaX, event.deltaY)
             case MacNativeStreamProtocol.FrameType.keyDown.rawValue:
-                guard client.isActive, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
                 onKeyDown?(event.keyCode, event.modifiers)
             case MacNativeStreamProtocol.FrameType.keyUp.rawValue:
-                guard client.isActive, let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
+                guard client.isActive, client.grants.contains(.input), let event = MacNativeStreamProtocol.decodeKeyEvent(frame.payload) else { break }
                 onKeyUp?(event.keyCode, event.modifiers)
             // v2 multiplexed streams — again active-client-only.
             case MacNativeStreamProtocol.FrameType.windowStreamStart.rawValue:
-                guard client.isActive, client.isV2,
+                guard client.isActive, client.grants.contains(.screen), client.isV2,
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 guard !client.subscriptions.contains(windowID) else { break }
                 let wasRunning = subscriberCount(windowID) > 0
@@ -712,7 +777,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     onWindowStreamStop?(windowID)
                 }
             case MacNativeStreamProtocol.FrameType.stillViewport.rawValue:
-                guard client.isActive, client.isStill,
+                guard client.isActive, client.grants.contains(.screen), client.isStill,
                       let viewport = MacNativeStreamProtocol.decodeStillViewport(frame.payload),
                       viewport != client.stillViewport else { break }
                 client.stillViewport = viewport
@@ -736,31 +801,31 @@ final class MacNativeStreamServer: @unchecked Sendable {
                       client.wantsStream(windowID) else { break }
                 onKeyFrameNeeded?(windowID)
             case MacNativeStreamProtocol.FrameType.selectDisplay.rawValue:
-                guard client.isActive, client.isV2,
+                guard client.isActive, client.grants.contains(.screen), client.isV2,
                       let displayID = MacNativeStreamProtocol.decodeSelectDisplay(frame.payload) else { break }
                 onSelectDisplay?(displayID)
             case MacNativeStreamProtocol.FrameType.configureVirtualDisplay.rawValue:
-                guard client.isActive, client.isV2,
+                guard client.isActive, client.grants.contains(.screen), client.isV2,
                       let change = MacNativeStreamProtocol.decodeVirtualDisplayChange(frame.payload) else { break }
                 onConfigureVirtualDisplay?(change)
             case MacNativeStreamProtocol.FrameType.focusWindow.rawValue:
-                guard client.isActive,
+                guard client.isActive, client.grants.contains(.input),
                       let windowID = MacNativeStreamProtocol.decodeWindowID(frame.payload) else { break }
                 onFocusWindow?(windowID)
             case MacNativeStreamProtocol.FrameType.windowMouseMove.rawValue:
-                guard client.isActive,
+                guard client.isActive, client.grants.contains(.input),
                       let event = MacNativeStreamProtocol.decodeWindowMouseMove(frame.payload) else { break }
                 onWindowMouseMove?(event.windowID, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowMouseDown.rawValue:
-                guard client.isActive,
+                guard client.isActive, client.grants.contains(.input),
                       let event = MacNativeStreamProtocol.decodeWindowMouseButton(frame.payload) else { break }
                 onWindowMouseDown?(event.windowID, event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowMouseUp.rawValue:
-                guard client.isActive,
+                guard client.isActive, client.grants.contains(.input),
                       let event = MacNativeStreamProtocol.decodeWindowMouseButton(frame.payload) else { break }
                 onWindowMouseUp?(event.windowID, event.button, event.x, event.y)
             case MacNativeStreamProtocol.FrameType.windowScroll.rawValue:
-                guard client.isActive,
+                guard client.isActive, client.grants.contains(.input),
                       let event = MacNativeStreamProtocol.decodeWindowScroll(frame.payload) else { break }
                 onWindowScroll?(event.windowID, event.x, event.y, event.deltaX, event.deltaY)
             default:
@@ -811,6 +876,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         // Only a v2 viewer gets sequenced desktop frames it could ack.
         client.acksFrames = acksFrames && client.isV2
         client.isStill = stillsOnly && client.isV2
+        let wantsScreen = wantsScreen && client.grants.contains(.screen)
         client.wantsDesktopV1 = wantsScreen
         client.awaitingKeyFrame = [MacNativeStreamProtocol.desktopStreamID: true]
         client.subscriptions = []
@@ -829,12 +895,13 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 supportsWindowStreams: true,
                 supportsTransparentDesktop: false,
                 supportsAudioStream: true,
-                supportsStills: true
+                supportsStills: true,
+                grants: client.grants.map(\.rawValue).sorted()
             )), to: client)
-            if let currentInventoryFrame {
+            if client.grants.contains(.screen), let currentInventoryFrame {
                 sendRequired(currentInventoryFrame, to: client)
             }
-            if let currentDisplayListFrame {
+            if client.grants.contains(.screen), let currentDisplayListFrame {
                 sendRequired(currentDisplayListFrame, to: client)
             }
             // No format frame yet — a v2 client gets stream formats as it
@@ -844,8 +911,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
             // hello implies — and only when it actually asked for Screen.
             sendRequired(MacNativeStreamProtocol.encodeFrame(.helloAck), to: client)
         }
-        sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([mouseAvailability])), to: client)
-        sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([keyboardAvailability])), to: client)
+        sendRequired(MacNativeStreamProtocol.encodeFrame(.mouseStatus, Data([inputStatus(mouseAvailability, for: client)])), to: client)
+        sendRequired(MacNativeStreamProtocol.encodeFrame(.keyboardStatus, Data([inputStatus(keyboardAvailability, for: client)])), to: client)
         // Before any stream start below: starting the desktop capture reads
         // the chroma every viewer can decode, and that answer is derived from
         // this very callback. Announcing the viewer set afterwards would start

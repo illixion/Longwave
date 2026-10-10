@@ -303,11 +303,18 @@ final class SavedConnection {
 
     // MARK: Companion-specific (Native: Screen + Audio)
 
-    /// Static auth token presented to the Longwave Companion, shared by both
-    /// the Screen and Audio toggles of a `.native` connection. Renamed from
-    /// `audioToken`; `originalName` keeps lightweight migration working.
+    /// The deprecated shared token, from before every device got its own at
+    /// pairing (that one lives in the keychain — see `companionCredential`).
+    /// Still presented while the Mac accepts it; the row asks to pair again.
+    /// Renamed from `audioToken`; `originalName` keeps lightweight migration
+    /// working.
     @Attribute(originalName: "audioToken")
     var companionToken: String = ""
+
+    /// `CompanionGrant` raw values, comma-separated: what the Mac allowed this
+    /// device, from pairing and refreshed by each Native hello. Display only —
+    /// the Mac enforces them.
+    var companionGrantsRaw: String = ""
 
     /// The paired Companion's identity (`CompanionDiscovery`), set when the
     /// connection was paired rather than typed in. With it, connecting knocks

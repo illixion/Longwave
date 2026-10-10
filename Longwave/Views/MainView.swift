@@ -72,12 +72,11 @@ struct MainView: View {
         }
         .animation(.smooth(duration: 0.25), value: selectedTab)
         .onOpenURL { url in
-            // AirDropped pairing URLs from the macOS companion.
-            if let token = AudioTokenURL.parseToken(from: url) {
-                // setAudioToken: stash the token and surface the Connections
-                // tab so the form can auto-fill it.
+            // A Mac's address link (no secret in it): surface the Connections
+            // tab, where a form opens and pairs over it.
+            if let link = CompanionPairLink(url: url) {
                 selectedTab = .connections
-                audioManager.importToken(token)
+                CompanionLocator.shared.pendingPairLink = link
             } else if let setup = BroadcastSetupURL.parse(from: url) {
                 // setBroadcastServer: fill the Broadcast tab's server config.
                 selectedTab = .broadcast

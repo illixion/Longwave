@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Network
 import os
 
 /// Orchestrates the system audio tap and the TCP stream server.
@@ -27,11 +28,15 @@ final class AudioStreamerController {
         }
         microphone.refreshStatus()
         macNativeStreaming.listenGateOpen = allowConnectionsByAddress
-        macNativeStreaming.configure(token: token)
+        macNativeStreaming.configure(keyring: devices.keyring)
+        presence.knockTokens = { [devices] headsetID in devices.knockTokens(headsetID: headsetID) }
         presence.onKnockChange = { [weak self] in self?.applyListenGate() }
         presence.onPairRequest = { [weak self] request in self?.answerPairRequest(request) }
-        presence.start(token: token)
+        presence.start()
         presence.setOpen(listenGateOpen)
+        directPairing.onConnection = { [weak self] connection in self?.answerDirectPairing(connection) }
+        devices.observe { [weak self] in self?.devicesChanged() }
+        macNativeStreaming.onDeviceIdentified = { [devices] deviceID in devices.noteSeen(deviceID) }
         // Closing waits for the last viewer, which nothing announces to this
         // object in one place, so the gate is re-checked on a slow tick.
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -55,35 +60,42 @@ final class AudioStreamerController {
         }
     }
 
-    /// Persistent static auth token — clients must present it to connect.
-    /// Loaded from (or generated into) UserDefaults on init; the didSet
-    /// keeps the store in sync when regenerated.
-    var token: String = AudioStreamerController.loadOrCreateToken() {
-        didSet { UserDefaults.standard.set(token, forKey: "audioStreamToken") }
+    /// The devices paired with this Mac and what each may do. Every server
+    /// reads its keys and grants from here.
+    let devices = CompanionDeviceRegistry()
+
+    /// A device was paired or revoked, or its grants changed: each listener
+    /// is rebuilt with the new keys, and connections no longer allowed end.
+    private func devicesChanged() {
+        macNativeStreaming.reloadCredentials()
+        server?.reloadCredentials()
+        if injectServer != nil { startInjectServer() }
+        presence.devicesChanged()
     }
 
-    /// x-callback URL carrying the token, for AirDrop to the Vision Pro.
-    var tokenShareURL: URL? {
-        AudioTokenURL.make(token: token)
-    }
+    // MARK: - Pairing by address
 
-    private static func loadOrCreateToken() -> String {
-        if let existing = UserDefaults.standard.string(forKey: "audioStreamToken"), !existing.isEmpty {
-            return existing
+    /// The fixed pairing port an address link points headsets at.
+    private let directPairing = DirectPairingListener()
+    /// Until when the direct pairing port stays open after an address link
+    /// was sent (it's always open while connections by address are allowed).
+    private(set) var addressLinkOpenUntil: Date?
+    @ObservationIgnored private var addressLinkTimer: Timer?
+
+    /// The address link for a headset that can't see this Mac over Bonjour.
+    /// Holds no secret; sending it opens the pairing port for ten minutes.
+    func makeAddressLink() -> URL? {
+        addressLinkOpenUntil = Date().addingTimeInterval(600)
+        addressLinkTimer?.invalidate()
+        addressLinkTimer = Timer.scheduledTimer(withTimeInterval: 601, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.addressLinkOpenUntil = nil
+                self?.applyListenGate()
+            }
         }
-        let generated = AudioToken.generate()
-        UserDefaults.standard.set(generated, forKey: "audioStreamToken")
-        return generated
-    }
-
-    /// Discards the current token and generates a fresh one. Any connected
-    /// client is dropped (its old token no longer matches) and must re-pair.
-    func regenerateToken() {
-        token = AudioToken.generate()
-        if isRunning { start() } // restart audio server with the new token
-        if injection.injectionEnabled { startInjectServer() } // re-key inject channel
-        macNativeStreaming.updateToken(token)
-        presence.updateToken(token)
+        applyListenGate()
+        return CompanionPairLink(macID: presence.macID, name: presence.macName,
+                                 addresses: CompanionPresence.reachableAddresses()).url
     }
 
     // MARK: - Listening and pairing
@@ -135,6 +147,7 @@ final class AudioStreamerController {
             }
         }
         presence.setOpen(open)
+        directPairing.setListening(allowConnectionsByAddress || (addressLinkOpenUntil.map { $0 > Date() } ?? false))
     }
 
     private var pairing: PairingServer?
@@ -156,21 +169,8 @@ final class AudioStreamerController {
 
     private func answerPairRequest(_ request: CompanionPresence.PairRequest) {
         let now = ContinuousClock.now
-        guard pairing == nil else { return }
-        if let pausedUntil, now < pausedUntil { return }
-        if let lastPairingEnded, now - lastPairingEnded < Self.pairingGap { return }
-        promptTimes.removeAll { now - $0 > .seconds(3600) }
-        guard promptTimes.count < Self.pairingsPerHour else {
-            pairingStatus = "Too many pairing requests; ignoring them for now."
-            return
-        }
-        let server = PairingServer(context: .init(
-            headsetID: request.headsetID, headsetName: request.name,
-            macID: presence.macID, macName: presence.macName, token: token
-        ))
-        server.onFinish = { [weak self] outcome in
-            self?.pairingFinished(outcome, name: request.name)
-        }
+        guard mayPromptForPairing() else { return }
+        let server = makePairingServer(headsetID: request.headsetID, name: request.name)
         do {
             try server.start()
             pairing = server
@@ -178,6 +178,41 @@ final class AudioStreamerController {
         } catch {
             pairingStatus = "Couldn't answer a pairing request: \(error.localizedDescription)"
         }
+    }
+
+    /// A headset dialled the direct pairing port. Rationed like a Bonjour
+    /// request; the headset says who it is in its first message.
+    private func answerDirectPairing(_ connection: NWConnection) {
+        guard mayPromptForPairing() else { connection.cancel(); return }
+        let server = makePairingServer(headsetID: nil, name: "A device")
+        pairing = server
+        promptTimes.append(.now)
+        server.start(accepting: connection)
+    }
+
+    private func mayPromptForPairing() -> Bool {
+        let now = ContinuousClock.now
+        guard pairing == nil else { return false }
+        if let pausedUntil, now < pausedUntil { return false }
+        if let lastPairingEnded, now - lastPairingEnded < Self.pairingGap { return false }
+        promptTimes.removeAll { now - $0 > .seconds(3600) }
+        guard promptTimes.count < Self.pairingsPerHour else {
+            pairingStatus = "Too many pairing requests; ignoring them for now."
+            return false
+        }
+        return true
+    }
+
+    private func makePairingServer(headsetID: String?, name: String) -> PairingServer {
+        let server = PairingServer(context: .init(
+            headsetID: headsetID, headsetName: name,
+            macID: presence.macID, macName: presence.macName,
+            enroll: { [devices] id, name, grants in devices.enroll(id: id, name: name, grants: grants) }
+        ))
+        server.onFinish = { [weak self] outcome, name in
+            self?.pairingFinished(outcome, name: name)
+        }
+        return server
     }
 
     private func pairingFinished(_ outcome: PairingServer.Outcome, name: String) {
@@ -306,7 +341,7 @@ final class AudioStreamerController {
         injectServer?.stop()
         injectServer = nil
         guard listenGateOpen else { return }
-        let server = CompanionInjectServer(port: CompanionInjectProtocol.defaultPort, token: token)
+        let server = CompanionInjectServer(port: CompanionInjectProtocol.defaultPort, keyring: devices.keyring)
         server.onInjectText = { [weak self] text in
             Task { @MainActor [weak self] in self?.injection.insertText(text) }
         }
@@ -478,7 +513,7 @@ final class AudioStreamerController {
         // tap is created lazily when a client connects (handleClientCountChange),
         // so an idle companion captures no system audio and shows no
         // audio-recording indicator.
-        let server = AudioStreamServer(port: port, token: token)
+        let server = AudioStreamServer(port: port, keyring: devices.keyring)
         server.onClientCountChange = { [weak self] count in
             Task { @MainActor [weak self] in
                 self?.handleClientCountChange(count)

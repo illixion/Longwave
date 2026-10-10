@@ -54,9 +54,9 @@ final class SSHSession: Identifiable {
     private var pendingOutput: [UInt8] = []
     private var connection: SSHConnection?
     private var projectsRelay: ProjectsClient?
-    private(set) var projectsInvitation: ProjectsProtocol.Invitation?
+    private(set) var projectsAccess: ProjectsProtocol.Access?
     private(set) var projectsSessionName: String?
-    var isCompanionSession: Bool { projectsInvitation != nil }
+    var isCompanionSession: Bool { projectsAccess != nil }
 
     // Output pacing. Every `feed` drives UIKit hard — SwiftTerm rewrites its
     // scroll offset per emitted line, repaints through CoreText and runs a
@@ -225,9 +225,9 @@ final class SSHSession: Identifiable {
     }
 
     private func connect() {
-        if let invitation = projectsInvitation, let name = projectsSessionName {
+        if let access = projectsAccess, let name = projectsSessionName {
             state = .connecting
-            let relay = ProjectsClient(invitation: invitation)
+            let relay = ProjectsClient(access: access)
             projectsRelay = relay
             relay.onTerminalEvent = { [weak self, weak relay] event in
                 guard let self, let relay, self.projectsRelay === relay else { return }
@@ -457,8 +457,8 @@ final class SSHSession: Identifiable {
         oldRelay?.disconnect()
     }
 
-    func prepareProjects(invitation: ProjectsProtocol.Invitation, session: String) {
-        projectsInvitation = invitation
+    func prepareProjects(access: ProjectsProtocol.Access, session: String) {
+        projectsAccess = access
         projectsSessionName = session
         state = .closed(nil)
     }
@@ -490,13 +490,13 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
     }
 
     @discardableResult
-    func openProjectsSession(_ found: ProjectsProtocol.Session, invitation: ProjectsProtocol.Invitation,
+    func openProjectsSession(_ found: ProjectsProtocol.Session, access: ProjectsProtocol.Access,
                              account: String) -> SSHSessionID {
-        let id = SSHSessionID(raw: "projects-\(invitation.id.uuidString)-\(found.id)")
+        let id = SSHSessionID(raw: "projects-\(access.id.uuidString)-\(found.id)")
         if let existing = session(id) { existing.ensureConnected(); return id }
-        let session = SSHSession(id: id, title: found.title, host: invitation.host, port: Int(invitation.port),
+        let session = SSHSession(id: id, title: found.title, host: access.host, port: Int(access.port),
             username: account, kind: .claude, cwd: found.folder)
-        session.prepareProjects(invitation: invitation, session: found.id)
+        session.prepareProjects(access: access, session: found.id)
         sessions.append(session)
         session.ensureConnected()
         return id
@@ -582,12 +582,12 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
     /// running (the user previously had to Ctrl+C on the Mac) and it would be
     /// resurrected by the next rediscovery pass.
     func stopSession(_ id: SSHSessionID) {
-        if let s = session(id), let invitation = s.projectsInvitation {
+        if let s = session(id), let access = s.projectsAccess {
             // The relay's server validates the tagged session before stopping
             // it. Never try SSH using the device key against a Companion peer.
             guard let name = s.projectsSessionName else { return }
             Task {
-                let client = ProjectsClient(invitation: invitation)
+                let client = ProjectsClient(access: access)
                 defer { client.disconnect() }
                 do { try await client.connect(); try await client.stop(session: name); remove(id) }
                 catch { s.reportFailure(error.localizedDescription) }

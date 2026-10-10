@@ -17,9 +17,11 @@ the LongwaveMac connection app are clients of it.
 Progress (2026-10-09): the Companion owns sandbox credentials and launches; a
 typed Projects service on port 4860 now lets visionOS and iOS clients list
 imported projects, create/stop sessions and relay terminals through the Companion.
-Each device receives a separate revocable invitation, stored in Keychain and
-authenticated with a domain-separated TLS PSK and TLS-bound device proof. Native
-pairing does not grant Projects access. Mobile devices receive no sandbox SSH
+Since 2026-10-10 access comes from pairing: a device the user allowed Projects
+(the `projects` grant, ticked in the Mac's pairing dialog or its Devices tab)
+connects with its own pairing token, through a domain-separated TLS PSK and
+TLS-bound device proof. The earlier pasted invitations are gone
+(`COMPANION_ENROLLMENT_PLAN.md`); other grants don't open Projects. Mobile devices receive no sandbox SSH
 private key, password or agent credentials. The existing SSH account mode remains
 available for full user access. Sandbox Claude refresh delegation is disabled;
 Codex access-only files are per session; credential writes are checked and

@@ -80,6 +80,7 @@
 		60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 3DBD8B1498560A799C9CBA40 /* DebugTraceUI */; };
 		A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000010 /* WatchLinkProtocol.swift */; };
 		A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000011 /* MacNativeStreamProtocol.swift */; };
+		A7C400000000000000000022 /* CompanionDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000012 /* CompanionDevices.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -133,6 +134,7 @@
 		A7C400000000000000000001 /* LongwaveWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A7C400000000000000000010 /* WatchLinkProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchLinkProtocol.swift; path = Shared/WatchLinkProtocol.swift; sourceTree = SOURCE_ROOT; };
 		A7C400000000000000000011 /* MacNativeStreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MacNativeStreamProtocol.swift; path = Shared/MacNativeStreamProtocol.swift; sourceTree = SOURCE_ROOT; };
+		A7C400000000000000000012 /* CompanionDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CompanionDevices.swift; path = Shared/CompanionDevices.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -491,6 +493,7 @@
 			children = (
 				A7C400000000000000000010 /* WatchLinkProtocol.swift */,
 				A7C400000000000000000011 /* MacNativeStreamProtocol.swift */,
+				A7C400000000000000000012 /* CompanionDevices.swift */,
 			);
 			name = "LongwaveWatch Shared";
 			sourceTree = "<group>";
@@ -1007,6 +1010,7 @@
 			files = (
 				A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */,
 				A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */,
+				A7C400000000000000000022 /* CompanionDevices.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -16,7 +16,9 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
     var onActiveChanged: (@Sendable (Bool) -> Void)?
 
     private let port: UInt16
-    private let key: SymmetricKey
+    /// A watch speaks with its iPhone's device key, so the server tries every
+    /// device allowed the screen.
+    private let keyring: CompanionKeyring
     private let queue = DispatchQueue(label: "pro.longwave.companion.watch-server", qos: .userInitiated)
     private let encodeQueue = DispatchQueue(label: "pro.longwave.companion.watch-stills", qos: .userInitiated)
     private let encoder = MacNativeStillEncoder()
@@ -41,12 +43,13 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
         let connection: NWConnection
         let viewport: WatchLinkProtocol.Viewport
         let nonce: String
+        let key: SymmetricKey
         let deadline: Date
     }
 
-    init(port: UInt16 = WatchLinkProtocol.defaultPort, token: String) {
+    init(port: UInt16 = WatchLinkProtocol.defaultPort, keyring: CompanionKeyring) {
         self.port = port
-        self.key = WatchLinkProtocol.key(token: token)
+        self.keyring = keyring
     }
 
     func start() throws {
@@ -87,7 +90,7 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
             let ready = waiting
             waiting = []
             for pending in ready {
-                respond(pending.connection, viewport: pending.viewport, nonce: pending.nonce)
+                respond(pending.connection, viewport: pending.viewport, nonce: pending.nonce, key: pending.key)
             }
         }
     }
@@ -145,7 +148,9 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
         }
 
         guard let authorization = headers["authorization"].flatMap(WatchLinkProtocol.Authorization.init(headerValue:)),
-              WatchLinkProtocol.verify(authorization, method: method, target: target, key: key),
+              let key = keyring.entries(with: .screen).lazy
+                .map({ WatchLinkProtocol.key(token: $0.credential.token) })
+                .first(where: { WatchLinkProtocol.verify(authorization, method: method, target: target, key: $0) }),
               seenNonces[authorization.nonce] == nil else {
             return reply(connection, status: 401)
         }
@@ -165,12 +170,13 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
             lastRequest = Date()
             setActive(true)
             if latest != nil, after < sequence {
-                respond(connection, viewport: viewport, nonce: authorization.nonce)
+                respond(connection, viewport: viewport, nonce: authorization.nonce, key: key)
             } else {
                 waiting.append(PendingStill(
                     connection: connection,
                     viewport: viewport,
                     nonce: authorization.nonce,
+                    key: key,
                     deadline: Date().addingTimeInterval(WatchLinkProtocol.longPollSeconds)
                 ))
             }
@@ -179,10 +185,9 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
         }
     }
 
-    private func respond(_ connection: NWConnection, viewport: WatchLinkProtocol.Viewport, nonce: String) {
+    private func respond(_ connection: NWConnection, viewport: WatchLinkProtocol.Viewport, nonce: String, key: SymmetricKey) {
         guard let buffer = latest else { return reply(connection, status: 204) }
         let sequence = sequence
-        let key = key
         encodeQueue.async { [self] in
             guard let jpeg = encoder.encode(buffer, viewport: viewport.stillViewport) else {
                 return queue.async { self.reply(connection, status: 500) }

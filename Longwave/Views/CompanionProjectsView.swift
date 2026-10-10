@@ -1,51 +1,62 @@
 #if !os(macOS)
+import SwiftData
 import SwiftUI
 
 /// Both visionOS and iOS use the Companion's project catalog and launch policy.
-/// Only a revocable Projects invitation is stored on the client.
+/// Access is this device's pairing with the Mac, used only while the Mac allows
+/// it Projects; nothing else is stored for it.
 struct CompanionProjectsView: View {
     @Environment(SSHTerminalManager.self) private var sshManager
     @Environment(\.openWindow) private var openWindow
+    @Query(sort: \SavedConnection.lastConnected, order: .reverse) private var connections: [SavedConnection]
     var reenter: (SSHSessionID) -> Void
 
-    @AppStorage("projects.companion.lastDevice") private var lastDevice = ""
-    @State private var devices = Self.loadDevices()
-    @State private var invitationText = ""
+    @AppStorage("projects.companion.lastConnection") private var lastConnection = ""
     @State private var agent = SSHAgent.claude
     @State private var snapshot: ProjectsProtocol.Snapshot?
     @State private var client: ProjectsClient?
     @State private var busy = false
     @State private var error: String?
     @State private var generation = 0
-    private static let devicesKey = "projects.companion.devices.v1"
+    @State private var pairing: CompanionPairingClient?
 
-    private var selected: ProjectsProtocol.Device? {
-        devices.first { $0.id.uuidString == lastDevice } ?? devices.first
+    /// Paired Macs: Native connections holding a key of their own.
+    private var macs: [SavedConnection] {
+        connections.filter { $0.connectionType == .native && $0.companionDeviceToken != nil }
+    }
+
+    private var selected: SavedConnection? {
+        macs.first { $0.id.uuidString == lastConnection } ?? macs.first
     }
 
     var body: some View {
         List {
-            Section("Companion") {
-                if !devices.isEmpty {
-                    Picker("Mac", selection: Binding(get: { selected?.id.uuidString ?? "" }, set: { lastDevice = $0 })) {
-                        ForEach(devices) { device in Text(device.name + " · " + device.host).tag(device.id.uuidString) }
+            Section {
+                if macs.isEmpty {
+                    Text("Pair a Mac first: Connections → Add → Native → Macs Nearby. Its Companion decides whether this device may use Projects.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Mac", selection: Binding(get: { selected?.id.uuidString ?? "" }, set: { lastConnection = $0 })) {
+                        ForEach(macs) { mac in Text(mac.displayName).tag(mac.id.uuidString) }
                     }
-                    if let device = selected {
-                        TextField("Mac address", text: Binding(get: { device.host }, set: { value in
-                            guard let index = devices.firstIndex(where: { $0.id == device.id }) else { return }
-                            devices[index].host = value
-                            saveDevices()
-                        }))
-                        .autocorrectionDisabled().textInputAutocapitalization(.never)
-                        Button("Connect / Refresh") { Task { await connect() } }.disabled(busy)
-                        Button("Forget This Invitation", role: .destructive) { forget(device) }.disabled(busy)
+                    if let mac = selected {
+                        if mac.companionGrants.contains(.projects) {
+                            Button("Connect / Refresh") { Task { await connect() } }.disabled(busy)
+                        } else {
+                            Text("This Mac hasn't allowed this device Projects. Request access to pair again with Projects ticked, or tick it for this device under Devices in Longwave Companion and refresh.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Request Access") { requestAccess(on: mac) }.disabled(busy || isPairing)
+                                Button("Refresh") { Task { await connect() } }.disabled(busy || isPairing)
+                            }
+                            pairingStatus
+                        }
                     }
                 }
-                SecureField("Paste Projects invitation", text: $invitationText)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                Button("Add Companion") { addInvitation() }.disabled(invitationText.isEmpty || busy)
-                Text("On the Mac: Longwave Companion → Projects → Remote Projects access → Create and Copy Invitation. Agent sign-ins are managed there.")
-                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Companion")
+            } footer: {
+                Text("Agent sign-ins, projects and schedules are managed in the Companion's Projects window on the Mac.")
             }
 
             if busy { ProgressView("Working with the Companion…") }
@@ -81,7 +92,7 @@ struct CompanionProjectsView: View {
                         Button("Open \(agent.displayName) in \(project.name)") {
                             action { client in
                                 let session = try await client.start(project: project.id, agent: agent.rawValue)
-                                open(session, invitation: client.invitation, account: snapshot.account)
+                                open(session, access: client.access, account: snapshot.account)
                             }
                         }
                         .disabled(busy || !snapshot.available || !snapshot.configuredAgents.contains(agent.rawValue))
@@ -92,7 +103,7 @@ struct CompanionProjectsView: View {
                     ForEach(snapshot.sessions) { session in
                         Button {
                             guard let client else { return }
-                            open(session, invitation: client.invitation, account: snapshot.account)
+                            open(session, access: client.access, account: snapshot.account)
                         } label: {
                             VStack(alignment: .leading) {
                                 Text(session.title)
@@ -107,8 +118,21 @@ struct CompanionProjectsView: View {
                 }
             }
         }
-        .task(id: selected?.id) { await connect() }
-        .onDisappear { client?.disconnect(); client = nil }
+        .task(id: selected?.id) {
+            if selected?.companionGrants.contains(.projects) == true { await connect() }
+        }
+        .onAppear { CompanionLocator.shared.startBrowsing() }
+        .onDisappear {
+            CompanionLocator.shared.stopBrowsing()
+            pairing?.cancel()
+            client?.disconnect(); client = nil
+        }
+        .onChange(of: pairing?.state) { _, state in
+            guard case .paired(let grant) = state, let mac = selected,
+                  mac.setCompanionDeviceToken(grant.token) else { return }
+            mac.companionGrants = Set((grant.grants ?? []).compactMap(CompanionGrant.init(rawValue:)))
+            Task { await connect() }
+        }
     }
 
     private func connect() async {
@@ -118,21 +142,66 @@ struct CompanionProjectsView: View {
         client = nil
         snapshot = nil
         busy = false
-        guard let device = selected else { return }
-        guard let key = ProjectsKeyStore.load(device.id) else { error = "This invitation's key is unavailable. Add it again."; return }
-        let connection = ProjectsClient(invitation: .init(id: device.id, name: device.name, host: device.host, port: device.port, key: key))
-        client = connection
+        guard let mac = selected, let token = mac.companionDeviceToken,
+              let deviceID = UUID(uuidString: CompanionLocator.headsetID) else { return }
         busy = true
         error = nil
         defer { if current == generation { busy = false } }
+        // Knock first, as the Native stream does, so a Mac that opens its
+        // ports only for nearby paired devices opens them.
+        var host = mac.hostname
+        if let macID = mac.companionMacID,
+           let found = await CompanionLocator.shared.locate(macID: macID, token: token) {
+            host = found
+        }
+        guard current == generation else { return }
+        let connection = ProjectsClient(access: .init(id: deviceID, name: mac.displayName, host: host, key: token))
+        client = connection
         do {
             try await connection.connect()
             let status = try await connection.snapshot()
             guard current == generation, !Task.isCancelled else { connection.disconnect(); return }
             snapshot = status
+            if !mac.companionGrants.contains(.projects) { mac.companionGrants.insert(.projects) }
         } catch { if current == generation, !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
+    private var isPairing: Bool {
+        switch pairing?.state {
+        case .waitingForMac, .confirming: true
+        default: false
+        }
+    }
+
+    @ViewBuilder private var pairingStatus: some View {
+        switch pairing?.state {
+        case .waitingForMac:
+            HStack { ProgressView(); Text("Asking the Mac…") }
+        case .confirming(let code):
+            VStack(alignment: .leading, spacing: 4) {
+                Text(PairingExchange.display(code)).font(.system(.title, design: .monospaced).weight(.semibold))
+                Text("Check that the Mac shows this code, tick Projects there and choose Pair.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        case .failed(let reason):
+            Text(reason).foregroundStyle(.red)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// Pairs again asking for Projects on top of what the Mac already allows.
+    /// The Mac must be nearby for this; by address, tick Projects on the Mac.
+    private func requestAccess(on mac: SavedConnection) {
+        guard let macID = mac.companionMacID,
+              let nearby = CompanionLocator.shared.nearby.first(where: { $0.macID == macID }) else {
+            error = "The Mac isn't nearby. Tick Projects for this device under Devices in Longwave Companion, then refresh."
+            return
+        }
+        let client = CompanionPairingClient(mac: nearby, requested: CompanionGrant.defaults.union(mac.companionGrants).union([.projects]))
+        pairing = client
+        client.start()
+    }
     private func action(_ work: @escaping (ProjectsClient) async throws -> Void) {
         guard !busy, let client else { return }
         busy = true
@@ -144,11 +213,11 @@ struct CompanionProjectsView: View {
         }
     }
 
-    private func open(_ session: ProjectsProtocol.Session, invitation: ProjectsProtocol.Invitation, account: String) {
+    private func open(_ session: ProjectsProtocol.Session, access: ProjectsProtocol.Access, account: String) {
         let alreadyOpen = sshManager.sessions.contains {
-            $0.id.raw == "projects-\(invitation.id.uuidString)-\(session.id)"
+            $0.id.raw == "projects-\(access.id.uuidString)-\(session.id)"
         }
-        let id = sshManager.openProjectsSession(session, invitation: invitation, account: account)
+        let id = sshManager.openProjectsSession(session, access: access, account: account)
         #if os(visionOS)
         openWindow(id: "ssh-terminal", value: id)
         #else
@@ -156,35 +225,5 @@ struct CompanionProjectsView: View {
         #endif
     }
 
-    private func addInvitation() {
-        do {
-            let invitation = try ProjectsProtocol.Invitation.parse(invitationText)
-            try ProjectsKeyStore.save(invitation.key, id: invitation.id)
-            devices.removeAll { $0.id == invitation.id }
-            devices.append(.init(id: invitation.id, name: invitation.name, host: invitation.host, port: invitation.port))
-            saveDevices()
-            lastDevice = invitation.id.uuidString
-            invitationText = ""
-            error = nil
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func forget(_ device: ProjectsProtocol.Device) {
-        do {
-            try ProjectsKeyStore.delete(device.id)
-            for session in sshManager.sessions where session.projectsInvitation?.id == device.id { sshManager.remove(session.id) }
-            devices.removeAll { $0.id == device.id }
-            saveDevices()
-            client?.disconnect()
-            client = nil
-            snapshot = nil
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func saveDevices() { UserDefaults.standard.set(try? JSONEncoder().encode(devices), forKey: Self.devicesKey) }
-    private static func loadDevices() -> [ProjectsProtocol.Device] {
-        guard let data = UserDefaults.standard.data(forKey: devicesKey) else { return [] }
-        return (try? JSONDecoder().decode([ProjectsProtocol.Device].self, from: data)) ?? []
-    }
 }
 #endif

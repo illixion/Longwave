@@ -5,7 +5,7 @@ import Network
 /// travel on this connection; the Companion creates and attaches the session.
 @MainActor
 final class ProjectsClient {
-    let invitation: ProjectsProtocol.Invitation
+    let access: ProjectsProtocol.Access
     var onTerminalEvent: ((SSHConnection.Event) -> Void)?
     private var channel: ProjectsChannel?
     private var authentication: CheckedContinuation<Void, Error>?
@@ -13,13 +13,13 @@ final class ProjectsClient {
     private var authenticated = false
     private var terminalReady = false
 
-    init(invitation: ProjectsProtocol.Invitation) { self.invitation = invitation }
+    init(access: ProjectsProtocol.Access) { self.access = access }
 
     func connect() async throws {
         if channel != nil { disconnect() }
-        let connection = NWConnection(host: NWEndpoint.Host(invitation.host),
-            port: NWEndpoint.Port(rawValue: invitation.port)!,
-            using: ProjectsProtocol.parameters(keys: [invitation.id: invitation.key]))
+        let connection = NWConnection(host: NWEndpoint.Host(access.host),
+            port: NWEndpoint.Port(rawValue: access.port)!,
+            using: ProjectsProtocol.parameters(keys: [access.id: access.key]))
         let channel = ProjectsChannel(connection)
         self.channel = channel
         channel.onReady = { [weak self, weak channel] in
@@ -27,9 +27,9 @@ final class ProjectsClient {
                   let binding = ProjectsProtocol.binding(connection) else {
                 channel?.close("Projects TLS authentication is unavailable."); return
             }
-            channel.send(.init(operation: .authenticate, deviceID: self.invitation.id,
+            channel.send(.init(operation: .authenticate, deviceID: self.access.id,
                 version: ProjectsProtocol.version,
-                proof: ProjectsProtocol.proof(key: self.invitation.key, binding: binding)))
+                proof: ProjectsProtocol.proof(key: self.access.key, binding: binding)))
         }
         channel.onMessage = { [weak self, weak channel] message in
             guard let self, let channel, self.channel === channel else { return }

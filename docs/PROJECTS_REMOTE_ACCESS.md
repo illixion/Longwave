@@ -1,5 +1,12 @@
 # Companion-managed Projects
 
+> **Update 2026-10-10:** the invitations below were replaced by pairing. A device
+> gets Projects through the `projects` grant on its own pairing token — ticked
+> in the Mac's pairing dialog, in the Devices tab, or requested from the
+> device's Projects tab (which pairs again with Projects asked for). The TLS PSK
+> derivation and TLS-bound proof are unchanged; the key is the device token and
+> the device id its pairing identity. See `COMPANION_ENROLLMENT_PLAN.md`.
+
 ## Decision (2026-10-09)
 
 Build on the existing Companion sandbox and shared OAuth implementation. The

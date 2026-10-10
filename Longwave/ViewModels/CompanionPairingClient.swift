@@ -2,10 +2,12 @@ import Foundation
 import Network
 import Observation
 
-/// Pairs this device with a Companion nearby: knocks with a pairing request,
-/// finds the listener the Mac opens for it, runs `PairingExchange`, shows the
-/// code for the user to compare, and hands back the Mac's grant once the user
-/// approves on the Mac.
+/// Pairs this device with a Companion: knocks with a pairing request and finds
+/// the listener the Mac opens for it — or, from an address link, dials the
+/// Mac's direct pairing port on each address in turn — then runs
+/// `PairingExchange`, shows the code for the user to compare, and hands back
+/// the device's own token and what the user allowed it, once they approve on
+/// the Mac.
 @MainActor
 @Observable
 final class CompanionPairingClient {
@@ -20,7 +22,16 @@ final class CompanionPairingClient {
 
     private(set) var state: State = .idle
 
-    private let mac: CompanionLocator.NearbyMac
+    private enum Target {
+        case nearby(CompanionLocator.NearbyMac)
+        case direct(CompanionPairLink)
+    }
+
+    private let target: Target
+    private let requested: Set<CompanionGrant>
+    /// The address the exchange ran over, for a direct pairing.
+    private(set) var connectedAddress: String?
+    private var remainingAddresses: [String] = []
     private var browser: NWBrowser?
     private var connection: NWConnection?
     private var buffer = Data()
@@ -29,15 +40,88 @@ final class CompanionPairingClient {
     private var agreement: PairingExchange.Agreement?
     private var timeout: Task<Void, Never>?
 
-    init(mac: CompanionLocator.NearbyMac) {
-        self.mac = mac
+    private var macID: String {
+        switch target {
+        case .nearby(let mac): mac.macID
+        case .direct(let link): link.macID
+        }
+    }
+
+    /// - Parameter requested: what to ask the Mac for; its dialog starts from
+    ///   these and the user decides.
+    init(mac: CompanionLocator.NearbyMac, requested: Set<CompanionGrant> = CompanionGrant.defaults) {
+        self.target = .nearby(mac)
+        self.requested = requested
+    }
+
+    init(link: CompanionPairLink, requested: Set<CompanionGrant> = CompanionGrant.defaults) {
+        self.target = .direct(link)
+        self.requested = requested
     }
 
     func start() {
         guard state == .idle else { return }
         state = .waitingForMac
         commitment = PairingExchange.commitment(publicKey: exchange.publicKey, nonce: exchange.nonce)
-        CompanionLocator.shared.requestPairing(macID: mac.macID)
+        timeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(120))
+            guard !Task.isCancelled else { return }
+            self?.fail("The Mac didn't answer. Check that Longwave Companion is running and allowed on the local network.")
+        }
+        switch target {
+        case .nearby:
+            startNearby()
+        case .direct(let link):
+            remainingAddresses = link.addresses
+            dialNext(port: link.port)
+        }
+    }
+
+    /// Tries the link's addresses one at a time; the first that answers runs
+    /// the exchange.
+    private func dialNext(port: UInt16) {
+        guard !remainingAddresses.isEmpty, let nwPort = NWEndpoint.Port(rawValue: port) else {
+            return fail("None of the Mac's addresses answered. Check that Longwave Companion is running there and that the link is less than ten minutes old.")
+        }
+        let address = remainingAddresses.removeFirst()
+        let tcp = NWProtocolTCP.Options()
+        tcp.connectionTimeout = 3
+        let connection = NWConnection(host: NWEndpoint.Host(address), port: nwPort, using: NWParameters(tls: nil, tcp: tcp))
+        self.connection = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self, self.connection === connection else { return }
+                switch state {
+                case .ready:
+                    self.connectedAddress = address
+                    self.sendCommit()
+                    self.receive()
+                case .failed, .waiting:
+                    guard self.agreement == nil else {
+                        return self.fail("Lost the Mac while pairing.")
+                    }
+                    connection.cancel()
+                    self.connection = nil
+                    self.dialNext(port: port)
+                default:
+                    break
+                }
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    private func sendCommit() {
+        send(.commit(
+            headsetID: CompanionLocator.headsetID,
+            headsetName: DeviceName.current,
+            commitment: commitment,
+            requested: requested.sorted { $0.rawValue < $1.rawValue }
+        ))
+    }
+
+    private func startNearby() {
+        CompanionLocator.shared.requestPairing(macID: macID)
 
         let browser = NWBrowser(
             for: .bonjourWithTXTRecord(type: CompanionDiscovery.pairServiceType, domain: nil),
@@ -48,11 +132,6 @@ final class CompanionPairingClient {
         }
         browser.start(queue: .main)
         self.browser = browser
-        timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(120))
-            guard !Task.isCancelled else { return }
-            self?.fail("The Mac didn't answer. Check that Longwave Companion is running and allowed on the local network.")
-        }
     }
 
     func cancel() {
@@ -65,7 +144,7 @@ final class CompanionPairingClient {
         guard connection == nil else { return }
         let match = results.first { result in
             guard case .bonjour(let txt) = result.metadata else { return false }
-            return txt[CompanionDiscovery.Key.macID] == mac.macID
+            return txt[CompanionDiscovery.Key.macID] == macID
                 && txt[CompanionDiscovery.Key.headsetID] == CompanionLocator.headsetID
         }
         guard let match else { return }
@@ -78,11 +157,7 @@ final class CompanionPairingClient {
                 guard let self else { return }
                 switch state {
                 case .ready:
-                    self.send(.commit(
-                        headsetID: CompanionLocator.headsetID,
-                        headsetName: DeviceName.current,
-                        commitment: self.commitment
-                    ))
+                    self.sendCommit()
                     self.receive()
                 case .failed(let error):
                     self.fail("Lost the Mac while pairing: \(error.localizedDescription)")
@@ -119,7 +194,7 @@ final class CompanionPairingClient {
     private func handle(_ message: PairingMessage) {
         switch message {
         case .macHello(let macID, _, let publicKey, let nonce):
-            guard macID == mac.macID, let agreement = PairingExchange.agree(
+            guard macID == self.macID, let agreement = PairingExchange.agree(
                 mine: exchange, theirPublicKey: publicKey, commitment: commitment,
                 headsetPublicKey: exchange.publicKey, headsetNonce: exchange.nonce,
                 macPublicKey: publicKey, macNonce: nonce
@@ -160,6 +235,6 @@ final class CompanionPairingClient {
         browser = nil
         connection?.cancel()
         connection = nil
-        CompanionLocator.shared.endKnock(macID: mac.macID)
+        if case .nearby = target { CompanionLocator.shared.endKnock(macID: macID) }
     }
 }

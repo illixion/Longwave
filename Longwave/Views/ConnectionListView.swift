@@ -70,6 +70,7 @@ struct ConnectionListView: View {
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
+                                    connection.forgetCompanionCredential()
                                     modelContext.delete(connection)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
@@ -87,11 +88,11 @@ struct ConnectionListView: View {
                 }
             }
             .navigationTitle("Longwave")
-            .onChange(of: audioManager.pendingImportedToken) { _, token in
-                // A token arrived via AirDrop while no form was open — open a
-                // new connection form so it can auto-fill (the form clears the
-                // pending token itself; if one is already open it consumes it).
-                guard token != nil, !showingNewConnection, connectionToEdit == nil else { return }
+            .onChange(of: CompanionLocator.shared.pendingPairLink) { _, link in
+                // A Mac's address link arrived (AirDrop, or opened from a
+                // copied link) while no form was open — open a new connection
+                // form, which starts pairing with it.
+                guard link != nil, !showingNewConnection, connectionToEdit == nil else { return }
                 showingNewConnection = true
             }
             .toolbar {
@@ -280,10 +281,10 @@ struct ConnectionListView: View {
         // A paired connection knocks first, so the Mac opens its ports, and
         // takes the Mac's LAN address when it's on this network. Not found,
         // it uses the saved address (Tailscale, a VPN, another network).
-        if let macID = connection.companionMacID, !connection.companionToken.isEmpty {
+        if let macID = connection.companionMacID, let token = connection.companionCredential?.token {
             Task {
                 connection.resolvedCompanionHost = await CompanionLocator.shared.locate(
-                    macID: macID, token: connection.companionToken
+                    macID: macID, token: token
                 )
                 openNativeSession(connection)
             }
@@ -322,7 +323,7 @@ struct ConnectionListView: View {
         audioPlayer.prepareTarget(
             hostname: connection.companionHost,
             port: AudioStreamProtocol.defaultPort,
-            token: connection.companionToken,
+            credential: connection.resolvedCompanionCredential,
             title: connection.displayName,
             lowLatency: connection.lowLatencyAudio
         )
@@ -331,7 +332,7 @@ struct ConnectionListView: View {
             audioPlayer.connect(
                 hostname: connection.companionHost,
                 port: AudioStreamProtocol.defaultPort,
-                token: connection.companionToken,
+                credential: connection.resolvedCompanionCredential,
                 title: connection.displayName,
                 lowLatency: connection.lowLatencyAudio
             )
@@ -395,7 +396,7 @@ struct ConnectionListView: View {
             VNCConnectionManager.AudioCompanion(
                 hostname: $0.companionHost,
                 port: AudioStreamProtocol.defaultPort,
-                token: $0.companionToken,
+                credential: $0.resolvedCompanionCredential,
                 title: $0.displayName,
                 lowLatency: $0.lowLatencyAudio
             )
@@ -404,7 +405,7 @@ struct ConnectionListView: View {
             VNCConnectionManager.CompanionInject(
                 hostname: $0.companionHost,
                 port: CompanionInjectProtocol.defaultPort,
-                token: $0.companionToken
+                credential: $0.resolvedCompanionCredential
             )
         }
 

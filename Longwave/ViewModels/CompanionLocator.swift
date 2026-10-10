@@ -26,6 +26,10 @@ final class CompanionLocator {
     /// Companions announcing themselves on this network, while browsing.
     private(set) var nearby: [NearbyMac] = []
 
+    /// An address link (`longwave://pair?…`) waiting for a connection form to
+    /// pair with it. Set by the app's URL handler; the form clears it.
+    var pendingPairLink: CompanionPairLink?
+
     /// This device's identity towards Companions. Stable, random, and not
     /// tied to anything else about the device.
     nonisolated static let headsetID: String = {

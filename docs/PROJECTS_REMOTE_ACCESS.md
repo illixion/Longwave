@@ -69,4 +69,6 @@ The task-worktree, reviewed memory sync, schedule management and host repository
 candidate APIs in AGENT_SANDBOX_PLAN.md remain separate work. The remote service
 introduced here provides the session path without exposing those host actions.
 Future enrollment can replace invitation sharing with native-paired requests
-and local approval while keeping the independent Projects grant.
+and local approval while keeping the independent Projects grant. That plan is
+`COMPANION_ENROLLMENT_PLAN.md`: per-device pairing tokens with a `projects`
+grant chosen in a one-time dialog on the Mac.

@@ -75,6 +75,12 @@ struct CompanionMenuView: View {
                         .help("Reset and golden snapshots of the agent sandbox need it. Opens the list with the Companion's icon ready to drag in.")
                 }
 
+                Button("Set Up…") {
+                    openWindow(id: "setup")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .help("Choose what headsets may do here and grant the permissions those features need.")
+
                 Button("Open Companion Window…") {
                     openSettings()
                     NSApp.activate(ignoringOtherApps: true)

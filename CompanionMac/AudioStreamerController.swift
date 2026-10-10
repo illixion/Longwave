@@ -575,10 +575,15 @@ final class AudioStreamerController {
                 capabilities: microphone.isAvailable ? [.acceptsMicrophone] : []
             ))
             self.tap = tap
+            PermissionCenter.shared.recordSystemAudio(allowed: true)
         } catch {
             tap.stop()
             streamFormat = nil
             lastError = error.localizedDescription
+            if case SystemAudioTap.TapError.osStatus("Creating process tap", _) = error {
+                PermissionCenter.shared.recordSystemAudio(allowed: false)
+                MacNativeStreamNotifications.shared.permissionMissing(PermissionCenter.Kind.systemAudio.title)
+            }
         }
     }
 

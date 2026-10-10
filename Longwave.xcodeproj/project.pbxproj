@@ -619,6 +619,7 @@
 				AA10AD100000000000000007 /* Frameworks */,
 				AA10AD100000000000000008 /* Resources */,
 				AA10AD100000000000000F00 /* Build MediaRemote Helper */,
+				AA10AD100000000000000F01 /* Bundle Agent Sandbox Installer */,
 			);
 			buildRules = (
 			);
@@ -916,6 +917,37 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${SRCROOT}/scripts/build-mediaremote-helper.sh\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/longwave-mediaremote.dylib\"\n";
+		};
+		AA10AD100000000000000F01 /* Bundle Agent Sandbox Installer */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/agent-sandbox/install.sh",
+				"$(SRCROOT)/scripts/agent-sandbox/uninstall.sh",
+				"$(SRCROOT)/scripts/agent-sandbox/longwave-sandbox",
+				"$(SRCROOT)/scripts/agent-sandbox/provision-golden.sh",
+				"$(SRCROOT)/scripts/agent-sandbox/pro.longwave.sandbox.plist",
+				"$(SRCROOT)/scripts/agent-sandbox/semd.c",
+				"$(SRCROOT)/scripts/bundle-agent-sandbox.sh",
+			);
+			name = "Bundle Agent Sandbox Installer";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/install.sh",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/uninstall.sh",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/longwave-sandbox",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/provision-golden.sh",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/pro.longwave.sandbox.plist",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/agent-sandbox/longwave-sandbox-semd",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/bundle-agent-sandbox.sh\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/agent-sandbox\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

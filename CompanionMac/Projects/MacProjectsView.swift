@@ -7,6 +7,7 @@ import SwiftUI
 /// no in-app one, and the sandbox desktop opens in Longwave for Mac's viewer.
 struct MacProjectsView: View {
     @Environment(LocalSandboxController.self) private var sandbox
+    @Environment(SandboxInstaller.self) private var installer
 
     @State private var setupAgent: SSHAgent?
     @State private var keyLine = ""
@@ -67,16 +68,27 @@ struct MacProjectsView: View {
     // MARK: Sections
 
     private func installSection(reason: String) -> some View {
-        Section("Agent sandbox") {
+        Section {
             Text(reason)
-            Text("Install it from the Longwave repo (Touch ID once):")
-                .foregroundStyle(.secondary)
-            HStack {
-                Text(LocalSandbox.installCommand).font(.body.monospaced()).textSelection(.enabled)
-                Spacer()
-                Button("Copy") { Pasteboard.copy(LocalSandbox.installCommand) }
+            switch installer.state {
+            case .running(let step):
+                HStack { ProgressView().controlSize(.small); Text(step) }
+            case .failed(let message):
+                Text(message).foregroundStyle(.red).textSelection(.enabled)
+            default:
+                EmptyView()
             }
-            Button("Check again") { Task { await sandbox.refresh() } }
+            HStack {
+                Button("Install Sandbox…") {
+                    Task { if await installer.install() { await sandbox.refresh() } }
+                }
+                .disabled(installer.isRunning || SandboxInstaller.bundledDirectory == nil)
+                Button("Check again") { Task { await sandbox.refresh() } }
+            }
+        } header: {
+            Text("Agent sandbox")
+        } footer: {
+            Text("Creates a hidden standard account the agents run as, and the small helper the Companion drives it through. macOS asks for your administrator password once; installing the agent CLIs takes a few minutes. From a checkout, `\(LocalSandbox.installCommand)` does the same.")
         }
     }
 

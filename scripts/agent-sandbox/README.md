@@ -95,6 +95,15 @@ that name every 2 s:
 
 ## Install
 
+The usual way is **Install Sandbox…** in the Companion (its setup assistant, or the
+Projects window). The Companion bundles this directory (`scripts/bundle-agent-sandbox.sh`,
+with `semd.c` prebuilt) and runs `install.sh --password-stdin` as root behind one
+administrator prompt. That root process is outside your login session, so the
+Companion generates the agent password itself, passes it on stdin, and saves the
+keychain item afterwards. Its output goes to `~/Library/Logs/Longwave/sandbox-install.log`.
+
+From a checkout:
+
 ```sh
 sudo scripts/agent-sandbox/install.sh
 ```

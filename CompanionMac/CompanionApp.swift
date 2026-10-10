@@ -11,6 +11,7 @@ import AppKit
 /// Display — audio played by the visionOS app honors the per-app setting.
 @main
 struct CompanionApp: App {
+    @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @State private var controller: AudioStreamerController
     @State private var broadcastServer: BroadcastServerManager
     // Projects: the local agent sandbox (scripts/agent-sandbox) and the
@@ -18,6 +19,7 @@ struct CompanionApp: App {
     @State private var sandbox: LocalSandboxController
     @State private var scheduler: LocalScheduler
     @State private var projectsServer: CompanionProjectsServer
+    @State private var sandboxInstaller = SandboxInstaller()
 
     init() {
         // Before any controller reads its settings (see the type's comment).
@@ -35,6 +37,7 @@ struct CompanionApp: App {
         // only when the user asks (Log In, setup, Device Hub) or a schedule
         // resets the sandbox — never just because the Companion launched.
         scheduler.start()
+        PermissionCenter.shared.attach(presence: controller.presence, sandbox: sandbox)
 
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
             .compactMap { $0 }
@@ -93,11 +96,33 @@ struct CompanionApp: App {
             .environment(sandbox)
             .environment(scheduler)
             .environment(projectsServer)
+            .environment(sandboxInstaller)
             .frame(minWidth: 620, minHeight: 520)
             .companionWindowActivation()
         }
         .defaultSize(width: 720, height: 760)
         .handlesExternalEvents(matching: ["projects"])
+
+        // First-run setup: opened by the app delegate until it's finished,
+        // and from the menu's "Set Up…" (longwave-companion://setup).
+        Window("Set Up Longwave Companion", id: "setup") {
+            SetupAssistantView(controller: controller)
+                .environment(sandbox)
+                .environment(sandboxInstaller)
+                .companionWindowActivation()
+        }
+        .windowResizability(.contentSize)
+        .handlesExternalEvents(matching: ["setup"])
+    }
+}
+
+/// Opens the setup assistant on launch until the user has finished it. The
+/// app has no window at launch to call `openWindow` from, so it opens its own
+/// URL, which SwiftUI routes to the setup scene.
+final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !UserDefaults.standard.bool(forKey: SetupAssistantView.completedKey) else { return }
+        NSWorkspace.shared.open(PermissionCenter.setupURL)
     }
 }
 

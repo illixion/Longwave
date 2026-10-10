@@ -750,6 +750,18 @@ final class MacNativeStreamingController {
     /// something is persistently wrong, and viewers are told so instead of
     /// being left on a frozen frame.
     private func captureFailed(_ message: String) {
+        // Retrying can't help without the grant, and the headset's wearer
+        // can't see a prompt on the Mac: say which permission, and point the
+        // Mac's user at the setup assistant.
+        if !CGPreflightScreenCaptureAccess() {
+            let missing = "Screen Recording isn't allowed for Longwave Companion on this Mac. Open Set Up… in its menu bar item to allow it."
+            lastError = missing
+            log.error("Desktop capture failed without Screen Recording permission: \(message, privacy: .public)")
+            server?.disconnectDesktopViewers(withError: missing)
+            stopCapture()
+            MacNativeStreamNotifications.shared.permissionMissing(PermissionCenter.Kind.screenRecording.title)
+            return
+        }
         let now = ContinuousClock.now
         captureRestarts = captureRestarts.filter { now - $0 < .seconds(60) }
         guard captureRestarts.count < 3, !connectedDeviceNames.isEmpty else {

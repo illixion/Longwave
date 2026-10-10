@@ -2,6 +2,9 @@
 # Longwave agent sandbox — one-time installer. Run from a Terminal as the Mac's
 # owner:   sudo scripts/agent-sandbox/install.sh
 #
+# Longwave Companion also runs it from its own bundle (Projects → Install, one
+# administrator prompt) with --password-stdin; see "Options" below.
+#
 # Creates the hidden, non-admin `longwave-agent` account that Longwave's
 # Projects tab runs Claude / Codex / Copilot in, plus the small root-side
 # surface the app drives it through. Idempotent: re-running upgrades the
@@ -16,6 +19,19 @@
 #   /etc/sudoers.d/longwave-sandbox, /usr/lib/cron/{cron,at}.deny
 #   the owner's login keychain (item pro.longwave.sandbox / longwave-agent)
 #   the owner's ~/.ssh/longwave_sandbox_ed25519{,.pub}
+#
+# Options:
+#   --firewall        also turn on the opt-in pf firewall
+#   --password-stdin  read the agent's new password from stdin (one line) and
+#                     leave the owner's keychain alone: the caller (the
+#                     Companion, which runs this as root through an
+#                     administrator prompt, outside the owner's login session)
+#                     saves the keychain item itself. An empty line keeps the
+#                     current password of an existing account.
+#
+# A prebuilt longwave-sandbox-semd beside this script (the Companion bundles
+# one) is installed as is; otherwise semd.c is compiled, which needs the Xcode
+# command-line tools.
 #
 # Must stay compatible with macOS /bin/bash 3.2.
 
@@ -37,6 +53,16 @@ readonly HERE
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+
+WANT_FIREWALL=0
+PASSWORD_STDIN=0
+for arg in "$@"; do
+    case "$arg" in
+        --firewall) WANT_FIREWALL=1 ;;
+        --password-stdin) PASSWORD_STDIN=1 ;;
+        *) die "unknown option: $arg" ;;
+    esac
+done
 
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 OWNER=${SUDO_USER:-}
@@ -90,7 +116,20 @@ dscl . -create "/Users/$AGENT_USER" IsHidden 1
 # virtual session. It is generated here, set without touching argv (dscl reads
 # its command from stdin), stored in the owner's login keychain, and never
 # printed. It is not rotated on re-runs — the keychain copy must stay in step.
-if [ "$created_user" -eq 1 ] || ! sudo -u "$OWNER" -H security find-generic-password \
+if [ "$PASSWORD_STDIN" -eq 1 ]; then
+    # The caller generated the password and saves it to the keychain itself.
+    IFS= read -r AGENT_PW || AGENT_PW=""
+    if [ -n "$AGENT_PW" ]; then
+        case "$AGENT_PW" in *[!0-9a-f]*) unset AGENT_PW; die "the agent password must be hex" ;; esac
+        say "setting the agent password (the Companion saves it to $OWNER's keychain)"
+        if ! printf 'passwd /Users/%s %s\n' "$AGENT_USER" "$AGENT_PW" | dscl . >/dev/null 2>&1; then
+            unset AGENT_PW; die "setting the agent password failed"
+        fi
+    elif [ "$created_user" -eq 1 ]; then
+        die "a new account needs a password on stdin"
+    fi
+    unset AGENT_PW
+elif [ "$created_user" -eq 1 ] || ! sudo -u "$OWNER" -H security find-generic-password \
         -s "$KEYCHAIN_SERVICE" -a "$AGENT_USER" >/dev/null 2>&1; then
     say "setting the agent password and saving it to $OWNER's login keychain"
     AGENT_PW=$(openssl rand -hex 24)
@@ -174,7 +213,9 @@ say "installing $LIBEXEC/longwave-sandbox and longwave-sandbox-semd"
 install -d -o root -g wheel -m 755 "$LIBEXEC"
 install -o root -g wheel -m 755 "$HERE/longwave-sandbox" "$LIBEXEC/longwave-sandbox"
 tmpbin=$(mktemp -d /tmp/lwsemd.XXXXXX)
-if ! xcrun clang -Os -Wall -o "$tmpbin/semd" "$HERE/semd.c"; then
+if [ -x "$HERE/longwave-sandbox-semd" ]; then
+    cp "$HERE/longwave-sandbox-semd" "$tmpbin/semd"
+elif ! xcrun clang -Os -Wall -o "$tmpbin/semd" "$HERE/semd.c"; then
     rm -rf "$tmpbin"; die "compiling semd.c failed (Xcode command-line tools needed)"
 fi
 install -o root -g wheel -m 755 "$tmpbin/semd" "$LIBEXEC/longwave-sandbox-semd"
@@ -213,7 +254,7 @@ say "SSH key authorized"
 # Not enabled by default: loading any custom pf rule makes iCloud Private Relay
 # switch itself off ("System Incompatible"). The sandbox holds no credentials,
 # so the default is no network filtering; `longwave-sandbox firewall on` opts in.
-if [ "${1:-}" = "--firewall" ]; then
+if [ "$WANT_FIREWALL" -eq 1 ]; then
     if /usr/bin/grep -q '^anchor "com.apple/\*"' /etc/pf.conf; then
         "$LIBEXEC/longwave-sandbox" firewall on
     else

@@ -67,15 +67,21 @@ On Windows the firewall relies on the first-listen prompt.
   device sends its requested features with the commit; the Mac's alert shows
   code + checkboxes; the sealed grant returns the device token and the granted
   set.
-- **By address (no Bonjour: Tailscale, VPN, other subnet).** The Mac's
-  Devices tab offers "Enroll a device by link": a single-use
-  `longwave://enroll?host=…&port=…&nonce=…` that expires after 10 minutes,
-  sent by AirDrop or Copy and opened through the existing `onOpenURL`. Opening
-  it connects to the pairing listener and runs the **same** exchange, code and
-  dialog. The link is a rendezvous, never a credential. An iPhone can also
-  open it from the Camera app (visionOS apps cannot scan QR codes, so nothing
-  depends on scanning). It replaces the raw-token AirDrop and the paste-only
-  `longwave-projects:` invitation.
+- **By address (no Bonjour: Tailscale, VPN, other subnet).** The pairing
+  itself never changes; only how the headset finds the Mac does. The Mac's
+  Devices tab has "Send This Mac's Address" (AirDrop, or Copy for anything
+  else): a `longwave://pair?mac=<macID>&name=…&port=…&addr=…&addr=…` link
+  listing every address the Mac has (LAN, Tailscale, other interfaces). It
+  carries **no secret, nonce or token** — anyone could have made it, and it
+  grants nothing. Opening it makes the headset try a direct connection to each
+  address in turn and run the normal 6-digit numeric-comparison exchange and
+  grant dialog over the first one that answers. To be reachable, the Mac keeps
+  a fixed pairing port open for 10 minutes after the link is sent (and
+  whenever "Allow connections by address" is on); a device that pairs this way
+  stores the address that worked as its host. The link replaces the raw-token
+  AirDrop, the manual "Companion Token" field and the paste-only
+  `longwave-projects:` invitation. iPhones may open the same link from the
+  Camera app; visionOS cannot scan QR codes, so nothing depends on scanning.
 - **Asking for more later.** The Projects tab's Companion Sandbox list shows
   paired hosts; one without `projects` gets "Request access", which raises the
   grant dialog on the Mac. Same for "Authorize this device for full SSH",
@@ -101,7 +107,7 @@ On Windows the firewall relies on the first-listen prompt.
 ## Mac Companion layout
 
 - Token tab → **Devices**: Pair status / Headsets Nearby, paired devices with
-  their grants (edit, revoke), enroll-by-link, allow-by-address. The Remote
+  their grants (edit, revoke), Send This Mac's Address, allow-by-address. The Remote
   tab's SSH key list and the Projects window's "Remote Projects access" section
   move here.
 - The Projects window keeps sessions, sign-ins, schedules and sandbox
@@ -123,7 +129,7 @@ each with live status, a one-line reason and a Grant button:
 | Accessibility / Device Control | existing `AccessibilityTrustMonitor` |
 | Notifications | request here instead of on server start |
 | Music Automation (optional) | `AEDeterminePermissionToAutomateTarget(askUserIfNeeded:)` |
-| Agents | sandbox install from the Companion (admin prompt on the Mac; `install.sh` stays for scripted setup), Full Disk Access via `FullDiskAccessAssistant`, Remote Login, Screen Sharing |
+| Agents | sandbox install from a button in the Companion (one admin prompt on the Mac — decided: it should be easy to switch on; `install.sh` stays for scripted setup), Full Disk Access via `FullDiskAccessAssistant`, Remote Login, Screen Sharing |
 
 `AccessibilityTrustMonitor` generalizes into a `PermissionCenter` that tracks
 all of these live. When a granted feature can't run because a permission is
@@ -150,16 +156,26 @@ provider only adds a `pcvr` grant to devices that already exist.
 - The same feature-first first-run checklist: firewall, hotspot elevation, and
   the PCVR drivers only when PCVR is chosen.
 
-## Migration
+## Migration: old methods are deprecated
 
-- The legacy shared token keeps working, shown in Devices as one "Older
-  devices (shared token)" row with Screen + Audio + Input. A device presenting
-  it is enrolled over that authenticated channel on its next connection: it
-  gets its own token, the dialog asks once, and the shared token is retired
-  when no device uses it any more (or when the user regenerates it).
-- Existing Projects invitations keep working until revoked; new ones are no
-  longer issued. A device that pairs is matched to its invitation by name on the
-  Mac's Devices tab, where the user can fold it into the device's grants.
+The 6-digit pairing is the only way to enroll. Everything else stops being
+issued in the release that ships per-device tokens:
+
+- **Shared token** (Token tab, Copy, Regenerate, the `setAudioToken` AirDrop
+  URL, the manual "Companion Token" field on the client): no longer shown or
+  accepted for new enrollments. A device still holding it is accepted for a
+  transition period, shown in Devices as "Needs to pair again", and its
+  connection tells the headset to re-pair (one code, one dialog). The host then
+  stops accepting the shared token entirely once no device uses it, or when the
+  user chooses "Stop accepting old devices".
+- **Projects invitations** are no longer created; existing ones are honoured
+  for the same transition and listed under the device that should replace them.
+  The client's paste field goes away.
+- **Pasted SSH keys** (Copy Public Key → Remote tab) are replaced by the
+  `sshKey` request over the paired channel; already-authorized keys stay in
+  `authorized_keys`.
+- The `longwave://` scheme keeps only `pair` (address hint) and the broadcast
+  setup link.
 
 ## Order
 

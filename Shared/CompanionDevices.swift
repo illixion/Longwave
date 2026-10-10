@@ -87,6 +87,9 @@ nonisolated struct CompanionIdentify: Codable, Sendable, Equatable {
         return CompanionIdentify(deviceID: credential.deviceID, proof: proof(token: credential.token, binding: binding))
     }
 
+    /// RFC 5705 keying material with an **empty** context — what
+    /// `sec_protocol_metadata_create_secret` exports, and what a non-Apple
+    /// peer must ask for (BouncyCastle: a zero-length array, not null).
     static func binding(_ connection: NWConnection, channel: Channel) -> Data? {
         guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else { return nil }
         let label = channel.rawValue

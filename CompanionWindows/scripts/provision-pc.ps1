@@ -502,7 +502,10 @@ foreach ($rule in @(
   # all keep working (the HUD falls back to the UDP return path) while the Games tab simply
   # never loads and the broker logs a listener with nobody connected. Observed 2026-07-29,
   # within an hour of the port existing.
-  @{ Name = 'Longwave bridge control (TCP 9523)';      Proto = 'TCP'; Port = 9523 }
+  @{ Name = 'Longwave bridge control (TCP 9523)';      Proto = 'TCP'; Port = 9523 },
+  # Screen streaming and device pairing (the installer adds one program rule for both).
+  @{ Name = 'Longwave screen streaming (TCP 4857)';    Proto = 'TCP'; Port = 4857 },
+  @{ Name = 'Longwave device pairing (TCP 4859)';      Proto = 'TCP'; Port = 4859 }
 )) {
   if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow `

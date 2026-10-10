@@ -89,6 +89,8 @@ builder.Services.AddSingleton<ITetheringService>(sp =>
     var lf = sp.GetRequiredService<ILoggerFactory>();
     return new ElevatedTetheringProxy(lf.CreateLogger<ElevatedTetheringProxy>(), local);
 });
+builder.Services.AddSingleton<Longwave.WindowsCompanion.Backend.Devices.DeviceRegistry>();
+builder.Services.AddSingleton<Longwave.WindowsCompanion.Backend.Devices.DevicesService>();
 builder.Services.AddSingleton<NativeStreamingService>();
 // The game library (public since 2026-10-05; the PCVR host consumes it over this pipe).
 builder.Services.AddSingleton(sp => new Longwave.WindowsCompanion.Backend.Games.GameLibrary(
@@ -97,6 +99,7 @@ builder.Services.AddSingleton(sp => new Longwave.WindowsCompanion.Backend.Games.
     syntheticCount: int.TryParse(Environment.GetEnvironmentVariable("LONGWAVE_LIBRARY_SYNTHETIC"), out var synthetic)
         ? Math.Clamp(synthetic, 0, 100_000) : 0));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NativeStreamingService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Longwave.WindowsCompanion.Backend.Devices.DevicesService>());
 builder.Services.AddHostedService<MonitorService>();
 builder.Services.AddHostedService<PipeServer>();
 

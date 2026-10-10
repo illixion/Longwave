@@ -100,6 +100,15 @@ FunctionEnd
 !endif
 
 !macro customInstall
+  ; Inbound rule for the backend: screen streaming (4857) and pairing (4859). Added here, while
+  ; the installer is elevated anyway, instead of waiting for Windows Firewall's "allow access"
+  ; prompt the first time the backend listens. That prompt lands behind the app, and answering
+  ; it with Cancel (or Public only) leaves headsets unable to find or pair with this PC, with
+  ; nothing pointing at the firewall. Private and domain networks only, as the prompt's default
+  ; would be. Deleted first so a repair or an update doesn't stack duplicates; the uninstaller
+  ; removes it with the prompt-created ones.
+  nsExec::Exec '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="Longwave Companion" program="$INSTDIR\resources\backend\LongwaveCompanionBackend.exe"'
+  nsExec::Exec '"$SYSDIR\netsh.exe" advfirewall firewall add rule name="Longwave Companion" dir=in action=allow program="$INSTDIR\resources\backend\LongwaveCompanionBackend.exe" enable=yes profile=private,domain'
   ; SetRegView 64 is load-bearing, not boilerplate. The NSIS stub electron-builder produces is
   ; a 32-bit executable, so its default registry view is the WOW6432Node redirect — a plain
   ; WriteRegDWORD here would land somewhere the 64-bit (or arm64) app cannot see, and the app

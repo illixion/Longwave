@@ -202,7 +202,8 @@ final class CompanionPairingClient {
     private func handle(_ message: PairingMessage) {
         switch message {
         case .macHello(let macID, _, let publicKey, let nonce):
-            guard macID == self.macID, let agreement = PairingExchange.agree(
+            // A typed address names no host id up front: the first answer is it.
+            guard self.macID.isEmpty || macID == self.macID, let agreement = PairingExchange.agree(
                 mine: exchange, theirPublicKey: publicKey, commitment: commitment,
                 headsetPublicKey: exchange.publicKey, headsetNonce: exchange.nonce,
                 macPublicKey: publicKey, macNonce: nonce

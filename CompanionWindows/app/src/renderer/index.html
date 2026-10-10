@@ -210,7 +210,7 @@
         <p id="nsMsg" class="note hidden" aria-live="polite"></p>
 
         <section class="plate" aria-labelledby="nsPlateTitle">
-          <p class="silk plate-title" id="nsPlateTitle">Type this into Longwave on the headset</p>
+          <p class="silk plate-title" id="nsPlateTitle">This PC on the network</p>
 
           <div class="plate-row">
             <div class="plate-label">
@@ -233,15 +233,24 @@
             </div>
           </div>
 
-          <div class="plate-row">
-            <div class="plate-label"><span class="silk">Companion token</span></div>
+        </section>
+
+        <section class="panel" aria-labelledby="nsDevicesTitle">
+          <p class="silk" id="nsDevicesTitle">Paired devices</p>
+          <p class="hint">In Longwave, add a Native connection and pick this PC under Computers Nearby,
+            or type the address above under “Pair by address”. You compare a code here and choose what
+            that device may do; it isn't asked again when it connects.</p>
+          <div id="nsDeviceList" class="device-list"></div>
+          <p id="nsPairStatus" class="hint hidden" aria-live="polite"></p>
+          <div id="nsLegacy" class="plate-row hidden">
+            <div class="plate-label"><span class="silk">Older pairing token</span></div>
             <div class="readout-stack">
               <div class="readout readout-token" id="nsToken" data-value="">—</div>
-              <small class="hint hidden" id="nsTokenHint">Type it without the spaces.</small>
+              <small class="hint" id="nsTokenHint">Devices set up before pairing still connect with it. Pair them
+                again, then stop accepting it.</small>
             </div>
             <div class="plate-actions">
-              <button class="chip" type="button" data-copy="nsToken">Copy</button>
-              <button class="chip" type="button" id="nsRegenToken">New token</button>
+              <button class="chip" type="button" id="nsStopLegacy">Stop accepting</button>
             </div>
           </div>
         </section>

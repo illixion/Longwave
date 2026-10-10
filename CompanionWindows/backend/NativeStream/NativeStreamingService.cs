@@ -56,9 +56,13 @@ public sealed class NativeStreamingService : BackgroundService
         }
     }
 
-    public NativeStreamingService(ILogger<NativeStreamingService> log)
+    private readonly Devices.DeviceRegistry _devices;
+
+    public NativeStreamingService(ILogger<NativeStreamingService> log, Devices.DeviceRegistry devices)
     {
         _log = log;
+        _devices = devices;
+        _devices.Changed += OnDevicesChanged;
     }
 
     // MARK: Settings (registry-persisted)
@@ -85,29 +89,16 @@ public sealed class NativeStreamingService : BackgroundService
         set { WriteRegistry("NativeStreamKeyboardControl", value ? 1 : 0); PushInputAvailability(); }
     }
 
-    public string Token
-    {
-        get
-        {
-            var existing = ReadRegistryString("NativeStreamToken");
-            if (!string.IsNullOrEmpty(existing)) return existing;
-            var generated = Tokens.Random(20);
-            WriteRegistryString("NativeStreamToken", generated);
-            return generated;
-        }
-    }
+    /// <summary>The token this PC showed before devices paired, while it is
+    /// still accepted. Never generated any more: pairing mints one per device.</summary>
+    public string? LegacyToken => _devices.LegacyToken;
 
-    public string RegenerateToken()
+    private void OnDevicesChanged()
     {
-        var token = Tokens.Random(20);
-        WriteRegistryString("NativeStreamToken", token);
-        if (IsRunning)
-        {
-            StopServer();
-            StartServer();
-        }
+        NativeStreamServer? server;
+        lock (_gate) { server = _server; }
+        server?.DevicesChanged();
         StatusChanged?.Invoke();
-        return token;
     }
 
     public bool IsRunning
@@ -120,7 +111,9 @@ public sealed class NativeStreamingService : BackgroundService
         Enabled = Enabled,
         Running = IsRunning,
         Port = NativeStreamProtocol.DefaultPort,
-        Token = Token,
+        Token = LegacyToken ?? "",
+        Devices = _devices.Devices,
+        AcceptsLegacyToken = _devices.AcceptsLegacyToken,
         ConnectedDevice = _connectedDevices.Count == 0 ? null : string.Join(", ", _connectedDevices),
         LastError = _lastError,
         MouseControlEnabled = MouseControlEnabled,
@@ -200,7 +193,8 @@ public sealed class NativeStreamingService : BackgroundService
             _lastError = null;
             try
             {
-                var server = new NativeStreamServer(_log, Token);
+                var server = new NativeStreamServer(_log, _devices);
+                server.DeviceIdentified += id => _devices.NoteSeen(id);
                 server.ClientConnected += OnClientConnected;
                 server.ClientsChanged += OnClientsChanged;
                 server.WindowStreamStart += OnWindowStreamStart;
@@ -638,7 +632,10 @@ public sealed record NativeStreamStatus
     [JsonPropertyName("enabled")] public bool Enabled { get; init; }
     [JsonPropertyName("running")] public bool Running { get; init; }
     [JsonPropertyName("port")] public int Port { get; init; }
+    /// <summary>The old shared token, empty once it's no longer accepted.</summary>
     [JsonPropertyName("token")] public string Token { get; init; } = "";
+    [JsonPropertyName("devices")] public IReadOnlyList<Devices.PairedDeviceInfo> Devices { get; init; } = Array.Empty<Devices.PairedDeviceInfo>();
+    [JsonPropertyName("acceptsLegacyToken")] public bool AcceptsLegacyToken { get; init; }
     [JsonPropertyName("connectedDevice")] public string? ConnectedDevice { get; init; }
     [JsonPropertyName("lastError")] public string? LastError { get; init; }
     [JsonPropertyName("mouseControlEnabled")] public bool MouseControlEnabled { get; init; }

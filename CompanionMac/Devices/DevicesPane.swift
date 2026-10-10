@@ -16,7 +16,7 @@ struct DevicesPane: View {
         Form {
             Section {
                 LabeledContent("Pairing") {
-                    Text("In Longwave, add a Native connection and pick this Mac under Macs Nearby. This Mac then shows a code to compare and asks what the device may do.")
+                    Text("In Longwave, add a Native connection and pick this Mac under Computers Nearby. This Mac then shows a code to compare and asks what the device may do.")
                         .foregroundStyle(.secondary)
                 }
                 if controller.presence.localNetworkDenied {

@@ -21,6 +21,15 @@ final class CompanionLocator {
         let name: String
         let addresses: [String]
         let open: Bool
+        var isWindows = false
+        /// Set for a host paired by dialling its fixed pairing port (Windows).
+        var pairPort: UInt16?
+
+        /// What to dial for a host that takes direct pairing.
+        var pairLink: CompanionPairLink? {
+            guard let pairPort, !addresses.isEmpty else { return nil }
+            return CompanionPairLink(macID: macID, name: name, port: pairPort, addresses: addresses)
+        }
     }
 
     /// Companions announcing themselves on this network, while browsing.
@@ -103,7 +112,9 @@ final class CompanionLocator {
                 .split(separator: ",").map(String.init)
             let mac = NearbyMac(
                 macID: macID, name: name, addresses: addresses,
-                open: txt[CompanionDiscovery.Key.open] == "1"
+                open: txt[CompanionDiscovery.Key.open] == "1",
+                isWindows: txt[CompanionDiscovery.Key.os] == "windows",
+                pairPort: txt[CompanionDiscovery.Key.pairPort].flatMap(UInt16.init)
             )
             // The same record arrives once per interface; keep the fullest.
             if let existing = macs[macID], existing.addresses.count >= addresses.count, existing.open || !mac.open {

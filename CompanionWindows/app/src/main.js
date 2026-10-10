@@ -93,6 +93,11 @@ function registerPcvrModuleProtocol() {
 
 let mainWindow = null;
 let pairingWindow = null;
+// The device-pairing approval dialog (COMPANION_ENROLLMENT_PLAN.md): open while
+// a headset waits on the code comparison, closed the moment it's answered or
+// the headset goes away.
+let devicePairingWindow = null;
+let devicePairingRequest = null;
 let noticesWindow = null;
 let launcherWindow = null;
 let launchInFlight = false;
@@ -317,9 +322,18 @@ function createWindow({ show = true } = {}) {
   const send = (channel, payload) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
   };
-  client.on('connected', () => send('connection', true));
-  client.on('disconnected', () => send('connection', false));
-  client.on('notify', (event, data) => send('notify', { event, data }));
+  client.on('connected', () => {
+    send('connection', true);
+    client.rpc('DevicesStatus').then(syncDevicePairingWindow).catch(() => {});
+  });
+  client.on('disconnected', () => {
+    send('connection', false);
+    syncDevicePairingWindow(null);
+  });
+  client.on('notify', (event, data) => {
+    if (event === 'devices') syncDevicePairingWindow(data);
+    send('notify', { event, data });
+  });
   pcvrClient.on('connected', () => send('pcvr-connection', true));
   pcvrClient.on('disconnected', () => send('pcvr-connection', false));
   pcvrClient.on('notify', (event, data) => {
@@ -402,6 +416,52 @@ function sendPairingState() {
     qrPngDataUri: hasPairing && pairingRevealed
       ? (lastFoveatedStatus.qrPngDataUri || null)
       : null,
+  });
+}
+
+/** Shows, updates or closes the approval dialog to match the backend. */
+function syncDevicePairingWindow(status) {
+  const request = status?.pairing || null;
+  devicePairingRequest = request;
+  if (!request) {
+    if (devicePairingWindow && !devicePairingWindow.isDestroyed()) devicePairingWindow.close();
+    return;
+  }
+  if (devicePairingWindow && !devicePairingWindow.isDestroyed()) {
+    devicePairingWindow.webContents.send('device-pairing-state', request);
+    return;
+  }
+  devicePairingWindow = new BrowserWindow({
+    width: 520,
+    height: 470,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    title: 'Pair a Device',
+    icon: path.join(__dirname, '..', 'buildResources', 'icon.ico'),
+    backgroundColor: '#0a080c',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'devicepair-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  devicePairingWindow.removeMenu();
+  devicePairingWindow.loadFile(path.join(__dirname, 'devicepair', 'index.html'));
+  devicePairingWindow.webContents.on('did-finish-load', () => {
+    if (devicePairingRequest) devicePairingWindow?.webContents.send('device-pairing-state', devicePairingRequest);
+  });
+  devicePairingWindow.once('ready-to-show', () => devicePairingWindow?.focus());
+  devicePairingWindow.flashFrame(true);
+  devicePairingWindow.on('closed', () => {
+    // Closing the dialog without answering declines, as the Mac's does.
+    if (devicePairingRequest) {
+      client.rpc('PairingAnswer', { id: devicePairingRequest.id, approve: false }).catch(() => {});
+    }
+    devicePairingWindow = null;
   });
 }
 
@@ -1182,6 +1242,16 @@ ipcMain.handle('library-add', async (event) => {
 ipcMain.handle('library-ask-state', (event) => {
   if (!fromMainWindow(event)) return null;
   return !gameLauncher.consentRemembered(userDataDir());
+});
+
+ipcMain.handle('device-pairing-answer', async (event, answer) => {
+  if (!devicePairingWindow || event.sender !== devicePairingWindow.webContents) return null;
+  if (!devicePairingRequest || answer?.id !== devicePairingRequest.id) return null;
+  const grants = Array.isArray(answer.grants) ? answer.grants.filter((g) => typeof g === 'string') : [];
+  devicePairingRequest = null;
+  const status = await client.rpc('PairingAnswer', { id: answer.id, approve: !!answer.approve, grants });
+  if (devicePairingWindow && !devicePairingWindow.isDestroyed()) devicePairingWindow.close();
+  return status;
 });
 
 // ---- IPC bridge: renderer -> backend RPC ----

@@ -985,3 +985,17 @@ select { cursor: pointer; }
   vertical-align: top;
 }
 .lib-detail-art:empty { display: none; }
+
+/* Paired devices (Screen streaming) */
+.device-list { display: grid; gap: 6px; margin: 10px 0 6px; }
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, .08));
+}
+.device-row:first-child { border-top: none; }
+.device-text { display: grid; flex: 1; min-width: 0; }
+.device-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-grant { display: flex; gap: 6px; align-items: center; font-size: 12.5px; }

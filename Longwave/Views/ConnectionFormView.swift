@@ -50,6 +50,8 @@ struct ConnectionFormView: View {
     /// Offer this device's SSH key when pairing, so the Mac can allow SSH
     /// login as its user (the Projects tab's SSH Account mode).
     @State private var askForSSH = false
+    /// "Pair by address": for a computer this device can't see over Bonjour.
+    @State private var pairAddress = ""
     /// The paired Companion's identity, set by pairing (see `nearbyMacsSection`).
     @State private var companionMacID: String?
     @State private var pairing: CompanionPairingClient?
@@ -232,7 +234,7 @@ struct ConnectionFormView: View {
                     startPairing(with: mac)
                 } label: {
                     HStack {
-                        Label(mac.name, systemImage: "laptopcomputer")
+                        Label(mac.name, systemImage: mac.isWindows ? "pc" : "laptopcomputer")
                         Spacer()
                         Text(mac.macID == companionMacID ? "Paired" : "Pair")
                             .foregroundStyle(.secondary)
@@ -241,8 +243,18 @@ struct ConnectionFormView: View {
                 .disabled(isPairing)
             }
             if CompanionLocator.shared.nearby.isEmpty {
-                Text("Looking for Macs running Longwave Companion…")
+                Text("Looking for computers running Longwave Companion…")
                     .foregroundStyle(.secondary)
+            }
+            HStack {
+                TextField("Pair by address", text: $pairAddress)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Pair") {
+                    let address = pairAddress.trimmingCharacters(in: .whitespaces)
+                    startPairing(with: CompanionPairLink(macID: "", name: address, addresses: [address]))
+                }
+                .disabled(pairAddress.trimmingCharacters(in: .whitespaces).isEmpty || isPairing)
             }
             #if !os(macOS)
             Toggle("Ask for SSH login too", isOn: $askForSSH)
@@ -250,9 +262,9 @@ struct ConnectionFormView: View {
             #endif
             pairingStatus
         } header: {
-            Text("Macs Nearby")
+            Text("Computers Nearby")
         } footer: {
-            Text("Pairing asks the Mac to approve this headset and compare a code. Afterwards the Mac opens its stream ports only while this headset is nearby and asks for them.")
+            Text("Pairing shows a code here and on the computer; you compare them there and choose what this device may do. Not listed (Tailscale, a VPN, another network)? Pair by address: the computer's IP, with “Allow connections by address” on for a Mac.")
         }
         .onAppear { CompanionLocator.shared.startBrowsing() }
         .onDisappear {
@@ -313,6 +325,8 @@ struct ConnectionFormView: View {
     }
 
     private func startPairing(with mac: CompanionLocator.NearbyMac) {
+        // A Windows PC listens on a fixed pairing port instead of answering knocks.
+        if let link = mac.pairLink { return startPairing(with: link) }
         pairing?.cancel()
         let client = CompanionPairingClient(mac: mac, requested: requestedGrants, sshPublicKey: offeredSSHKey)
         pairing = client
@@ -380,7 +394,7 @@ struct ConnectionFormView: View {
                     .font(.system(.body, design: .monospaced))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                Text("Copy it from Longwave Companion on the PC (Screen streaming tab). Macs pair instead — pick one under Macs Nearby, or open its address link.")
+                Text("Only for a PC whose Longwave Companion predates pairing (it shows a token in its Screen streaming tab). An up-to-date PC pairs like a Mac — under Computers Nearby, or by address.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -390,7 +404,7 @@ struct ConnectionFormView: View {
             Section {
                 Label("Pair this connection again", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                Text("It still uses the token every device used to share. Pair it with its Mac under Macs Nearby (or open the Mac's address link) so it gets a key of its own — the Mac stops accepting the shared one eventually.")
+                Text("It still uses the token every device used to share. Pair it under Computers Nearby (or by address, or from the Mac's address link) so it gets a key of its own — the Mac stops accepting the shared one eventually.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

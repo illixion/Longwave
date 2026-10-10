@@ -25,7 +25,10 @@ const el = {
   nsPort: $('nsPort'),
   nsToken: $('nsToken'),
   nsTokenHint: $('nsTokenHint'),
-  nsRegenToken: $('nsRegenToken'),
+  nsStopLegacy: $('nsStopLegacy'),
+  nsLegacy: $('nsLegacy'),
+  nsDeviceList: $('nsDeviceList'),
+  nsPairStatus: $('nsPairStatus'),
   nsMouse: $('nsMouse'),
   nsKeyboard: $('nsKeyboard'),
 
@@ -496,11 +499,79 @@ function renderNativeStream(s) {
   }
 
   renderAddresses(s.addresses || []);
+  renderLegacyToken(s);
   setReadout(el.nsPort, String(s.port || 4857));
-  const tokenGrouped = setReadout(el.nsToken, s.token || '', { chunk: true });
-  el.nsTokenHint.classList.toggle('hidden', !tokenGrouped);
   el.nsMouse.checked = !!s.mouseControlEnabled;
   el.nsKeyboard.checked = !!s.keyboardControlEnabled;
+}
+
+// ── Paired devices ─────────────────────────────────────────────────────────
+
+const GRANT_TITLES = { screen: 'Screen', input: 'Control' };
+
+function renderDevices(d) {
+  if (!d) return;
+  const list = (d.devices || []).map((device) => {
+    const row = document.createElement('div');
+    row.className = 'device-row';
+    const text = document.createElement('div');
+    text.className = 'device-text';
+    const name = document.createElement('strong');
+    name.textContent = device.name;
+    const seen = document.createElement('small');
+    seen.className = 'hint';
+    seen.textContent = device.lastSeen
+      ? `Last connected ${new Date(device.lastSeen).toLocaleString()}`
+      : 'Not connected yet';
+    text.append(name, seen);
+    row.append(text);
+    for (const grant of ['screen', 'input']) {
+      const label = document.createElement('label');
+      label.className = 'device-grant';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = (device.grants || []).includes(grant);
+      box.addEventListener('change', async () => {
+        const grants = new Set(device.grants || []);
+        if (box.checked) grants.add(grant); else grants.delete(grant);
+        renderDevices(await window.hotspot.deviceSetGrants(device.id, [...grants]));
+      });
+      label.append(box, document.createTextNode(GRANT_TITLES[grant]));
+      row.append(label);
+    }
+    const revoke = document.createElement('button');
+    revoke.className = 'chip';
+    revoke.type = 'button';
+    revoke.textContent = 'Revoke';
+    revoke.addEventListener('click', async () => {
+      if (!window.confirm(`Revoke “${device.name}”? It has to pair again to connect.`)) return;
+      renderDevices(await window.hotspot.deviceRevoke(device.id));
+      toast('Device revoked');
+    });
+    row.append(revoke);
+    return row;
+  });
+  if (list.length === 0) {
+    const none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'None yet.';
+    list.push(none);
+  }
+  el.nsDeviceList.replaceChildren(...list);
+  el.nsPairStatus.textContent = d.pairing
+    ? `Pairing “${d.pairing.deviceName}” — answer in the Pair a Device window.`
+    : (d.lastStatus || '');
+  el.nsPairStatus.classList.toggle('hidden', !el.nsPairStatus.textContent);
+}
+
+async function refreshDevices() {
+  try { renderDevices(await window.hotspot.devicesStatus()); } catch { /* backend not up yet */ }
+}
+
+function renderLegacyToken(s) {
+  const token = s?.acceptsLegacyToken ? (s.token || '') : '';
+  el.nsLegacy.classList.toggle('hidden', !token);
+  if (token) setReadout(el.nsToken, token, { chunk: true });
 }
 
 function renderAddresses(addresses) {
@@ -611,6 +682,7 @@ async function refreshAll() {
   try {
     await loadUpstreams();
     await refreshNativeStream();
+    await refreshDevices();
     const s = await window.hotspot.getStatus();
     // Seed the fields from the live AP when one is running; otherwise the
     // generated defaults stay put.
@@ -756,9 +828,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   el.nsKeyboard.addEventListener('change', async () => {
     renderNativeStream(await window.hotspot.nativeStreamSetInput({ keyboard: el.nsKeyboard.checked }));
   });
-  el.nsRegenToken.addEventListener('click', async () => {
-    renderNativeStream(await window.hotspot.nativeStreamRegenerateToken());
-    toast('New token — reconnect the headset with it');
+  el.nsStopLegacy.addEventListener('click', async () => {
+    if (!window.confirm('Stop accepting the older token? Devices still using it have to pair again.')) return;
+    renderDevices(await window.hotspot.devicesStopLegacyToken());
+    await refreshNativeStream();
+    toast('The older token no longer works');
   });
   el.nsAddressPick.addEventListener('change', () => {
     preferredAddress = el.nsAddressPick.value;
@@ -802,6 +876,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.hotspot.onNotify(({ event, data }) => {
     if (event === 'state') renderStatus(data);
     else if (event === 'nativeStream') renderNativeStream(data);
+    else if (event === 'devices') renderDevices(data);
     // 'foveated' events are handled inside the PCVR module's own <webview> now — it
     // subscribes to window.hotspot.onNotify itself via the same preload.
   });

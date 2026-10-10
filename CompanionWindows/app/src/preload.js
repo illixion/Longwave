@@ -55,7 +55,11 @@ contextBridge.exposeInMainWorld('hotspot', {
   nativeStreamStatus: () => ipcRenderer.invoke('rpc', 'NativeStreamStatus'),
   nativeStreamSetEnabled: (enabled) => ipcRenderer.invoke('rpc', 'NativeStreamSetEnabled', { enabled }),
   nativeStreamSetInput: (params) => ipcRenderer.invoke('rpc', 'NativeStreamSetInput', params),
-  nativeStreamRegenerateToken: () => ipcRenderer.invoke('rpc', 'NativeStreamRegenerateToken'),
+  // Devices paired with this PC, each with its own key and grants.
+  devicesStatus: () => ipcRenderer.invoke('rpc', 'DevicesStatus'),
+  deviceSetGrants: (id, grants) => ipcRenderer.invoke('rpc', 'DeviceSetGrants', { id, grants }),
+  deviceRevoke: (id) => ipcRenderer.invoke('rpc', 'DeviceRevoke', { id }),
+  devicesStopLegacyToken: () => ipcRenderer.invoke('rpc', 'DevicesStopLegacyToken'),
 
   // Local helpers (no backend round-trip).
   genPassphrase: () => ipcRenderer.invoke('gen-passphrase'),

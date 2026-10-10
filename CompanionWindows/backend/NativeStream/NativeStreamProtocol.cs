@@ -78,6 +78,17 @@ public static class NativeStreamProtocol
     {
         [JsonPropertyName("deviceName")] public string DeviceName { get; init; } = "";
         [JsonPropertyName("protocolVersion")] public int? Version { get; init; }
+        /// <summary>Which paired device this is, proved over this TLS session
+        /// (<c>CompanionIdentify</c> in Shared/CompanionDevices.swift).</summary>
+        [JsonPropertyName("identity")] public Identify? Identity { get; init; }
+    }
+
+    public sealed record Identify
+    {
+        /// <summary>Null: the token this PC used to show.</summary>
+        [JsonPropertyName("deviceID")] public string? DeviceId { get; init; }
+        /// <summary>Base64, as Swift encodes <c>Data</c>.</summary>
+        [JsonPropertyName("proof")] public string Proof { get; init; } = "";
     }
 
     public sealed record HelloAck
@@ -93,6 +104,8 @@ public static class NativeStreamProtocol
         /// "Connecting…" waiting for a stream that will never arrive.
         /// </summary>
         [JsonPropertyName("supportsAudioStream")] public bool SupportsAudioStream { get; init; }
+        /// <summary>What this device may do here (CompanionGrant raw values).</summary>
+        [JsonPropertyName("grants")] public IReadOnlyList<string>? Grants { get; init; }
     }
 
     public sealed record WindowInfo

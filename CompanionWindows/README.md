@@ -347,9 +347,24 @@ is privileged — an open pipe would be a local privilege-escalation vector).
 TCP 4857 — the same wire format `CompanionMac` speaks, so the headset's *Native* connection
 type works unchanged against a Windows host:
 
+- **Pairing** (`backend/Devices/`, COMPANION_ENROLLMENT_PLAN.md): the same six-digit
+  numeric comparison the Mac uses, byte for byte, on the direct pairing port **TCP 4859**.
+  The PC announces itself as `_longwave-mac._tcp` (Windows' own DNS-SD, no Bonjour install)
+  with `os=windows` and `pp=4859`, so the headset lists it under Computers Nearby and dials
+  the port; "Pair by address" in the app does the same for a PC it can't see. The
+  "Pair a Device" window shows the code and asks once which grants the device gets
+  (screen, input); each device gets its own token, DPAPI-sealed in the registry
+  (`PairedDevices`). `backend-tests/PairingInteropTests.cs` pins the exchange and the
+  device proof to values CryptoKit produced.
 - **Transport:** TLS 1.2 external PSK (`TLS_PSK_WITH_AES_128_GCM_SHA256`), PSK derived
-  HKDF-SHA256 from the access token shown in the UI. SChannel exposes no PSK ciphersuites,
-  so the handshake runs on BouncyCastle. Newest authenticated viewer wins.
+  HKDF-SHA256 from **that device's** token, chosen per handshake by the PSK identity
+  `LongwaveMacNative/v1/<device id>`. The hello then carries a `CompanionIdentify` proof:
+  HMAC under the token over the session's RFC 5705 exporter value — with an **empty**
+  context, which is what Apple's `sec_protocol_metadata_create_secret` produces, and
+  BouncyCastle only exports inside `NotifyHandshakeComplete`. Screen and input are then
+  enforced per viewer; revoking a device ends its live session. The token this PC used
+  to show (bare identity) still works, with screen + input, until "Stop accepting".
+  SChannel exposes no PSK ciphersuites, so the handshake runs on BouncyCastle.
 - **Capture:** Windows.Graphics.Capture — the primary monitor is stream 0; every streamable
   top-level window is published in a 1 s inventory and can be streamed individually
   (Unity-style per-window visionOS scenes).
@@ -363,8 +378,9 @@ type works unchanged against a Windows host:
   `keyCodeSpace: hidUsage`). Clicks on an occluded streamed window raise it first. Mouse and
   keyboard control default **on** — the paired token is the consent gate — and can be
   disabled in the UI.
-- **Settings** persist under `HKCU\SOFTWARE\Longwave\Companion` (token, enabled, input
-  toggles).
+- **Settings** persist under `HKCU\SOFTWARE\Longwave\Companion` (paired devices, the
+  old token while accepted, enabled, input toggles). The installer adds an inbound firewall
+  rule for the backend (private/domain), so the first-listen prompt can't silently block it.
 
 Requires Windows 10 2004+ for Windows.Graphics.Capture and a hardware HEVC encoder
 (NVIDIA/Intel/AMD — there is no software fallback yet).

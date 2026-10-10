@@ -134,7 +134,7 @@ struct SetupAssistantView: View {
             }
 
             Section("Next") {
-                Text("In Longwave on your headset, add a Native connection and pick this Mac under Macs Nearby. Compare the code it shows with this Mac's, then choose what that headset may do.")
+                Text("In Longwave on your headset, add a Native connection and pick this Mac under Computers Nearby. Compare the code it shows with this Mac's, then choose what that headset may do.")
                     .foregroundStyle(.secondary)
                 HStack {
                     if neededPermissions.contains(where: { $0 == .fullDiskAccess || $0 == .screenRecording }) {

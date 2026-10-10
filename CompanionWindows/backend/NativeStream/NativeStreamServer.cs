@@ -32,11 +32,13 @@ public sealed class NativeStreamServer : IDisposable
     public event Action<uint, NativeStreamProtocol.MouseButton, ushort, ushort>? WindowMouseUp;
     public event Action<uint, ushort, ushort, short, short>? WindowScroll;
     public event Action<ushort, bool>? KeyEvent; // HID usage, isDown
+    /// <summary>A viewer proved which paired device it is (null: the old token).</summary>
+    public event Action<string?>? DeviceIdentified;
 
     private const int MaxPendingBytes = 12 * 1024 * 1024;
 
     private readonly ILogger _log;
-    private readonly byte[] _psk;
+    private readonly Devices.DeviceRegistry _devices;
     private readonly ushort _port;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancel;
@@ -56,6 +58,11 @@ public sealed class NativeStreamServer : IDisposable
     private sealed class Client : IDisposable
     {
         public required TcpClient Tcp { get; init; }
+        public required NativeStreamCrypto.Session Session { get; init; }
+        /// <summary>What this viewer's device may do, set by its hello.</summary>
+        public IReadOnlyList<string> Grants = Array.Empty<string>();
+        public bool CanSee => Grants.Contains(Devices.Grant.Screen);
+        public bool CanControl => Grants.Contains(Devices.Grant.Input);
         public required TlsServerProtocol Tls { get; init; }
         public string? DeviceName;
         public readonly HashSet<uint> Subscriptions = new();
@@ -71,10 +78,10 @@ public sealed class NativeStreamServer : IDisposable
         }
     }
 
-    public NativeStreamServer(ILogger log, string token, ushort port = NativeStreamProtocol.DefaultPort)
+    public NativeStreamServer(ILogger log, Devices.DeviceRegistry devices, ushort port = NativeStreamProtocol.DefaultPort)
     {
         _log = log;
-        _psk = NativeStreamCrypto.DerivePsk(token);
+        _devices = devices;
         _port = port;
     }
 
@@ -111,7 +118,8 @@ public sealed class NativeStreamServer : IDisposable
     {
         var frame = NativeStreamProtocol.EncodeWindowInventory(windows);
         _inventoryFrame = frame;
-        SendRequired(frame);
+        // Only viewers allowed the screen learn what's on it.
+        foreach (var client in Snapshot()) if (client.CanSee) Enqueue(client, frame);
     }
 
     public void SetInputAvailability(bool mouseAvailable, bool keyboardAvailable)
@@ -122,10 +130,13 @@ public sealed class NativeStreamServer : IDisposable
         _keyboardStatus = (byte)(keyboardAvailable
             ? NativeStreamProtocol.RemoteControlStatus.Available
             : NativeStreamProtocol.RemoteControlStatus.Disabled);
-        SendRequired(NativeStreamProtocol.EncodeFrame(
-            NativeStreamProtocol.FrameType.MouseStatus, new[] { _mouseStatus }));
-        SendRequired(NativeStreamProtocol.EncodeFrame(
-            NativeStreamProtocol.FrameType.KeyboardStatus, new[] { _keyboardStatus }));
+        foreach (var client in Snapshot())
+        {
+            Enqueue(client, NativeStreamProtocol.EncodeFrame(
+                NativeStreamProtocol.FrameType.MouseStatus, new[] { InputStatus(client, _mouseStatus) }));
+            Enqueue(client, NativeStreamProtocol.EncodeFrame(
+                NativeStreamProtocol.FrameType.KeyboardStatus, new[] { InputStatus(client, _keyboardStatus) }));
+        }
     }
 
     public void BroadcastWindowFormat(uint windowId, byte[] parameterSets)
@@ -175,11 +186,6 @@ public sealed class NativeStreamServer : IDisposable
         }
         var frame = NativeStreamProtocol.EncodeWindowClosed(windowId, reason);
         foreach (var client in snapshot) Enqueue(client, frame);
-    }
-
-    private void SendRequired(byte[] frame)
-    {
-        foreach (var client in Snapshot()) Enqueue(client, frame);
     }
 
     private Client[] Snapshot()
@@ -247,10 +253,10 @@ public sealed class NativeStreamServer : IDisposable
 
     private void ServeClient(TcpClient tcp, CancellationToken ct)
     {
-        TlsServerProtocol tls;
+        NativeStreamCrypto.Session session;
         try
         {
-            tls = NativeStreamCrypto.Accept(tcp.GetStream(), _psk);
+            session = NativeStreamCrypto.Accept(tcp.GetStream(), id => _devices.Lookup(id)?.Token);
         }
         catch (Exception ex)
         {
@@ -259,7 +265,8 @@ public sealed class NativeStreamServer : IDisposable
             return;
         }
 
-        var client = new Client { Tcp = tcp, Tls = tls };
+        var tls = session.Protocol;
+        var client = new Client { Tcp = tcp, Tls = tls, Session = session };
         var writer = new Thread(() => WriteLoop(client)) { IsBackground = true };
         writer.Start();
 
@@ -325,12 +332,18 @@ public sealed class NativeStreamServer : IDisposable
                         "This host requires a newer Longwave (protocol v2)."));
                     return;
                 }
+                if (!Identified(client, hello.Identity))
+                {
+                    Enqueue(client, NativeStreamProtocol.EncodeError(
+                        "This device isn't paired with this PC. Pair it again from Longwave's connection settings."));
+                    return;
+                }
                 Promote(client, hello.DeviceName);
                 break;
             }
             case NativeStreamProtocol.FrameType.KeepAlive:
                 break;
-            case NativeStreamProtocol.FrameType.WindowStreamStart when isActive:
+            case NativeStreamProtocol.FrameType.WindowStreamStart when isActive && client.CanSee:
             {
                 if (NativeStreamProtocol.DecodeWindowId(payload) is not { } id) break;
                 bool alreadyRunning;
@@ -373,55 +386,94 @@ public sealed class NativeStreamServer : IDisposable
                 if (last) WindowStreamStop?.Invoke(id);
                 break;
             }
-            case NativeStreamProtocol.FrameType.FocusWindow when isActive:
+            case NativeStreamProtocol.FrameType.FocusWindow when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeWindowId(payload) is { } focusId)
                     FocusWindow?.Invoke(focusId);
                 break;
-            case NativeStreamProtocol.FrameType.WindowMouseMove when isActive:
+            case NativeStreamProtocol.FrameType.WindowMouseMove when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeWindowMouseMove(payload) is { } move)
                     WindowMouseMove?.Invoke(move.WindowId, move.X, move.Y);
                 break;
-            case NativeStreamProtocol.FrameType.WindowMouseDown when isActive:
+            case NativeStreamProtocol.FrameType.WindowMouseDown when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeWindowMouseButton(payload) is { } down)
                     WindowMouseDown?.Invoke(down.WindowId, down.Button, down.X, down.Y);
                 break;
-            case NativeStreamProtocol.FrameType.WindowMouseUp when isActive:
+            case NativeStreamProtocol.FrameType.WindowMouseUp when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeWindowMouseButton(payload) is { } up)
                     WindowMouseUp?.Invoke(up.WindowId, up.Button, up.X, up.Y);
                 break;
-            case NativeStreamProtocol.FrameType.WindowScroll when isActive:
+            case NativeStreamProtocol.FrameType.WindowScroll when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeWindowScroll(payload) is { } scroll)
                     WindowScroll?.Invoke(scroll.WindowId, scroll.X, scroll.Y, scroll.DeltaX, scroll.DeltaY);
                 break;
             // Legacy (v1) desktop-space mouse frames target the desktop stream.
-            case NativeStreamProtocol.FrameType.MouseMove when isActive:
+            case NativeStreamProtocol.FrameType.MouseMove when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeMouseMove(payload) is { } legacyMove)
                     WindowMouseMove?.Invoke(NativeStreamProtocol.DesktopStreamId, legacyMove.X, legacyMove.Y);
                 break;
-            case NativeStreamProtocol.FrameType.MouseDown when isActive:
+            case NativeStreamProtocol.FrameType.MouseDown when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeMouseButton(payload) is { } legacyDown)
                     WindowMouseDown?.Invoke(
                         NativeStreamProtocol.DesktopStreamId, legacyDown.Button, legacyDown.X, legacyDown.Y);
                 break;
-            case NativeStreamProtocol.FrameType.MouseUp when isActive:
+            case NativeStreamProtocol.FrameType.MouseUp when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeMouseButton(payload) is { } legacyUp)
                     WindowMouseUp?.Invoke(
                         NativeStreamProtocol.DesktopStreamId, legacyUp.Button, legacyUp.X, legacyUp.Y);
                 break;
-            case NativeStreamProtocol.FrameType.Scroll when isActive:
+            case NativeStreamProtocol.FrameType.Scroll when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeScroll(payload) is { } legacyScroll)
                     WindowScroll?.Invoke(
                         NativeStreamProtocol.DesktopStreamId,
                         legacyScroll.X, legacyScroll.Y, legacyScroll.DeltaX, legacyScroll.DeltaY);
                 break;
-            case NativeStreamProtocol.FrameType.KeyDown when isActive:
+            case NativeStreamProtocol.FrameType.KeyDown when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeKeyEvent(payload) is { } keyDown)
                     KeyEvent?.Invoke(keyDown.KeyCode, true);
                 break;
-            case NativeStreamProtocol.FrameType.KeyUp when isActive:
+            case NativeStreamProtocol.FrameType.KeyUp when isActive && client.CanControl:
                 if (NativeStreamProtocol.DecodeKeyEvent(payload) is { } keyUp)
                     KeyEvent?.Invoke(keyUp.KeyCode, false);
                 break;
+        }
+    }
+
+    /// <summary>Checks the hello's identify proof against the credential the
+    /// handshake used, and takes that device's grants.</summary>
+    private bool Identified(Client client, NativeStreamProtocol.Identify? identity)
+    {
+        if (identity is null) return false;
+        byte[] proof;
+        try { proof = Convert.FromBase64String(identity.Proof); }
+        catch (FormatException) { return false; }
+        if (_devices.Lookup(client.Session.DeviceId) is not { } entry
+            || !NativeStreamCrypto.Verifies(identity.DeviceId, proof, client.Session, entry.Token)) return false;
+        client.Grants = entry.Grants;
+        DeviceIdentified?.Invoke(client.Session.DeviceId);
+        return true;
+    }
+
+    private static byte InputStatus(Client client, byte status) =>
+        client.CanControl ? status : (byte)NativeStreamProtocol.RemoteControlStatus.Disabled;
+
+    /// <summary>
+    /// A device was paired or revoked, or its grants changed. The PSK is looked
+    /// up per handshake, so nothing listens differently; viewers whose device
+    /// lost access, or whose grants changed, are told and dropped.
+    /// </summary>
+    public void DevicesChanged()
+    {
+        Client[] affected;
+        lock (_gate)
+        {
+            affected = _clients.Where(c =>
+                _devices.Lookup(c.Session.DeviceId) is not { } entry
+                || !entry.Grants.OrderBy(g => g).SequenceEqual(c.Grants.OrderBy(g => g))).ToArray();
+        }
+        foreach (var client in affected)
+        {
+            Enqueue(client, NativeStreamProtocol.EncodeError("This device's access to this PC changed. Connect again."));
+            Task.Delay(300).ContinueWith(_ => Remove(client));
         }
     }
 
@@ -441,15 +493,15 @@ public sealed class NativeStreamServer : IDisposable
             names = _clients.Select(c => c.DeviceName ?? "Unknown").ToArray();
         }
 
-        Enqueue(client, NativeStreamProtocol.EncodeHelloAck(new NativeStreamProtocol.HelloAck()));
-        if (_inventoryFrame is { } inventory)
+        Enqueue(client, NativeStreamProtocol.EncodeHelloAck(new NativeStreamProtocol.HelloAck { Grants = client.Grants }));
+        if (client.CanSee && _inventoryFrame is { } inventory)
         {
             Enqueue(client, inventory);
         }
         Enqueue(client, NativeStreamProtocol.EncodeFrame(
-            NativeStreamProtocol.FrameType.MouseStatus, new[] { _mouseStatus }));
+            NativeStreamProtocol.FrameType.MouseStatus, new[] { InputStatus(client, _mouseStatus) }));
         Enqueue(client, NativeStreamProtocol.EncodeFrame(
-            NativeStreamProtocol.FrameType.KeyboardStatus, new[] { _keyboardStatus }));
+            NativeStreamProtocol.FrameType.KeyboardStatus, new[] { InputStatus(client, _keyboardStatus) }));
 
         _log.LogInformation("Native stream viewer connected: {Device}", deviceName);
         ClientConnected?.Invoke(deviceName);

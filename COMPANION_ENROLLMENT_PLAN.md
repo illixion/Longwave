@@ -5,7 +5,14 @@ install, per-device tokens and grants, the pairing dialog, Devices tab, address
 link and direct pairing port, Projects and the watch lane on device keys, the
 SSH key offered in the pairing commit (added to authorized_keys exactly while
 the device holds `sshKey`), and the iPhone handing the watch its own device key.
-Step 4 (Windows) is open.
+Step 4 done for screen streaming: the Windows host pairs the same way (direct
+port 4859, `os=windows`/`pp` in its `_longwave-mac._tcp` record, a "Pair a
+Device" window, per-device keys with the identify proof), verified end to end
+against the gaming PC including revocation. The `pcvr` grant waits for the own
+foveated-streaming provider. Not done: a separate Windows first-run checklist
+(its firewall rule now comes from the installer; drivers and hotspot already
+explain their own prompts). Deviation: Windows reuses `_longwave-mac._tcp` with
+an `os` key instead of a new `_longwave-host._tcp`, so no Info.plist changes.
 Deviations: asking for more grants later pairs again (one code) rather than a
 code-less request; Projects invitations were removed outright instead of
 honoured for a transition (the feature was a day old).

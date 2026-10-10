@@ -33,7 +33,7 @@ struct CompanionProjectsView: View {
         List {
             Section {
                 if macs.isEmpty {
-                    Text("Pair a Mac first: Connections → Add → Native → Macs Nearby. Its Companion decides whether this device may use Projects.")
+                    Text("Pair a Mac first: Connections → Add → Native → Computers Nearby. Its Companion decides whether this device may use Projects.")
                         .foregroundStyle(.secondary)
                 } else {
                     Picker("Mac", selection: Binding(get: { selected?.id.uuidString ?? "" }, set: { lastConnection = $0 })) {

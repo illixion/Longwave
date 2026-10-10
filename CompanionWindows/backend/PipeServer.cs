@@ -67,15 +67,20 @@ public sealed class PipeServer : BackgroundService
         }
     }
 
+    private readonly Devices.DevicesService _devices;
+
     public PipeServer(ILogger<PipeServer> log, ITetheringService controller,
-                     NativeStream.NativeStreamingService nativeStream, Games.GameLibrary games)
+                     NativeStream.NativeStreamingService nativeStream, Games.GameLibrary games,
+                     Devices.DevicesService devices)
     {
         _log = log;
         _controller = controller;
         _nativeStream = nativeStream;
         _games = games;
+        _devices = devices;
         _controller.StatusChanged += OnStatusChanged;
         _nativeStream.StatusChanged += OnNativeStreamChanged;
+        _devices.Changed += OnDevicesChanged;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -254,7 +259,12 @@ public sealed class PipeServer : BackgroundService
                 "NativeStreamStatus" => _nativeStream.GetStatus(),
                 "NativeStreamSetEnabled" => SetNativeStreamEnabled(ParseParams<NativeStreamEnableParams>(req)),
                 "NativeStreamSetInput" => SetNativeStreamInput(ParseParams<NativeStreamInputParams>(req)),
-                "NativeStreamRegenerateToken" => RegenerateNativeStreamToken(),
+                // ---- Paired devices ----
+                "DevicesStatus" => DevicesStatus(),
+                "PairingAnswer" => AnswerPairing(ParseParams<PairingAnswerParams>(req)),
+                "DeviceSetGrants" => SetDeviceGrants(ParseParams<DeviceGrantsParams>(req)),
+                "DeviceRevoke" => RevokeDevice(ParseParams<DeviceGrantsParams>(req)),
+                "DevicesStopLegacyToken" => StopLegacyToken(),
                 // ---- Game library (public; the PCVR host relays the headset's requests here) ----
                 "LibraryList" => ListLibrary(ParseParams<LibraryListParams>(req)),
                 "LibraryListExposed" => _games.ListExposedTitles(),
@@ -342,10 +352,57 @@ public sealed class PipeServer : BackgroundService
         return _nativeStream.GetStatus();
     }
 
-    private object RegenerateNativeStreamToken()
+    private object DevicesStatus() => new
     {
-        _nativeStream.RegenerateToken();
-        return _nativeStream.GetStatus();
+        hostId = _devices.Registry.HostId,
+        devices = _devices.Registry.Devices,
+        acceptsLegacyToken = _devices.Registry.AcceptsLegacyToken,
+        pairing = _devices.Pairing.CurrentRequest,
+        lastStatus = _devices.LastStatus,
+        pairingPort = Devices.PairingService.Port,
+        addresses = Devices.HostAddresses.Lan(),
+    };
+
+    private object AnswerPairing(PairingAnswerParams? p)
+    {
+        if (p is not null) _devices.Pairing.Answer(p.Id, p.Approve ? (p.Grants ?? Array.Empty<string>()) : null);
+        return DevicesStatus();
+    }
+
+    private object SetDeviceGrants(DeviceGrantsParams? p)
+    {
+        if (p is not null) _devices.Registry.SetGrants(p.Id, p.Grants ?? Array.Empty<string>());
+        return DevicesStatus();
+    }
+
+    private object RevokeDevice(DeviceGrantsParams? p)
+    {
+        if (p is not null) _devices.Registry.Revoke(p.Id);
+        return DevicesStatus();
+    }
+
+    private object StopLegacyToken()
+    {
+        _devices.Registry.StopAcceptingLegacyToken();
+        return DevicesStatus();
+    }
+
+    private void OnDevicesChanged()
+    {
+        _ = BroadcastAsync(RpcEvent.Of("devices", DevicesStatus()));
+    }
+
+    private sealed record PairingAnswerParams
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("id")] public string Id { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("approve")] public bool Approve { get; init; }
+        [System.Text.Json.Serialization.JsonPropertyName("grants")] public string[]? Grants { get; init; }
+    }
+
+    private sealed record DeviceGrantsParams
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("id")] public string Id { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("grants")] public string[]? Grants { get; init; }
     }
 
     private void OnNativeStreamChanged()
@@ -395,6 +452,7 @@ public sealed class PipeServer : BackgroundService
     {
         _controller.StatusChanged -= OnStatusChanged;
         _nativeStream.StatusChanged -= OnNativeStreamChanged;
+        _devices.Changed -= OnDevicesChanged;
         base.Dispose();
     }
 

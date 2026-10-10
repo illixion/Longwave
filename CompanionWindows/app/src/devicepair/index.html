@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self'; script-src 'self';" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pair a Device</title>
+  <link rel="stylesheet" href="devicepair.css" />
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Longwave Companion</p>
+    <h1 id="title">Pair a device with this PC?</h1>
+    <p class="lede">Check that the device shows this code:</p>
+    <p id="code" class="code">— — —</p>
+    <p class="lede">Choose what it may do. You won't be asked again when it connects; change this any time
+      under Screen streaming → Paired devices.</p>
+    <form id="grants" class="grants"></form>
+    <div class="actions">
+      <button id="decline" type="button" class="secondary">Don't Pair</button>
+      <button id="approve" type="button" class="primary">Pair</button>
+    </div>
+  </main>
+  <script src="devicepair.js"></script>
+</body>
+</html>

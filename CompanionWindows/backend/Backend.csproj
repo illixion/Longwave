@@ -28,6 +28,8 @@
     <!-- Native screen streaming: TLS-PSK (SChannel exposes no PSK suites) and
          the D3D11 / Media Foundation capture-encode pipeline. -->
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <!-- Paired devices' tokens, sealed to the current user (DPAPI). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
     <!-- Game library: Steam's binary appinfo.vdf (launch entries, VR flags) and cover-art

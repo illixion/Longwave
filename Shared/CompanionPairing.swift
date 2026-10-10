@@ -37,6 +37,11 @@ nonisolated enum CompanionDiscovery {
         static let tag = "t"
         static let pairRequest = "pair"
         static let name = "n"
+        /// "windows" on a Windows host's record; absent on a Mac's.
+        static let os = "os"
+        /// The host's fixed pairing port. A host that lists it (Windows) is
+        /// paired by dialling it rather than knocking for a listener.
+        static let pairPort = "pp"
     }
 
     static let version = "1"

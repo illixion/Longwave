@@ -411,6 +411,7 @@ final class MacNativeStreamingController {
         let generation = serverGeneration
         let previousServer = server
         server = nil
+        input.releaseHeldKeys()
         watchServer?.stop()
         watchServer = nil
         watchActive = false
@@ -460,6 +461,8 @@ final class MacNativeStreamingController {
         server.onClientsChanged = { [weak self] clients in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
+                // A viewer left, maybe mid-press: keys it held must not stay down.
+                if clients.count < self.connectedDeviceNames.count { self.input.releaseHeldKeys() }
                 self.connectedDeviceNames = clients.map(\.deviceName)
                 // Only ever raised by a viewer that has probed its own
                 // hardware decoder — see `MacNativeVideoCapability`.
@@ -702,6 +705,7 @@ final class MacNativeStreamingController {
 
     private func stopServer() {
         serverGeneration += 1
+        input.releaseHeldKeys()
         let oldServer = server
         server = nil
         oldServer?.stop()

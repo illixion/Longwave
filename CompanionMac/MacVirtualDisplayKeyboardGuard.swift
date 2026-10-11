@@ -70,9 +70,9 @@ final class MacVirtualDisplayKeyboardGuard {
     @ObservationIgnored private var gated: [CGEvent] = []
     @ObservationIgnored private var gateTimer: Timer?
 
-    /// Key codes whose key-down went out through the session stream, so their
-    /// key-up follows the same route even if the frontmost app changed since.
-    @ObservationIgnored private var sessionRouted = Set<Int64>()
+    /// The route each held key's key-down took, so its repeats and key-up
+    /// follow it even if the frontmost app changed since.
+    @ObservationIgnored private var routes: [Int64: Route] = [:]
     @ObservationIgnored private var guardingLogged = false
 
     private init() {}
@@ -106,9 +106,13 @@ final class MacVirtualDisplayKeyboardGuard {
                 guardingLogged = false
                 Self.log.info("keyboard back on the Mac — headset keys post normally")
             }
-            sessionRouted.removeAll()
             closeGate()
-            event.post(tap: .cghidEventTap)
+            if event.type == .keyUp, let route = routes.removeValue(forKey: event.getIntegerValueField(.keyboardEventKeycode)) {
+                // Pressed while rerouted: release it where it went down.
+                post(event, via: route)
+            } else {
+                event.post(tap: .cghidEventTap)
+            }
             return
         }
         if !guardingLogged {
@@ -147,24 +151,33 @@ final class MacVirtualDisplayKeyboardGuard {
         return macVDCached
     }
 
+    private enum Route { case session, process(pid_t) }
+
     private func deliver(_ event: CGEvent) {
         let code = event.getIntegerValueField(.keyboardEventKeycode)
-        let isUp = event.type == .keyUp
-        let frontPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let target = targetPid()
-        if isUp, sessionRouted.remove(code) != nil {
-            event.post(tap: .cgSessionEventTap)
+        // A held key's repeats and its release follow the route its press
+        // took, so the app that saw it go down also sees it come up.
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        if event.type == .keyUp || isRepeat, let route = routes[code] {
+            if event.type == .keyUp { routes[code] = nil }
+            post(event, via: route)
             return
         }
-        guard let target else { return }
-        if frontPid == target {
-            // The session stream delivers to the frontmost app and passes the
-            // global-hotkey stage, so a push-to-talk key still reaches the
-            // voice app listening for it.
-            if event.type == .keyDown { sessionRouted.insert(code) }
-            event.post(tap: .cgSessionEventTap)
-        } else {
-            event.postToPid(target)
+        guard let target = targetPid() else { return }
+        // The session stream delivers to the frontmost app and passes the
+        // global-hotkey stage, so a push-to-talk key still reaches the voice
+        // app listening for it. Straight to the process only while visionOS
+        // won't give that app the front.
+        let route: Route = NSWorkspace.shared.frontmostApplication?.processIdentifier == target
+            ? .session : .process(target)
+        if event.type == .keyDown { routes[code] = route }
+        post(event, via: route)
+    }
+
+    private func post(_ event: CGEvent, via route: Route) {
+        switch route {
+        case .session: event.post(tap: .cgSessionEventTap)
+        case .process(let pid): event.postToPid(pid)
         }
     }
 

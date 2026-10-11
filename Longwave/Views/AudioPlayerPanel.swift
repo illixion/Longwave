@@ -300,35 +300,58 @@ struct MicrophoneToggleButton: View {
     var onPushToTalk: ((Bool) -> Void)? = nil
 
     @Environment(AudioStreamManager.self) private var audioManager
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var pressed = false
     @State private var holdTask: Task<Void, Never>?
     @State private var holding = false
 
     /// Long enough that a deliberate tap never becomes a hold.
     private static let holdDelay: Duration = .milliseconds(350)
 
-    var body: some View {
-        Button {
-            // A hold already did its work on release; its trailing tap (if
-            // the system sends one) must not toggle as well.
-            guard !holding else { return }
-            audioManager.toggleMicrophone()
-        } label: {
-            Image(systemName: audioManager.microphoneEnabled ? "mic.fill" : "mic.slash")
-        }
-        .buttonStyle(PressReportingButtonStyle(onPressChanged: pressChanged))
-        .foregroundStyle(audioManager.microphoneEnabled ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-        .disabled(!audioManager.microphoneEnabled && !audioManager.microphoneAvailable)
-        .help(help)
-        .onDisappear { endHold() }
+    private var usable: Bool {
+        isEnabled && (audioManager.microphoneEnabled || audioManager.microphoneAvailable)
     }
 
-    private func pressChanged(_ pressed: Bool) {
+    /// A gesture rather than a `Button`: a button learns of a gaze-and-pinch
+    /// only at the release, so a hold looked like a tap. A zero-distance drag
+    /// starts the moment the fingers close, by pinch, touch or pointer alike.
+    var body: some View {
+        Image(systemName: audioManager.microphoneEnabled ? "mic.fill" : "mic.slash")
+            .foregroundStyle(audioManager.microphoneEnabled ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            .opacity(usable ? (pressed ? 0.6 : 1) : 0.4)
+            .padding(6)
+            .contentShape(.hoverEffect, Circle())
+            .contentShape(Circle())
+            .hoverEffect()
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !pressed else { return }
+                        pressed = true
+                        pressBegan()
+                    }
+                    .onEnded { value in
+                        pressed = false
+                        pressEnded(isTap: hypot(value.translation.width, value.translation.height) < 24)
+                    },
+                isEnabled: usable
+            )
+            .accessibilityElement()
+            .accessibilityLabel("Microphone")
+            .accessibilityValue(audioManager.microphoneEnabled ? "On" : "Off")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                if usable { audioManager.toggleMicrophone() }
+            }
+            .help(help)
+            .onDisappear {
+                pressed = false
+                pressEnded(isTap: false)
+            }
+    }
+
+    private func pressBegan() {
         holdTask?.cancel()
-        holdTask = nil
-        guard pressed else {
-            endHold()
-            return
-        }
         holding = false
         holdTask = Task {
             try? await Task.sleep(for: Self.holdDelay)
@@ -339,14 +362,16 @@ struct MicrophoneToggleButton: View {
         }
     }
 
-    /// Leaves `holding` set so the release's tap is swallowed; the next press
-    /// clears it.
-    private func endHold() {
+    private func pressEnded(isTap: Bool) {
         holdTask?.cancel()
         holdTask = nil
-        guard holding else { return }
-        onPushToTalk?(false)
-        audioManager.endPushToTalk()
+        if holding {
+            holding = false
+            onPushToTalk?(false)
+            audioManager.endPushToTalk()
+        } else if isTap {
+            audioManager.toggleMicrophone()
+        }
     }
 
     private var help: String {
@@ -363,32 +388,4 @@ struct MicrophoneToggleButton: View {
     }
 }
 
-/// A borderless-looking style that reports press-down and release, which a
-/// `Button` otherwise keeps to itself. Unlike a drag or long-press gesture
-/// beside the button, it sees exactly the press the button sees, by gaze and
-/// pinch, touch or pointer alike.
-private struct PressReportingButtonStyle: ButtonStyle {
-    let onPressChanged: (Bool) -> Void
-
-    func makeBody(configuration: Configuration) -> some View {
-        PressReportingLabel(configuration: configuration, onPressChanged: onPressChanged)
-    }
-
-    private struct PressReportingLabel: View {
-        let configuration: Configuration
-        let onPressChanged: (Bool) -> Void
-        @Environment(\.isEnabled) private var isEnabled
-
-        var body: some View {
-            configuration.label
-                .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
-                .padding(6)
-                .contentShape(.hoverEffect, Circle())
-                .hoverEffect()
-                .onChange(of: configuration.isPressed) { _, pressed in
-                    onPressChanged(pressed)
-                }
-        }
-    }
-}
 #endif

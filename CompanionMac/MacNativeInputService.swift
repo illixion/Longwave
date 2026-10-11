@@ -189,12 +189,75 @@ final class MacNativeInputService {
 
     func keyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
         guard isKeyboardShortcutsAvailable else { return }
-        postKey(keyCode: CGKeyCode(keyCode), isDown: true, modifiers: modifiers.cgEventFlags)
+        let code = CGKeyCode(keyCode)
+        heldKeys.insert(code)
+        postKey(keyCode: code, isDown: true, modifiers: modifiers.cgEventFlags)
+        if !Self.isModifier(code) { startRepeat(code, flags: modifiers.cgEventFlags) }
     }
 
     func keyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
         guard isKeyboardShortcutsAvailable else { return }
-        postKey(keyCode: CGKeyCode(keyCode), isDown: false, modifiers: modifiers.cgEventFlags)
+        let code = CGKeyCode(keyCode)
+        heldKeys.remove(code)
+        if repeatingKey == code { stopRepeat() }
+        postKey(keyCode: code, isDown: false, modifiers: modifiers.cgEventFlags)
+    }
+
+    /// Lets go of every key a viewer still holds — its connection went away
+    /// mid-press, and a key left down here would repeat forever.
+    func releaseHeldKeys() {
+        stopRepeat()
+        for code in heldKeys.sorted() { postKey(keyCode: code, isDown: false, modifiers: []) }
+        heldKeys.removeAll()
+    }
+
+    // MARK: - Key repeat
+    //
+    // A key held on a real keyboard keeps arriving as autorepeat key-downs and
+    // reads as down in the HID state; a single synthetic key-down does neither,
+    // so push-to-talk (the microphone button holds Space) saw a tap rather than
+    // a hold. Repeats follow the user's own Keyboard settings, and stop at the
+    // next key, as on hardware.
+
+    @ObservationIgnored private var heldKeys = Set<CGKeyCode>()
+    @ObservationIgnored private var repeatingKey: CGKeyCode?
+    @ObservationIgnored private var repeatTimer: Timer?
+
+    /// kVK_Command … kVK_Function: modifiers never repeat.
+    private static func isModifier(_ code: CGKeyCode) -> Bool { (0x36...0x3F).contains(code) }
+
+    private func repeatSettings() -> (initial: Double, interval: Double)? {
+        let defaults = UserDefaults.standard
+        let initial = (defaults.object(forKey: "InitialKeyRepeat") as? Double) ?? 25 // 1/60 s ticks
+        let interval = (defaults.object(forKey: "KeyRepeat") as? Double) ?? 6
+        if initial >= 300_000 || interval >= 300_000 { return nil } // repeat turned off
+        return (max(initial, 1) / 60, max(interval, 1) / 60)
+    }
+
+    private func startRepeat(_ code: CGKeyCode, flags: CGEventFlags) {
+        stopRepeat()
+        guard let (initial, interval) = repeatSettings() else { return }
+        repeatingKey = code
+        repeatTimer = Timer.scheduledTimer(withTimeInterval: initial, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.repeatingKey == code else { return }
+                self.repeatTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, self.repeatingKey == code, self.isKeyboardShortcutsAvailable else {
+                            self?.stopRepeat()
+                            return
+                        }
+                        self.postKey(keyCode: code, isDown: true, modifiers: flags, autorepeat: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatingKey = nil
     }
 
     // MARK: - Private
@@ -217,9 +280,14 @@ final class MacNativeInputService {
         event.post(tap: .cghidEventTap)
     }
 
-    private func postKey(keyCode: CGKeyCode, isDown: Bool, modifiers: CGEventFlags) {
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown) else { return }
+    /// Keys post from the HID state source, so the key reads as down to
+    /// anything polling key state for as long as it is held.
+    @ObservationIgnored private let keySource = CGEventSource(stateID: .hidSystemState)
+
+    private func postKey(keyCode: CGKeyCode, isDown: Bool, modifiers: CGEventFlags, autorepeat: Bool = false) {
+        guard let event = CGEvent(keyboardEventSource: keySource, virtualKey: keyCode, keyDown: isDown) else { return }
         event.flags = modifiers
+        if autorepeat { event.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
         MacVirtualDisplayKeyboardGuard.shared.post(event)
     }
 

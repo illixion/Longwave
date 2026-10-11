@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// The Native desktop's controls: Screen, touch mode, right-click, Mouse,
-/// Display, Keyboard, Audio, Disconnect. The desktop window's bottom
+/// Display, Keyboard, Audio, Disconnect. Keyboard stays when Screen is off. The desktop window's bottom
 /// ornament. (While a mouse drove the Mac they were briefly a window of their
 /// own, so the pointer couldn't slide onto them; the padded desktop layout
 /// holds the pointer now, and the window is gone.)
@@ -66,12 +66,14 @@ struct NativeDesktopControls: View {
                 }
 
                 displayButton
-
-                Button(action: toggleKeyboardWindow) {
-                    Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
-                }
-                .tint(isKeyboardWindowOpen ? .accentColor : nil)
             }
+
+            // Outside the Screen group: typing to the Mac doesn't need its
+            // picture on.
+            Button(action: toggleKeyboardWindow) {
+                Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
+            }
+            .tint(isKeyboardWindowOpen ? .accentColor : nil)
 
             Toggle(isOn: audioBinding) {
                 Label(

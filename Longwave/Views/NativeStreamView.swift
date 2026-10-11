@@ -637,7 +637,7 @@ struct NativeStreamView: View {
                         Image(systemName: audioManager.audioModeSymbol)
                     }
                     #if canImport(UIKit)
-                    MicrophoneToggleButton()
+                    MicrophoneToggleButton(onPushToTalk: screenManager.setPushToTalkKey(held:))
                     #endif
                     Button {
                         showEQ.toggle()
@@ -1051,7 +1051,7 @@ struct NativeStreamView: View {
                 .help(audioManager.audioModeLabel)
 
                 #if canImport(UIKit)
-                MicrophoneToggleButton()
+                MicrophoneToggleButton(onPushToTalk: screenManager.setPushToTalkKey(held:))
                 #endif
 
                 Button {
@@ -1150,7 +1150,7 @@ struct NativeStreamView: View {
                     : "Speaker Mode — mixes with other audio and auto-recovers")
 
             #if canImport(UIKit)
-            MicrophoneToggleButton()
+            MicrophoneToggleButton(onPushToTalk: screenManager.setPushToTalkKey(held:))
             #endif
 
             Button {
@@ -1212,7 +1212,8 @@ struct NativeStreamView: View {
     /// short of reopening the connection from the list. It carries its own
     /// text label (unlike the icon-only home button, matching the `controls`
     /// ornament's own "Screen" toggle) since a bare icon here reads as
-    /// decoration rather than the only way back to the screen.
+    /// decoration rather than the only way back to the screen. Keyboard
+    /// follows, as on the full bar, since typing needs no screen.
     private var homeOnlyControls: some View {
         HStack(spacing: 10) {
             Button {
@@ -1231,9 +1232,28 @@ struct NativeStreamView: View {
                 Label("Screen", systemImage: "macwindow.on.rectangle")
             }
             .help("Show the screen again")
+
+            Button(action: toggleKeyboardWindow) {
+                Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
+                    .labelStyle(.iconOnly)
+            }
+            .tint(isKeyboardWindowOpen ? .accentColor : nil)
+            .help("Type on the Mac")
         }
         .padding(8)
         .glassBackgroundEffect()
+    }
+
+    private var isKeyboardWindowOpen: Bool {
+        WindowSessionRegistry.shared.sessions[keyboardWindowKey] != nil
+    }
+
+    private func toggleKeyboardWindow() {
+        if isKeyboardWindowOpen {
+            dismissWindow(id: "mac-native-keyboard", value: sessionID)
+        } else {
+            openWindow(id: "mac-native-keyboard", value: sessionID)
+        }
     }
 
     // MARK: - Disconnect

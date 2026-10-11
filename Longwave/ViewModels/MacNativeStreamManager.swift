@@ -525,6 +525,7 @@ final class MacNativeStreamManager {
         textInputAvailable = false
         virtualCursorInitialized = false
         lastDesktopPointer = nil
+        pushToTalkKeyCode = nil
         if case .disconnected = state {
             return
         }
@@ -571,6 +572,24 @@ final class MacNativeStreamManager {
 
     func sendKeyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
         client?.sendKeyUp(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    /// The space bar the microphone button holds down while it is held, for
+    /// the push-to-talk key most voice apps default to. Needs keyboard
+    /// control; with only the text channel there is no way to hold a key.
+    private var pushToTalkKeyCode: UInt16?
+
+    func setPushToTalkKey(held: Bool) {
+        if held {
+            guard pushToTalkKeyCode == nil, keyboardShortcutsAvailability == .available,
+                  let code = MacKeyCodeMap.wireKeyCode(forHIDUsage: MacKeyCodeMap.HID.spacebar, space: keyCodeSpace)
+            else { return }
+            pushToTalkKeyCode = code
+            sendKeyDown(keyCode: code, modifiers: [])
+        } else if let code = pushToTalkKeyCode {
+            pushToTalkKeyCode = nil
+            sendKeyUp(keyCode: code, modifiers: [])
+        }
     }
 
     // MARK: - Virtual cursor (relative/touchpad mode)

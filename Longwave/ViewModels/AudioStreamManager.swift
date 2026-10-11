@@ -272,12 +272,33 @@ final class AudioStreamManager {
     #if canImport(UIKit)
     private var microphone: MicrophoneUplink?
 
+    /// Push-to-talk turned the microphone on, so releasing turns it off. A
+    /// microphone that was already on when the hold began stays on.
+    private var pushToTalkOwnsMicrophone = false
+
     func toggleMicrophone() {
+        pushToTalkOwnsMicrophone = false
         if microphoneEnabled {
             stopMicrophone(reason: nil)
         } else {
             Task { await startMicrophone() }
         }
+    }
+
+    func beginPushToTalk() {
+        guard !microphoneEnabled, !pushToTalkOwnsMicrophone else { return }
+        pushToTalkOwnsMicrophone = true
+        Task {
+            await startMicrophone()
+            // Released while permission or capture was still starting.
+            if !pushToTalkOwnsMicrophone { stopMicrophone(reason: nil) }
+        }
+    }
+
+    func endPushToTalk() {
+        guard pushToTalkOwnsMicrophone else { return }
+        pushToTalkOwnsMicrophone = false
+        stopMicrophone(reason: nil)
     }
 
     private func startMicrophone() async {

@@ -292,18 +292,61 @@ struct AudioVolumeRow: View {
 /// into BlackHole for any app there to use as its microphone. Mixable, so it
 /// runs alongside a call or other audio here. Disabled until the connected
 /// Companion says it can take it.
+///
+/// A tap toggles it. Held, it is push-to-talk: the microphone is on only for
+/// the hold (unless it already was), and `onPushToTalk` hears the hold begin
+/// and end — the Native window holds the Mac's space bar for it.
 struct MicrophoneToggleButton: View {
+    var onPushToTalk: ((Bool) -> Void)? = nil
+
     @Environment(AudioStreamManager.self) private var audioManager
+    @State private var holdTask: Task<Void, Never>?
+    @State private var holding = false
+
+    /// Long enough that a deliberate tap never becomes a hold.
+    private static let holdDelay: Duration = .milliseconds(350)
 
     var body: some View {
         Button {
+            // A hold already did its work on release; its trailing tap (if
+            // the system sends one) must not toggle as well.
+            guard !holding else { return }
             audioManager.toggleMicrophone()
         } label: {
             Image(systemName: audioManager.microphoneEnabled ? "mic.fill" : "mic.slash")
         }
-        .tint(audioManager.microphoneEnabled ? .red : nil)
+        .buttonStyle(PressReportingButtonStyle(onPressChanged: pressChanged))
+        .foregroundStyle(audioManager.microphoneEnabled ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
         .disabled(!audioManager.microphoneEnabled && !audioManager.microphoneAvailable)
         .help(help)
+        .onDisappear { endHold() }
+    }
+
+    private func pressChanged(_ pressed: Bool) {
+        holdTask?.cancel()
+        holdTask = nil
+        guard pressed else {
+            endHold()
+            return
+        }
+        holding = false
+        holdTask = Task {
+            try? await Task.sleep(for: Self.holdDelay)
+            guard !Task.isCancelled else { return }
+            holding = true
+            audioManager.beginPushToTalk()
+            onPushToTalk?(true)
+        }
+    }
+
+    /// Leaves `holding` set so the release's tap is swallowed; the next press
+    /// clears it.
+    private func endHold() {
+        holdTask?.cancel()
+        holdTask = nil
+        guard holding else { return }
+        onPushToTalk?(false)
+        audioManager.endPushToTalk()
     }
 
     private var help: String {
@@ -314,7 +357,38 @@ struct MicrophoneToggleButton: View {
                 ? "Install BlackHole on the Mac to send it this microphone"
                 : "Microphone to Mac — available once audio is connected"
         }
-        return "Send this microphone to the Mac (pick BlackHole as the microphone there)"
+        return onPushToTalk == nil
+            ? "Send this microphone to the Mac (pick BlackHole as the microphone there). Hold to talk"
+            : "Send this microphone to the Mac (pick BlackHole as the microphone there). Hold to talk with Space held on the Mac"
+    }
+}
+
+/// A borderless-looking style that reports press-down and release, which a
+/// `Button` otherwise keeps to itself. Unlike a drag or long-press gesture
+/// beside the button, it sees exactly the press the button sees, by gaze and
+/// pinch, touch or pointer alike.
+private struct PressReportingButtonStyle: ButtonStyle {
+    let onPressChanged: (Bool) -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        PressReportingLabel(configuration: configuration, onPressChanged: onPressChanged)
+    }
+
+    private struct PressReportingLabel: View {
+        let configuration: Configuration
+        let onPressChanged: (Bool) -> Void
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+                .padding(6)
+                .contentShape(.hoverEffect, Circle())
+                .hoverEffect()
+                .onChange(of: configuration.isPressed) { _, pressed in
+                    onPressChanged(pressed)
+                }
+        }
     }
 }
 #endif

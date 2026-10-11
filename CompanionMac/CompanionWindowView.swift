@@ -164,6 +164,12 @@ struct NativePane: View {
                     Toggle("Allow keyboard shortcuts", isOn: $controller.macNativeStreaming.keyboardShortcutsEnabled)
                         .help("Lets the connected Vision Pro send modifier shortcuts and special keys (Cmd+C, arrows, F-keys, …) on this Mac. Plain typing is the switch above instead.")
 
+                    Toggle("Keep typing in Mac Virtual Display", isOn: Binding(
+                        get: { MacVirtualDisplayKeyboardGuard.shared.enabled },
+                        set: { MacVirtualDisplayKeyboardGuard.shared.enabled = $0 }
+                    ))
+                    .help("Looking at a Longwave window to type hands the Mac's keyboard to Universal Control, which drops the keys and takes focus. With this on, the app you were using comes back to the front and gets the headset's keys, push-to-talk included.")
+
                     if remoteControlRequested && !controller.macNativeStreaming.input.accessibilityTrusted {
                         HStack {
                             Text(Self.accessibilityNeeded("to control input"))

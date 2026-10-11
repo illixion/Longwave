@@ -220,7 +220,7 @@ final class MacNativeInputService {
     private func postKey(keyCode: CGKeyCode, isDown: Bool, modifiers: CGEventFlags) {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: isDown) else { return }
         event.flags = modifiers
-        event.post(tap: .cghidEventTap)
+        MacVirtualDisplayKeyboardGuard.shared.post(event)
     }
 
     private func cgButton(for button: MacNativeStreamProtocol.MouseButton) -> CGMouseButton {

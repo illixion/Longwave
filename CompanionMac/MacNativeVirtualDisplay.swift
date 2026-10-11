@@ -183,6 +183,11 @@ final class MacNativeVirtualDisplay {
         return nil
     }
 
+    /// Whether a Mac Virtual Display session is up, by the same signals.
+    static func macVirtualDisplaySessionActive() -> Bool {
+        activeSessionConflict() != nil
+    }
+
     /// The name `SidecarDisplayAgent` gives its PreventUserIdleDisplaySleep
     /// assertion while a Mac Virtual Display session is up (visible in
     /// `pmset -g assertions`).

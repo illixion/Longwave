@@ -92,12 +92,12 @@ final class InjectionService {
         var buffer = units
         down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: &buffer)
         up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: &buffer)
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        MacVirtualDisplayKeyboardGuard.shared.post(down)
+        MacVirtualDisplayKeyboardGuard.shared.post(up)
     }
 
     private func postKey(_ virtualKey: CGKeyCode, down: Bool) {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: virtualKey, keyDown: down) else { return }
-        event.post(tap: .cghidEventTap)
+        MacVirtualDisplayKeyboardGuard.shared.post(event)
     }
 }

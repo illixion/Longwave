@@ -122,6 +122,9 @@ struct CompanionApp: App {
 /// URL, which SwiftUI routes to the setup scene.
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before any headset key arrives: it has to know which app was in use
+        // before Universal Control took the front.
+        MacVirtualDisplayKeyboardGuard.shared.start()
         guard !UserDefaults.standard.bool(forKey: SetupAssistantView.completedKey) else { return }
         NSWorkspace.shared.open(PermissionCenter.setupURL)
     }

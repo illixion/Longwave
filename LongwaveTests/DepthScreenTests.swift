@@ -121,6 +121,54 @@ final class DepthScreenTests: XCTestCase {
         XCTAssertLessThan(separation, 0.063)
     }
 
+    // MARK: - Fade
+
+    /// What the renderer draws for a fade state, with the depth stood in for
+    /// by one sample: relief × blend, flat once the depth is gone.
+    private func drawnRelief(_ state: (depth: Float?, blend: Float)) -> Float {
+        guard let v = state.depth else { return 0 }
+        return DepthScreenGeometry.relief(normalized: v, range: gameRange, convergence: 2.5, popOutLimit: 0.35) * state.blend
+    }
+
+    /// A cutscene starting: the first frame without depth must stand where the
+    /// last frame with depth stood (within one frame's fade step), not jump to
+    /// the far plane and creep forward from there.
+    func testFadeOutStartsFromTheLastRealRelief() {
+        var fade = DepthReliefFade<Float>(duration: 0.35)
+        let background = gameRange.normalized(distance: 10)   // relief −0.75
+        fade.advance(frameDepth: background, at: 0)
+        fade.advance(frameDepth: background, at: 1)
+        let last = fade.advance(frameDepth: background, at: 1.016)
+        XCTAssertEqual(last.blend, 1)
+        let first = fade.advance(frameDepth: nil, at: 1.032)
+        let lastRelief = drawnRelief(last)
+        XCTAssertEqual(drawnRelief(first), lastRelief, accuracy: abs(lastRelief) * 0.016 / 0.35 + 1e-6)
+
+        // It then eases monotonically onto the window plane and lets go of the
+        // old depth.
+        var previous = drawnRelief(first)
+        var time = 1.032
+        while time < 1.5 {
+            time += 0.016
+            let drawn = drawnRelief(fade.advance(frameDepth: nil, at: time))
+            XCTAssertGreaterThanOrEqual(drawn, previous)
+            XCTAssertLessThanOrEqual(drawn, 0)
+            previous = drawn
+        }
+        XCTAssertEqual(previous, 0)
+        XCTAssertNil(fade.depth)
+        XCTAssertTrue(fade.isSettled)
+    }
+
+    func testFadeInStartsFlatAndSettlesAtFullRelief() {
+        var fade = DepthReliefFade<Float>(duration: 0.35)
+        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 5).blend, 0)
+        XCTAssertFalse(fade.isSettled)
+        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 5.175).blend, 0.5, accuracy: 1e-5)
+        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 6).blend, 1)
+        XCTAssertTrue(fade.isSettled)
+    }
+
     func testFeatherFlattensTheBorder() {
         XCTAssertEqual(DepthScreenGeometry.feather(0), 0)
         XCTAssertEqual(DepthScreenGeometry.feather(1), 0)

@@ -117,11 +117,10 @@ final class DepthScreenRenderer {
     private var builtGrid: DepthMeshGrid?
     private var lastFrame: DepthScreenFrame?
     private var materialApplied = false
-    /// 0 flat, 1 full relief; eased toward whether the frame has depth.
-    private var reliefBlend: Float = 0
-    private var lastBlendTime: CFTimeInterval?
+    private var fade = DepthReliefFade<DepthScreenDepth>(duration: DepthScreenRenderer.reliefFade)
     private var fadeTask: Task<Void, Never>?
-    /// A 1×1 texture bound when a frame has no depth.
+    /// A 1×1 texture bound once the relief has faded flat (its value is
+    /// never seen: the relief scale is zero then).
     private lazy var flatDepth: MTLTexture? = makeFlatDepth()
     private var gpuSamples: [Double] = []
     private var encodeSamples: [Double] = []
@@ -167,8 +166,9 @@ final class DepthScreenRenderer {
 
     private func updateMesh() {
         guard let frame = lastFrame, let queue, let meshPipeline else { return }
-        let depth = frame.depth.flatMap { $0.range.isEmpty ? nil : $0 }
-        advanceBlend(toward: depth == nil ? 0 : 1)
+        let frameDepth = frame.depth.flatMap { $0.range.isEmpty ? nil : $0 }
+        let (depth, reliefBlend) = fade.advance(frameDepth: frameDepth, at: CACurrentMediaTime())
+        scheduleFadeStep()
 
         let pictureAspect = Float(CVPixelBufferGetHeight(frame.colour)) / Float(max(CVPixelBufferGetWidth(frame.colour), 1))
         let grid = depth.map {
@@ -229,7 +229,7 @@ final class DepthScreenRenderer {
                 )
             )
         ])
-        stats.source = depth == nil ? .none : frame.source
+        stats.source = frameDepth == nil ? .none : frame.source
     }
 
     /// The mesh for `grid`, rebuilt (with its static index buffer) when the
@@ -297,23 +297,17 @@ final class DepthScreenRenderer {
 
     // MARK: - Fade
 
-    private func advanceBlend(toward target: Float) {
-        let now = CACurrentMediaTime()
-        let elapsed = lastBlendTime.map { now - $0 } ?? Self.reliefFade
-        lastBlendTime = now
-        let step = Float(min(elapsed / Self.reliefFade, 1))
-        reliefBlend = target > reliefBlend ? min(reliefBlend + step, target) : max(reliefBlend - step, target)
-        // A still picture or a stalled stream sends no more frames to carry
-        // the fade along, so finish it on a timer.
-        if reliefBlend != target, fadeTask == nil {
-            fadeTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(16))
-                guard let self, !Task.isCancelled else { return }
-                // Cleared first: the refresh schedules the next step if the
-                // fade still isn't done.
-                self.fadeTask = nil
-                self.refresh()
-            }
+    /// A still picture or a stalled stream sends no more frames to carry
+    /// the fade along, so step it on a timer until it settles.
+    private func scheduleFadeStep() {
+        guard !fade.isSettled, fadeTask == nil else { return }
+        fadeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard let self, !Task.isCancelled else { return }
+            // Cleared first: the refresh schedules the next step if the fade
+            // still isn't done.
+            self.fadeTask = nil
+            self.refresh()
         }
     }
 

@@ -254,6 +254,52 @@ nonisolated enum DepthScreenGeometry {
     }
 }
 
+/// Eases the relief in when depth arrives and out when it goes (a cutscene
+/// starting, the depth stream lost), instead of the scene snapping between
+/// 3D and flat.
+///
+/// Fading out keeps drawing the last frame that had depth, scaled down by
+/// `blend`, so the first frame without depth stands where the last one with
+/// it stood and the surface eases onto the window plane. (Drawing the empty
+/// frame instead would decode its blank depth as infinitely far — relief −1 —
+/// and throw the whole screen back before it crept forward.) Time-free and
+/// generic so the rule is testable; the renderer passes texture-backed depth.
+nonisolated struct DepthReliefFade<Depth> {
+    let duration: Double
+    /// 0 flat, 1 full relief.
+    private(set) var blend: Float = 0
+    /// What to draw: the frame's own depth, or while fading out the last
+    /// frame's that had one. Nil once flat.
+    private(set) var depth: Depth?
+    private var hasFrameDepth = false
+    private var lastTime: Double?
+
+    init(duration: Double) {
+        self.duration = duration
+    }
+
+    /// Steps to `time` for a frame with `frameDepth` (nil: none, or empty).
+    /// The first call starts the fade rather than jumping to full relief.
+    @discardableResult
+    mutating func advance(frameDepth: Depth?, at time: Double) -> (depth: Depth?, blend: Float) {
+        let elapsed = lastTime.map { max(time - $0, 0) } ?? 0
+        lastTime = time
+        let step = duration > 0 ? Float(min(elapsed / duration, 1)) : 1
+        hasFrameDepth = frameDepth != nil
+        if let frameDepth {
+            depth = frameDepth
+            blend = min(blend + step, 1)
+        } else {
+            blend = max(blend - step, 0)
+            if blend == 0 { depth = nil }
+        }
+        return (depth, blend)
+    }
+
+    /// Whether advancing again without a new frame would change nothing.
+    var isSettled: Bool { hasFrameDepth ? blend == 1 : blend == 0 }
+}
+
 /// The mesh's grid: vertices across and down, following the depth texture.
 nonisolated struct DepthMeshGrid: Equatable, Sendable {
     let columns: Int

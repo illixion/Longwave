@@ -266,9 +266,13 @@ int lw_fs_producer_discard(lw_fs_shared *shared, uint64_t generation, uint32_t s
                     LW_FS_SLOT_WORD(gen, 0, LW_FS_SLOT_FREE));
 }
 
-int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t *out_slot) {
+uint64_t lw_fs_sequence_window(uint32_t slot_count, uint64_t elapsed_ms) {
+    return static_cast<uint64_t>(slot_count) + LW_FS_SEQUENCE_SLACK + elapsed_ms * LW_FS_SUBMITS_PER_MS;
+}
+
+int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint64_t window, uint32_t *out_slot) {
     const uint64_t generation = ring->generation;
-    if (load(shared->attach) != LW_FS_ATTACH_WORD(generation, LW_FS_ATTACH_ATTACHED)) return 0;
+    if (load(shared->attach) != LW_FS_ATTACH_WORD(generation, LW_FS_ATTACH_ATTACHED)) return LW_FS_NOTHING_READY;
     const uint32_t gen = static_cast<uint32_t>(generation);
     const uint32_t count = clamp_slots(ring->slot_count);
     for (uint32_t attempt = 0; attempt < kRetries; ++attempt) {
@@ -283,6 +287,13 @@ int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t
             words[i] = load(shared->slots[i].state);
             if (LW_FS_SLOT_GENERATION(words[i]) != gen || LW_FS_SLOT_STATE(words[i]) != LW_FS_SLOT_READY) continue;
             sequences[i] = load(shared->slots[i].submit_sequence, std::memory_order_relaxed);
+            if (sequences[i] > ring->taken_sequence && sequences[i] - ring->taken_sequence > window) {
+                // Re-read the word: a slot republished since the scan read
+                // above carries a fresh sequence, and only a sequence still
+                // belonging to the word it was read with is evidence.
+                if (load(shared->slots[i].state) == words[i]) return LW_FS_PRODUCER_FAULT;
+                continue;
+            }
             if (sequences[i] > ring->taken_sequence && (newest == count || sequences[i] > sequences[newest]))
                 newest = i;
         }
@@ -298,18 +309,18 @@ int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t
             if (exchange(shared->slots[i].state, words[i], LW_FS_SLOT_WORD(gen, 0, LW_FS_SLOT_FREE)))
                 increment(shared->dropped);
         }
-        if (newest == count) return 0;
+        if (newest == count) return LW_FS_NOTHING_READY;
         const uint64_t taken = LW_FS_SLOT_WORD(gen, LW_FS_SLOT_TAG(words[newest]), LW_FS_SLOT_CONSUMING);
         if (!exchange(shared->slots[newest].state, words[newest], taken)) continue; // reclaimed meanwhile
         ring->taken_sequence = sequences[newest];
         increment(shared->consumed);
         *out_slot = newest;
-        return 1;
+        return LW_FS_TAKEN;
     }
-    return 0;
+    return LW_FS_NOTHING_READY;
 }
 
-int lw_fs_host_snapshot(const lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t slot,
+int lw_fs_host_snapshot(const lw_fs_shared *shared, const lw_fs_host_ring *ring, uint32_t slot,
                         lw_fs_frame_snapshot *out) {
     if (slot >= clamp_slots(ring->slot_count)) return 0;
     const lw_fs_slot &s = shared->slots[slot];
@@ -337,8 +348,11 @@ int lw_fs_host_snapshot(const lw_fs_shared *shared, lw_fs_host_ring *ring, uint3
     const auto *source = reinterpret_cast<const uint32_t *>(s.side_data);
     for (uint32_t i = 0; i < (size + 3) / 4; ++i) words[i] = load32(source[i], std::memory_order_relaxed);
     std::memcpy(out->side_data, words, size);
-    ring->last_fence_value = fence_value;
     return 1;
+}
+
+void lw_fs_host_frame_delivered(lw_fs_host_ring *ring, const lw_fs_frame_snapshot *snapshot) {
+    ring->last_fence_value = snapshot->fence_value;
 }
 
 int lw_fs_host_release(lw_fs_shared *shared, uint64_t generation, uint32_t slot) {

@@ -23,18 +23,23 @@ final class Section: @unchecked Sendable {
     }
 
     /// Host: take the newest frame of `generation`, keeping its ring state.
-    func take(_ generation: UInt64, _ slot: inout UInt32) -> Int32 {
+    /// The window defaults to what a second since the last take allows.
+    func take(_ generation: UInt64, _ slot: inout UInt32, elapsedMilliseconds: UInt64 = 1000) -> Int32 {
         var ring = rings[generation] ?? lw_fs_host_ring(generation: generation, slot_count: slots, reserved: 0,
                                                          taken_sequence: 0, last_fence_value: 0)
         defer { rings[generation] = ring }
-        return lw_fs_host_take_newest(raw, &ring, &slot)
+        return lw_fs_host_take_newest(raw, &ring, lw_fs_sequence_window(slots, elapsedMilliseconds), &slot)
     }
 
-    /// Host: snapshot a taken slot of `generation`.
-    func snapshot(_ generation: UInt64, _ slot: UInt32, _ out: inout lw_fs_frame_snapshot) -> Int32 {
+    /// Host: snapshot a taken slot of `generation` and, if it is good, count
+    /// it delivered (the real host does that once the fence is reached).
+    func snapshot(_ generation: UInt64, _ slot: UInt32, _ out: inout lw_fs_frame_snapshot,
+                  delivered: Bool = true) -> Int32 {
         var ring = rings[generation]!
         defer { rings[generation] = ring }
-        return lw_fs_host_snapshot(raw, &ring, slot, &out)
+        let result = lw_fs_host_snapshot(raw, &ring, slot, &out)
+        if result == 1 && delivered { lw_fs_host_frame_delivered(&ring, &out) }
+        return result
     }
 
     /// Direct access to a slot, as a misbehaving producer has.
@@ -357,6 +362,63 @@ final class FrameSourceRingTests: XCTestCase {
         XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 0)
     }
 
+    /// A frame dropped on a fence timeout is never delivered, so its fence
+    /// value (perhaps forged, never signalled) mustn't raise the bar for the
+    /// frames after it.
+    func testAnUndeliveredFrameDoesNotRaiseTheFenceBar() {
+        let section = Section(slots: 2)
+        let generation = section.attach()
+        var slot: UInt32 = 0
+        var snapshot = lw_fs_frame_snapshot()
+        XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        section.withSlot(Int(slot)) { $0.pointee.fence_value = 1_000_000 }
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot, delivered: false), 1) // then times out
+        XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 1)
+        XCTAssertEqual(section.produce(2), LW_FS_ACQUIRED) // fence 2
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 1)
+    }
+
+    func testSequenceWindow() {
+        XCTAssertEqual(lw_fs_sequence_window(3, 0), 3 + UInt64(LW_FS_SEQUENCE_SLACK))
+        XCTAssertEqual(lw_fs_sequence_window(3, 2000), 3 + UInt64(LW_FS_SEQUENCE_SLACK) + 2000 * UInt64(LW_FS_SUBMITS_PER_MS))
+    }
+
+    /// One forged submit sequence of UINT64_MAX used to become the host's
+    /// "last taken", after which every honest frame looked stale and delivery
+    /// froze with no fault. Now it is a fault, and nothing is taken.
+    func testAForgedSequenceFarAheadIsAFault() {
+        let section = Section(slots: 3)
+        let generation = section.attach()
+        XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
+        let forgedSlot = (0 ..< 3).first { section.slotState($0) == UInt32(LW_FS_SLOT_READY) }!
+        section.withSlot(forgedSlot) { $0.pointee.submit_sequence = .max }
+        var slot: UInt32 = 0
+        XCTAssertEqual(section.take(generation, &slot), LW_FS_PRODUCER_FAULT)
+        XCTAssertEqual(section.rings[generation]!.taken_sequence, 0, "nothing was taken")
+        XCTAssertEqual(section.slotState(forgedSlot), UInt32(LW_FS_SLOT_READY))
+    }
+
+    /// Just inside the window is an honest burst (the host stalled while the
+    /// producer kept reclaiming); just outside is not.
+    func testSequenceWindowEdges() {
+        let section = Section(slots: 3)
+        let generation = section.attach()
+        let window = lw_fs_sequence_window(3, 0)
+        var slot: UInt32 = 0
+        XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
+        let ready = (0 ..< 3).first { section.slotState($0) == UInt32(LW_FS_SLOT_READY) }!
+        section.withSlot(ready) { $0.pointee.submit_sequence = window }
+        XCTAssertEqual(section.take(generation, &slot, elapsedMilliseconds: 0), LW_FS_TAKEN)
+        XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 1)
+        section.raw.pointee.submit_sequence = window // as the producer's counter would be
+        XCTAssertEqual(section.produce(2), LW_FS_ACQUIRED)
+        let next = (0 ..< 3).first { section.slotState($0) == UInt32(LW_FS_SLOT_READY) }!
+        section.withSlot(next) { $0.pointee.submit_sequence = 2 * window + 1 }
+        XCTAssertEqual(section.take(generation, &slot, elapsedMilliseconds: 0), LW_FS_PRODUCER_FAULT)
+    }
+
     /// The producer raises the section's slot count after attach and marks a
     /// slot beyond the ring ready. The host goes by its own count and never
     /// looks there (that slot has no textures).
@@ -466,7 +528,9 @@ final class FrameSourceRingTests: XCTestCase {
         var finished = false
         while true {
             var slot: UInt32 = 0
-            if section.take(generation, &slot) == 1 {
+            // No sequence window here: the threads run unpaced, and a host
+            // descheduled for a moment can legitimately fall far behind.
+            if section.take(generation, &slot, elapsedMilliseconds: 1 << 40) == 1 {
                 let frame = section.frameNumber(Int(slot))
                 let side = section.sideData(Int(slot))
                 let expected = withUnsafeBytes(of: (frame, ~frame)) { Array($0) }

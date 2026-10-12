@@ -117,12 +117,31 @@ typedef struct lw_fs_host_ring {
     uint64_t last_fence_value; /* fence value of the last frame accepted */
 } lw_fs_host_ring;
 
+/* The most a submit sequence may run ahead of the last frame the host took:
+ * every slot, plus slack, plus LW_FS_SUBMITS_PER_MS for each millisecond since
+ * that take. Frame sources pace to a display (90-360 Hz); 10 submits per
+ * millisecond is ten times the fastest plausible one, so an honest catch-up
+ * burst while the host thread was descheduled stays inside, while a forged
+ * jump (the attack: one huge sequence freezing delivery) does not.
+ * `elapsed_ms` is host time since the last take (or the attach). */
+#define LW_FS_SEQUENCE_SLACK 64
+#define LW_FS_SUBMITS_PER_MS 10
+uint64_t lw_fs_sequence_window(uint32_t slot_count, uint64_t elapsed_ms);
+
+#define LW_FS_NOTHING_READY 0
+#define LW_FS_TAKEN 1
+#define LW_FS_PRODUCER_FAULT 2 /* a ready slot's sequence is implausibly far ahead: end the attach */
+
 /* Takes the newest ready frame (READY -> CONSUMING) and frees every older
- * ready one, counting them as dropped. 1 and the slot if there was one.
- * Frames are taken in submit order: a ready frame no newer than the last one
- * taken is dropped, never delivered. Read the slot with lw_fs_host_snapshot,
- * not in place. */
-int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t *out_slot);
+ * ready one, counting them as dropped. LW_FS_TAKEN and the slot if there was
+ * one. Frames are taken in submit order: a ready frame no newer than the last
+ * one taken is dropped, never delivered (the scan isn't a snapshot, so an
+ * honest producer can cause that). A frame more than `window` sequences ahead
+ * of the last one taken can't come from an honest producer
+ * (lw_fs_sequence_window); taking it would make every later frame look
+ * stale, so it is LW_FS_PRODUCER_FAULT instead. Read the slot with
+ * lw_fs_host_snapshot, not in place. */
+int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint64_t window, uint32_t *out_slot);
 
 /* A taken frame's metadata, copied out of the section. */
 typedef struct lw_fs_frame_snapshot {
@@ -136,11 +155,16 @@ typedef struct lw_fs_frame_snapshot {
 
 /* Copies taken slot `slot` into `out`, reading each field once, and checks
  * what the producer could have scribbled: the side data must fit
- * LW_FS_MAX_SIDE_DATA and the fence value must be after the last frame's.
- * 1 if the frame is good (and ring->last_fence_value advances); 0 is a
- * producer fault: drop the frame and end the attach. */
-int lw_fs_host_snapshot(const lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t slot,
+ * LW_FS_MAX_SIDE_DATA and the fence value must be after the last frame
+ * delivered. 1 if the frame is good; 0 is a producer fault: drop the frame
+ * and end the attach. */
+int lw_fs_host_snapshot(const lw_fs_shared *shared, const lw_fs_host_ring *ring, uint32_t slot,
                         lw_fs_frame_snapshot *out);
+
+/* The fence reached the snapshot's value and the frame is delivered: later
+ * frames must have higher fence values. Not called for a frame dropped on a
+ * fence timeout, so a value that never arrives doesn't poison the next. */
+void lw_fs_host_frame_delivered(lw_fs_host_ring *ring, const lw_fs_frame_snapshot *snapshot);
 
 /* CONSUMING -> FREE. Call only once the host's GPU work reading the slot is
  * finished. 0 if `generation` has ended (nothing to give back). */

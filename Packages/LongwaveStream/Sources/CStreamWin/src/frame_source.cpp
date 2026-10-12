@@ -35,7 +35,11 @@ struct Ring {
     uint64_t generation = 0;
     uint32_t producer_pid = 0;
     lw_fs_format format{};     // the copy validated at attach; the section's may change
-    lw_fs_host_ring cursor{};  // touched only by the source thread
+    // Touched only by the source thread:
+    lw_fs_host_ring cursor{};
+    int64_t last_take_qpc = 0;            // sets the sequence window (lw_fs_sequence_window)
+    uint32_t stalled_timeouts = 0;        // consecutive fence timeouts without fence progress
+    uint64_t completed_at_timeout = 0;    // the fence's completed value at the last timeout
     std::array<std::array<winrt::com_ptr<ID3D11Texture2D>, LW_FS_MAX_TEXTURES>, LW_FS_MAX_SLOTS> textures;
 };
 
@@ -63,7 +67,14 @@ struct RemoteHandles {
     }
 };
 
-constexpr DWORD kFenceTimeoutMs = 1000; // far beyond any frame; only a hung producer GPU reaches it
+constexpr DWORD kFenceTimeoutMs = 1000; // far beyond any frame: the frame is dropped, the attach stays
+// A fence that hasn't moved through this many consecutive timeouts (3 s and
+// more) ends the attach. Windows resets a GPU that runs one piece of work
+// longer than TdrDelay (2 s by default), so an honest producer's GPU has
+// either made progress or been reset by then. A long CPU-side stall (shader
+// compiles, level loads) doesn't count: it delays the next submit, never a
+// fence value already submitted.
+constexpr uint32_t kStalledTimeoutsBeforeFault = 3;
 constexpr ULONGLONG kStuckHandshakeMs = 3000;
 
 } // namespace
@@ -110,7 +121,8 @@ struct lw_frame_source {
     enum class FenceWait { reached, timed_out, device_lost };
     FenceWait wait_for_fence(uint64_t value);
     bool stop_requested() const { return WaitForSingleObject(stop_event.value, 0) == WAIT_OBJECT_0; }
-    enum class DropReason { detached, producer_exited, producer_fault, stopping };
+    enum class DropReason { detached, producer_exited, producer_fault, host_device_lost, stopping };
+    void producer_fault();
     void drop_ring(DropReason reason);
     static void finish_stop(lw_frame_source *source);
 };
@@ -179,6 +191,7 @@ void lw_frame_source::answer_request() {
     } else {
         ring = std::move(built);
         producer_process = std::move(process);
+        ring->last_take_qpc = lw::qpc_now();
         lw_fs_host_finish_attach(s, ring->generation);
         update_stats([&](lw_frame_source_stats &st) {
             ++st.attaches;
@@ -304,11 +317,24 @@ lw_frame_source::FenceWait lw_frame_source::wait_for_fence(uint64_t value) {
     }
 }
 
+void lw_frame_source::producer_fault() {
+    update_stats([](lw_frame_source_stats &st) { ++st.producer_faults; });
+    drop_ring(DropReason::producer_fault);
+}
+
 void lw_frame_source::deliver() {
     if (!ring) return;
     lw_fs_shared *s = shared();
     uint32_t slot = 0;
-    while (!stop_requested() && lw_fs_host_take_newest(s, &ring->cursor, &slot)) {
+    while (ring && !stop_requested()) {
+        const int64_t now = lw::qpc_now();
+        const uint64_t elapsed_ms =
+            static_cast<uint64_t>((now - ring->last_take_qpc) * 1000 / lw::qpc_frequency()) + 1;
+        const int taken_result =
+            lw_fs_host_take_newest(s, &ring->cursor, lw_fs_sequence_window(ring->cursor.slot_count, elapsed_ms), &slot);
+        if (taken_result == LW_FS_PRODUCER_FAULT) return producer_fault();
+        if (taken_result != LW_FS_TAKEN) return;
+        ring->last_take_qpc = now;
         const int64_t taken = lw::qpc_now();
         // From here the frame owns the slot: deleting it gives the slot back.
         auto *frame = new SourceFrame();
@@ -318,22 +344,33 @@ void lw_frame_source::deliver() {
             // Out-of-range metadata only gets there by writing the section
             // directly, around lw_frame_producer_submit: end that attach.
             delete frame;
-            update_stats([](lw_frame_source_stats &st) { ++st.producer_faults; });
-            drop_ring(DropReason::producer_fault);
-            return;
+            return producer_fault();
         }
         const FenceWait waited = wait_for_fence(frame->snapshot.fence_value);
-        if (waited != FenceWait::reached) {
-            // A fence value that never arrives is a hung producer GPU, a TDR,
-            // or a producer announcing work it never queued. Either way the
-            // attach is over; the producer can attach again.
+        if (waited == FenceWait::timed_out) {
+            // Drop this frame; the attach survives a stall. Only a fence that
+            // stays put through several timeouts is a fault.
             delete frame;
-            update_stats([&](lw_frame_source_stats &st) {
-                if (waited == FenceWait::timed_out) ++st.fence_timeouts; else ++st.errors;
-            });
-            drop_ring(waited == FenceWait::timed_out ? DropReason::producer_fault : DropReason::detached);
-            return;
+            const uint64_t completed = fence->GetCompletedValue();
+            ring->stalled_timeouts = completed > ring->completed_at_timeout || ring->stalled_timeouts == 0
+                                         ? 1
+                                         : ring->stalled_timeouts + 1;
+            ring->completed_at_timeout = completed;
+            update_stats([](lw_frame_source_stats &st) { ++st.fence_timeouts; });
+            if (ring->stalled_timeouts >= kStalledTimeoutsBeforeFault) return producer_fault();
+            continue;
         }
+        if (waited == FenceWait::device_lost) {
+            delete frame;
+            // UINT64_MAX is how D3D reports a removed device, but a producer
+            // can also signal the shared fence to that value. Our own device
+            // tells the two apart.
+            if (device->GetDeviceRemovedReason() == S_OK) return producer_fault();
+            update_stats([](lw_frame_source_stats &st) { ++st.host_device_lost; });
+            return drop_ring(DropReason::host_device_lost);
+        }
+        ring->stalled_timeouts = 0;
+        lw_fs_host_frame_delivered(&ring->cursor, &frame->snapshot);
         auto &info = frame->source;
         info.generation = ring->generation;
         info.frame_number = frame->snapshot.frame_number;

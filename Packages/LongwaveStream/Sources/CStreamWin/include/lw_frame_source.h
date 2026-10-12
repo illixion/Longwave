@@ -128,10 +128,13 @@ typedef struct lw_frame_source_stats {
     uint64_t detaches;        /* the producer detached */
     uint64_t producer_exits;  /* the producer's process ended while attached */
     uint64_t delivered;
-    uint64_t fence_timeouts;  /* a slot's fence value never arrived (producer GPU hang or TDR); ends the attach */
+    uint64_t fence_timeouts;  /* a slot's fence value didn't arrive within 1 s: that frame is dropped */
     uint64_t errors;
-    uint64_t producer_faults; /* the producer wrote metadata no honest producer can (side data
-                                 too large, fence not rising); ends the attach */
+    uint64_t producer_faults; /* attaches ended for producer misbehaviour: metadata no honest
+                                 producer writes (side data too large, fence not rising, a submit
+                                 sequence implausibly far ahead, the fence forced to UINT64_MAX),
+                                 or a fence that stayed put through 3 consecutive timeouts */
+    uint64_t host_device_lost; /* attaches ended because the host's own D3D device was removed */
     /* this generation, from the section */
     uint64_t submitted, superseded, starved, consumed, dropped;
 } lw_frame_source_stats;
@@ -205,6 +208,10 @@ void lw_frame_producer_get_stats(const lw_frame_producer *producer, lw_frame_pro
 
 /* Ends the attach (if still live) and releases everything. */
 void lw_frame_producer_detach(lw_frame_producer *producer);
+
+/* TEST ONLY: queues a signal of the producer's fence to `value`, as a rogue
+ * producer could, to test the host's handling of forged fence values. */
+lw_status lw_spike_frame_producer_signal_fence(lw_frame_producer *producer, uint64_t value);
 
 #ifdef __cplusplus
 }

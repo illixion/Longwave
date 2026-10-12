@@ -250,3 +250,11 @@ extern "C" void lw_frame_producer_get_stats(const lw_frame_producer *producer, l
 }
 
 extern "C" void lw_frame_producer_detach(lw_frame_producer *producer) { delete producer; }
+
+extern "C" lw_status lw_spike_frame_producer_signal_fence(lw_frame_producer *producer, uint64_t value) {
+    if (!producer) return lw::fail(LW_E_INVALID_ARG, "lw_spike_frame_producer_signal_fence: NULL argument");
+    HRESULT hr = producer->context->Signal(producer->fence.get(), value);
+    if (FAILED(hr)) return lw::fail_hr(hr, "ID3D11DeviceContext4::Signal");
+    producer->context->Flush();
+    return LW_OK;
+}

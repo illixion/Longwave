@@ -13,13 +13,19 @@ final class PCVRPlayoutTests: XCTestCase {
 
     // MARK: Latest-frame slot
 
-    private struct Frame: PCVRNumberedFrame, Equatable {
+    private struct Frame: PCVRPlayoutFrame, Equatable {
+        var streamEpoch: UInt32 = 0
         let frameNumber: UInt32
+        var spaceEpoch: UInt16 = 0
+    }
+
+    private func frame(_ number: UInt32, stream: UInt32 = 0, space: UInt16 = 0) -> Frame {
+        Frame(streamEpoch: stream, frameNumber: number, spaceEpoch: space)
     }
 
     func testNothingToShowBeforeTheFirstFrame() {
         var slot = PCVRLatestFrameSlot<Frame>()
-        XCTAssertNil(slot.takeForPresentation())
+        XCTAssertNil(slot.takeForPresentation(spaceEpoch: 0).frame)
         XCTAssertEqual(slot.repeated, 0, "an empty slot is not a repeat")
     }
 
@@ -28,9 +34,10 @@ final class PCVRPlayoutTests: XCTestCase {
         var slot = PCVRLatestFrameSlot<Frame>()
         var shown: [(UInt32, Bool)] = []
         for number in UInt32(1)...4 {
-            slot.deliver(Frame(frameNumber: number))
+            slot.deliver(frame(number))
             for _ in 0..<2 {
-                if let next = slot.takeForPresentation() { shown.append((next.frame.frameNumber, next.isNew)) }
+                let next = slot.takeForPresentation(spaceEpoch: 0)
+                if let shownFrame = next.frame { shown.append((shownFrame.frameNumber, next.isNew)) }
             }
         }
         XCTAssertEqual(shown.map(\.0), [1, 1, 2, 2, 3, 3, 4, 4])
@@ -44,58 +51,104 @@ final class PCVRPlayoutTests: XCTestCase {
         // A network burst: three frames land inside one display slot. VR shows
         // the newest; queueing the others would only add latency.
         var slot = PCVRLatestFrameSlot<Frame>()
-        XCTAssertNil(slot.deliver(Frame(frameNumber: 1)))
-        XCTAssertEqual(slot.deliver(Frame(frameNumber: 2)), Frame(frameNumber: 1), "the displaced frame comes back")
-        slot.deliver(Frame(frameNumber: 3))
-        XCTAssertEqual(slot.takeForPresentation()?.frame, Frame(frameNumber: 3))
+        XCTAssertNil(slot.deliver(frame(1)))
+        XCTAssertEqual(slot.deliver(frame(2)), frame(1), "the displaced frame comes back")
+        slot.deliver(frame(3))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(3))
         XCTAssertEqual(slot.dropped, 2)
-        XCTAssertEqual(slot.takeForPresentation()?.isNew, false)
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).isNew, false)
     }
 
-    func testPresentingANewFrameHandsBackTheOldCurrent() {
+    func testPresentingANewFrameReleasesTheOldCurrent() {
         // The mailbox lets that frame go after unlocking, so its texture's
         // release never runs under the lock.
         var slot = PCVRLatestFrameSlot<Frame>()
-        slot.deliver(Frame(frameNumber: 1))
-        XCTAssertNil(slot.takeForPresentation()?.displaced)
-        slot.deliver(Frame(frameNumber: 2))
-        XCTAssertEqual(slot.takeForPresentation()?.displaced, Frame(frameNumber: 1))
-        XCTAssertNil(slot.takeForPresentation()?.displaced, "a repeat displaces nothing")
+        slot.deliver(frame(1))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).released, [])
+        slot.deliver(frame(2))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).released, [frame(1)])
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).released, [], "a repeat releases nothing")
     }
 
     func testLateFramesAreDroppedAcrossTheWrap() {
         var slot = PCVRLatestFrameSlot<Frame>()
-        slot.deliver(Frame(frameNumber: .max - 1))
-        _ = slot.takeForPresentation()
+        slot.deliver(frame(.max - 1))
+        _ = slot.takeForPresentation(spaceEpoch: 0)
         // Older than what is showing: never steps the picture backwards.
-        XCTAssertEqual(slot.deliver(Frame(frameNumber: .max - 3)), Frame(frameNumber: .max - 3))
+        XCTAssertEqual(slot.deliver(frame(.max - 3)), frame(.max - 3))
         XCTAssertEqual(slot.dropped, 1)
         // Wrapped past zero is newer, not older.
-        XCTAssertNil(slot.deliver(Frame(frameNumber: 2)))
-        XCTAssertEqual(slot.takeForPresentation()?.frame, Frame(frameNumber: 2))
+        XCTAssertNil(slot.deliver(frame(2)))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(2))
         XCTAssertEqual(slot.dropped, 1)
     }
 
-    func testSerialNumberComparisonWraps() {
-        XCTAssertTrue(PCVRSerialNumber.isNewer(1, than: 0))
-        XCTAssertTrue(PCVRSerialNumber.isNewer(0, than: .max))
-        XCTAssertFalse(PCVRSerialNumber.isNewer(.max, than: 0))
-        XCTAssertFalse(PCVRSerialNumber.isNewer(7, than: 7))
-        XCTAssertTrue(PCVRSerialNumber.isNewer(0x7FFF_FFFF, than: 0))
-        XCTAssertFalse(PCVRSerialNumber.isNewer(0x8000_0000, than: 0), "half the range ahead counts as behind")
-    }
-
-    func testResetForgetsFramesButKeepsCounts() {
+    func testStreamRestartAcceptsNumberingFromOneAgain() {
+        // A host reconnecting inside one open space starts over at frame 1. With
+        // no stream epoch every new frame would read as older than the last old
+        // one, and the shell would reproject that one forever.
         var slot = PCVRLatestFrameSlot<Frame>()
-        slot.deliver(Frame(frameNumber: 1))
-        slot.deliver(Frame(frameNumber: 2))
-        _ = slot.takeForPresentation()
-        let released = slot.reset()
-        XCTAssertNil(released.0)
-        XCTAssertEqual(released.1, Frame(frameNumber: 2))
-        XCTAssertNil(slot.takeForPresentation())
+        slot.deliver(frame(5_000))
+        _ = slot.takeForPresentation(spaceEpoch: 0)
+        XCTAssertEqual(slot.deliver(frame(1)), frame(1), "same run: frame 1 is late")
+        XCTAssertNil(slot.deliver(frame(1, stream: 1)), "new run: accepted")
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(1, stream: 1))
+        XCTAssertNil(slot.deliver(frame(2, stream: 1)))
+        // A straggler from the replaced run is dropped, whatever its number.
+        XCTAssertEqual(slot.deliver(frame(5_001, stream: 0)), frame(5_001, stream: 0))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(2, stream: 1))
+    }
+
+    func testStreamRestartReplacesAPendingFrameOfTheOldRun() {
+        var slot = PCVRLatestFrameSlot<Frame>()
+        slot.deliver(frame(9))
+        XCTAssertEqual(slot.deliver(frame(1, stream: 7)), frame(9))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(1, stream: 7))
+        // Stream epochs compare like frame numbers: half the range ahead reads
+        // as a run already replaced.
+        XCTAssertEqual(slot.deliver(frame(2, stream: 0x8000_0007)), frame(2, stream: 0x8000_0007))
+    }
+
+    func testRecentreShowsNothingUntilFramesFromTheNewEpochArrive() {
+        var slot = PCVRLatestFrameSlot<Frame>()
+        slot.deliver(frame(1, space: 0))
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 0).frame, frame(1, space: 0))
+
+        // Recentre: the display pose is now in epoch 1. The last frame was
+        // rendered for the old origin, so it is not repeated.
+        XCTAssertNil(slot.takeForPresentation(spaceEpoch: 1).frame)
+        // A frame still in flight from before the recentre is dropped, not shown.
+        slot.deliver(frame(2, space: 0))
+        let stale = slot.takeForPresentation(spaceEpoch: 1)
+        XCTAssertNil(stale.frame)
+        XCTAssertEqual(stale.released, [frame(2, space: 0)])
         XCTAssertEqual(slot.dropped, 1)
-        XCTAssertEqual(slot.presentedNew, 1)
+        // The first frame rendered in the new epoch is shown and then repeated.
+        slot.deliver(frame(3, space: 1))
+        let fresh = slot.takeForPresentation(spaceEpoch: 1)
+        XCTAssertEqual(fresh.frame, frame(3, space: 1))
+        XCTAssertEqual(fresh.released, [frame(1, space: 0)])
+        XCTAssertEqual(slot.takeForPresentation(spaceEpoch: 1).frame, frame(3, space: 1))
+    }
+
+    /// The wraparound cases StreamWire tests (`InputAndStateTests.
+    /// testLatestWinsWithWraparound`, `StreamFormatTableTests.
+    /// testFirstFrameNumbersWrap`), so this copy cannot drift from
+    /// `SerialNumber.isNewer` before the app links the package.
+    func testSerialNumberMatchesStreamWire() {
+        // Sequence 1 supersedes UInt32.max, not the reverse, and not itself.
+        XCTAssertTrue(PCVRSerialNumber.isNewer(1, than: .max))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(.max, than: 1))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(1, than: 1))
+        // A format starting at 3 follows one that started at max - 1; frame max
+        // still belongs to the earlier one, frame 4 to the later.
+        XCTAssertTrue(PCVRSerialNumber.isNewer(3, than: .max - 1))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(.max - 1, than: 3))
+        XCTAssertTrue(PCVRSerialNumber.isNewer(.max, than: .max - 1))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(3, than: 4))
+        // The half-range boundary.
+        XCTAssertTrue(PCVRSerialNumber.isNewer(0x7FFF_FFFF, than: 0))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(0x8000_0000, than: 0))
     }
 
     // MARK: Head-pose producer

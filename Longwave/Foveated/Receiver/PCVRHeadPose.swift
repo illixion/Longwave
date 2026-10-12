@@ -79,8 +79,14 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         min(max(smoothedLatency ?? 0, 0), Self.maximumPredictionHorizon)
     }
 
+    /// The current space epoch: what the next snapshot carries, and what a
+    /// frame's `renderPose.spaceEpoch` must equal for it to be presented.
+    var spaceEpoch: UInt16 { epoch.withLock { $0 } }
+
     /// Starts a new space epoch: call when the immersive space's origin moves
-    /// (a recentre). The next snapshot carries the new epoch.
+    /// (a recentre). The next snapshot carries the new epoch, and frames rendered
+    /// in the old one stop being presented. Nothing calls it on a real recentre
+    /// yet: ARKit reports no recentre event, so detecting one is still open.
     func bumpSpaceEpoch() {
         epoch.withLock { $0 &+= 1 }
     }
@@ -124,13 +130,6 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         let latency = presentTime - entry.baseDisplayTime
         smoothedLatency = smoothedLatency.map { $0 + (latency - $0) * 0.1 } ?? latency
         return presentTime - entry.sampledAt
-    }
-
-    /// Forget measurements (a new stream): the next frames re-learn the horizon.
-    func reset() {
-        history.removeAll()
-        smoothedLatency = nil
-        lastPresented = nil
     }
 
     /// One line a second: enough to see the uplink is alive and sane in a trace

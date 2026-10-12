@@ -56,6 +56,10 @@ struct PCVRShellDevView: View {
                     .pickerStyle(.segmented)
                     LabeledContent("Overscan", value: "\(Int(session.remoteSettings.overscan * 100)) %")
                     Slider(value: $session.remoteSettings.overscan, in: 0...0.3, step: 0.01)
+                    Button("Restart stream (numbering from 1)") { session.restartFakeStream() }
+                        .disabled(!session.isPresenting)
+                    Button("Simulate recentre (bump space epoch)") { session.simulateRecentre() }
+                        .disabled(!session.isPresenting)
                 }
 
                 Section("Reprojection") {

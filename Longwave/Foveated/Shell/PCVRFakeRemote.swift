@@ -55,7 +55,11 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
     private let startTime = CACurrentMediaTime()
+    /// Frame numbering, and the run it belongs to. Touched only on the remote's
+    /// thread; `restartStream()` asks for a new run through `restartRequested`.
     private var frameNumber: UInt32 = 0
+    private var streamEpoch: UInt32 = 0
+    private let restartRequested = OSAllocatedUnfairLock(initialState: false)
 
     init(device: any MTLDevice, mailbox: PCVRFrameMailbox) throws {
         guard let queue = device.makeCommandQueue() else {
@@ -97,6 +101,12 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
         running.withLock { $0 = false }
     }
 
+    /// Starts the frame numbering over in a new stream epoch from the next frame,
+    /// as a host does when it reconnects or restarts its stream.
+    func restartStream() {
+        restartRequested.withLock { $0 = true }
+    }
+
     // MARK: Loop
 
     private func run() {
@@ -123,6 +133,11 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
             tally.withLock { $0.stalled += 1 }
             return
         }
+        if restartRequested.withLock({ let requested = $0; $0 = false; return requested }) {
+            streamEpoch &+= 1
+            frameNumber = 0
+            log.notice("Fake remote restarted its stream (epoch \(self.streamEpoch))")
+        }
         frameNumber &+= 1
         let renderPose = PCVRRenderPose(
             poseSequence: snapshot.sequence,
@@ -136,14 +151,14 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
         guard let commandBuffer = queue.makeCommandBuffer() else { return }
         encodeScene(into: lease.texture, renderPose: renderPose, time: Float(CACurrentMediaTime() - startTime),
                     commandBuffer: commandBuffer)
-        let number = frameNumber
+        let number = frameNumber, epoch = streamEpoch
         let renderedAt = CACurrentMediaTime()
         // Delivered only once the GPU has finished, like a decoder's output, so
         // the receiver never samples a half-rendered texture from another queue.
         commandBuffer.addCompletedHandler { [delivery, mailbox, tally] _ in
             let due = renderedAt + settings.delay
             delivery.asyncAfter(deadline: .now() + max(due - CACurrentMediaTime(), 0)) {
-                let frame = PCVRDecodedFrame(frameNumber: number, texture: lease.texture, renderPose: renderPose,
+                let frame = PCVRDecodedFrame(streamEpoch: epoch, frameNumber: number, texture: lease.texture, renderPose: renderPose,
                                              arrivalTime: CACurrentMediaTime(),
                                              release: { withExtendedLifetime(lease) {} })
                 mailbox.deliver(frame)

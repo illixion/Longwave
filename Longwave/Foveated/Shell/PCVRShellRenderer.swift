@@ -209,7 +209,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         }
         // A frame is only placed in the world with a head pose to place it at:
         // without one it would be drawn head-locked, which in VR is worse than black.
-        let presented = head == nil ? nil : mailbox.takeForPresentation()
+        // And only a frame rendered in the display pose's space epoch: across a
+        // recentre its pose names a different place.
+        let presented = head == nil ? nil : mailbox.takeForPresentation(spaceEpoch: poseProducer.spaceEpoch)
         if let presented, presented.isNew {
             let poseToPresent = poseProducer.recordPresentation(
                 frameNumber: presented.frame.frameNumber,

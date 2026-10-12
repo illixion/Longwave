@@ -3,22 +3,28 @@ import Foundation
 import Metal
 import os
 
-/// §4.7's `renderPose` side data: what a frame was rendered for. The receiver
-/// shows the frame where it was rendered, not where the head is now, so without
-/// this it cannot reproject at all.
-/// Counters that wrap, compared the way the v3 wire compares them (StreamWire's
-/// `SerialNumber`): anything less than half the range ahead counts as newer.
+/// Counters that wrap, compared the way the v3 wire compares them: anything
+/// less than half the range ahead counts as newer.
+///
+/// Must match StreamWire's `SerialNumber.isNewer` (and the frame source's
+/// `lw_fs_serial_newer`). It is a local copy only because the app does not
+/// link the LongwaveStream package yet; replace it with `SerialNumber` when it
+/// does. `PCVRPlayoutTests` mirrors StreamWire's wraparound cases.
 nonisolated enum PCVRSerialNumber {
     static func isNewer(_ a: UInt32, than b: UInt32) -> Bool {
         a != b && a &- b < 0x8000_0000
     }
 }
 
+/// §4.7's `renderPose` side data: what a frame was rendered for. The receiver
+/// shows the frame where it was rendered, not where the head is now, so without
+/// this it cannot reproject at all.
 nonisolated struct PCVRRenderPose: Equatable, Sendable {
     /// The head-pose snapshot (`PCVRHeadPoseSnapshot.sequence`) the host rendered from.
     var poseSequence: UInt32
-    /// The space epoch of that snapshot, so a recentre between pose and render
-    /// can be told apart from head motion.
+    /// The space epoch of that snapshot. A frame is only shown while the display
+    /// pose is in the same epoch: across a recentre its pose means a different
+    /// place, and reprojecting it would jump the picture.
     var spaceEpoch: UInt16
     /// The display time the host rendered for, on the receiver's clock.
     var displayTime: TimeInterval
@@ -34,7 +40,12 @@ nonisolated struct PCVRRenderPose: Equatable, Sendable {
 /// when the last of those lets go, which is when a producer may reuse the
 /// texture.
 nonisolated final class PCVRDecodedFrame: @unchecked Sendable {
-    /// Per stream, wraps (compare with `PCVRSerialNumber`).
+    /// Identifies one run of the stream's frame numbering. The producer bumps it
+    /// whenever numbering starts over (a host reconnect or stream restart, a new
+    /// format); the v3 client maps it from the stream's format generation.
+    /// Wraps (compare with `PCVRSerialNumber`).
+    let streamEpoch: UInt32
+    /// Per stream epoch, wraps (compare with `PCVRSerialNumber`).
     let frameNumber: UInt32
     let texture: any MTLTexture
     let renderPose: PCVRRenderPose
@@ -42,8 +53,9 @@ nonisolated final class PCVRDecodedFrame: @unchecked Sendable {
     let arrivalTime: TimeInterval
     private let release: (@Sendable () -> Void)?
 
-    init(frameNumber: UInt32, texture: any MTLTexture, renderPose: PCVRRenderPose,
+    init(streamEpoch: UInt32, frameNumber: UInt32, texture: any MTLTexture, renderPose: PCVRRenderPose,
          arrivalTime: TimeInterval, release: (@Sendable () -> Void)? = nil) {
+        self.streamEpoch = streamEpoch
         self.frameNumber = frameNumber
         self.texture = texture
         self.renderPose = renderPose
@@ -54,24 +66,41 @@ nonisolated final class PCVRDecodedFrame: @unchecked Sendable {
     deinit { release?() }
 }
 
-/// A frame the playout slot can order: its per-stream number, which wraps.
-nonisolated protocol PCVRNumberedFrame {
+/// What the playout slot needs to know about a frame.
+nonisolated protocol PCVRPlayoutFrame {
+    var streamEpoch: UInt32 { get }
     var frameNumber: UInt32 { get }
+    var spaceEpoch: UInt16 { get }
 }
 
-extension PCVRDecodedFrame: PCVRNumberedFrame {}
+extension PCVRDecodedFrame: PCVRPlayoutFrame {
+    var spaceEpoch: UInt16 { renderPose.spaceEpoch }
+}
 
 /// Latest-wins playout, as pure bookkeeping (§4.7 Pacing: a frame that misses
 /// its display slot is dropped, never queued; a display slot with no new frame
 /// repeats the last one, which reprojection then moves to the new head pose).
 ///
-/// Every mutating call returns the frame it displaced, if any, so a caller
-/// holding a lock can let that last reference go after unlocking.
-nonisolated struct PCVRLatestFrameSlot<Frame: PCVRNumberedFrame> {
+/// Two epochs gate it. A newer stream epoch starts the frame numbering over, so
+/// its frames are accepted whatever their numbers and the old run's pending
+/// frame is dropped. A frame is presented only in its own space epoch; across a
+/// recentre the slot shows nothing until frames rendered in the new epoch arrive.
+///
+/// Every mutating call returns the frames it let go of, so a caller holding a
+/// lock can drop those last references after unlocking.
+nonisolated struct PCVRLatestFrameSlot<Frame: PCVRPlayoutFrame> {
+    /// What a display slot gets: the frame to show (nil for nothing), whether it
+    /// is shown for the first time, and the frames the slot released.
+    struct Presentation {
+        var frame: Frame?
+        var isNew: Bool
+        var released: [Frame]
+    }
+
     private(set) var pending: Frame?
     private(set) var current: Frame?
-    /// Frames that arrived and were replaced before any display slot showed
-    /// them, or that arrived older than one already received.
+    /// Frames never shown: replaced before a display slot came, older than one
+    /// already received, from an older stream epoch, or from another space epoch.
     private(set) var dropped = 0
     /// Display slots that showed a frame already shown before.
     private(set) var repeated = 0
@@ -82,10 +111,15 @@ nonisolated struct PCVRLatestFrameSlot<Frame: PCVRNumberedFrame> {
 
     @discardableResult
     mutating func deliver(_ frame: Frame) -> Frame? {
-        // Late or reordered: showing it would step the picture backwards.
-        if let newest = pending ?? current, !PCVRSerialNumber.isNewer(frame.frameNumber, than: newest.frameNumber) {
-            dropped += 1
-            return frame
+        if let newest = pending ?? current {
+            let restarted = PCVRSerialNumber.isNewer(frame.streamEpoch, than: newest.streamEpoch)
+            let sameRun = frame.streamEpoch == newest.streamEpoch
+            // From a stream run already replaced, or late or reordered within
+            // this one: showing it would step the picture backwards.
+            guard restarted || (sameRun && PCVRSerialNumber.isNewer(frame.frameNumber, than: newest.frameNumber)) else {
+                dropped += 1
+                return frame
+            }
         }
         let displaced = pending
         if displaced != nil { dropped += 1 }
@@ -93,29 +127,26 @@ nonisolated struct PCVRLatestFrameSlot<Frame: PCVRNumberedFrame> {
         return displaced
     }
 
-    /// The frame for the next display slot, whether it is new, and the frame it
-    /// replaced as current. Nil before the first frame arrives.
-    mutating func takeForPresentation() -> (frame: Frame, isNew: Bool, displaced: Frame?)? {
+    /// The frame for the next display slot, shown at a display pose in `spaceEpoch`.
+    mutating func takeForPresentation(spaceEpoch: UInt16) -> Presentation {
+        var released: [Frame] = []
         if let next = pending {
             pending = nil
-            let displaced = current
-            current = next
-            presentedNew += 1
-            return (next, true, displaced)
+            if next.spaceEpoch == spaceEpoch {
+                if let previous = current { released.append(previous) }
+                current = next
+                presentedNew += 1
+                return Presentation(frame: next, isNew: true, released: released)
+            }
+            // Rendered for another origin; it can never be placed correctly.
+            dropped += 1
+            released.append(next)
         }
-        guard let current else { return nil }
+        guard let current, current.spaceEpoch == spaceEpoch else {
+            return Presentation(frame: nil, isNew: false, released: released)
+        }
         repeated += 1
-        return (current, false, nil)
-    }
-
-    /// Forget every frame (a reconnect or a stream change) but keep the counts.
-    /// Returns the frames it let go of.
-    mutating func reset() -> (Frame?, Frame?) {
-        defer {
-            pending = nil
-            current = nil
-        }
-        return (pending, current)
+        return Presentation(frame: current, isNew: false, released: released)
     }
 }
 
@@ -124,8 +155,8 @@ nonisolated struct PCVRLatestFrameSlot<Frame: PCVRNumberedFrame> {
 nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
     private let slot = OSAllocatedUnfairLock(initialState: PCVRLatestFrameSlot<PCVRDecodedFrame>())
 
-    // Every method takes the frame the slot let go of out of the lock and lets it
-    // drop after unlocking: it may be that frame's last reference, and its
+    // Every method takes the frames the slot let go of out of the lock and lets
+    // them drop after unlocking: one may be a frame's last reference, and its
     // release callback (a texture going back to a pool) must not run locked.
 
     func deliver(_ frame: PCVRDecodedFrame) {
@@ -133,19 +164,15 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
         withExtendedLifetime(displaced) {}
     }
 
-    func takeForPresentation() -> (frame: PCVRDecodedFrame, isNew: Bool)? {
-        guard let taken = slot.withLock({ $0.takeForPresentation() }) else { return nil }
-        withExtendedLifetime(taken.displaced) {}
-        return (taken.frame, taken.isNew)
+    /// The frame to show at a display pose in `spaceEpoch`, or nil for nothing.
+    func takeForPresentation(spaceEpoch: UInt16) -> (frame: PCVRDecodedFrame, isNew: Bool)? {
+        let taken = slot.withLock { $0.takeForPresentation(spaceEpoch: spaceEpoch) }
+        withExtendedLifetime(taken.released) {}
+        return taken.frame.map { ($0, taken.isNew) }
     }
 
     var counts: (dropped: Int, repeated: Int, presentedNew: Int) {
         slot.withLock { ($0.dropped, $0.repeated, $0.presentedNew) }
-    }
-
-    func reset() {
-        let released = slot.withLock { $0.reset() }
-        withExtendedLifetime(released) {}
     }
 }
 #endif

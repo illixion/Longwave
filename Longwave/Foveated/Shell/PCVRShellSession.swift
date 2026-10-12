@@ -39,9 +39,22 @@ final class PCVRShellSession {
     }
     private(set) var remoteCounts: (rendered: Int, stalled: Int) = (0, 0)
     @ObservationIgnored private var fakeRemote: PCVRFakeRemote?
+
+    /// Starts the fake remote's frame numbering over, as a host reconnecting
+    /// within one open space does.
+    func restartFakeStream() {
+        fakeRemote?.restartStream()
+    }
+
+    /// Bumps the space epoch as a recentre would, without moving the origin:
+    /// exercises the epoch gate (a brief gap until new-epoch frames arrive).
+    func simulateRecentre() {
+        poseProducer?.bumpSpaceEpoch()
+    }
     #endif
 
     @ObservationIgnored private var renderer: PCVRShellRenderer?
+    @ObservationIgnored private var poseProducer: PCVRHeadPoseProducer?
     @ObservationIgnored private var statsTask: Task<Void, Never>?
     @ObservationIgnored private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
 
@@ -78,6 +91,7 @@ final class PCVRShellSession {
         }
         #endif
         self.renderer = renderer
+        self.poseProducer = poseProducer
         isPresenting = true
         renderer.start()
         statsTask = Task { [weak self] in
@@ -97,6 +111,7 @@ final class PCVRShellSession {
         #endif
         renderer?.stop()
         renderer = nil
+        poseProducer = nil
         isPresenting = false
     }
 

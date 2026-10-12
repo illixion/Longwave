@@ -119,6 +119,7 @@ final class PCVRReprojectionTests: XCTestCase {
         XCTAssertEqual(wide.tangents.x, headsetFOV.tangents.x * 1.1, accuracy: 1e-5)
         XCTAssertEqual(wide.tangents.w, headsetFOV.tangents.w * 1.1, accuracy: 1e-5)
         XCTAssertLessThan(wide.angleLeft, headsetFOV.angleLeft, "wider means further from the axis")
+        XCTAssertEqual(headsetFOV.expanded(by: 0).tangents, headsetFOV.tangents, "no tan/atan round trip")
         XCTAssertEqual(headsetFOV.expanded(by: -1), headsetFOV, "negative overscan is ignored")
     }
 
@@ -268,7 +269,7 @@ final class PCVRReprojectionTests: XCTestCase {
         let target = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
         let depth = try XCTUnwrap(device.makeTexture(descriptor: depthDescriptor))
         let eye = PCVREyeView(pose: .identity, fieldOfView: headsetFOV)
-        let frame = PCVRDecodedFrame(frameNumber: 1, texture: source,
+        let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 1, texture: source,
                                      renderPose: PCVRRenderPose(poseSequence: 1, spaceEpoch: 0, displayTime: 0, eyes: PCVRStereo(left: eye, right: eye)),
                                      arrivalTime: 0)
         let queue = try XCTUnwrap(device.makeCommandQueue())

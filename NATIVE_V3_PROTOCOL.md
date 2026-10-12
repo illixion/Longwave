@@ -25,6 +25,12 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   optional depth stream that turns a flat game into 3D on the headset (§4.8).
   Both rest on two general mechanisms, frame side data and auxiliary streams
   (§4.2), which land in Phase 1 with the core.
+- **`StreamWire` built (2026-10-12, branch `v3-wire`).** The wire types of §4
+  exist as a Foundation-free module in `Packages/LongwaveStream`, with golden
+  byte vectors (the interop reference for the C++ side) and a fuzzed decoder.
+  Writing them down settled the encoding details §4 left open, and each is
+  noted in place, marked 2026-10-12. Questions that need measurement or a
+  design decision are §9 items 19–21.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -339,7 +345,8 @@ UDP datagram
    └─ AEAD-sealed body: one or more frames, each [type u8 | length varint | body]
       ├─ CTRL      reliable ordered bytes, channel 0 (control) / 1 (input events) / 2 (bulk: clipboard, artwork)
       ├─ ACK       selective ack ranges for the reliable channels
-      ├─ MEDIA     one video or audio shard (§4.2, §4.4)
+      ├─ VIDEO     one video shard (§4.2)
+      ├─ AUDIO     one audio shard (§4.4)
       ├─ STATE     unreliable latest-wins snapshot (pointer position, gamepad, head pose)
       ├─ FEEDBACK  receive report for rate control (§6)
       ├─ PING/PONG clock sync and liveness (§5)
@@ -356,6 +363,39 @@ congestion window of its own — its traffic is accounted against the media rate
 controller's budget. Three channels so a clipboard image can't sit in front of a
 key-up. This is ENet's design point in our own framing.
 
+**Encoding rules** (fixed when `StreamWire` was built, 2026-10-12; the code and
+its golden byte vectors in `StreamWireTests` are the reference):
+
+- **Byte order and numbers.** Every multi-byte field is little-endian. The one
+  exception is inside an access unit, where NAL length prefixes stay
+  big-endian as AVCC/HVCC define them. Floats are IEEE 754 binary32, and NaN or
+  infinity are rejected wherever a value must be finite.
+- **`varint`** is unsigned LEB128, at most 3 bytes (0…2,097,151), and must be
+  minimal. A non-canonical varint is rejected, so every value has exactly one
+  encoding.
+- **Frame types:** PADDING 0x00, CTRL 0x01, ACK 0x02, VIDEO 0x03, AUDIO 0x04,
+  STATE 0x05, FEEDBACK 0x06, PING 0x07, PONG 0x08. The design's single MEDIA
+  type is split in two, so the frame type says which shard header follows.
+  PADDING is the one frame without a length: a single 0x00 byte. A run of zero
+  bytes is then valid padding of exactly its size, which is what a PMTU probe
+  needs (QUIC's rule).
+- **Malformed datagrams are dropped whole.** That covers a truncated frame, a
+  bad varint, or a second media frame. Such a datagram passed AEAD, so the peer
+  has a bug and nothing in it can be trusted.
+- **Strict fixed fields, open extension points.** Reserved bits and unknown
+  values in fixed fields are rejected. New flag bits arrive with a capability,
+  so a receiver never sees bits it doesn't know. Extension happens only in the
+  open places: unknown frame types, message types, side data types,
+  `formatDescription` extensions and STATE kinds are skipped. A known TLV value
+  longer than its defined size is accepted, and the extra bytes (fields a
+  later revision appended) are ignored.
+- **Reliable-channel messages** have the same shape as frames: `type u8 |
+  length varint | body`, with the body ≤ 1 MiB (bigger payloads are chunked on
+  channel 2). One type namespace covers all three channels: control
+  0x20–0x3F (`formatDescription` = 0x20), input events 0x40–0x5F, host input
+  feedback 0x60–0x6F. An unknown message type is skipped. A bad length ends
+  the session, because a byte stream can't resynchronise after one.
+
 ### 4.2 Video
 
 **Stream identity.** `streamID: u32` exactly as v2 — 0 is the desktop, nonzero
@@ -371,29 +411,90 @@ Bumping the format is a reliable message *and* stamped with the first
 `frameNumber` it applies to, so a reordered shard can't be decoded against the
 wrong parameter sets.
 
-**Shard header** (inside the sealed MEDIA frame, 24 bytes):
+*Layout (2026-10-12).* The message is a 22-byte core, then the configuration
+blob, then extension blocks:
+
+- **Core:** streamID u32, firstFrameNumber u32, codec u8 (HEVC 1, H.264 2,
+  AV1 3), formatKind u8, width u16, height u16, bitDepth u8, chromaFormat u8,
+  primaries u8, transfer u8, matrix u8, fullRange u8, then configLength u16
+  and the configuration.
+  - formatKind keeps v2's values: 0 is the CoreMedia ImageDescription, and 1
+    is Annex-B parameter sets, now for HEVC or H.264. 2 is new: an AV1
+    sequence header.
+  - Width and height are the displayed (cropped) picture size.
+  - Colour is three ITU-T H.273 code points plus the range flag. VideoToolbox,
+    NVENC, AMF and VAAPI all map those directly.
+- **Extension blocks** are `type u8 | length u16 | body`. Each type appears at
+  most once, and unknown types are skipped. Types:
+  1. mastering display: ST 2086, in the HEVC SEI's order and units;
+  2. content light level;
+  3. side data types: the declared types, strictly ascending;
+  4. auxiliary: role and primaryStreamID;
+  5. PCVR layout (§4.7);
+  6. depth encoding (§4.8).
+
+A receiver keeps the current format and the one before it for each stream. It
+decodes a frame against the newest format whose first frame is not after the
+frame's number. A new format must start at a newer frame number than the
+format it replaces.
+
+**Shard header** (inside the sealed VIDEO frame, 24 bytes):
 
 | field | size | notes |
 |---|---|---|
 | streamID | 4 | |
 | frameNumber | 4 | per stream, wraps |
 | captureTime | 8 | host monotonic ns (§5), same for all shards of a frame |
-| flags | 1 | key, recovery (first frame after invalidation), LTR-marked, last-block, discardable (not a reference) |
+| flags | 1 | key 0x01, recovery 0x02 (first frame after invalidation), LTR-marked 0x04, last-block 0x08, discardable 0x10 (not a reference); bits 5–7 reserved |
 | block | 1 | FEC block index within the frame |
-| blockCount | 1 | |
+| blockCount | 1 | ≥ 1 |
 | shardIndex | 1 | index in the block, data shards first |
-| dataShards | 1 | k |
-| parityShards | 1 | m |
-| refFrame | 2 | low 16 bits of the frame this one predicts from, 0xFFFF for intra |
+| dataShards | 1 | k ≥ 1 |
+| parityShards | 1 | m, with k + m ≤ 255 |
+| referenceDistance | 2 | frameNumber minus the frame this one predicts from; 0 = intra |
 
-`refFrame` is what lets the receiver tell, *before* decoding, whether a frame is
+`referenceDistance` is what lets the receiver tell, *before* decoding, whether a frame is
 decodable given what it has — the receiver knows exactly which frames are
 damaged and asks for invalidation of exactly those (§6.3).
 
-**Packetization.** An encoded frame (length-prefixed NAL units, as v2) is split
-into equal-size data shards of `payload − 24` bytes, the last zero-padded with
-the true length in its header extension. Frames bigger than one block are split
-into several blocks of ≤ 255 total shards each.
+*Changed 2026-10-12:* the design first had `refFrame`, the low 16 bits of the
+reference, with 0xFFFF for intra. That sentinel collides with a real frame
+number every 65,536 frames, so the field is a distance instead. It wraps
+cleanly and is unambiguous. A reference more than 65,535 frames back needs an
+IDR or a fresh LTR. Consistency rules the decoder enforces:
+
+- last-block is set exactly when `block == blockCount − 1`, which duplicates
+  information the other fields already give;
+- a key frame has distance 0;
+- discardable and LTR-marked never appear together.
+
+One field means one reference. The check is only exact if encoders run with a
+single reference frame (NVENC `numRefL0 = 1`, or LTR-only prediction). With
+NVENC's default of several references, the receiver's decodability check is
+optimistic.
+
+**Packetization.** The bytes split into shards are the **frame payload**:
+
+```
+contentLength u32 | sideDataLength u16 | side data items | access unit | zero padding
+```
+
+The access unit is length-prefixed NAL units as in v2, or AV1 OBUs.
+`contentLength` counts everything after itself up to the padding.
+
+- **Why the length is in the payload.** The shard header has no room for an
+  extension, and a data shard rebuilt from parity must carry the true length
+  too. Only the payload is FEC-protected.
+- **The side data section is always present**, with length 0 when a frame has
+  none. Parsing then never depends on the format message, and a frame without
+  side data costs 6 bytes.
+- **Shard size.** All data shards are the same size: the UDP payload minus
+  56 bytes. That is the outer header (13), the AEAD tag (16), the frame type
+  and length (3) and the shard header (24). It comes to 1144 bytes at the
+  default 1200 and 1396 at 1452 (`DatagramLayout`). The design's
+  "payload − 24" left out the other 32 bytes.
+- **Blocks.** Frames bigger than one block are split into several blocks of
+  ≤ 255 total shards each.
 
 **FEC.** Systematic Reed–Solomon (Cauchy matrix) over GF(2^8), per block: `k`
 data shards plus `m = max(minParity, ceil(k × fecRatio))` parity shards, where
@@ -450,6 +551,17 @@ shard header stays the same for every stream. Unknown types are skipped by
 length. Types: `renderPose` and `foveation` (§4.7), `depthRange` (§4.8), with
 more added append-only.
 
+*Encoding (2026-10-12).* Items sit in the payload's side data section above,
+so a parser never has to guess where TLVs end and NAL units begin. The design
+left that boundary open. Type numbers: renderPose 1 (102 bytes), foveation 2
+(20 bytes), depthRange 3 (13 bytes). Each known type appears at most once per
+frame. The format's declared types bound what a frame may carry:
+
+- an item whose type isn't declared is an error;
+- a PCVR frame must carry renderPose, plus foveation with the current epoch
+  when the stream is warped;
+- a depth frame must carry depthRange.
+
 **Auxiliary streams.** A stream can be an auxiliary of another: its
 `formatDescription` names a `primaryStreamID` and a `role` (`alpha`, `depth`).
 An auxiliary frame uses the same `frameNumber` and `captureTime` as the primary
@@ -460,6 +572,26 @@ capability never subscribes to it. If an auxiliary frame is missing, the receive
 shows the primary frame with the last good auxiliary, and treats a primary
 frame without one as normal. Alpha (`alphaVideo`) and depth (`depthVideo`, §4.8)
 are the first two roles.
+
+*Rules (2026-10-12)*, enforced by `StreamFormatTable`:
+
+- **Roles.** Role numbers: alpha 1, depth 2.
+- **Announcement order.** The primary's format must arrive before its
+  auxiliary's.
+- **No chains.** An auxiliary's primary can't itself be an auxiliary.
+- **One per role.** A primary has at most one auxiliary per role.
+- **Fixed roles.** A stream keeps its role and primary for its lifetime.
+- **Removal.** Ending a primary ends its auxiliaries.
+- **One auxiliary frame for every primary frame** while the auxiliary is
+  subscribed. When there is nothing to send (a cutscene with no depth), the
+  auxiliary frame has an empty access unit and only side data, so it costs a
+  shard or two. A gap in an auxiliary's frame numbers then always means loss,
+  and the receiver can NACK it. Without this rule, a missing auxiliary frame
+  could mean "lost" or "never sent", and the NACK logic couldn't tell which.
+- **Stream IDs** are window IDs on the primary side, so an auxiliary needs an
+  ID no window will ever have. That is open: the host must allocate auxiliary
+  IDs from a range it never hands to windows. Decoupling stream IDs from
+  window IDs altogether would be cleaner.
 
 ### 4.3 Input
 
@@ -485,6 +617,43 @@ are the first two roles.
   cursor locally when the stream doesn't), and the v2 `mouseStatus`/
   `keyboardStatus` capability states.
 
+*Encoding (2026-10-12; field tables in `InputEvents.swift` and
+`StateSnapshots.swift`):*
+
+- **Event message types:** keyDown 0x40, keyUp 0x41, mouseDown 0x42,
+  mouseUp 0x43, scroll 0x44, textInput 0x45, focusWindow 0x46,
+  gamepadConnected 0x47, gamepadDisconnected 0x48, releaseAll 0x49.
+- **Event bodies** start with `hostTime u64`.
+  - Keys carry `keyCode u16` and `modifiers u32`: v2's bits, plus `function`
+    as bit 5.
+  - Mouse buttons carry streamID and position as well as the button (left,
+    right, middle, back, forward). A click then lands where it was made even
+    if the pointer STATE before it was lost.
+  - Scroll carries line deltas (i16) and precise deltas (i32, 1/120 notch).
+  - Text is 1–4096 bytes of valid UTF-8.
+  - Gamepads are indexed 0–15.
+- **Host → client message types:** rumble 0x60, lightBar 0x61,
+  triggerEffect 0x62 (up to 32 effect bytes in DualSense format), cursor 0x63,
+  controlStatus 0x64. Rumble carries a duration, and the client stops when it
+  runs out unless the host sends again, so a lost session can't leave a pad
+  buzzing.
+- **STATE frame header** (14 bytes): `kind u8 | source u8 | sequence u32 |
+  hostTime u64`. Latest wins per (kind, source), compared as RFC 1982 serial
+  numbers. Kinds: pointerAbsolute 1, pointerRelative 2, gamepad 3, headPose 4.
+  Unknown kinds are skipped. `source` is the gamepad index for pads and 0 for
+  every other kind.
+- **Relative pointer** is sent as running totals since the session started,
+  in 1/256 pixel, wrapping. The host applies the difference from the last
+  total it saw. "Accumulated since the last ack" needed an ack and per-ack
+  state; a running total survives any loss with neither.
+- **Gamepad snapshot:**
+  - buttons u32, named by position (south, east, west, north, then
+    shoulders, sticks, menu, view, home, d-pad, share, touchpad click and
+    four paddles);
+  - four i16 stick axes with +Y up, and two u16 triggers;
+  - a sections byte, followed by optional motion (gyro rad/s and accel in g,
+    f32) and an optional two-contact touchpad.
+
 ### 4.4 Audio
 
 **Channel.** One `audio` media channel per session, on the same session as the
@@ -505,6 +674,24 @@ device sample index, continuous through silence suppression, holes and drops),
 `frameSamples u16`, `fecGroup u16`. The format message maps sample index to host
 monotonic time (§5), so audio and video share a clock without stamping every
 packet twice.
+
+*Header details (2026-10-12):*
+
+- **`channelID`:** 0 is the bed; 1–65535 are spatial object IDs.
+- **`flags`:** bits 0–2 are `fecIndex`, bit 3 is `discontinuity` (the host
+  restarted or dropped on purpose, so a jump in `firstSample` isn't loss), and
+  bit 4 is `inBandFEC` (the Opus packet carries LBRR). Bits 5–7 are reserved.
+- **`codec`:** Opus 1, PCM24 2. Codecs are negotiated, so an unknown codec
+  is an error rather than something to skip.
+- **`frameSamples`:** 1–5760 (120 ms at 48 kHz).
+- **FEC group shape** is fixed in v3.0 at 4 data plus 2 parity. `fecIndex`
+  0–3 marks data and 4–5 parity, and a parity packet's `firstSample` is that
+  of its group's first data packet.
+- **Open, for StreamFEC:** RS needs equal-size shards, and a rebuilt data
+  packet needs its header fields and true length. So the FEC must cover each
+  data packet's header and a u16 length along with the payload, zero-padded
+  to the group's longest. The 16-byte header has no field that would make
+  that implicit.
 
 **FEC.** Audio packets are tiny and late audio is useless, so: RS across groups
 of 4 data packets with 2 parity (same RS code as video; the same grouping
@@ -556,6 +743,16 @@ diagnostics overlay), and `bye` with a reason.
   `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
   `sideData`, `depthVideo`, `pcvr`, `gaze`.
   Unknown capabilities are ignored, never fatal.
+  *Encoding (2026-10-12):*
+  - **Bit numbers** follow the list order: `windowStreams` = 0 through
+    `gaze` = 21, append-only.
+  - **Wire form:** `byteCount u8 | bitmap`, where bit n of byte n/8 is
+    capability n, up to 256 capabilities. Senders write the shortest bitmap.
+    Receivers accept trailing zero bytes and unknown bits.
+  - **Negotiation** takes the intersection, restricted to capabilities the
+    build knows. It then drops any capability whose requirements didn't
+    survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` needs
+    `pcvr`.
 - Message and frame types are append-only; a receiver skips unknown frame types
   by their length.
 - **v2 coexistence.** Hosts serve TCP 4857 (v2) and UDP 4857 (v3) at once,
@@ -599,6 +796,33 @@ when IPD changes, the `frameNumber` and present time of the last frame shown
 distance, timestamp, valid flag) that stays invalid unless `gaze` was
 negotiated. Hands and controllers keep their existing paths for now.
 
+*Encoding (2026-10-12).*
+
+- **Conventions** are OpenXR's, which the host's frame source speaks and
+  which agree with ARKit: metres, right-handed, +Y up, −Z forward.
+  - A pose is the orientation quaternion (x, y, z, w) followed by the position
+    (x, y, z), `XrPosef`'s field order.
+  - A field of view is four signed angles in radians (left, right, up, down),
+    `XrFovf`.
+  - Everything is binary32 with no quantisation, which costs ~16 KB/s of
+    uplink at 90 Hz.
+  - Quaternions must be unit length within 1%, and FOV angles must lie inside
+    ±π/2 with left < right and down < up.
+- **The head-pose snapshot** is 164 bytes after the STATE header:
+  - displayTime u64, spaceEpoch u16, flags u16 (bit 0 gaze valid, bit 1
+    presented frame valid);
+  - the head pose;
+  - for each eye, its pose relative to the head plus its field of view;
+  - presented frameNumber u32 and present time u64;
+  - gaze direction (unit vector in head space), distance f32 (0 when
+    unknown), and sample time u64.
+- **Fields whose flag is clear must be all zero.** No stale gaze leaks, and
+  every value has one encoding.
+- **Deviation:** eye offsets and fields of view ride in *every* snapshot, not
+  only when IPD changes. A STATE frame can be lost, and a change sent only
+  once would then never arrive. The host also needs the headset's per-eye
+  projection to render at all, which the design didn't carry.
+
 **Video.** One stream, both eyes side by side, HEVC Main10, 90–120 fps. Its
 `formatDescription` gives the layout, the per-eye render and wire sizes, and
 the foveation warp's parameter block. Side data on every frame:
@@ -610,6 +834,26 @@ the foveation warp's parameter block. Side data on every frame:
 - `foveation`: the warp centre per eye, and a parameter-block epoch. The
   receiver's unwarp must use exactly the parameters the encoder used, and
   logs a mismatch rather than drawing a slightly wrong image.
+
+*Encoding (2026-10-12):*
+
+- **PCVR format block:**
+  - layout u8 (side by side = 1: left eye in the left half, no gap, so the
+    picture width is exactly twice the per-eye wire width);
+  - per-eye render size and wire size (u16 × 4);
+  - foveation epoch u32;
+  - warp kind u8 and the warp's parameters.
+- **Warp kinds.** Kind 0 is none, where render size must equal wire size.
+  Kind 1 is an axis-aligned centre-plus-edges warp, the shape ALVR's foveated
+  encoding uses. Its parameters are four f32: centre size x and y (the
+  fraction of each axis kept at full density, in (0, 1]) and edge ratio x and
+  y (≥ 1). An unknown warp kind makes the format undecodable, because the
+  receiver couldn't invert the warp.
+- **`renderPose`** (102 bytes): poseSequence u32, spaceEpoch u16 (so a
+  recentre between pose and render can't misproject), displayTime u64, then
+  each eye's pose and field of view in the immersive space.
+- **`foveation`** (20 bytes): parameterEpoch u32, then each eye's warp centre
+  as a normalised (x, y) in [0, 1], with (0, 0) at the top left.
 
 **Receiver.** Decode is the existing VideoToolbox path. Unwarp and
 reprojection are Metal that produces a texture for each eye, presented by a
@@ -661,6 +905,16 @@ not VR.
   nothing). Each depth frame carries `depthRange` side data: near, far and the
   profile's suggested convergence. The headset therefore needs no per-game
   knowledge.
+  *Encoding (2026-10-12):*
+  - **Depth format block:** encoding kind u8 and value bits u8 (at most the
+    stream's bit depth).
+  - **Kind 1, inverse linear:** `v = round((1/z − 1/far) / (1/near − 1/far) ×
+    (2^bits − 1))`, in full-range luma. Near maps to the maximum value and far
+    to 0, so an infinite far plane, common with reversed Z, works.
+  - **`depthRange`** (13 bytes): flags u8 (bit 0 = empty), then near, far and
+    convergence as f32 metres. The constraints are 0 < near < far, far may be
+    +∞, and convergence 0 means no suggestion. An empty frame has all three
+    at zero.
 - **Headset.** First choice: a grid mesh in RealityKit, displaced by the depth
   map and textured with the frame, so RealityKit renders each eye itself and
   the user gets correct stereo plus parallax as the head moves. Gaps behind
@@ -1331,6 +1585,9 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
 - LTR recovery if Phase 0 says it works on hardware HEVC; IDR otherwise.
 - Frame side data and auxiliary streams (§4.2) in `StreamWire` and the frame
   assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
+  *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
+  input, STATE including the head pose, capabilities). The frame assembler
+  is still to do.
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,
   so loss and recovery are tuned against the hardest stream from day one.
@@ -1618,7 +1875,8 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
 4. **Custom transport risk.** Owning reliability and crypto framing means owning
    their bugs. Mitigations: Noise exactly to spec with test vectors; WireGuard's
    replay/roaming rules; the simulator exercising every loss path; fuzzing the
-   frame parser.
+   frame parser. *`StreamWire`'s decoders are fuzzed with seeded mutations from the
+   start (2026-10-12).*
 5. **Network.framework UDP throughput on visionOS.** At 100 Mbps and 1200-byte
    payloads that's ~10 k datagrams/s; per-datagram callbacks may cost real CPU on
    the client. Measure in Phase 1; `NWConnection.batch` and multi-message
@@ -1718,6 +1976,31 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
     matters (90 Hz or more). The fallback if it isn't
     small is to load the public host into the producer as a DLL. That keeps the
     code public but adds the Swift runtime to that process.
+19. **Packet rate and pacing at 90 Hz stereo** (arithmetic from the shard
+    layout, 2026-10-12). Assume a 3840×1920 HEVC stream at 150 Mbps and 90 fps.
+    - **Frame size:** about 208 KB per frame, which is 183 data shards of
+      1144 bytes. With 20% FEC that makes 220 datagrams per frame and
+      ~20,000 datagrams/s, twice the figure in risk 5. At 200 Mbps a frame no
+      longer fits one 255-shard block.
+    - **Pacing:** the pacer's 1.5× budget (§6.4) spends ~7 ms of the 11 ms
+      frame interval sending one frame. That adds the same to motion-to-photon
+      for the last shard. PCVR probably needs a pacing factor of its own, and
+      the 1452-byte LAN payload (18% fewer datagrams) matters more here than
+      for the desktop.
+    - **Header overhead** is 56 of 1200 bytes (4.7%), acceptable.
+    - The headset's receive cost at 20 k datagrams/s is the number to measure
+      first.
+20. **Coalescing with media is unspecified.** §4.1 lets an ACK or FEEDBACK
+    ride on any outgoing packet, but a media shard fills its datagram to the
+    byte, because FEC needs equal shard sizes. Either the packetizer reserves
+    headroom in every media datagram (and the shard size shrinks by it), or
+    small frames ride only in non-media datagrams. Media is mostly host →
+    client, so this mainly decides how the host acks the client's input
+    channel.
+21. **The gaze sample's shape is a guess.** The provider API exposes a focus
+    *region* (`latestFocusRegion`), not necessarily a direction and distance.
+    Gaze is capability-gated and a new STATE kind costs nothing, so the shape
+    should be confirmed against the real API before anything depends on it.
 
 ### Sources
 

@@ -57,7 +57,8 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
 /// and depth to the true display pose. That residual is small because our
 /// display pose was predicted for the same presentation time.
 nonisolated final class PCVRShellRenderer: @unchecked Sendable {
-    /// Called once on the render thread when the layer is invalidated (the space closed).
+    /// Called once on the render thread when the layer is invalidated (the space
+    /// closed), and not after `stop()`.
     var onInvalidated: (@Sendable () -> Void)?
 
     let options = OSAllocatedUnfairLock(initialState: PCVRShellRenderOptions())
@@ -78,6 +79,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     /// the former; the receiver clock everything else stamps is the latter.
     private var clockOffset: TimeInterval = 0
     private var window = StatsWindow()
+    private let isStopped = OSAllocatedUnfairLock(initialState: false)
 
     init(layerRenderer: LayerRenderer, mailbox: PCVRFrameMailbox, poseProducer: PCVRHeadPoseProducer) throws {
         guard let queue = layerRenderer.device.makeCommandQueue() else {
@@ -129,9 +131,21 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         }
     }
 
+    /// Ends the loop without waiting for the layer to be invalidated: a space
+    /// reopened quickly gets its new renderer before the old layer reports its
+    /// end, and two loops must never run at once. The thread finishes its frame
+    /// in flight, stops world tracking and exits. It is not joined, because it
+    /// may be blocked in the compositor (a paused layer's `waitUntilRunning`),
+    /// which the main actor must not wait on; nothing it still touches is
+    /// shared with the next run (each run has its own mailbox and producer).
+    func stop() {
+        isStopped.withLock { $0 = true }
+    }
+
     // MARK: Loop
 
     private func renderLoop() {
+        defer { arSession.stop() }
         do {
             receiver = try PCVRReceiver(device: layerRenderer.device)
         } catch {
@@ -140,10 +154,13 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         clockOffset = LayerRenderer.Clock().now.pcvrSeconds - CACurrentMediaTime()
         log.notice("Shell A render loop started (\(self.stats.withLock { $0.configuration }, privacy: .public)); layer clock leads media time by \(self.clockOffset * 1000, format: .fixed(precision: 3)) ms")
         while true {
+            if isStopped.withLock({ $0 }) {
+                log.notice("Shell A render loop stopped")
+                return
+            }
             switch layerRenderer.state {
             case .invalidated:
                 log.notice("Shell A layer invalidated")
-                arSession.stop()
                 onInvalidated?()
                 return
             case .paused:
@@ -157,14 +174,20 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
     private func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else { return }
+        // Wait for a GPU slot before the frame's update, as Apple's Compositor
+        // Services template does, so the timing the frame predicts accounts for it.
+        inFlight.wait()
+        var committed = false
+        defer { if !committed { inFlight.signal() } }
         frame.startUpdate()
         frame.endUpdate()
         guard let timing = frame.predictTiming() else { return }
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
+        // Drawables before `startSubmission`, the order of Apple's Compositor
+        // Services templates (Xcode 27, Renderer.swift).
         let drawables = frame.queryDrawables()
         guard let primary = drawables.first else { return }
 
-        inFlight.wait()
         frame.startSubmission()
         let options = self.options.withLock { $0 }
         let presentLayerTime = primary.frameTiming.presentationTime.pcvrSeconds
@@ -195,7 +218,6 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             frame.endSubmission()
-            inFlight.signal()
             return
         }
         commandBuffer.label = "PCVR shell frame"
@@ -219,6 +241,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             inFlight.signal()
         }
         commandBuffer.commit()
+        committed = true
         frame.endSubmission()
         publishStatsIfDue(now: presentTime, tracking: tracking)
     }

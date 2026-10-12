@@ -11,9 +11,10 @@ import SwiftUI
 /// compositor's late reprojection (NATIVE_V3_PROTOCOL.md §4.7, "Why now").
 /// Separate from the CloudXR foveated-streaming space, which stays as it is.
 ///
-/// The session owns what outlives one frame: the frame mailbox the stream
-/// feeds, the head-pose producer whose snapshots go up the uplink, and the
-/// render loop while the space is open. Until the v3 client exists, DEBUG builds
+/// The session owns one run per opened space: a frame mailbox the stream feeds,
+/// a head-pose producer whose snapshots go up the uplink, and the render loop.
+/// Each run gets its own, so a run that is still winding down can never take
+/// frames meant for the next one. Until the v3 client exists, DEBUG builds
 /// feed it from `PCVRFakeRemote`.
 @Observable
 final class PCVRShellSession {
@@ -40,7 +41,6 @@ final class PCVRShellSession {
     @ObservationIgnored private var fakeRemote: PCVRFakeRemote?
     #endif
 
-    @ObservationIgnored private let mailbox = PCVRFrameMailbox()
     @ObservationIgnored private var renderer: PCVRShellRenderer?
     @ObservationIgnored private var statsTask: Task<Void, Never>?
     @ObservationIgnored private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
@@ -48,7 +48,7 @@ final class PCVRShellSession {
     /// Called by the space's `CompositorLayer` once its layer renderer exists.
     func start(layerRenderer: LayerRenderer) {
         stop()
-        mailbox.reset()
+        let mailbox = PCVRFrameMailbox()
         let poseProducer = PCVRHeadPoseProducer()
         let renderer: PCVRShellRenderer
         do {
@@ -95,8 +95,8 @@ final class PCVRShellSession {
         fakeRemote?.stop()
         fakeRemote = nil
         #endif
+        renderer?.stop()
         renderer = nil
-        mailbox.reset()
         isPresenting = false
     }
 

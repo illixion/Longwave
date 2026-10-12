@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 /// Existing saved connections are not affected.
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    #if DEBUG && os(visionOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
 
     // Backup & Restore
     @State private var isExportingBackup = false
@@ -197,6 +200,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                #if DEBUG && os(visionOS)
+                Section("Developer") {
+                    Button {
+                        openWindow(id: DepthScreenLabView.windowID)
+                    } label: {
+                        Label("Depth 3D Lab", systemImage: "cube.transparent")
+                    }
+                }
+
+                #endif
                 Section("About") {
                     LabeledContent("Version", value: appVersionString)
                 }

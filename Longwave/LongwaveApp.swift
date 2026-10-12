@@ -61,6 +61,7 @@ struct LongwaveApp: App {
                 .unityControlsLayoutDemo(macNativeSessions, audioManager)
                 .nativeDesktopDemo(macNativeSessions)
                 .screenshotDemo()
+                .modifier(DepthScreenLabLaunch())
                 #endif
                 #if FOVEATED_ENABLED
                 .environment(foveatedManager)
@@ -113,6 +114,19 @@ struct LongwaveApp: App {
         // (`NativeStreamView`); stays a separate window for as long as it's
         // open, tracked live via `WindowSessionRegistry` so the Native
         // window knows to hide its own inline audio UI meanwhile.
+        #if DEBUG
+        // The depth screen's developer lab (3D for flat games, §4.8). A
+        // volume, because the relief reaches behind the screen's plane and a
+        // plain window clips anything there.
+        WindowGroup("Depth 3D Lab", id: DepthScreenLabView.windowID) {
+            DepthScreenLabView()
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 1.3, height: 0.85, depth: 0.7, in: .meters)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        #endif
         WindowGroup("Audio Stream", id: "audio-stream") {
             AudioStreamView()
                 .environment(audioManager)

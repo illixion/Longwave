@@ -319,7 +319,10 @@ struct MicrophoneToggleButton: View {
         Image(systemName: audioManager.microphoneEnabled ? "mic.fill" : "mic.slash")
             .foregroundStyle(audioManager.microphoneEnabled ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
             .opacity(usable ? (pressed ? 0.6 : 1) : 0.4)
-            .padding(6)
+            // The borderless buttons beside it pad their glyph out to a
+            // comfortable target; a bare icon with 6pt around it was about
+            // half that, so it is sized to the 44pt minimum instead.
+            .frame(minWidth: 44, minHeight: 44)
             .contentShape(.hoverEffect, Circle())
             .contentShape(Circle())
             .hoverEffect()
@@ -340,6 +343,7 @@ struct MicrophoneToggleButton: View {
             .accessibilityLabel("Microphone")
             .accessibilityValue(audioManager.microphoneEnabled ? "On" : "Off")
             .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Sends this microphone to the Mac. Pick BlackHole as the microphone there.")
             .accessibilityAction {
                 if usable { audioManager.toggleMicrophone() }
             }
@@ -374,17 +378,18 @@ struct MicrophoneToggleButton: View {
         }
     }
 
+    /// Kept short: a tooltip truncates at about one line.
     private var help: String {
         if let message = audioManager.microphoneMessage { return message }
         if audioManager.microphoneEnabled { return "Microphone on — the Mac hears this headset" }
         if !audioManager.microphoneAvailable {
             return audioManager.state == .streaming
-                ? "Install BlackHole on the Mac to send it this microphone"
-                : "Microphone to Mac — available once audio is connected"
+                ? "Needs BlackHole on the Mac"
+                : "Available once audio is connected"
         }
         return onPushToTalk == nil
-            ? "Send this microphone to the Mac (pick BlackHole as the microphone there). Hold to talk"
-            : "Send this microphone to the Mac (pick BlackHole as the microphone there). Hold to talk with Space held on the Mac"
+            ? "Tap to toggle the microphone, hold to talk"
+            : "Tap to toggle, hold to talk (holds Space on the Mac)"
     }
 }
 

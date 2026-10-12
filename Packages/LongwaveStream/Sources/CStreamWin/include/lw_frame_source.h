@@ -79,6 +79,9 @@ typedef struct lw_frame_source_params {
 } lw_frame_source_params;
 
 /* What an lw_frame from an external source carries besides lw_frame_info.
+ * Everything here is the host's own copy: side data and metadata are copied
+ * out of the section and checked when the frame is taken, so a producer
+ * writing the section afterwards can't change them.
  * lw_frame_info.texture is textures[LW_FS_TEXTURE_IMAGE], sequence is
  * frame_number, present_qpc the producer's submit time, arrival_qpc when the
  * host took the slot and ready_qpc when the fence reached the slot's value
@@ -88,7 +91,7 @@ typedef struct lw_frame_source_info {
     uint64_t frame_number;
     uint32_t slot;
     uint32_t side_data_size;
-    const uint8_t *side_data; /* valid while the frame is held */
+    const uint8_t *side_data; /* the frame's own copy, valid while the frame is held */
     lw_fs_format format;      /* as declared at attach */
     void *textures[LW_FS_MAX_TEXTURES]; /* ID3D11Texture2D* on the host's device, NULL where absent */
     int64_t present_qpc;
@@ -125,8 +128,10 @@ typedef struct lw_frame_source_stats {
     uint64_t detaches;        /* the producer detached */
     uint64_t producer_exits;  /* the producer's process ended while attached */
     uint64_t delivered;
-    uint64_t fence_timeouts;  /* a slot's fence value never arrived (producer GPU hang or TDR) */
+    uint64_t fence_timeouts;  /* a slot's fence value never arrived (producer GPU hang or TDR); ends the attach */
     uint64_t errors;
+    uint64_t producer_faults; /* the producer wrote metadata no honest producer can (side data
+                                 too large, fence not rising); ends the attach */
     /* this generation, from the section */
     uint64_t submitted, superseded, starved, consumed, dropped;
 } lw_frame_source_stats;
@@ -134,7 +139,10 @@ typedef struct lw_frame_source_stats {
 void lw_frame_source_get_stats(const lw_frame_source *source, lw_frame_source_stats *out);
 
 /* Ends any attach, stops listening and blocks until no callback is running.
- * Frames still held stay valid until released. */
+ * Frames still held stay valid until released. Safe to call from the frame
+ * callback itself: it then returns at once, no further callback runs once the
+ * current one returns, and the source finishes tearing down on its own
+ * thread right after. */
 void lw_frame_source_stop(lw_frame_source *source);
 
 /* ==== Producer side ===========================================================

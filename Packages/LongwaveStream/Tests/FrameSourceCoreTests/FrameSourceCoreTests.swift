@@ -10,11 +10,38 @@ import XCTest
 /// of a test exactly as two processes share the mapped section.
 final class Section: @unchecked Sendable {
     let raw: UnsafeMutablePointer<lw_fs_shared>
+    /// Each side's own copy of the slot count, as the real ones keep.
+    let slots: UInt32
+    /// The host's private ring state per generation (host memory, not the section).
+    var rings: [UInt64: lw_fs_host_ring] = [:]
 
     init(slots: UInt32 = UInt32(LW_FS_DEFAULT_SLOTS)) {
         raw = .allocate(capacity: 1)
         lw_fs_init(raw)
         raw.pointee.format = Section.format(slots: slots)
+        self.slots = slots
+    }
+
+    /// Host: take the newest frame of `generation`, keeping its ring state.
+    func take(_ generation: UInt64, _ slot: inout UInt32) -> Int32 {
+        var ring = rings[generation] ?? lw_fs_host_ring(generation: generation, slot_count: slots, reserved: 0,
+                                                         taken_sequence: 0, last_fence_value: 0)
+        defer { rings[generation] = ring }
+        return lw_fs_host_take_newest(raw, &ring, &slot)
+    }
+
+    /// Host: snapshot a taken slot of `generation`.
+    func snapshot(_ generation: UInt64, _ slot: UInt32, _ out: inout lw_fs_frame_snapshot) -> Int32 {
+        var ring = rings[generation]!
+        defer { rings[generation] = ring }
+        return lw_fs_host_snapshot(raw, &ring, slot, &out)
+    }
+
+    /// Direct access to a slot, as a misbehaving producer has.
+    func withSlot<R>(_ index: Int, _ body: (UnsafeMutablePointer<lw_fs_slot>) -> R) -> R {
+        withUnsafeMutablePointer(to: &raw.pointee.slots) {
+            $0.withMemoryRebound(to: lw_fs_slot.self, capacity: Int(LW_FS_MAX_SLOTS)) { body($0 + index) }
+        }
     }
 
     deinit { raw.deallocate() }
@@ -67,11 +94,11 @@ final class Section: @unchecked Sendable {
     /// Producer: acquire, then publish `frame` with its number as side data.
     func produce(_ frame: UInt64, generation: UInt64 = 1) -> Int32 {
         var slot: UInt32 = 0
-        let result = lw_fs_producer_acquire(raw, generation, &slot)
+        let result = lw_fs_producer_acquire(raw, generation, slots, &slot)
         guard result == LW_FS_ACQUIRED || result == LW_FS_ACQUIRED_SUPERSEDED else { return result }
         var bytes = frame
         let published = withUnsafeBytes(of: &bytes) {
-            lw_fs_producer_publish(raw, generation, slot, frame, frame, Int64(frame), $0.baseAddress, UInt32($0.count))
+            lw_fs_producer_publish(raw, generation, slots, slot, frame, frame, Int64(frame), $0.baseAddress, UInt32($0.count))
         }
         XCTAssertEqual(published, 1)
         return result
@@ -92,6 +119,21 @@ final class FrameSourceLayoutTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<lw_fs_shared>.offset(of: \.host_state_data), 392)
         XCTAssertEqual(MemoryLayout<lw_fs_shared>.offset(of: \.slots), 704)
         XCTAssertEqual(MemoryLayout<lw_fs_host_state>.offset(of: \.next_frame_start_qpc), 176)
+        XCTAssertEqual(MemoryLayout<lw_fs_host_state>.offset(of: \.pose_sequence), 8)
+        XCTAssertEqual(MemoryLayout.size(ofValue: lw_fs_host_state().pose_sequence), 4)
+        XCTAssertEqual(MemoryLayout<lw_fs_pose>.offset(of: \.position), 16, "XrPosef order: orientation first")
+        XCTAssertEqual(LW_FS_VERSION, 2)
+    }
+
+    /// RFC 1982 order for the wrapping pose sequence, as StreamWire's SerialNumber.
+    func testSerialNumberOrder() {
+        XCTAssertEqual(lw_fs_serial_newer(2, 1), 1)
+        XCTAssertEqual(lw_fs_serial_newer(1, 2), 0)
+        XCTAssertEqual(lw_fs_serial_newer(5, 5), 0)
+        XCTAssertEqual(lw_fs_serial_newer(0, UInt32.max), 1, "across the wrap")
+        XCTAssertEqual(lw_fs_serial_newer(UInt32.max, 0), 0)
+        XCTAssertEqual(lw_fs_serial_newer(0x8000_0000, 0), 0, "half the range is not newer")
+        XCTAssertEqual(lw_fs_serial_newer(0x7FFF_FFFF, 0), 1)
     }
 
     func testFreshSectionHasThisBuildsIdentity() {
@@ -196,7 +238,7 @@ final class FrameSourceHandshakeTests: XCTestCase {
         XCTAssertEqual(lw_fs_is_attached(section.raw, generation), 0)
         XCTAssertEqual(lw_fs_attach_state(section.raw), UInt32(LW_FS_ATTACH_FREE))
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, &slot), LW_FS_STALE)
+        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, section.slots, &slot), LW_FS_STALE)
 
         XCTAssertEqual(lw_fs_producer_begin_request(section.raw), 1)
         lw_fs_producer_commit_request(section.raw)
@@ -232,14 +274,14 @@ final class FrameSourceRingTests: XCTestCase {
         let generation = section.attach()
         for frame in UInt64(1) ... 3 { XCTAssertEqual(section.produce(frame), LW_FS_ACQUIRED) }
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, generation, &slot), 1)
+        XCTAssertEqual(section.take(generation, &slot), 1)
         XCTAssertEqual(section.frameNumber(Int(slot)), 3)
         XCTAssertEqual(section.sideData(Int(slot)), withUnsafeBytes(of: UInt64(3)) { Array($0) })
         XCTAssertEqual(section.slotState(Int(slot)), UInt32(LW_FS_SLOT_CONSUMING))
         XCTAssertEqual(section.raw.pointee.dropped, 2)
         XCTAssertEqual(section.raw.pointee.consumed, 1)
         var other: UInt32 = 0
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, generation, &other), 0, "nothing else is ready")
+        XCTAssertEqual(section.take(generation, &other), 0, "nothing else is ready")
         XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 1)
         XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 0, "released once")
         XCTAssertEqual((0 ..< 4).map(section.slotState), Array(repeating: UInt32(LW_FS_SLOT_FREE), count: 4))
@@ -253,13 +295,84 @@ final class FrameSourceRingTests: XCTestCase {
         let generation = section.attach()
         XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, generation, &slot), 1)
+        XCTAssertEqual(section.take(generation, &slot), 1)
         XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 1)
-        section.raw.pointee.taken_sequence = 5 // as if a frame submitted later had been taken
+        section.rings[generation]!.taken_sequence = 5 // as if a frame submitted later had been taken
         XCTAssertEqual(section.produce(2), LW_FS_ACQUIRED) // gets sequence 2
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, generation, &slot), 0)
+        XCTAssertEqual(section.take(generation, &slot), 0)
         XCTAssertEqual(section.raw.pointee.dropped, 1)
         XCTAssertEqual((0 ..< 3).map(section.slotState), Array(repeating: UInt32(LW_FS_SLOT_FREE), count: 3))
+    }
+
+    func testSnapshotCopiesTheFrameOut() {
+        let section = Section(slots: 2)
+        let generation = section.attach()
+        XCTAssertEqual(section.produce(7), LW_FS_ACQUIRED)
+        var slot: UInt32 = 0
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        var snapshot = lw_fs_frame_snapshot()
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 1)
+        XCTAssertEqual(snapshot.frame_number, 7)
+        XCTAssertEqual(snapshot.fence_value, 7)
+        XCTAssertEqual(snapshot.side_data_size, 8)
+        XCTAssertEqual(withUnsafeBytes(of: snapshot.side_data) { Array($0.prefix(8)) }, withUnsafeBytes(of: UInt64(7)) { Array($0) })
+    }
+
+    /// A producer writing the section directly (skipping the producer API's
+    /// checks) sets a side data size beyond the slot: a producer fault, and
+    /// nothing is copied.
+    func testSnapshotRejectsOversizedSideData() {
+        let section = Section(slots: 2)
+        let generation = section.attach()
+        XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
+        var slot: UInt32 = 0
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        for size in [UInt32(LW_FS_MAX_SIDE_DATA) + 1, UInt32.max] {
+            section.withSlot(Int(slot)) { $0.pointee.side_data_size = size }
+            var snapshot = lw_fs_frame_snapshot()
+            XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 0, "size \(size)")
+            XCTAssertEqual(snapshot.side_data_size, 0)
+        }
+        section.withSlot(Int(slot)) { $0.pointee.side_data_size = UInt32(LW_FS_MAX_SIDE_DATA) }
+        var snapshot = lw_fs_frame_snapshot()
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 1, "exactly the maximum is fine")
+    }
+
+    /// A fence value that doesn't rise would have the host wait on old work
+    /// (or on a value that never comes).
+    func testSnapshotRejectsAFenceThatDoesNotRise() {
+        let section = Section(slots: 2)
+        let generation = section.attach()
+        var slot: UInt32 = 0
+        var snapshot = lw_fs_frame_snapshot()
+        XCTAssertEqual(section.produce(1), LW_FS_ACQUIRED)
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 1)
+        XCTAssertEqual(lw_fs_host_release(section.raw, generation, slot), 1)
+        XCTAssertEqual(section.produce(2), LW_FS_ACQUIRED)
+        XCTAssertEqual(section.take(generation, &slot), 1)
+        section.withSlot(Int(slot)) { $0.pointee.fence_value = 1 }
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 0)
+        section.withSlot(Int(slot)) { $0.pointee.fence_value = 0 }
+        XCTAssertEqual(section.snapshot(generation, slot, &snapshot), 0)
+    }
+
+    /// The producer raises the section's slot count after attach and marks a
+    /// slot beyond the ring ready. The host goes by its own count and never
+    /// looks there (that slot has no textures).
+    func testHostIgnoresASlotCountTheProducerRaised() {
+        let section = Section(slots: 2)
+        let generation = section.attach()
+        section.raw.pointee.format.slot_count = UInt32(LW_FS_MAX_SLOTS)
+        section.withSlot(5) { slot in
+            slot.pointee.fence_value = 1
+            slot.pointee.submit_sequence = 1
+            slot.pointee.state = LW_FS_SLOT_WORD_SWIFT(generation, 1, LW_FS_SLOT_READY)
+        }
+        var slot: UInt32 = 0
+        XCTAssertEqual(section.take(generation, &slot), 0)
+        var snapshot = lw_fs_frame_snapshot()
+        XCTAssertEqual(section.snapshot(generation, 5, &snapshot), 0, "a slot outside the ring is a fault")
     }
 
     /// The consumer stalls holding frames: the producer runs out of slots,
@@ -271,7 +384,7 @@ final class FrameSourceRingTests: XCTestCase {
         for frame in UInt64(1) ... 2 {
             XCTAssertEqual(section.produce(frame), LW_FS_ACQUIRED)
             var slot: UInt32 = 0
-            XCTAssertEqual(lw_fs_host_take_newest(section.raw, generation, &slot), 1)
+            XCTAssertEqual(section.take(generation, &slot), 1)
             held.append(slot)
         }
         XCTAssertEqual(section.produce(3), LW_FS_NO_SLOT)
@@ -285,22 +398,22 @@ final class FrameSourceRingTests: XCTestCase {
         let section = Section(slots: 2)
         let generation = section.attach()
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, &slot), LW_FS_ACQUIRED)
-        XCTAssertEqual(lw_fs_producer_discard(section.raw, generation, slot), 1)
+        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, section.slots, &slot), LW_FS_ACQUIRED)
+        XCTAssertEqual(lw_fs_producer_discard(section.raw, generation, section.slots, slot), 1)
         XCTAssertEqual(section.slotState(Int(slot)), UInt32(LW_FS_SLOT_FREE))
-        XCTAssertEqual(lw_fs_producer_discard(section.raw, generation, slot), 0)
+        XCTAssertEqual(lw_fs_producer_discard(section.raw, generation, section.slots, slot), 0)
     }
 
     func testPublishRejectsBadArguments() {
         let section = Section(slots: 2)
         let generation = section.attach()
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, &slot), LW_FS_ACQUIRED)
+        XCTAssertEqual(lw_fs_producer_acquire(section.raw, generation, section.slots, &slot), LW_FS_ACQUIRED)
         let big = [UInt8](repeating: 0, count: Int(LW_FS_MAX_SIDE_DATA) + 1)
-        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, slot, 1, 1, 0, big, UInt32(big.count)), 0)
-        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, 5, 1, 1, 0, nil, 0), 0, "slot out of range")
-        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation + 1, slot, 1, 1, 0, nil, 0), 0, "stale")
-        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, slot, 1, 1, 0, nil, 0), 1)
+        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, section.slots, slot, 1, 1, 0, big, UInt32(big.count)), 0)
+        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, section.slots, 5, 1, 1, 0, nil, 0), 0, "slot out of range")
+        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation + 1, section.slots, slot, 1, 1, 0, nil, 0), 0, "stale")
+        XCTAssertEqual(lw_fs_producer_publish(section.raw, generation, section.slots, slot, 1, 1, 0, nil, 0), 1)
     }
 
     /// A frame the host still holds when the producer re-attaches belongs to
@@ -310,16 +423,16 @@ final class FrameSourceRingTests: XCTestCase {
         let first = section.attach(generation: 1)
         XCTAssertEqual(section.produce(1, generation: first), LW_FS_ACQUIRED)
         var held: UInt32 = 0
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, first, &held), 1)
+        XCTAssertEqual(section.take(first, &held), 1)
         XCTAssertEqual(lw_fs_detach(section.raw, first), 1)
 
         let second = section.attach(generation: 2)
         XCTAssertEqual(section.produce(1, generation: second), LW_FS_ACQUIRED)
         var slot: UInt32 = 0
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, second, &slot), 1)
+        XCTAssertEqual(section.take(second, &slot), 1)
         XCTAssertEqual(lw_fs_host_release(section.raw, first, held), 0)
         XCTAssertEqual(section.slotState(Int(slot)), UInt32(LW_FS_SLOT_CONSUMING))
-        XCTAssertEqual(lw_fs_host_take_newest(section.raw, first, &slot), 0, "the old generation takes nothing")
+        XCTAssertEqual(section.take(first, &slot), 0, "the old generation takes nothing")
     }
 
     /// Producer and host race on the ring from two threads, as two processes
@@ -338,11 +451,11 @@ final class FrameSourceRingTests: XCTestCase {
             var frame: UInt64 = 1
             while frame <= frames {
                 var slot: UInt32 = 0
-                let result = lw_fs_producer_acquire(section.raw, generation, &slot)
+                let result = lw_fs_producer_acquire(section.raw, generation, section.slots, &slot)
                 guard result == LW_FS_ACQUIRED || result == LW_FS_ACQUIRED_SUPERSEDED else { continue }
                 var side = (frame, ~frame)
                 _ = withUnsafeBytes(of: &side) {
-                    lw_fs_producer_publish(section.raw, generation, slot, frame, frame, 0, $0.baseAddress, UInt32($0.count))
+                    lw_fs_producer_publish(section.raw, generation, section.slots, slot, frame, frame, 0, $0.baseAddress, UInt32($0.count))
                 }
                 frame += 1
             }
@@ -353,7 +466,7 @@ final class FrameSourceRingTests: XCTestCase {
         var finished = false
         while true {
             var slot: UInt32 = 0
-            if lw_fs_host_take_newest(section.raw, generation, &slot) == 1 {
+            if section.take(generation, &slot) == 1 {
                 let frame = section.frameNumber(Int(slot))
                 let side = section.sideData(Int(slot))
                 let expected = withUnsafeBytes(of: (frame, ~frame)) { Array($0) }
@@ -385,7 +498,7 @@ final class FrameSourceSeqlockTests: XCTestCase {
     /// read (half one write, half another) is detectable.
     static func state(_ k: UInt64) -> lw_fs_host_state {
         var state = lw_fs_host_state()
-        state.pose_sequence = k
+        state.pose_sequence = UInt32(truncatingIfNeeded: k)
         state.pose_display_qpc = Int64(bitPattern: k &* 3)
         state.pose_valid = 1
         state.space_epoch = UInt32(truncatingIfNeeded: k)
@@ -398,7 +511,7 @@ final class FrameSourceSeqlockTests: XCTestCase {
     }
 
     static func isConsistent(_ s: lw_fs_host_state) -> Bool {
-        let k = s.pose_sequence
+        let k = UInt64(s.pose_sequence)
         return s.pose_display_qpc == Int64(bitPattern: k &* 3) && s.space_epoch == UInt32(truncatingIfNeeded: k)
             && s.head.position.2 == Float(k % 1000) && s.gaze_direction.0 == Float(k % 999)
             && s.refresh_millihz == UInt32(truncatingIfNeeded: k &* 7) && s.next_frame_start_qpc == Int64(bitPattern: k &* 5)
@@ -445,7 +558,7 @@ final class FrameSourceSeqlockTests: XCTestCase {
         // The writer never pauses (a real host writes at the display rate), so
         // many reads are contended and retried; none may come back torn.
         var reads = 0, torn = 0, contended = 0
-        var last: UInt64 = 0, backwards = 0
+        var last: UInt32 = 0, backwards = 0
         while stop.wait(timeout: .now()) == .timedOut {
             var out = lw_fs_host_state()
             guard lw_fs_read_host_state(section.raw, &out, 64) == 1 else {
@@ -454,11 +567,16 @@ final class FrameSourceSeqlockTests: XCTestCase {
             }
             reads += 1
             if !Self.isConsistent(out) { torn += 1 }
-            if out.pose_sequence < last { backwards += 1 }
+            if lw_fs_serial_newer(last, out.pose_sequence) != 0 { backwards += 1 }
             last = out.pose_sequence
         }
         XCTAssertGreaterThan(reads, 100, "\(contended) contended")
         XCTAssertEqual(torn, 0)
         XCTAssertEqual(backwards, 0)
     }
+}
+
+/// LW_FS_SLOT_WORD (a function-like macro Swift doesn't import).
+func LW_FS_SLOT_WORD_SWIFT(_ generation: UInt64, _ tag: UInt32, _ state: Int32) -> UInt64 {
+    (UInt64(UInt32(truncatingIfNeeded: generation)) << 32) | (UInt64(tag & 0xFF_FFFF) << 8) | UInt64(UInt32(state) & 0xFF)
 }

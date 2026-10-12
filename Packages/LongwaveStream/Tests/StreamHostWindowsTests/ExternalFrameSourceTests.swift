@@ -245,6 +245,149 @@ final class ExternalFrameSourceTests: XCTestCase {
         XCTAssertEqual(source.statistics.starved, 1)
     }
 
+    // MARK: A producer that writes the section directly
+
+    /// Maps the channel's section the way a misbehaving producer would, to
+    /// write fields the producer API never lets through.
+    func withSection(_ channel: String, _ body: (UnsafeMutablePointer<lw_fs_shared>) throws -> Void) throws {
+        let mapping = "Local\\lw_frame_source.\(channel)".withCString(encodedAs: UTF16.self) {
+            OpenFileMappingW(DWORD(FILE_MAP_READ) | DWORD(FILE_MAP_WRITE), false, $0)
+        }
+        let handle = try XCTUnwrap(mapping, "OpenFileMappingW")
+        defer { CloseHandle(handle) }
+        let view = try XCTUnwrap(MapViewOfFile(handle, DWORD(FILE_MAP_READ) | DWORD(FILE_MAP_WRITE), 0, 0,
+                                               SIZE_T(MemoryLayout<lw_fs_shared>.size)), "MapViewOfFile")
+        defer { UnmapViewOfFile(view) }
+        try body(view.assumingMemoryBound(to: lw_fs_shared.self))
+    }
+
+    /// Writes slot `index` as a submitted frame, bypassing lw_frame_producer_submit.
+    func forgeReadySlot(_ shared: UnsafeMutablePointer<lw_fs_shared>, index: Int, fence: UInt64,
+                        sideDataSize: UInt32) {
+        let generation = shared.pointee.generation
+        withUnsafeMutablePointer(to: &shared.pointee.slots) {
+            $0.withMemoryRebound(to: lw_fs_slot.self, capacity: Int(LW_FS_MAX_SLOTS)) { slots in
+                let slot = slots + index
+                slot.pointee.fence_value = fence
+                slot.pointee.frame_number = 99
+                slot.pointee.side_data_size = sideDataSize
+                slot.pointee.submit_sequence = 1
+                let word = (UInt64(UInt32(truncatingIfNeeded: generation)) << 32) | (1 << 8) | UInt64(LW_FS_SLOT_READY)
+                withUnsafeMutablePointer(to: &slot.pointee.state) {
+                    UnsafeMutableRawPointer($0).storeBytes(of: word, as: UInt64.self) // aligned 8-byte store: atomic on x64
+                }
+            }
+        }
+    }
+
+    /// The finding that motivated lw_fs_host_snapshot: a side data size of
+    /// 4 GB written straight into a slot. The host must drop the frame, end
+    /// that producer's attach, and read nothing past the slot.
+    func testForgedSideDataSizeEndsTheAttach() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let collector = Collector()
+        let source = try ExternalFrameSource(device: device, channel: channel) { collector.take($0) }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel)
+        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1, sideDataSize: .max) }
+        waitUntil { source.statistics.producerFaults == 1 }
+        XCTAssertFalse(source.statistics.attached)
+        XCTAssertEqual(source.statistics.delivered, 0)
+        XCTAssertEqual(collector.frames.withLock { $0.count }, 0)
+        XCTAssertEqual(producer.submit(1), LW_E_ACCESS_LOST)
+        producer.detach()
+        // An honest producer is served again.
+        let next = try Producer(channel: channel)
+        XCTAssertEqual(next.submit(1), LW_OK)
+        collector.wait(1)
+    }
+
+    /// A fence value the producer never signals: the host gives up after its
+    /// timeout and ends the attach, rather than waiting on every frame.
+    func testForgedFenceValueEndsTheAttach() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let source = try ExternalFrameSource(device: device, channel: channel) { _ in }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel)
+        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1_000_000, sideDataSize: 0) }
+        waitUntil(seconds: 4) { source.statistics.fenceTimeouts == 1 }
+        XCTAssertFalse(source.statistics.attached)
+        XCTAssertEqual(producer.submit(1), LW_E_ACCESS_LOST)
+    }
+
+    /// The producer raises the section's slot count after attach and marks a
+    /// slot ready that has no textures. The host goes by the count it
+    /// validated and never touches it.
+    func testRaisedSlotCountIsIgnored() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let collector = Collector()
+        let source = try ExternalFrameSource(device: device, channel: channel) { collector.take($0) }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel, slots: 2)
+        try withSection(channel) { shared in
+            shared.pointee.format.slot_count = UInt32(LW_FS_MAX_SLOTS)
+            forgeReadySlot(shared, index: 6, fence: 1, sideDataSize: 0)
+        }
+        Sleep(400) // more than one pass of the host's loop
+        XCTAssertEqual(collector.frames.withLock { $0.count }, 0)
+        XCTAssertTrue(source.statistics.attached)
+        XCTAssertEqual(producer.submit(1), LW_OK)
+        collector.wait(1)
+        XCTAssertEqual(collector.frames.withLock { $0.last?.sequence }, 1)
+    }
+
+    // MARK: Stopping from the frame callback
+
+    final class SourceBox: @unchecked Sendable {
+        var source: ExternalFrameSource?
+        let callbacks = Atomic<Int>(0)
+    }
+
+    /// onFrame runs on the source's own thread; stopping there used to join
+    /// that thread from itself (std::system_error across the C ABI).
+    func testStopFromTheCallback() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let box = SourceBox()
+        box.source = try ExternalFrameSource(device: device, channel: channel) { [box] _ in
+            box.callbacks.add(1, ordering: .relaxed)
+            box.source?.stop()
+        }
+        let producer = try Producer(channel: channel)
+        XCTAssertEqual(producer.submit(1), LW_OK)
+        waitUntil { box.callbacks.load(ordering: .relaxed) == 1 }
+        // The host tears down after the callback: the producer's attach ends.
+        waitUntil { producer.submit(2) == LW_E_ACCESS_LOST }
+        Sleep(100)
+        XCTAssertEqual(box.callbacks.load(ordering: .relaxed), 1, "no callback after stop")
+        box.source = nil
+    }
+
+    /// The same, by dropping the last reference: deinit runs stop() on the
+    /// callback thread.
+    func testLastReferenceDroppedInTheCallback() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let box = SourceBox()
+        box.source = try ExternalFrameSource(device: device, channel: channel) { [box] _ in
+            box.callbacks.add(1, ordering: .relaxed)
+            box.source = nil
+        }
+        let producer = try Producer(channel: channel)
+        XCTAssertEqual(producer.submit(1), LW_OK)
+        waitUntil { box.callbacks.load(ordering: .relaxed) == 1 }
+        waitUntil { producer.submit(2) == LW_E_ACCESS_LOST }
+        XCTAssertEqual(box.callbacks.load(ordering: .relaxed), 1)
+        // The channel is free for a new host once the teardown has finished.
+        producer.detach()
+        Sleep(100)
+        let again = try ExternalFrameSource(device: device, channel: channel) { _ in }
+        again.stop()
+    }
+
     func testInvalidChannelNames() throws {
         let device = try GraphicsDevice(for: nil)
         for name in ["", "has space", "back\\slash", String(repeating: "x", count: Int(LW_FS_MAX_CHANNEL) + 1)] {
@@ -252,8 +395,8 @@ final class ExternalFrameSourceTests: XCTestCase {
         }
     }
 
-    func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
-        let deadline = HostClock.now() + HostClock.ticksPerSecond * 2
+    func waitUntil(seconds: Int64 = 2, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = HostClock.now() + HostClock.ticksPerSecond * seconds
         while !condition() {
             if HostClock.now() > deadline { return XCTFail("timed out", file: file, line: line) }
             Sleep(5)

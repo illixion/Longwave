@@ -68,8 +68,9 @@ int lw_fs_host_reclaim(lw_fs_shared *shared, uint32_t state);
  * slot_count must already be resolved (no 0 = default here). */
 uint32_t lw_fs_validate_format(const lw_fs_format *format);
 
-/* Resets every slot to FREE in `generation`, zeroes the per-generation
- * counters, and publishes ATTACHED. The handles and host_luid must already be
+/* Resets every slot to FREE in `generation` (chosen by the host from its own
+ * counter, not from the section), zeroes the per-generation counters, and
+ * publishes ATTACHED. The handles and host_luid must already be
  * written: the release store here is what makes them visible. */
 void lw_fs_host_finish_attach(lw_fs_shared *shared, uint64_t generation);
 void lw_fs_host_refuse(lw_fs_shared *shared, uint32_t reason);
@@ -81,7 +82,9 @@ int lw_fs_detach(lw_fs_shared *shared, uint64_t generation);
 /* Whether `generation` is still the live attach (and the host still listens). */
 int lw_fs_is_attached(const lw_fs_shared *shared, uint64_t generation);
 
-/* ---- Slot ring --------------------------------------------------------------- */
+/* ---- Slot ring ---------------------------------------------------------------
+ * Both sides pass the slot count from their own copy of the attach's format,
+ * never the section's (which the other side could have changed since). */
 
 #define LW_FS_ACQUIRED 0            /* a free slot */
 #define LW_FS_ACQUIRED_SUPERSEDED 1 /* no free slot: reclaimed the oldest ready frame */
@@ -91,24 +94,53 @@ int lw_fs_is_attached(const lw_fs_shared *shared, uint64_t generation);
 /* Takes a slot to draw into: a free one, else the oldest ready frame the host
  * hasn't taken (latest wins: a frame nobody encoded yet is worth less than
  * the next one). */
-int lw_fs_producer_acquire(lw_fs_shared *shared, uint64_t generation, uint32_t *out_slot);
+int lw_fs_producer_acquire(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t *out_slot);
 
 /* PRODUCING -> READY with the frame's metadata. The caller has already queued
- * the fence signal to `fence_value` on its GPU queue. side_data_size must be
- * <= LW_FS_MAX_SIDE_DATA. 0 if the slot isn't this producer's (stale). */
-int lw_fs_producer_publish(lw_fs_shared *shared, uint64_t generation, uint32_t slot,
+ * the fence signal to `fence_value` on its GPU queue; fence values must rise
+ * with every submit. side_data_size must be <= LW_FS_MAX_SIDE_DATA. 0 if the
+ * slot isn't this producer's (stale) or an argument is out of range. */
+int lw_fs_producer_publish(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t slot,
                            uint64_t fence_value, uint64_t frame_number, int64_t present_qpc,
                            const void *side_data, uint32_t side_data_size);
 
 /* PRODUCING -> FREE without submitting. */
-int lw_fs_producer_discard(lw_fs_shared *shared, uint64_t generation, uint32_t slot);
+int lw_fs_producer_discard(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t slot);
+
+/* The host's private view of one attach's ring. It lives in the host's own
+ * memory: the producer can write anything in the section, but not this. */
+typedef struct lw_fs_host_ring {
+    uint64_t generation;
+    uint32_t slot_count;       /* from the format the host validated at attach */
+    uint32_t reserved;
+    uint64_t taken_sequence;   /* submit_sequence of the last frame taken */
+    uint64_t last_fence_value; /* fence value of the last frame accepted */
+} lw_fs_host_ring;
 
 /* Takes the newest ready frame (READY -> CONSUMING) and frees every older
- * ready one, counting them as dropped. 1 and the slot if there was one. The
- * slot's metadata is stable until lw_fs_host_release. Frames are taken in
- * submit order: a ready frame no newer than the last one taken is dropped,
- * never delivered. */
-int lw_fs_host_take_newest(lw_fs_shared *shared, uint64_t generation, uint32_t *out_slot);
+ * ready one, counting them as dropped. 1 and the slot if there was one.
+ * Frames are taken in submit order: a ready frame no newer than the last one
+ * taken is dropped, never delivered. Read the slot with lw_fs_host_snapshot,
+ * not in place. */
+int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t *out_slot);
+
+/* A taken frame's metadata, copied out of the section. */
+typedef struct lw_fs_frame_snapshot {
+    uint64_t fence_value;
+    uint64_t frame_number; /* opaque to the host: carried to the stream as given */
+    int64_t present_qpc;   /* producer's claim; for statistics only */
+    uint32_t side_data_size;
+    uint32_t reserved;
+    uint8_t side_data[LW_FS_MAX_SIDE_DATA];
+} lw_fs_frame_snapshot;
+
+/* Copies taken slot `slot` into `out`, reading each field once, and checks
+ * what the producer could have scribbled: the side data must fit
+ * LW_FS_MAX_SIDE_DATA and the fence value must be after the last frame's.
+ * 1 if the frame is good (and ring->last_fence_value advances); 0 is a
+ * producer fault: drop the frame and end the attach. */
+int lw_fs_host_snapshot(const lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t slot,
+                        lw_fs_frame_snapshot *out);
 
 /* CONSUMING -> FREE. Call only once the host's GPU work reading the slot is
  * finished. 0 if `generation` has ended (nothing to give back). */

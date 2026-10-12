@@ -24,6 +24,11 @@
  *    machine, so the two processes need no clock exchange.
  *  - Handles are values in the *producer's* handle table, put there by the
  *    host with DuplicateHandle, stored as uint64_t.
+ *  - The host never trusts the section. A producer (possibly at a lower
+ *    integrity level) can write any byte of it at any time, so the host keeps
+ *    its own copies of the format, slot count, generation and ring position,
+ *    reads each producer-written field once, and checks it before use (side
+ *    data size, fence order); a bad value ends that producer's attach.
  */
 #ifndef LW_FRAME_SOURCE_LAYOUT_H
 #define LW_FRAME_SOURCE_LAYOUT_H
@@ -39,7 +44,7 @@ extern "C" {
 #endif
 
 #define LW_FS_MAGIC 0x5346574Cu /* "LWFS" in memory */
-#define LW_FS_VERSION 1u
+#define LW_FS_VERSION 2u /* 2: OpenXR pose and FOV conventions, u32 pose sequence */
 
 #define LW_FS_MIN_SLOTS 2
 #define LW_FS_MAX_SLOTS 8
@@ -91,22 +96,32 @@ typedef struct lw_fs_format {
 /* ---- Host state (host -> producer, seqlocked) --------------------------------
  * What a VR compositor needs to render the next frame: the latest predicted
  * head pose, the eye geometry, gaze and display pacing. A flat-game producer
- * ignores it. Poses are in the client's immersive space, metres, right-handed
- * (the space the v3 STATE message uses, section 4.7). */
+ * ignores it. The conventions are OpenXR's, as the v3 STATE message's are
+ * (section 4.7, StreamWire): the client's immersive space, metres,
+ * right-handed, +Y up, -Z forward; poses laid out as XrPosef, fields of view
+ * as XrFovf. */
 typedef struct lw_fs_pose {
-    float position[3];
     float orientation[4]; /* unit quaternion x, y, z, w */
+    float position[3];
 } lw_fs_pose;
 
 typedef struct lw_fs_fov {
-    float left, right, up, down; /* tangents of the half-angles; left and down negative */
+    float angle_left, angle_right, angle_up, angle_down; /* radians; left and down negative */
 } lw_fs_fov;
 
+/* Whether wrapping counter value `a` is after `b` (RFC 1982 serial numbers:
+ * anything less than half the range ahead is newer), as StreamWire's
+ * SerialNumber.isNewer. For pose_sequence. */
+static inline int lw_fs_serial_newer(uint32_t a, uint32_t b) {
+    return a != b && (uint32_t)(a - b) < 0x80000000u;
+}
+
 typedef struct lw_fs_host_state {
-    uint64_t pose_sequence;     /* the client's pose sequence number; echo it in side data */
     int64_t pose_display_qpc;   /* the display time the pose was predicted for */
+    uint32_t pose_sequence;     /* the client's STATE sequence, wraps; echo it in side data */
     uint32_t pose_valid;        /* head, eye_offset and eye_fov hold data */
     uint32_t space_epoch;       /* bumped on recentre: poses of different epochs don't compare */
+    uint32_t reserved_pose;
     lw_fs_pose head;
     lw_fs_pose eye_offset[2];   /* each eye relative to the head (IPD), left then right */
     lw_fs_fov eye_fov[2];
@@ -209,7 +224,7 @@ typedef struct lw_fs_shared {
     /* Host state, seqlocked: odd while the host is writing. */
     uint64_t host_state_sequence;  /* atomic */
     lw_fs_host_state host_state_data;
-    uint64_t taken_sequence;       /* host: submit_sequence of the last frame it took */
+    uint64_t reserved2;            /* zero */
     uint64_t host_start_time;      /* the host's process creation time: pins host_pid */
     uint64_t reserved1[5];
 
@@ -219,6 +234,8 @@ typedef struct lw_fs_shared {
 LW_FS_STATIC_ASSERT(sizeof(lw_fs_format) == 48, "lw_fs_format layout");
 LW_FS_STATIC_ASSERT(sizeof(lw_fs_pose) == 28, "lw_fs_pose layout");
 LW_FS_STATIC_ASSERT(sizeof(lw_fs_fov) == 16, "lw_fs_fov layout");
+LW_FS_STATIC_ASSERT(offsetof(lw_fs_pose, position) == 16, "lw_fs_pose layout (XrPosef order)");
+LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, pose_sequence) == 8, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, head) == 24, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, gaze_valid) == 140, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, gaze_qpc) == 160, "lw_fs_host_state layout");

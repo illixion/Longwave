@@ -191,7 +191,7 @@ extern "C" lw_status lw_frame_producer_acquire(lw_frame_producer *producer, lw_f
     if (!producer || !out) return lw::fail(LW_E_INVALID_ARG, "lw_frame_producer_acquire: NULL argument");
     if (!producer->live()) return lw::fail(LW_E_ACCESS_LOST, "frame source: the host ended the attach");
     uint32_t slot = 0;
-    switch (lw_fs_producer_acquire(producer->shared(), producer->generation, &slot)) {
+    switch (lw_fs_producer_acquire(producer->shared(), producer->generation, producer->slot_count, &slot)) {
     case LW_FS_ACQUIRED:
         out->superseded = 0;
         break;
@@ -219,7 +219,7 @@ extern "C" lw_status lw_frame_producer_submit(lw_frame_producer *producer, uint3
     HRESULT hr = producer->context->Signal(producer->fence.get(), value);
     if (FAILED(hr)) return lw::fail_hr(hr, "frame source: ID3D11DeviceContext4::Signal");
     producer->context->Flush();
-    if (!lw_fs_producer_publish(producer->shared(), producer->generation, slot, value, frame_number, lw::qpc_now(),
+    if (!lw_fs_producer_publish(producer->shared(), producer->generation, producer->slot_count, slot, value, frame_number, lw::qpc_now(),
                                 side_data, side_data_size))
         return lw::fail(LW_E_ACCESS_LOST, "frame source: the slot is no longer ours (the host ended the attach)");
     SetEvent(producer->host_event.value);
@@ -228,7 +228,7 @@ extern "C" lw_status lw_frame_producer_submit(lw_frame_producer *producer, uint3
 
 extern "C" lw_status lw_frame_producer_discard(lw_frame_producer *producer, uint32_t slot) {
     if (!producer) return lw::fail(LW_E_INVALID_ARG, "lw_frame_producer_discard: NULL argument");
-    if (!lw_fs_producer_discard(producer->shared(), producer->generation, slot))
+    if (!lw_fs_producer_discard(producer->shared(), producer->generation, producer->slot_count, slot))
         return lw::fail(LW_E_INVALID_ARG, "lw_frame_producer_discard: slot %u isn't acquired", slot);
     return LW_OK;
 }

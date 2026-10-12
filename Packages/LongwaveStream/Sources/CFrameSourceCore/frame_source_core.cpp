@@ -38,10 +38,7 @@ bool exchange(uint64_t &field, uint64_t expected, uint64_t desired) {
 
 void increment(uint64_t &counter) { std::atomic_ref<uint64_t>(counter).fetch_add(1, std::memory_order_relaxed); }
 
-uint32_t slot_count(const lw_fs_shared *shared) {
-    const uint32_t count = shared->format.slot_count;
-    return count > LW_FS_MAX_SLOTS ? LW_FS_MAX_SLOTS : count;
-}
+uint32_t clamp_slots(uint32_t count) { return count > LW_FS_MAX_SLOTS ? LW_FS_MAX_SLOTS : count; }
 
 bool transition(lw_fs_shared *shared, uint32_t from, uint32_t to) {
     return exchange(shared->attach, LW_FS_ATTACH_WORD(0, from), LW_FS_ATTACH_WORD(0, to));
@@ -175,7 +172,6 @@ void lw_fs_host_finish_attach(lw_fs_shared *shared, uint64_t generation) {
         slot.present_qpc = 0;
         slot.side_data_size = 0;
     }
-    shared->taken_sequence = 0;
     for (uint64_t *counter : {&shared->submitted, &shared->superseded, &shared->starved, &shared->consumed,
                               &shared->dropped, &shared->submit_sequence})
         std::atomic_ref<uint64_t>(*counter).store(0, std::memory_order_relaxed);
@@ -201,10 +197,10 @@ int lw_fs_is_attached(const lw_fs_shared *shared, uint64_t generation) {
 
 // ---- Slot ring ----------------------------------------------------------------------
 
-int lw_fs_producer_acquire(lw_fs_shared *shared, uint64_t generation, uint32_t *out_slot) {
+int lw_fs_producer_acquire(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t *out_slot) {
     if (!lw_fs_is_attached(shared, generation)) return LW_FS_STALE;
     const uint32_t gen = static_cast<uint32_t>(generation);
-    const uint32_t count = slot_count(shared);
+    const uint32_t count = clamp_slots(slot_count);
     for (uint32_t attempt = 0; attempt < kRetries; ++attempt) {
         for (uint32_t i = 0; i < count; ++i) {
             const uint64_t word = load(shared->slots[i].state);
@@ -239,10 +235,10 @@ int lw_fs_producer_acquire(lw_fs_shared *shared, uint64_t generation, uint32_t *
     return LW_FS_NO_SLOT;
 }
 
-int lw_fs_producer_publish(lw_fs_shared *shared, uint64_t generation, uint32_t slot, uint64_t fence_value,
-                           uint64_t frame_number, int64_t present_qpc, const void *side_data,
+int lw_fs_producer_publish(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t slot,
+                           uint64_t fence_value, uint64_t frame_number, int64_t present_qpc, const void *side_data,
                            uint32_t side_data_size) {
-    if (slot >= slot_count(shared) || side_data_size > LW_FS_MAX_SIDE_DATA || (side_data_size && !side_data))
+    if (slot >= clamp_slots(slot_count) || side_data_size > LW_FS_MAX_SIDE_DATA || (side_data_size && !side_data))
         return 0;
     const uint32_t gen = static_cast<uint32_t>(generation);
     lw_fs_slot &s = shared->slots[slot];
@@ -263,17 +259,18 @@ int lw_fs_producer_publish(lw_fs_shared *shared, uint64_t generation, uint32_t s
     return 1;
 }
 
-int lw_fs_producer_discard(lw_fs_shared *shared, uint64_t generation, uint32_t slot) {
-    if (slot >= slot_count(shared)) return 0;
+int lw_fs_producer_discard(lw_fs_shared *shared, uint64_t generation, uint32_t slot_count, uint32_t slot) {
+    if (slot >= clamp_slots(slot_count)) return 0;
     const uint32_t gen = static_cast<uint32_t>(generation);
     return exchange(shared->slots[slot].state, LW_FS_SLOT_WORD(gen, 0, LW_FS_SLOT_PRODUCING),
                     LW_FS_SLOT_WORD(gen, 0, LW_FS_SLOT_FREE));
 }
 
-int lw_fs_host_take_newest(lw_fs_shared *shared, uint64_t generation, uint32_t *out_slot) {
+int lw_fs_host_take_newest(lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t *out_slot) {
+    const uint64_t generation = ring->generation;
     if (load(shared->attach) != LW_FS_ATTACH_WORD(generation, LW_FS_ATTACH_ATTACHED)) return 0;
     const uint32_t gen = static_cast<uint32_t>(generation);
-    const uint32_t count = slot_count(shared);
+    const uint32_t count = clamp_slots(ring->slot_count);
     for (uint32_t attempt = 0; attempt < kRetries; ++attempt) {
         // The scan is not a snapshot: a slot read early as PRODUCING can be
         // published, just ahead of a newer one read later. So "newest" is
@@ -286,10 +283,10 @@ int lw_fs_host_take_newest(lw_fs_shared *shared, uint64_t generation, uint32_t *
             words[i] = load(shared->slots[i].state);
             if (LW_FS_SLOT_GENERATION(words[i]) != gen || LW_FS_SLOT_STATE(words[i]) != LW_FS_SLOT_READY) continue;
             sequences[i] = load(shared->slots[i].submit_sequence, std::memory_order_relaxed);
-            if (sequences[i] > shared->taken_sequence && (newest == count || sequences[i] > sequences[newest]))
+            if (sequences[i] > ring->taken_sequence && (newest == count || sequences[i] > sequences[newest]))
                 newest = i;
         }
-        const uint64_t floor = newest == count ? shared->taken_sequence : sequences[newest];
+        const uint64_t floor = newest == count ? ring->taken_sequence : sequences[newest];
         // Ready frames older than the one taken (or than the last one taken)
         // will never be shown: give them back now rather than leaving the
         // producer to reclaim them. The CAS on the exact word seen above skips
@@ -304,12 +301,44 @@ int lw_fs_host_take_newest(lw_fs_shared *shared, uint64_t generation, uint32_t *
         if (newest == count) return 0;
         const uint64_t taken = LW_FS_SLOT_WORD(gen, LW_FS_SLOT_TAG(words[newest]), LW_FS_SLOT_CONSUMING);
         if (!exchange(shared->slots[newest].state, words[newest], taken)) continue; // reclaimed meanwhile
-        shared->taken_sequence = sequences[newest];
+        ring->taken_sequence = sequences[newest];
         increment(shared->consumed);
         *out_slot = newest;
         return 1;
     }
     return 0;
+}
+
+int lw_fs_host_snapshot(const lw_fs_shared *shared, lw_fs_host_ring *ring, uint32_t slot,
+                        lw_fs_frame_snapshot *out) {
+    if (slot >= clamp_slots(ring->slot_count)) return 0;
+    const lw_fs_slot &s = shared->slots[slot];
+    // Each field is loaded exactly once (relaxed atomics keep the compiler
+    // from reloading it), and only the loaded value is checked and used, so
+    // a producer rewriting the slot meanwhile can't get past the checks.
+    const uint64_t fence_value = load(s.fence_value, std::memory_order_relaxed);
+    const uint32_t size = load32(s.side_data_size, std::memory_order_relaxed);
+    if (size > LW_FS_MAX_SIDE_DATA) return 0;
+    // An honest producer's fence rises with every submit, and frames are
+    // taken in submit order. A value that doesn't rise would make the host
+    // wait on work that already happened (or never will).
+    if (fence_value <= ring->last_fence_value) return 0;
+    out->fence_value = fence_value;
+    out->frame_number = load(s.frame_number, std::memory_order_relaxed);
+    out->present_qpc = static_cast<int64_t>(load(reinterpret_cast<const uint64_t &>(s.present_qpc), std::memory_order_relaxed));
+    out->side_data_size = size;
+    out->reserved = 0;
+    // The bytes may still change under the copy; that only garbles this
+    // producer's own side data. Copied as relaxed atomic words so a racing
+    // write is torn data, not a data race; the copy can't overrun.
+    static_assert(offsetof(lw_fs_slot, side_data) % alignof(uint32_t) == 0 && LW_FS_MAX_SIDE_DATA % 4 == 0,
+                  "side data copies as words");
+    uint32_t words[LW_FS_MAX_SIDE_DATA / 4];
+    const auto *source = reinterpret_cast<const uint32_t *>(s.side_data);
+    for (uint32_t i = 0; i < (size + 3) / 4; ++i) words[i] = load32(source[i], std::memory_order_relaxed);
+    std::memcpy(out->side_data, words, size);
+    ring->last_fence_value = fence_value;
+    return 1;
 }
 
 int lw_fs_host_release(lw_fs_shared *shared, uint64_t generation, uint32_t slot) {

@@ -261,18 +261,23 @@ public struct ExternalFrame: @unchecked Sendable {
 }
 
 /// What the host tells a producer each display frame (lw_fs_host_state):
-/// the latest predicted head pose, eye geometry, gaze and pacing.
+/// the latest predicted head pose, eye geometry, gaze and pacing. OpenXR
+/// conventions, as StreamWire's STATE: metres, right-handed, +Y up, -Z forward.
 public struct ExternalHostState: Sendable {
+    /// `XrPosef`.
     public struct Pose: Sendable {
-        public var position: SIMD3<Float> = .zero
         public var orientation: SIMD4<Float> = SIMD4(0, 0, 0, 1) // x, y, z, w
+        public var position: SIMD3<Float> = .zero
         public init() {}
     }
+    /// `XrFovf`: signed angles in radians, left and down negative.
     public struct FieldOfView: Sendable {
-        public var left: Float = 0, right: Float = 0, up: Float = 0, down: Float = 0 // tangents
+        public var angleLeft: Float = 0, angleRight: Float = 0, angleUp: Float = 0, angleDown: Float = 0
         public init() {}
     }
-    public var poseSequence: UInt64 = 0
+    /// The client's STATE sequence number; wraps (compare with
+    /// lw_fs_serial_newer / StreamWire's SerialNumber).
+    public var poseSequence: UInt32 = 0
     public var poseDisplayTicks: Int64 = 0
     public var spaceEpoch: UInt32 = 0
     public var head: Pose?
@@ -285,10 +290,12 @@ public struct ExternalHostState: Sendable {
 
     var raw: lw_fs_host_state {
         func pose(_ p: Pose) -> lw_fs_pose {
-            lw_fs_pose(position: (p.position.x, p.position.y, p.position.z),
-                       orientation: (p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w))
+            lw_fs_pose(orientation: (p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w),
+                       position: (p.position.x, p.position.y, p.position.z))
         }
-        func fov(_ f: FieldOfView) -> lw_fs_fov { lw_fs_fov(left: f.left, right: f.right, up: f.up, down: f.down) }
+        func fov(_ f: FieldOfView) -> lw_fs_fov {
+            lw_fs_fov(angle_left: f.angleLeft, angle_right: f.angleRight, angle_up: f.angleUp, angle_down: f.angleDown)
+        }
         var s = lw_fs_host_state()
         s.pose_sequence = poseSequence
         s.pose_display_qpc = poseDisplayTicks
@@ -322,6 +329,8 @@ public final class ExternalFrameSource: @unchecked Sendable {
         public let attaches, refusals, detaches, producerExits: UInt64
         public let lastRefusal: UInt32
         public let delivered, fenceTimeouts: UInt64
+        /// Attaches ended because the producer wrote impossible metadata into the section.
+        public let producerFaults: UInt64
         /// This generation's ring, from the shared section.
         public let submitted, superseded, starved, consumed, dropped: UInt64
     }
@@ -337,8 +346,9 @@ public final class ExternalFrameSource: @unchecked Sendable {
 
     /// Listens on `channel`. `onFrame` runs on the source's thread; hand the
     /// frame off, and let it go only once the GPU is done with it (after the
-    /// encode). `producerSID` grants one more account access (a host running
-    /// as SYSTEM names the signed-in user).
+    /// encode). It may call `stop()` or drop the last reference to the source.
+    /// `producerSID` grants one more account access (a host running as SYSTEM
+    /// names the signed-in user).
     public init(device: GraphicsDevice, channel: String, producerSID: String? = nil,
                 onFrame: @escaping @Sendable (CapturedFrame) -> Void) throws {
         self.device = device
@@ -349,7 +359,10 @@ public final class ExternalFrameSource: @unchecked Sendable {
                 var params = lw_frame_source_params(channel: channelName, producer_sid: sid)
                 return lw_frame_source_start(device.raw, &params, { context, frame in
                     guard let context, let frame else { return }
-                    Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue().handler(CapturedFrame(frame))
+                    // Held for the whole call: a handler that stops the
+                    // source releases the source's reference to the sink.
+                    let sink = Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue()
+                    withExtendedLifetime(sink) { sink.handler(CapturedFrame(frame)) }
                 }, sink.toOpaque(), &source)
             }
         }
@@ -378,12 +391,13 @@ public final class ExternalFrameSource: @unchecked Sendable {
             return Statistics(attached: s.attached != 0, producerPID: s.producer_pid, generation: s.generation,
                               attaches: s.attaches, refusals: s.refusals, detaches: s.detaches,
                               producerExits: s.producer_exits, lastRefusal: s.last_refusal, delivered: s.delivered,
-                              fenceTimeouts: s.fence_timeouts, submitted: s.submitted, superseded: s.superseded,
+                              fenceTimeouts: s.fence_timeouts, producerFaults: s.producer_faults, submitted: s.submitted, superseded: s.superseded,
                               starved: s.starved, consumed: s.consumed, dropped: s.dropped)
         }
     }
 
-    /// Stops listening; returns once no frame callback is running. Idempotent.
+    /// Stops listening; returns once no frame callback is running (or, called
+    /// from `onFrame`, at once: no callback follows the current one). Idempotent.
     public func stop() {
         let source = raw.withLock { value -> OpaquePointer? in
             defer { value = nil }

@@ -29,17 +29,20 @@ struct Channel {
     lw_fs_shared *shared() const { return section.shared; }
 };
 
-// One attach's GPU objects.
+// One attach's GPU objects, and the host's private view of its ring.
 struct Ring {
     std::shared_ptr<Channel> channel;
     uint64_t generation = 0;
-    lw_fs_format format{};
+    uint32_t producer_pid = 0;
+    lw_fs_format format{};     // the copy validated at attach; the section's may change
+    lw_fs_host_ring cursor{};  // touched only by the source thread
     std::array<std::array<winrt::com_ptr<ID3D11Texture2D>, LW_FS_MAX_TEXTURES>, LW_FS_MAX_SLOTS> textures;
 };
 
 struct SourceFrame final : lw_frame {
     std::shared_ptr<Ring> ring;
     lw_frame_source_info source{};
+    lw_fs_frame_snapshot snapshot{}; // the slot's metadata, copied out of the section and checked
 
     ~SourceFrame() override {
         // Fails harmlessly if the attach has ended and a new ring reuses the slot.
@@ -83,6 +86,8 @@ struct lw_frame_source {
     std::shared_ptr<Ring> ring;
     winrt::com_ptr<ID3D11Fence> fence;
     Handle producer_process;
+    uint64_t last_generation = 0; // generations come from here, never from the section
+    bool stop_from_callback = false;
     uint32_t stuck_state = LW_FS_ATTACH_FREE;
     ULONGLONG stuck_since = 0;
 
@@ -102,9 +107,12 @@ struct lw_frame_source {
     void answer_request();
     uint32_t build_ring(std::shared_ptr<Ring> &out_ring, Handle &out_process);
     void deliver();
-    bool wait_for_fence(uint64_t value);
-    enum class DropReason { detached, producer_exited, stopping };
+    enum class FenceWait { reached, timed_out, device_lost };
+    FenceWait wait_for_fence(uint64_t value);
+    bool stop_requested() const { return WaitForSingleObject(stop_event.value, 0) == WAIT_OBJECT_0; }
+    enum class DropReason { detached, producer_exited, producer_fault, stopping };
     void drop_ring(DropReason reason);
+    static void finish_stop(lw_frame_source *source);
 };
 
 // ---- The source thread ---------------------------------------------------------
@@ -122,6 +130,10 @@ void lw_frame_source::run() {
         deliver();
     }
     lw::leave_mmcss(mmcss);
+    // lw_frame_source_stop was called from a frame callback on this thread,
+    // which can't join itself: it detached the thread and left the teardown
+    // to it. Nothing may touch `this` after this call.
+    if (stop_from_callback) finish_stop(this);
 }
 
 void lw_frame_source::service_handshake() {
@@ -173,25 +185,31 @@ void lw_frame_source::answer_request() {
             st.attached = 1;
             st.generation = ring->generation;
             st.format = ring->format;
-            st.producer_pid = s->producer_pid;
+            st.producer_pid = ring->producer_pid;
         });
     }
     SetEvent(channel->producer_event.value);
 }
 
 uint32_t lw_frame_source::build_ring(std::shared_ptr<Ring> &out_ring, Handle &out_process) {
-    lw_fs_shared *s = shared(); // BUILDING: the request fields are stable and ours to answer
+    lw_fs_shared *s = shared(); // BUILDING: the request is ours to answer
     s->host_luid = luid;
-    if (s->producer_version != LW_FS_VERSION) return LW_FS_REFUSE_VERSION;
+    // A producer can still write the request while we read it, so every field
+    // is read once into host memory, then checked and used from there.
+    const uint32_t producer_version = s->producer_version;
     const lw_fs_format format = s->format;
+    const uint64_t producer_luid = s->producer_luid;
+    const uint32_t producer_pid = s->producer_pid;
+    const uint64_t producer_start_time = s->producer_start_time;
+    if (producer_version != LW_FS_VERSION) return LW_FS_REFUSE_VERSION;
     if (lw_fs_validate_format(&format) != LW_FS_REFUSE_NONE) return LW_FS_REFUSE_FORMAT;
-    if (s->producer_luid != luid) return LW_FS_REFUSE_ADAPTER;
+    if (producer_luid != luid) return LW_FS_REFUSE_ADAPTER;
 
     // The pid alone could name a different process by now: pin it to the
     // creation time the producer recorded.
     Handle process(OpenProcess(PROCESS_DUP_HANDLE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-                               s->producer_pid));
-    if (!process || lw::fs::process_start_time(process.value) != s->producer_start_time) return LW_FS_REFUSE_PROCESS;
+                               producer_pid));
+    if (!process || lw::fs::process_start_time(process.value) != producer_start_time) return LW_FS_REFUSE_PROCESS;
 
     RemoteHandles remote{process.value};
     auto give = [&](HANDLE local, DWORD access, DWORD options, uint64_t &field) -> bool {
@@ -207,8 +225,13 @@ uint32_t lw_frame_source::build_ring(std::shared_ptr<Ring> &out_ring, Handle &ou
 
     auto built = std::make_shared<Ring>();
     built->channel = channel;
-    built->generation = s->generation + 1; // the section outlives hosts, so generations never repeat in it
+    // The section outlives hosts, so last_generation starts from the section's
+    // value at open; after that the section's copy is never read again.
+    built->generation = last_generation + 1;
+    built->producer_pid = producer_pid;
     built->format = format;
+    built->cursor.generation = built->generation;
+    built->cursor.slot_count = format.slot_count;
 
     winrt::com_ptr<ID3D11Fence> new_fence;
     if (FAILED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(new_fence.put()))))
@@ -259,23 +282,24 @@ uint32_t lw_frame_source::build_ring(std::shared_ptr<Ring> &out_ring, Handle &ou
     if (!give(GetCurrentProcess(), SYNCHRONIZE, 0, s->host_process_handle)) return LW_FS_REFUSE_PROCESS;
 
     remote.keep = true;
+    last_generation = built->generation;
     fence = new_fence;
     out_ring = std::move(built);
     out_process = std::move(process);
     return LW_FS_REFUSE_NONE;
 }
 
-bool lw_frame_source::wait_for_fence(uint64_t value) {
+lw_frame_source::FenceWait lw_frame_source::wait_for_fence(uint64_t value) {
     const ULONGLONG deadline = GetTickCount64() + kFenceTimeoutMs;
     for (;;) {
         const uint64_t completed = fence->GetCompletedValue();
-        if (completed == UINT64_MAX) return false; // device removed
-        if (completed >= value) return true;
+        if (completed == UINT64_MAX) return FenceWait::device_lost;
+        if (completed >= value) return FenceWait::reached;
         const ULONGLONG now = GetTickCount64();
-        if (now >= deadline) return false;
+        if (now >= deadline) return FenceWait::timed_out;
         // The event is auto-reset and shared by every wait, so a stale
         // signal from an earlier wait can wake this one early: recheck.
-        if (FAILED(fence->SetEventOnCompletion(value, fence_event.value))) return false;
+        if (FAILED(fence->SetEventOnCompletion(value, fence_event.value))) return FenceWait::device_lost;
         WaitForSingleObject(fence_event.value, static_cast<DWORD>(deadline - now));
     }
 }
@@ -284,25 +308,40 @@ void lw_frame_source::deliver() {
     if (!ring) return;
     lw_fs_shared *s = shared();
     uint32_t slot = 0;
-    while (lw_fs_host_take_newest(s, ring->generation, &slot)) {
+    while (!stop_requested() && lw_fs_host_take_newest(s, &ring->cursor, &slot)) {
         const int64_t taken = lw::qpc_now();
-        const lw_fs_slot &meta = s->slots[slot]; // stable while CONSUMING
-        if (!wait_for_fence(meta.fence_value)) {
-            lw_fs_host_release(s, ring->generation, slot);
-            update_stats([](lw_frame_source_stats &st) { ++st.fence_timeouts; });
-            return; // the producer's process handle or next request decides what happens next
-        }
+        // From here the frame owns the slot: deleting it gives the slot back.
         auto *frame = new SourceFrame();
         frame->ring = ring;
+        frame->source.slot = slot;
+        if (!lw_fs_host_snapshot(s, &ring->cursor, slot, &frame->snapshot)) {
+            // Out-of-range metadata only gets there by writing the section
+            // directly, around lw_frame_producer_submit: end that attach.
+            delete frame;
+            update_stats([](lw_frame_source_stats &st) { ++st.producer_faults; });
+            drop_ring(DropReason::producer_fault);
+            return;
+        }
+        const FenceWait waited = wait_for_fence(frame->snapshot.fence_value);
+        if (waited != FenceWait::reached) {
+            // A fence value that never arrives is a hung producer GPU, a TDR,
+            // or a producer announcing work it never queued. Either way the
+            // attach is over; the producer can attach again.
+            delete frame;
+            update_stats([&](lw_frame_source_stats &st) {
+                if (waited == FenceWait::timed_out) ++st.fence_timeouts; else ++st.errors;
+            });
+            drop_ring(waited == FenceWait::timed_out ? DropReason::producer_fault : DropReason::detached);
+            return;
+        }
         auto &info = frame->source;
         info.generation = ring->generation;
-        info.frame_number = meta.frame_number;
-        info.slot = slot;
-        info.side_data_size = meta.side_data_size;
-        info.side_data = meta.side_data;
+        info.frame_number = frame->snapshot.frame_number;
+        info.side_data_size = frame->snapshot.side_data_size;
+        info.side_data = frame->snapshot.side_data;
         info.format = ring->format;
         for (uint32_t t = 0; t < LW_FS_MAX_TEXTURES; ++t) info.textures[t] = ring->textures[slot][t].get();
-        info.present_qpc = meta.present_qpc;
+        info.present_qpc = frame->snapshot.present_qpc;
         info.taken_qpc = taken;
         info.ready_qpc = lw::qpc_now();
         frame->info.texture = info.textures[LW_FS_TEXTURE_IMAGE];
@@ -313,7 +352,7 @@ void lw_frame_source::deliver() {
         frame->info.arrival_qpc = info.taken_qpc;
         frame->info.ready_qpc = info.ready_qpc;
         update_stats([](lw_frame_source_stats &st) { ++st.delivered; });
-        callback(callback_context, frame);
+        callback(callback_context, frame); // may call lw_frame_source_stop (see stop_requested)
     }
 }
 
@@ -330,6 +369,7 @@ void lw_frame_source::drop_ring(DropReason reason) {
         st.producer_pid = 0;
         if (reason == DropReason::detached) ++st.detaches;
         if (reason == DropReason::producer_exited) ++st.producer_exits;
+        // producer_fault is counted where it is detected (faults or fence timeouts).
     });
     SetEvent(channel->producer_event.value);
 }
@@ -390,6 +430,7 @@ extern "C" lw_status lw_frame_source_start(lw_device *device, const lw_frame_sou
         } else {
             lw_fs_init(s);
         }
+        source->last_generation = s->generation;
         channel->host_event.reset(CreateEventW(sa, FALSE, FALSE, names.host_event.c_str()));
         channel->producer_event.reset(CreateEventW(sa, FALSE, FALSE, names.producer_event.c_str()));
         source->stop_event.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -429,14 +470,26 @@ extern "C" void lw_frame_source_get_stats(const lw_frame_source *source, lw_fram
     out->dropped = lw::fs::counter(s->dropped);
 }
 
-extern "C" void lw_frame_source_stop(lw_frame_source *source) {
-    if (!source) return;
-    SetEvent(source->stop_event.value);
-    if (source->thread.joinable()) source->thread.join();
-    source->drop_ring(lw_frame_source::DropReason::stopping);
+void lw_frame_source::finish_stop(lw_frame_source *source) {
+    source->drop_ring(DropReason::stopping);
     lw_fs_host_close(source->shared());
     SetEvent(source->channel->producer_event.value);
     delete source;
+}
+
+extern "C" void lw_frame_source_stop(lw_frame_source *source) {
+    if (!source) return;
+    SetEvent(source->stop_event.value);
+    if (source->thread.get_id() == std::this_thread::get_id()) {
+        // From the frame callback: joining would be joining ourselves
+        // (std::system_error, which can't cross the C ABI). The thread stops
+        // taking frames once the callback returns and tears down by itself.
+        source->stop_from_callback = true;
+        source->thread.detach();
+        return;
+    }
+    if (source->thread.joinable()) source->thread.join();
+    lw_frame_source::finish_stop(source);
 }
 
 extern "C" const lw_frame_source_info *lw_frame_get_source_info(const lw_frame *frame) {

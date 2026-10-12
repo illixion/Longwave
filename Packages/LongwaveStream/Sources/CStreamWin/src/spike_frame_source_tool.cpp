@@ -102,9 +102,9 @@ void precise_sleep_until(int64_t qpc) {
 #pragma pack(push, 1)
 struct TestSideData {
     uint8_t type = 0xF0;
-    uint16_t length = 16;
+    uint16_t length = 12;
     uint64_t frame_number;
-    uint64_t pose_sequence;
+    uint32_t pose_sequence;
 };
 #pragma pack(pop)
 
@@ -317,7 +317,7 @@ struct Encoding {
     std::mutex records_mutex;
     std::vector<Record> records;
     long verify_failures = 0, verified = 0, encode_errors = 0;
-    uint64_t last_pose = 0;
+    uint32_t last_pose = 0;
 
     void open(int width, int height) {
         if (verify) {
@@ -357,7 +357,7 @@ struct Encoding {
                 ok = ok && w.side_size == sizeof side;
                 if (w.side_size == sizeof side) {
                     memcpy(&side, w.side, sizeof side);
-                    ok = ok && side.type == 0xF0 && side.frame_number == w.frame && side.pose_sequence >= last_pose;
+                    ok = ok && side.type == 0xF0 && side.frame_number == w.frame && !lw_fs_serial_newer(last_pose, side.pose_sequence);
                     last_pose = side.pose_sequence;
                 }
             }
@@ -531,7 +531,7 @@ int consume(const Options &o) {
     const int64_t interval = static_cast<int64_t>(lw_qpc_frequency() / fps);
     const int64_t end = lw_qpc_now() + static_cast<int64_t>(seconds * lw_qpc_frequency());
     int64_t next = lw_qpc_now();
-    uint64_t pose = 0;
+    uint32_t pose = 0;
     lw_frame_source_stats last{};
     while (lw_qpc_now() < end) {
         next += interval;

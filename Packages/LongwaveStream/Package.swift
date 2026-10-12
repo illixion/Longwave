@@ -4,6 +4,8 @@
 // Today this holds the Phase 2 go/no-go spike (2026-10-04):
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows)
 //            StreamHostWindows  its Swift side
+//            CFrameSourceCore   the external frame source's shared-memory layout and
+//                                 protocol (section 7.2), portable so it is tested everywhere
 //   spike    StreamSpikeWire, longwave-host-spike, stream-spike-receiver,
 //            StreamSpikeTests   - a throwaway packetizer and test tools, to be
 //                                 replaced by the Phase 1 core (StreamWire,
@@ -18,6 +20,8 @@ var products: [Product] = [
 ]
 
 var targets: [Target] = [
+    .target(name: "CFrameSourceCore"),
+    .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),
     .executableTarget(name: "stream-spike-receiver", dependencies: ["StreamSpikeWire"]),
     .testTarget(

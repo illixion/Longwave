@@ -39,7 +39,18 @@ Longwave/
 │   ├── FoveatedEndpoint.swift          — Endpoint validation and mode → endpoint mapping
 │   ├── FoveatedStreamingMock.swift     — Stand-in session for the simulator (no framework there)
 │   ├── PCVRStore.swift                 — StoreKit 2 entitlements: $1.99/mo or $24.99 once
-│   └── PCVRSessionLimiter.swift        — 20-minute trial clock, warnings, and the cutoff
+│   ├── PCVRSessionLimiter.swift        — 20-minute trial clock, warnings, and the cutoff
+│   ├── Receiver/                       — Native v3 PCVR receiver (§4.7), presenter-agnostic: no CompositorServices/RealityKit/ARKit
+│   │   ├── PCVRGeometry.swift          — Poses, per-eye FOV tangents, stereo pairs
+│   │   ├── PCVRReprojection.swift      — Render pose → display pose homography (rotation, or rotation + translation on a proxy plane)
+│   │   ├── PCVRReceiver.swift          — Metal reprojection of a side-by-side frame into per-eye targets
+│   │   ├── PCVRFrame.swift             — renderPose side data, decoded frame lease, latest-wins mailbox
+│   │   └── PCVRHeadPose.swift          — Uplink head-pose snapshots, motion-to-photon, prediction horizon
+│   └── Shell/                          — "Shell A": the receiver in a CompositorServices full immersive space (no entitlement)
+│       ├── PCVRShellRenderer.swift     — Off-main frame loop: device anchor at presentation time, reproject, submit
+│       ├── PCVRShellSession.swift      — Scene-owned session, CompositorLayer content and configuration
+│       ├── PCVRFakeRemote.swift        — DEBUG: test room rendered at a past pose with delay/frame rate, no host needed
+│       └── PCVRShellDevView.swift      — DEBUG: window that opens the space, tunes it and shows the stats
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)

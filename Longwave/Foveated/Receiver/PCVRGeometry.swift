@@ -78,24 +78,39 @@ nonisolated struct PCVRPose: Equatable, Sendable {
 /// from the view axis to each edge, left and down negative. The same
 /// convention as the Native v3 wire (StreamWire's `FieldOfView`), so values
 /// cross the network unconverted. Asymmetric frusta are the norm on a headset;
-/// nothing here assumes symmetry. The maths works in tangents, derived below.
+/// nothing here assumes symmetry.
+///
+/// The angles are kept for the wire; the maths works in tangents, which are
+/// computed once here rather than on every access (the receiver reads them
+/// several times per eye per frame).
 nonisolated struct PCVRFieldOfView: Equatable, Sendable {
-    var angleLeft: Float
-    var angleRight: Float
-    var angleUp: Float
-    var angleDown: Float
+    let angleLeft: Float
+    let angleRight: Float
+    let angleUp: Float
+    let angleDown: Float
+    /// Signed tangents in `XrFovf` order: (left, right, up, down), left and down negative.
+    let tangents: SIMD4<Float>
 
     init(angleLeft: Float, angleRight: Float, angleUp: Float, angleDown: Float) {
         self.angleLeft = angleLeft
         self.angleRight = angleRight
         self.angleUp = angleUp
         self.angleDown = angleDown
+        tangents = SIMD4(tan(angleLeft), tan(angleRight), tan(angleUp), tan(angleDown))
     }
 
-    /// From signed tangents of the same four angles (left and down negative).
+    /// From signed tangents (left, right, up, down; left and down negative),
+    /// kept exactly as given.
+    init(tangents: SIMD4<Float>) {
+        angleLeft = atan(tangents.x)
+        angleRight = atan(tangents.y)
+        angleUp = atan(tangents.z)
+        angleDown = atan(tangents.w)
+        self.tangents = tangents
+    }
+
     init(tangentLeft: Float, tangentRight: Float, tangentUp: Float, tangentDown: Float) {
-        self.init(angleLeft: atan(tangentLeft), angleRight: atan(tangentRight),
-                  angleUp: atan(tangentUp), angleDown: atan(tangentDown))
+        self.init(tangents: SIMD4(tangentLeft, tangentRight, tangentUp, tangentDown))
     }
 
     /// From a perspective projection whose clip `x` and `y` are
@@ -111,17 +126,11 @@ nonisolated struct PCVRFieldOfView: Equatable, Sendable {
                   tangentDown: (p.columns.2.y - 1) / p.columns.1.y)
     }
 
-    /// Signed tangents in `XrFovf` order: (left, right, up, down), left and down negative.
-    var tangents: SIMD4<Float> {
-        SIMD4(tan(angleLeft), tan(angleRight), tan(angleUp), tan(angleDown))
-    }
-
     /// The same frustum widened by `fraction` of each edge's tangent: what a
     /// host renders when it overscans to leave reprojection something to show
     /// at the edges (see `PCVRReprojection`).
     func expanded(by fraction: Float) -> PCVRFieldOfView {
-        let t = tangents * (1 + max(fraction, 0))
-        return PCVRFieldOfView(tangentLeft: t.x, tangentRight: t.y, tangentUp: t.z, tangentDown: t.w)
+        PCVRFieldOfView(tangents: tangents * (1 + max(fraction, 0)))
     }
 
     /// Maps a forward-tangent vector `(x / -z, y / -z, 1)` to homogeneous NDC

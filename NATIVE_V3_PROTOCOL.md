@@ -65,10 +65,11 @@ because the Mac needs to beat Moonlight. No Mac host for Moonlight exists anyway
 - WAN/Internet streaming through NAT (no STUN/TURN/relay). LAN, routed LAN and
   Tailscale are in scope; Tailscale's 1280-byte MTU sets the default packet size.
 - Browser clients or WebRTC compatibility.
-- The PCVR host's internals. v3 defines the PCVR stream on the wire (§4.7).
-  How the Windows host produces it, and the OpenXR side behind it, live in the
-  private `Longwave-PCVR-Host/docs/` (`NATIVE_PROVIDER_PLAN.md`). CloudXR stays
-  the shipping PCVR path until the v3 path passes that plan's gates.
+- The PCVR OpenXR side. v3 defines the PCVR stream on the wire (§4.7), and
+  the public Windows host encodes and sends it. The OpenXR compositor that
+  renders the eye images and hands them over (§7.2, external frame source)
+  is private, as is its plan (`Longwave-PCVR-Host/docs/NATIVE_PROVIDER_PLAN.md`).
+  CloudXR stays the shipping PCVR path until the v3 path passes that plan's gates.
 - Replacing the Companion's audio-only Music mode on day one. The VVAS audio
   stream (`Shared/AudioStreamProtocol.swift`, port 4855) keeps serving
   audio-only connections until v3's audio channel has matched it.
@@ -618,6 +619,14 @@ CompositorServices isn't available there). Keeping the presenter thin is what
 makes the extension a second shell around the same receiver instead of a
 rewrite.
 
+**Host.** The public Windows host (§7) serves PCVR like any other stream. The
+eye images come from an external frame source (§7.2): a private OpenXR
+compositor hands each composited frame over as shared GPU textures, and gets
+head poses, gaze and pacing back through a shared section. The foveation warp,
+the encoder, the transport and audio are all in the public host. The warp is
+half of a matched pair with the headset's unwarp, so both halves sit in public
+code and share one parameter block and one set of tests.
+
 **Pacing.** The client reports its display refresh in the handshake and on
 every change. In game-mode playout (§5) a frame that misses its display slot is
 dropped, never queued: in VR a late frame is worse than a repeated one, which
@@ -639,7 +648,7 @@ not VR.
 - **Source.** An in-game component, loaded only when the game is started
   through Longwave (§7.6), reads the depth buffer at present time and hands
   the host the frame and its depth as shared GPU textures stamped with one
-  frame number. It is built on ReShade's add-on API (BSD-3): that covers
+  frame number, through the external frame source contract (§7.2). It is built on ReShade's add-on API (BSD-3): that covers
   D3D9–12, OpenGL and Vulkan and already solves picking the right depth buffer.
   Some tuning per game is expected (reversed Z, near/far), kept as profiles
   in the game library. Games not started through Longwave are captured as
@@ -984,6 +993,26 @@ callbacks — `lw_capture_start(monitor|hwnd, cb)`, `lw_encoder_create(params)`,
 `lw_audio_loopback_start(cb)`, `lw_input_inject(event)`,
 `lw_gamepad_create(kind)` — with frames passed as opaque D3D11 texture handles
 and encoded output as byte buffers. Swift imports it through a module map.
+
+**External frame sources** (added 2026-10-12). Besides WGC and duplication,
+the shim accepts frames from another process through a small public contract,
+`lw_frame_source.h`: a ring of shared D3D11 textures (NT handles) with a shared
+fence, each frame tagged with its frame number and the side data to send
+(§4.2); a seqlocked shared section going back, with head pose, gaze and pacing
+for producers that need them; attach/detach and stats. Producer and host must
+share an adapter (checked by LUID), and the handoff is GPU-only, with no CPU copy
+or readback. Two producers use it:
+
+- the **depth component** inside a flat game (§4.8): picture and depth, one
+  frame number;
+- the **PCVR compositor** (§4.7), which is private: composited eye images with
+  their render poses, and head poses and pacing back.
+
+The contract is how the public/private line stays at the module boundary.
+Everything that streams is public and in this host. The private side only
+produces frames and never links the core. The cost is one cross-process GPU
+handoff per frame, expected well under a millisecond and to be measured first
+(open question 18).
 
 Why: Swift on Windows is proven here only for headless engine code (Oneiros'
 engine suite on Swift 6.2.4 on `gaming-pc`; its
@@ -1683,6 +1712,12 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
     each frame is submitted with its true render pose. Translation since render
     and late frames are ours to handle. That is the hard part of the PCVR
     profile, and the reason to stress-test it early, not a reason to wait.
+18. **Cost of the external frame source handoff.** A fence wait on a shared
+    texture between two processes on one adapter should add well under a
+    millisecond, but it is unmeasured. The PCVR compositor is the case that
+    matters (90 Hz or more). The fallback if it isn't
+    small is to load the public host into the producer as a DLL. That keeps the
+    code public but adds the Swift runtime to that process.
 
 ### Sources
 

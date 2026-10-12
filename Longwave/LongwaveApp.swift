@@ -22,6 +22,9 @@ struct LongwaveApp: App {
     @State private var pcvrStore = PCVRStore()
     @State private var pcvrLimiter = PCVRSessionLimiter()
     @State private var pcvrBandwidth = PCVRBandwidthMonitor()
+    #if DEBUG
+    @State private var pcvrShell = PCVRShellSession()
+    #endif
 
     /// Bridges the manager's style to the scene's existential binding.
     ///
@@ -68,6 +71,9 @@ struct LongwaveApp: App {
                 .environment(pcvrStore)
                 .environment(pcvrLimiter)
                 .environment(pcvrBandwidth)
+                #if DEBUG
+                .pcvrShellDemo()
+                #endif
                 #endif
                 .task {
                     // Let the VNC manager drive a companion audio stream in
@@ -396,6 +402,29 @@ struct LongwaveApp: App {
         .immersionStyle(selection: foveatedImmersionBinding, in: .progressive, .mixed)
         .upperLimbVisibility(.hidden)
         #endif
+
+        #if DEBUG
+        // Shell A: the PCVR receiver in a CompositorServices space of its own,
+        // fed by a fake remote until the Native v3 client exists. DEBUG-only
+        // while it has no real source; the receiver and presenter types compile
+        // into every FOVEATED_ENABLED build. See `PCVRShellSession`.
+        WindowGroup("PCVR Shell A", id: PCVRShellDevView.windowID) {
+            PCVRShellDevView()
+                .environment(pcvrShell)
+                .environment(foveatedManager)
+        }
+        .defaultSize(width: 480, height: 760)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        // Hands stay visible here, unlike the PCVR space: with no game drawing
+        // hands, your own are the steadiest reference for judging whether the
+        // streamed room holds still.
+        ImmersiveSpace(id: PCVRShellSession.immersiveSpaceID) {
+            PCVRShellContent(session: pcvrShell)
+        }
+        .immersionStyle(selection: .constant(.full), in: .full)
+        #endif
         #endif
     }
 }
@@ -462,7 +491,29 @@ private struct NativeDesktopDemo: ViewModifier {
     }
 }
 
+#if FOVEATED_ENABLED
+/// `-LongwavePCVRShellDemo`: opens the Shell A developer window at launch, which
+/// then opens the space itself, so the simulator can show the fake remote's
+/// room without anyone tapping through the PCVR tab.
+private struct PCVRShellDemo: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.task {
+            guard ProcessInfo.processInfo.arguments.contains(PCVRShellDevView.demoArgument) else { return }
+            openWindow(id: PCVRShellDevView.windowID)
+        }
+    }
+}
+#endif
+
 private extension View {
+    #if FOVEATED_ENABLED
+    func pcvrShellDemo() -> some View {
+        modifier(PCVRShellDemo())
+    }
+    #endif
+
     func nativeDesktopDemo(_ sessions: MacNativeSessionStore) -> some View {
         modifier(NativeDesktopDemo(macNativeSessions: sessions))
     }

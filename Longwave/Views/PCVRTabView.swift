@@ -83,6 +83,9 @@ private struct PCVRSessionForm: View {
     @Environment(PCVRBandwidthMonitor.self) private var bandwidthMonitor
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    #if DEBUG
+    @Environment(\.openWindow) private var openWindow
+    #endif
 
     // Live in-session preferences rather than new-connection defaults, so they
     // stay where the immersive view reads them from.
@@ -155,6 +158,19 @@ private struct PCVRSessionForm: View {
                     Label("Help", systemImage: "questionmark.circle")
                 }
             }
+            // Shell A, the PCVR receiver run against a fake remote. A developer
+            // tool, so DEBUG builds only; it needs the immersive space this
+            // session would otherwise use, hence disconnected only.
+            #if DEBUG
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    openWindow(id: PCVRShellDevView.windowID)
+                } label: {
+                    Label("Shell A", systemImage: "cube.transparent")
+                }
+                .disabled(!manager.isDisconnected)
+            }
+            #endif
         }
         .sheet(isPresented: $showHelp) {
             NavigationStack {

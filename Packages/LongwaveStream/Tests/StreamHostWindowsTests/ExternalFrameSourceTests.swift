@@ -262,16 +262,20 @@ final class ExternalFrameSourceTests: XCTestCase {
     }
 
     /// Writes slot `index` as a submitted frame, bypassing lw_frame_producer_submit.
+    /// Without `sequence` it takes the next one from the producer's counter, as
+    /// an honest submit would.
     func forgeReadySlot(_ shared: UnsafeMutablePointer<lw_fs_shared>, index: Int, fence: UInt64,
-                        sideDataSize: UInt32) {
+                        sideDataSize: UInt32, sequence: UInt64? = nil) {
         let generation = shared.pointee.generation
+        let submitSequence = sequence ?? (shared.pointee.submit_sequence + 1)
+        if sequence == nil { shared.pointee.submit_sequence = submitSequence }
         withUnsafeMutablePointer(to: &shared.pointee.slots) {
             $0.withMemoryRebound(to: lw_fs_slot.self, capacity: Int(LW_FS_MAX_SLOTS)) { slots in
                 let slot = slots + index
                 slot.pointee.fence_value = fence
                 slot.pointee.frame_number = 99
                 slot.pointee.side_data_size = sideDataSize
-                slot.pointee.submit_sequence = 1
+                slot.pointee.submit_sequence = submitSequence
                 let word = (UInt64(UInt32(truncatingIfNeeded: generation)) << 32) | (1 << 8) | UInt64(LW_FS_SLOT_READY)
                 withUnsafeMutablePointer(to: &slot.pointee.state) {
                     UnsafeMutableRawPointer($0).storeBytes(of: word, as: UInt64.self) // aligned 8-byte store: atomic on x64
@@ -303,17 +307,73 @@ final class ExternalFrameSourceTests: XCTestCase {
         collector.wait(1)
     }
 
-    /// A fence value the producer never signals: the host gives up after its
-    /// timeout and ends the attach, rather than waiting on every frame.
-    func testForgedFenceValueEndsTheAttach() throws {
+    /// One fence value that doesn't arrive (a game's GPU stalling past a
+    /// second) drops that frame only: the attach and later frames carry on,
+    /// and it isn't a fault.
+    func testSingleFenceStallDropsOnlyTheFrame() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let collector = Collector()
+        let source = try ExternalFrameSource(device: device, channel: channel) { collector.take($0) }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel)
+        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1_000_000, sideDataSize: 0) }
+        waitUntil(seconds: 3) { source.statistics.fenceTimeouts == 1 }
+        XCTAssertTrue(source.statistics.attached)
+        XCTAssertEqual(source.statistics.producerFaults, 0)
+        XCTAssertEqual(producer.submit(1), LW_OK)
+        collector.wait(1)
+        XCTAssertEqual(collector.frames.withLock { $0.last?.sequence }, 1)
+    }
+
+    /// A fence that stays put through three timeouts in a row (over 3 s, past
+    /// Windows' 2 s GPU reset) ends the attach as a producer fault.
+    func testPersistentFenceStallEndsTheAttach() throws {
         let channel = channelName()
         let device = try GraphicsDevice(for: nil)
         let source = try ExternalFrameSource(device: device, channel: channel) { _ in }
         defer { source.stop() }
         let producer = try Producer(channel: channel)
-        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1_000_000, sideDataSize: 0) }
-        waitUntil(seconds: 4) { source.statistics.fenceTimeouts == 1 }
+        for stall in UInt64(1) ... 3 {
+            try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1_000_000, sideDataSize: 0) }
+            waitUntil(seconds: 3) { source.statistics.fenceTimeouts == stall }
+            XCTAssertEqual(source.statistics.attached, stall < 3, "after stall \(stall)")
+        }
+        XCTAssertEqual(source.statistics.producerFaults, 1)
+        XCTAssertEqual(producer.submit(1), LW_E_ACCESS_LOST)
+    }
+
+    /// A producer signals the shared fence to UINT64_MAX, the value D3D uses
+    /// for a removed device. The host's device is fine, so it's the
+    /// producer's fault, not a device loss.
+    func testFenceForcedToMaxIsAProducerFault() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let source = try ExternalFrameSource(device: device, channel: channel) { _ in }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel)
+        try check(lw_spike_frame_producer_signal_fence(producer.raw, .max), "signal")
+        // D3D rejects any lower signal after that, so publish a frame by hand.
+        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1, sideDataSize: 0) }
+        waitUntil { source.statistics.producerFaults == 1 }
+        XCTAssertEqual(source.statistics.hostDeviceLost, 0)
+        XCTAssertEqual(source.statistics.detaches, 0)
         XCTAssertFalse(source.statistics.attached)
+    }
+
+    /// One forged submit sequence of UINT64_MAX used to freeze delivery for
+    /// the rest of the attach with no fault. Now it ends the attach.
+    func testForgedSequenceEndsTheAttach() throws {
+        let channel = channelName()
+        let device = try GraphicsDevice(for: nil)
+        let collector = Collector()
+        let source = try ExternalFrameSource(device: device, channel: channel) { collector.take($0) }
+        defer { source.stop() }
+        let producer = try Producer(channel: channel)
+        try withSection(channel) { forgeReadySlot($0, index: 0, fence: 1, sideDataSize: 0, sequence: .max) }
+        waitUntil { source.statistics.producerFaults == 1 }
+        XCTAssertFalse(source.statistics.attached)
+        XCTAssertEqual(collector.frames.withLock { $0.count }, 0)
         XCTAssertEqual(producer.submit(1), LW_E_ACCESS_LOST)
     }
 

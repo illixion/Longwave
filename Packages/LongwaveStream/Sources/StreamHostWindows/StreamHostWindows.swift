@@ -329,8 +329,11 @@ public final class ExternalFrameSource: @unchecked Sendable {
         public let attaches, refusals, detaches, producerExits: UInt64
         public let lastRefusal: UInt32
         public let delivered, fenceTimeouts: UInt64
-        /// Attaches ended because the producer wrote impossible metadata into the section.
+        /// Attaches ended for producer misbehaviour (impossible metadata in the
+        /// section, or a fence that stopped moving).
         public let producerFaults: UInt64
+        /// Attaches ended because the host's own device was removed.
+        public let hostDeviceLost: UInt64
         /// This generation's ring, from the shared section.
         public let submitted, superseded, starved, consumed, dropped: UInt64
     }
@@ -391,7 +394,7 @@ public final class ExternalFrameSource: @unchecked Sendable {
             return Statistics(attached: s.attached != 0, producerPID: s.producer_pid, generation: s.generation,
                               attaches: s.attaches, refusals: s.refusals, detaches: s.detaches,
                               producerExits: s.producer_exits, lastRefusal: s.last_refusal, delivered: s.delivered,
-                              fenceTimeouts: s.fence_timeouts, producerFaults: s.producer_faults, submitted: s.submitted, superseded: s.superseded,
+                              fenceTimeouts: s.fence_timeouts, producerFaults: s.producer_faults, hostDeviceLost: s.host_device_lost, submitted: s.submitted, superseded: s.superseded,
                               starved: s.starved, consumed: s.consumed, dropped: s.dropped)
         }
     }

@@ -123,6 +123,11 @@ int lw_fs_host_begin_attach(lw_fs_shared *shared) {
     return transition(shared, LW_FS_ATTACH_REQUESTED, LW_FS_ATTACH_BUILDING);
 }
 
+int lw_fs_host_reclaim(lw_fs_shared *shared, uint32_t state) {
+    if (state != LW_FS_ATTACH_WRITING && state != LW_FS_ATTACH_REFUSED) return 0;
+    return transition(shared, state, LW_FS_ATTACH_FREE);
+}
+
 uint32_t lw_fs_validate_format(const lw_fs_format *format) {
     auto image_format_ok = [](uint32_t f) {
         return f == LW_FS_FORMAT_B8G8R8A8_UNORM || f == LW_FS_FORMAT_R8G8B8A8_UNORM ||

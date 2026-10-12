@@ -60,6 +60,10 @@ int lw_fs_producer_acknowledge_refusal(lw_fs_shared *shared);
 
 int lw_fs_host_begin_attach(lw_fs_shared *shared);
 
+/* Host: frees a handshake stuck in `state` (WRITING or REFUSED only) because
+ * its producer died before finishing it. The caller decides when it is stuck. */
+int lw_fs_host_reclaim(lw_fs_shared *shared, uint32_t state);
+
 /* LW_FS_REFUSE_NONE if the format is acceptable, else LW_FS_REFUSE_FORMAT.
  * slot_count must already be resolved (no 0 = default here). */
 uint32_t lw_fs_validate_format(const lw_fs_format *format);

@@ -60,12 +60,13 @@ struct CaptureCore {
     }
 };
 
-} // namespace
-
-struct lw_frame {
+// A captured frame: owns its ring slot until released.
+struct CaptureFrame final : lw_frame {
     std::shared_ptr<Slot> slot;
-    lw_frame_info info{};
+    ~CaptureFrame() override { slot->busy.store(false, std::memory_order_release); }
 };
+
+} // namespace
 
 void CaptureCore::deliver(ID3D11Texture2D *source, int32_t width, int32_t height,
                           int64_t present_qpc, int64_t arrival_qpc) {
@@ -113,7 +114,7 @@ void CaptureCore::deliver(ID3D11Texture2D *source, int32_t width, int32_t height
     D3D11_BOX box{0, 0, 0, static_cast<UINT>(width), static_cast<UINT>(height), 1};
     context->CopySubresourceRegion(slot->texture.get(), 0, 0, 0, 0, source, 0, &box);
 
-    auto *frame = new lw_frame();
+    auto *frame = new CaptureFrame();
     frame->slot = slot;
     frame->info.texture = slot->texture.get();
     frame->info.width = width;
@@ -388,7 +389,7 @@ struct SyntheticBackend final : Backend {
         }
         D3D11_BOX box{x, y, 0, x + static_cast<UINT>(width), y + static_cast<UINT>(height), 1};
         core->context->CopySubresourceRegion(slot->texture.get(), 0, 0, 0, 0, noise.get(), 0, &box);
-        auto *frame = new lw_frame();
+        auto *frame = new CaptureFrame();
         frame->slot = slot;
         frame->info.texture = slot->texture.get();
         frame->info.width = width;
@@ -511,8 +512,4 @@ extern "C" const lw_frame_info *lw_frame_get_info(const lw_frame *frame) {
     return frame ? &frame->info : nullptr;
 }
 
-extern "C" void lw_frame_release(lw_frame *frame) {
-    if (!frame) return;
-    frame->slot->busy.store(false, std::memory_order_release);
-    delete frame;
-}
+extern "C" void lw_frame_release(lw_frame *frame) { delete frame; }

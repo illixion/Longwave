@@ -210,7 +210,8 @@ typedef struct lw_fs_shared {
     uint64_t host_state_sequence;  /* atomic */
     lw_fs_host_state host_state_data;
     uint64_t taken_sequence;       /* host: submit_sequence of the last frame it took */
-    uint64_t reserved1[6];
+    uint64_t host_start_time;      /* the host's process creation time: pins host_pid */
+    uint64_t reserved1[5];
 
     lw_fs_slot slots[LW_FS_MAX_SLOTS];
 } lw_fs_shared;

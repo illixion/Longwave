@@ -106,11 +106,15 @@ public final class CapturedFrame: @unchecked Sendable {
     public let texture: UnsafeMutableRawPointer
     public let width: Int
     public let height: Int
+    /// The capture sequence, or the producer's frame number for an external frame.
     public let sequence: UInt64
-    /// QPC ticks: OS composition, shim arrival, GPU copy queued.
+    /// QPC ticks. Capture: OS composition, shim arrival, GPU copy queued.
+    /// External: producer submit, slot taken, producer's GPU work finished.
     public let presentTicks: Int64
     public let arrivalTicks: Int64
     public let readyTicks: Int64
+    /// What an external frame source adds; nil for WGC and duplication.
+    public let external: ExternalFrame?
 
     init(_ raw: OpaquePointer) {
         self.raw = raw
@@ -122,6 +126,7 @@ public final class CapturedFrame: @unchecked Sendable {
         presentTicks = info.present_qpc
         arrivalTicks = info.arrival_qpc
         readyTicks = info.ready_qpc
+        external = lw_frame_get_source_info(raw).map { ExternalFrame($0.pointee) }
     }
 
     deinit { lw_frame_release(raw) }
@@ -215,6 +220,186 @@ public final class CaptureSession: @unchecked Sendable {
     }
 
     deinit { stop() }
+}
+
+// MARK: - External frame source
+
+/// The parts of an external frame (lw_frame_source.h) beyond the picture.
+public struct ExternalFrame: @unchecked Sendable {
+    public enum Layout: Sendable { case mono, sideBySide, separateEyes }
+    /// The attach this frame came from; a new one means a re-attached producer.
+    public let generation: UInt64
+    public let layout: Layout
+    /// The right eye's texture with `.separateEyes` (the left is `CapturedFrame.texture`).
+    public let rightTexture: UnsafeMutableRawPointer?
+    /// The auxiliary (depth) texture, its DXGI format and size.
+    public let auxTexture: UnsafeMutableRawPointer?
+    public let auxFormat: UInt32
+    public let auxWidth: Int
+    public let auxHeight: Int
+    /// The DXGI format of the picture.
+    public let imageFormat: UInt32
+    /// The producer's side data (v3 side-data TLVs), to send with this frame.
+    public let sideData: [UInt8]
+
+    init(_ info: lw_frame_source_info) {
+        generation = info.generation
+        switch Int32(info.format.layout) {
+        case LW_FS_LAYOUT_STEREO_SIDE_BY_SIDE: layout = .sideBySide
+        case LW_FS_LAYOUT_STEREO_SEPARATE: layout = .separateEyes
+        default: layout = .mono
+        }
+        rightTexture = info.textures.1
+        auxTexture = info.textures.2
+        auxFormat = info.format.aux_format
+        auxWidth = Int(info.format.aux_width)
+        auxHeight = Int(info.format.aux_height)
+        imageFormat = info.format.image_format
+        sideData = info.side_data_size == 0 ? []
+            : Array(UnsafeBufferPointer(start: info.side_data, count: Int(info.side_data_size)))
+    }
+}
+
+/// What the host tells a producer each display frame (lw_fs_host_state):
+/// the latest predicted head pose, eye geometry, gaze and pacing.
+public struct ExternalHostState: Sendable {
+    public struct Pose: Sendable {
+        public var position: SIMD3<Float> = .zero
+        public var orientation: SIMD4<Float> = SIMD4(0, 0, 0, 1) // x, y, z, w
+        public init() {}
+    }
+    public struct FieldOfView: Sendable {
+        public var left: Float = 0, right: Float = 0, up: Float = 0, down: Float = 0 // tangents
+        public init() {}
+    }
+    public var poseSequence: UInt64 = 0
+    public var poseDisplayTicks: Int64 = 0
+    public var spaceEpoch: UInt32 = 0
+    public var head: Pose?
+    public var eyeOffsets = (Pose(), Pose())
+    public var eyeFieldsOfView = (FieldOfView(), FieldOfView())
+    public var gaze: (direction: SIMD3<Float>, distance: Float, ticks: Int64)?
+    public var refreshMillihertz: UInt32 = 0
+    public var nextFrameStartTicks: Int64 = 0
+    public init() {}
+
+    var raw: lw_fs_host_state {
+        func pose(_ p: Pose) -> lw_fs_pose {
+            lw_fs_pose(position: (p.position.x, p.position.y, p.position.z),
+                       orientation: (p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w))
+        }
+        func fov(_ f: FieldOfView) -> lw_fs_fov { lw_fs_fov(left: f.left, right: f.right, up: f.up, down: f.down) }
+        var s = lw_fs_host_state()
+        s.pose_sequence = poseSequence
+        s.pose_display_qpc = poseDisplayTicks
+        s.space_epoch = spaceEpoch
+        if let head {
+            s.pose_valid = 1
+            s.head = pose(head)
+            s.eye_offset = (pose(eyeOffsets.0), pose(eyeOffsets.1))
+            s.eye_fov = (fov(eyeFieldsOfView.0), fov(eyeFieldsOfView.1))
+        }
+        if let gaze {
+            s.gaze_valid = 1
+            s.gaze_direction = (gaze.direction.x, gaze.direction.y, gaze.direction.z)
+            s.gaze_distance = gaze.distance
+            s.gaze_qpc = gaze.ticks
+        }
+        s.refresh_millihz = refreshMillihertz
+        s.next_frame_start_qpc = nextFrameStartTicks
+        s.written_qpc = HostClock.now()
+        return s
+    }
+}
+
+/// Frames another process renders (an in-game depth component, a VR
+/// compositor), delivered like captured frames: lw_frame_source.h.
+public final class ExternalFrameSource: @unchecked Sendable {
+    public struct Statistics: Sendable {
+        public let attached: Bool
+        public let producerPID: UInt32
+        public let generation: UInt64
+        public let attaches, refusals, detaches, producerExits: UInt64
+        public let lastRefusal: UInt32
+        public let delivered, fenceTimeouts: UInt64
+        /// This generation's ring, from the shared section.
+        public let submitted, superseded, starved, consumed, dropped: UInt64
+    }
+
+    private final class Sink {
+        let handler: @Sendable (CapturedFrame) -> Void
+        init(_ handler: @escaping @Sendable (CapturedFrame) -> Void) { self.handler = handler }
+    }
+
+    private let raw: Mutex<OpaquePointer?>
+    private let sink: Unmanaged<Sink>
+    private let device: GraphicsDevice
+
+    /// Listens on `channel`. `onFrame` runs on the source's thread; hand the
+    /// frame off, and let it go only once the GPU is done with it (after the
+    /// encode). `producerSID` grants one more account access (a host running
+    /// as SYSTEM names the signed-in user).
+    public init(device: GraphicsDevice, channel: String, producerSID: String? = nil,
+                onFrame: @escaping @Sendable (CapturedFrame) -> Void) throws {
+        self.device = device
+        let sink = Unmanaged.passRetained(Sink(onFrame))
+        var source: OpaquePointer?
+        let status = channel.withCString { channelName in
+            withOptionalCString(producerSID) { sid in
+                var params = lw_frame_source_params(channel: channelName, producer_sid: sid)
+                return lw_frame_source_start(device.raw, &params, { context, frame in
+                    guard let context, let frame else { return }
+                    Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue().handler(CapturedFrame(frame))
+                }, sink.toOpaque(), &source)
+            }
+        }
+        do {
+            try check(status, "lw_frame_source_start")
+        } catch {
+            sink.release()
+            throw error
+        }
+        self.sink = sink
+        raw = Mutex(source)
+    }
+
+    /// Publishes the state the producer reads. Any thread.
+    public func publish(_ state: ExternalHostState) {
+        var s = state.raw
+        raw.withLock { source in
+            if let source { lw_frame_source_publish(source, &s) }
+        }
+    }
+
+    public var statistics: Statistics {
+        raw.withLock { source in
+            var s = lw_frame_source_stats()
+            if let source { lw_frame_source_get_stats(source, &s) }
+            return Statistics(attached: s.attached != 0, producerPID: s.producer_pid, generation: s.generation,
+                              attaches: s.attaches, refusals: s.refusals, detaches: s.detaches,
+                              producerExits: s.producer_exits, lastRefusal: s.last_refusal, delivered: s.delivered,
+                              fenceTimeouts: s.fence_timeouts, submitted: s.submitted, superseded: s.superseded,
+                              starved: s.starved, consumed: s.consumed, dropped: s.dropped)
+        }
+    }
+
+    /// Stops listening; returns once no frame callback is running. Idempotent.
+    public func stop() {
+        let source = raw.withLock { value -> OpaquePointer? in
+            defer { value = nil }
+            return value
+        }
+        guard let source else { return }
+        lw_frame_source_stop(source)
+        sink.release()
+    }
+
+    deinit { stop() }
+}
+
+func withOptionalCString<R>(_ string: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    guard let string else { return body(nil) }
+    return string.withCString { body($0) }
 }
 
 // MARK: - Encoder

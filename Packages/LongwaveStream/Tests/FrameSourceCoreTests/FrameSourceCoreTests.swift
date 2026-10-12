@@ -168,6 +168,16 @@ final class FrameSourceHandshakeTests: XCTestCase {
         XCTAssertEqual(lw_fs_producer_begin_request(section.raw), 1)
     }
 
+    func testHostReclaimsAHandshakeADeadProducerLeft() {
+        let section = Section()
+        lw_fs_host_open(section.raw, 100)
+        XCTAssertEqual(lw_fs_producer_begin_request(section.raw), 1) // and then the producer dies
+        XCTAssertEqual(lw_fs_host_reclaim(section.raw, UInt32(LW_FS_ATTACH_REFUSED)), 0, "not in that state")
+        XCTAssertEqual(lw_fs_host_reclaim(section.raw, UInt32(LW_FS_ATTACH_ATTACHED)), 0, "never an attach")
+        XCTAssertEqual(lw_fs_host_reclaim(section.raw, UInt32(LW_FS_ATTACH_WRITING)), 1)
+        XCTAssertEqual(lw_fs_producer_begin_request(section.raw), 1)
+    }
+
     func testCancelWhenNoHostAnswers() {
         let section = Section()
         XCTAssertEqual(lw_fs_producer_begin_request(section.raw), 1)

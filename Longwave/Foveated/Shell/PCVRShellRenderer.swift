@@ -140,6 +140,12 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     /// shared with the next run (each run has its own mailbox and producer).
     func stop() {
         isStopped.withLock { $0 = true }
+        // World tracking ends now, not when the loop next runs: a loop blocked in
+        // a paused layer's `waitUntilRunning` would otherwise keep it going beside
+        // the next session's. `ARKitSession` is Sendable, so this is safe from the
+        // main actor while the render thread waits; a later query just returns no
+        // anchor, and the loop's own `stop()` on exit is then a no-op.
+        arSession.stop()
     }
 
     // MARK: Loop

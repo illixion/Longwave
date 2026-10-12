@@ -51,7 +51,7 @@ final class DepthScreenFeed {
 
     /// A decoded depth frame with its `depthRange` side data. The sample
     /// encoding follows from the pixel format unless given.
-    func submit(depth pixelBuffer: CVPixelBuffer, range: DepthRange, frameNumber: UInt32, encoding: DepthSampleEncoding? = nil) {
+    func submit(depth pixelBuffer: CVPixelBuffer, range: DepthScreenRange, frameNumber: UInt32, encoding: DepthSampleEncoding? = nil) {
         guard let depth = makeDepth(pixelBuffer, range: range, encoding: encoding) else { return }
         deliver(pairer.receive(depth: depth, frameNumber: frameNumber))
     }
@@ -94,7 +94,7 @@ final class DepthScreenFeed {
         onFrame?(DepthScreenFrame(frameNumber: pair.frameNumber, colour: pair.picture, depth: depth, source: source))
     }
 
-    private func makeDepth(_ pixelBuffer: CVPixelBuffer, range: DepthRange, encoding: DepthSampleEncoding?) -> DepthScreenDepth? {
+    private func makeDepth(_ pixelBuffer: CVPixelBuffer, range: DepthScreenRange, encoding: DepthSampleEncoding?) -> DepthScreenDepth? {
         let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
         guard let textureCache, let pixelFormat = Self.metalFormat(for: format),
               let encoding = encoding ?? DepthSampleEncoding(pixelFormat: format) else {

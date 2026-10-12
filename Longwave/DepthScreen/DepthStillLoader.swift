@@ -25,14 +25,14 @@ nonisolated struct DepthStillSidecar: Codable, Equatable, Sendable {
     /// for linear), as a reversed-Z buffer dumped raw does.
     var reversed: Bool?
 
-    var range: DepthRange {
-        DepthRange(near: near ?? 0.1, far: far ?? .infinity, convergence: convergence)
+    var range: DepthScreenRange {
+        DepthScreenRange(near: near ?? 0.1, far: far ?? .infinity, convergence: convergence)
     }
 }
 
 /// Grey levels (0…1) to the normalised inverse depth the renderer reads.
 nonisolated enum DepthStillConversion {
-    static func inverseDepth(samples: [Float], encoding: DepthStillEncoding, reversed: Bool, range: DepthRange) -> [Float] {
+    static func inverseDepth(samples: [Float], encoding: DepthStillEncoding, reversed: Bool, range: DepthScreenRange) -> [Float] {
         samples.map { raw in
             let sample = reversed ? 1 - raw : raw
             switch encoding {
@@ -58,7 +58,7 @@ nonisolated enum DepthStillLoader {
         let colour: CVPixelBuffer
         /// `OneComponent32Float`, normalised inverse depth.
         let depth: CVPixelBuffer
-        let range: DepthRange
+        let range: DepthScreenRange
     }
 
     enum LoadError: LocalizedError {

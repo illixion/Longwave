@@ -14,7 +14,7 @@ extension AppLog {
 struct DepthScreenDepth {
     let texture: MTLTexture
     let encoding: DepthSampleEncoding
-    let range: DepthRange
+    let range: DepthScreenRange
     /// Keeps a decoder surface alive while its texture is in use.
     let keepAlive: AnyObject?
 
@@ -178,7 +178,7 @@ final class DepthScreenRenderer {
               let commandBuffer = queue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
 
-        let range = depth?.range ?? DepthRange.empty
+        let range = depth?.range ?? DepthScreenRange.empty
         let (valueScale, valueBias) = (depth?.encoding ?? .unitInterval).scaleBias
         var uniforms = DepthScreenMeshUniforms(
             columns: UInt32(grid.columns),

@@ -32,7 +32,9 @@ final class DepthSyntheticSource {
         /// The depth stream's resolution divisor: 2 (half) or 4 (quarter).
         var depthDivisor = 4
         var framesPerSecond = 60.0
-        var fullRangeDepth = false
+        /// Full range, as StreamWire's `DepthEncodingKind.inverseLinear` specifies;
+        /// off exercises a decoder that tags the stream video range.
+        var fullRangeDepth = true
         var verticalFieldOfView: Float = 60
         var near: Float = 0.1
         var far: Float = 60
@@ -135,7 +137,7 @@ final class DepthSyntheticSource {
 
         frameNumber &+= 1
         let number = frameNumber
-        let range = DepthRange(near: config.near, far: config.far, convergence: config.convergence, isEmpty: emptyDepth)
+        let range = DepthScreenRange(near: config.near, far: config.far, convergence: config.convergence, isEmpty: emptyDepth)
         let dropDepth = Double.random(in: 0..<1) < depthDropRate
         let depthFirst = Bool.random()
         let encoding: DepthSampleEncoding = config.fullRangeDepth ? .fullRange10 : .videoRange10

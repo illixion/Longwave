@@ -9,7 +9,7 @@ import XCTest
 /// §4.8): decoding depth samples, the relief mapping and its comfort bounds,
 /// the mesh grid, edge detection, and pairing frames by number.
 final class DepthScreenTests: XCTestCase {
-    private let gameRange = DepthRange(near: 0.1, far: 1000, convergence: 2.5)
+    private let gameRange = DepthScreenRange(near: 0.1, far: 1000, convergence: 2.5)
 
     // MARK: - Decode
 
@@ -23,7 +23,7 @@ final class DepthScreenTests: XCTestCase {
     }
 
     func testInfiniteFarPlaneDecodesZeroToInfinity() {
-        let range = DepthRange(near: 0.1, far: .infinity)
+        let range = DepthScreenRange(near: 0.1, far: .infinity)
         XCTAssertEqual(range.distance(normalized: 0), .infinity)
         XCTAssertEqual(range.distance(normalized: 0.5), 0.2, accuracy: 1e-6)
         XCTAssertEqual(range.normalized(distance: 1), 0.1, accuracy: 1e-6)
@@ -98,7 +98,7 @@ final class DepthScreenTests: XCTestCase {
     func testConvergencePrefersOverrideThenProfileThenFallback() {
         var settings = DepthScreenSettings()
         XCTAssertEqual(settings.convergence(for: gameRange), 2.5)
-        XCTAssertEqual(settings.convergence(for: DepthRange(near: 0.1, far: 100)), DepthScreenSettings.fallbackConvergence)
+        XCTAssertEqual(settings.convergence(for: DepthScreenRange(near: 0.1, far: 100)), DepthScreenSettings.fallbackConvergence)
         settings.convergenceOverride = 4
         XCTAssertEqual(settings.convergence(for: gameRange), 4)
         settings.convergenceOverride = 0.01
@@ -273,7 +273,7 @@ final class DepthScreenTests: XCTestCase {
     // MARK: - Stills
 
     func testStillConversionHandlesEachEncoding() {
-        let range = DepthRange(near: 1, far: 11)
+        let range = DepthScreenRange(near: 1, far: 11)
         XCTAssertEqual(DepthStillConversion.inverseDepth(samples: [0.25], encoding: .inverse, reversed: false, range: range), [0.25])
         XCTAssertEqual(DepthStillConversion.inverseDepth(samples: [0.25], encoding: .inverse, reversed: true, range: range), [0.75])
         let linear = DepthStillConversion.inverseDepth(samples: [0, 1, 0.1], encoding: .linear, reversed: false, range: range)
@@ -303,7 +303,7 @@ final class DepthScreenTests: XCTestCase {
         try Data(#"{"near": 0.5, "far": 50, "convergence": 3, "reversed": true}"#.utf8).write(to: sidecar)
 
         let still = try DepthStillLoader.load([colour, depth, sidecar])
-        XCTAssertEqual(still.range, DepthRange(near: 0.5, far: 50, convergence: 3))
+        XCTAssertEqual(still.range, DepthScreenRange(near: 0.5, far: 50, convergence: 3))
         XCTAssertEqual(CVPixelBufferGetWidth(still.colour), 8)
         XCTAssertEqual(CVPixelBufferGetPixelFormatType(still.depth), kCVPixelFormatType_OneComponent32Float)
         CVPixelBufferLockBaseAddress(still.depth, .readOnly)

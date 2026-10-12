@@ -15,7 +15,14 @@ import Foundation
 ///
 /// Units are whatever the game's camera uses; only ratios matter to the
 /// headset, so metres are assumed for defaults but nothing depends on it.
-nonisolated struct DepthRange: Equatable, Sendable {
+///
+/// The renderer's own copy of `StreamWire.DepthRange` (branch `v3-wire`), with
+/// the same fields: when the feed is wired to the Native stream it is built
+/// from that — `.planes(near, far, convergence)` field for field, with a wire
+/// convergence of 0 ("no suggestion") becoming nil, and `.empty` becoming
+/// `.empty`. Named apart so the two can't be confused once the app imports
+/// StreamWire.
+nonisolated struct DepthScreenRange: Equatable, Sendable {
     var near: Float
     /// `.infinity` for an infinite far plane (common with reversed Z).
     var far: Float
@@ -31,7 +38,7 @@ nonisolated struct DepthRange: Equatable, Sendable {
         self.isEmpty = isEmpty
     }
 
-    static let empty = DepthRange(near: 0.1, far: .infinity, isEmpty: true)
+    static let empty = DepthScreenRange(near: 0.1, far: .infinity, isEmpty: true)
 
     /// Wire encoding (§4.8): `v = (1/z − 1/far) / (1/near − 1/far)`, so 1 is
     /// the near plane, 0 the far plane, and `v` is linear in inverse depth —
@@ -161,7 +168,7 @@ nonisolated struct DepthScreenSettings: Equatable, Sendable {
     /// Used when neither the user nor the game's profile names a convergence.
     static let fallbackConvergence: Float = 2
 
-    func convergence(for range: DepthRange) -> Float {
+    func convergence(for range: DepthScreenRange) -> Float {
         let suggested = convergenceOverride ?? range.convergence ?? Self.fallbackConvergence
         return min(max(suggested, range.near), range.far.isFinite ? range.far : .greatestFiniteMagnitude)
     }
@@ -186,7 +193,7 @@ nonisolated enum DepthScreenGeometry {
     /// Normalising by the near/far range instead would hand nearly all of the
     /// relief to the first metre in front of a game camera with a 0.1 m near
     /// plane and leave the world beyond it flat.
-    static func relief(normalized v: Float, range: DepthRange, convergence: Float, popOutLimit: Float) -> Float {
+    static func relief(normalized v: Float, range: DepthScreenRange, convergence: Float, popOutLimit: Float) -> Float {
         let inverse = range.metricInverseDepth(normalized: v)
         let r = inverse * convergence - 1
         guard r > 0 else { return max(r, -1) }

@@ -1,7 +1,11 @@
 // swift-tools-version: 6.0
 // LongwaveStream - the portable v3 stream core (NATIVE_V3_PROTOCOL.md section 7.1).
 //
-// Today this holds the Phase 2 go/no-go spike (2026-10-04):
+// Today this holds the first Phase 1 module and the Phase 2 go/no-go spike
+// (2026-10-04):
+//   core     StreamWire         v3 wire types (frames, shard headers, format,
+//            StreamWireTests    side data, input, STATE, capabilities);
+//                               Foundation-free, builds on every platform
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows)
 //            StreamHostWindows  its Swift side
 //   spike    StreamSpikeWire, longwave-host-spike, stream-spike-receiver,
@@ -14,10 +18,13 @@
 import PackageDescription
 
 var products: [Product] = [
+    .library(name: "StreamWire", targets: ["StreamWire"]),
     .executable(name: "stream-spike-receiver", targets: ["stream-spike-receiver"]),
 ]
 
 var targets: [Target] = [
+    .target(name: "StreamWire"),
+    .testTarget(name: "StreamWireTests", dependencies: ["StreamWire"]),
     .target(name: "StreamSpikeWire"),
     .executableTarget(name: "stream-spike-receiver", dependencies: ["StreamSpikeWire"]),
     .testTarget(

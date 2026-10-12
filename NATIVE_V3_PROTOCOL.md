@@ -1020,12 +1020,17 @@ handoff per frame: *measured* at under 0.01 ms p99 added at 90 Hz
 *Built (2026-10-12), in `Packages/LongwaveStream`:*
 
 - `CFrameSourceCore/include/lw_frame_source_layout.h` is the contract: one
-  named section (9,280 bytes, `LW_FS_VERSION` 1, layout `static_assert`ed) with
+  named section (9,280 bytes, `LW_FS_VERSION` 2, layout `static_assert`ed) with
   the attach handshake, up to eight slots (state word, fence value, frame
   number, submit time, up to 1 KB of opaque side-data TLVs each) and a
   seqlocked host state (head pose with display time and space epoch, eye
   offsets and fields of view, gaze with a valid flag, refresh rate, next frame
-  start). The layout (one texture, side by side, or one per eye, plus an
+  start). Its conventions are StreamWire's (§4.7): poses laid out as `XrPosef`
+  (orientation, then position), fields of view as `XrFovf` (signed angles in
+  radians, left and down negative), and a u32 pose sequence compared with
+  wrap-aware serial-number order (`lw_fs_serial_newer`, StreamWire's
+  `SerialNumber.isNewer`). Version 2 made those changes; version 1 had
+  position-first poses, tangent fields of view and a u64 sequence. The layout (one texture, side by side, or one per eye, plus an
   optional depth texture) and the formats are declared at attach.
   `CFrameSourceCore` also holds every state transition, portable, so its tests
   run on the Mac as well as Windows.
@@ -1059,6 +1064,23 @@ handoff per frame: *measured* at under 0.01 ms p99 added at 90 Hz
 - *Lifetimes.* The host waits on the producer's process handle, so a producer
   crash ends its attach at once. The producer holds a `SYNCHRONIZE` handle to
   the host, so it sees a host crash on its next acquire and attaches again.
+  `lw_frame_source_stop` may be called from the frame callback, which runs on
+  the source's own thread; a Swift handler that drops the last reference to
+  the source does the same. The call then returns at once, no callback follows
+  the current one, and the thread finishes the teardown itself. Joining from
+  that thread would have thrown across the C ABI.
+- *The host trusts nothing in the section.* A producer, possibly at a lower
+  integrity level, can write any byte of it, bypassing the producer API's
+  checks. So the host keeps its own copies of the validated format, the slot
+  count, the generation counter and the ring position (`lw_fs_host_ring`). It
+  reads each producer-written field once (`lw_fs_host_snapshot`) and copies the
+  side data into the frame. A side data size over 1 KB, a fence value that
+  doesn't rise, or a fence that never arrives within 1 s is a producer fault:
+  the frame is dropped and that producer's attach ends. A code review found
+  that version 1 copied `side_data_size` bytes straight from the slot, so a
+  rogue producer could make the host read gigabytes past the mapped view.
+  Version 1 also took its slot count from the section, so a producer could
+  point the host at slots that have no textures.
 
 *Measured (2026-10-12, `gaming-pc`: Windows 10 22H2, RTX 3080 on driver 610.88,
 hardware GPU scheduling off (registry default), both processes in the
@@ -1099,8 +1121,14 @@ GPU at about 70% (`gpu-load`), which raises clocks the way a game does.
   generation 2. A host stopped, or killed and restarted at once, was seen by
   the producer within a frame, and it re-attached. NVENC registers and encodes
   the shared texture with no change to the encoder.
-  `StreamHostWindowsTests` (8 cases, in one process) and `FrameSourceCoreTests`
-  (21) pass on the PC; the latter also on the Mac.
+  `StreamHostWindowsTests` (13 cases in one process, including a forged side
+  data size, a forged fence value, a raised slot count, and stopping from the
+  callback) and `FrameSourceCoreTests` (26) pass on the PC; the latter also
+  pass on the Mac.
+- *With a real game sharing the GPU* (Cyberpunk 2077 running on the PC during
+  a later 40 s run, plus the load process): both columns slow alike,
+  in-process 2.689 ms and cross-process 2.684 ms p99 present → encode start.
+  The handoff stays invisible; the game's contention sets the number.
 - *Not measured or not verified:* hardware-accelerated GPU scheduling on;
   Windows 11; a real game as the producer (the depth component and its
   per-frame `Flush` in a game's render thread); a producer at a different

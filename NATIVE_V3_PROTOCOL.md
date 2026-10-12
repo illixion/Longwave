@@ -1074,13 +1074,31 @@ handoff per frame: *measured* at under 0.01 ms p99 added at 90 Hz
   checks. So the host keeps its own copies of the validated format, the slot
   count, the generation counter and the ring position (`lw_fs_host_ring`). It
   reads each producer-written field once (`lw_fs_host_snapshot`) and copies the
-  side data into the frame. A side data size over 1 KB, a fence value that
-  doesn't rise, or a fence that never arrives within 1 s is a producer fault:
-  the frame is dropped and that producer's attach ends. A code review found
-  that version 1 copied `side_data_size` bytes straight from the slot, so a
-  rogue producer could make the host read gigabytes past the mapped view.
-  Version 1 also took its slot count from the section, so a producer could
-  point the host at slots that have no textures.
+  side data into the frame. These are producer faults: the frame is dropped,
+  that producer's attach ends, and `producer_faults` counts it.
+  - a side data size over 1 KB;
+  - a fence value no higher than the last delivered frame's;
+  - a submit sequence more than `lw_fs_sequence_window` ahead of the last
+    frame taken. The window is the slot count, plus 64, plus 10 per
+    millisecond since that take, which is ten times any display-paced
+    producer. Without the bound, one forged huge sequence froze delivery for
+    the rest of the attach;
+  - the fence forced to `UINT64_MAX`, the value D3D also uses for a removed
+    device. The host tells the two apart by asking its own device
+    (`GetDeviceRemovedReason`). If the host's device really was removed, that
+    is `host_device_lost`, not a fault.
+  - a fence that hasn't moved through 3 consecutive 1 s timeouts. A single
+    timeout only drops that frame, and the attach carries on. A game stalling
+    on shader compiles or level loads delays its next submit, never a fence
+    value it already submitted. And Windows resets a GPU stuck on one piece of
+    work past TdrDelay (2 s by default), so after 3 s an honest producer's
+    fence has moved or its device was reset.
+
+  A code review found that version 1 copied `side_data_size` bytes straight
+  from the slot, so a rogue producer could make the host read gigabytes past
+  the mapped view. Version 1 also took its slot count from the section, so a
+  producer could point the host at slots that have no textures. A second
+  review found the fence and sequence cases above.
 
 *Measured (2026-10-12, `gaming-pc`: Windows 10 22H2, RTX 3080 on driver 610.88,
 hardware GPU scheduling off (registry default), both processes in the
@@ -1121,10 +1139,13 @@ GPU at about 70% (`gpu-load`), which raises clocks the way a game does.
   generation 2. A host stopped, or killed and restarted at once, was seen by
   the producer within a frame, and it re-attached. NVENC registers and encodes
   the shared texture with no change to the encoder.
-  `StreamHostWindowsTests` (13 cases in one process, including a forged side
-  data size, a forged fence value, a raised slot count, and stopping from the
-  callback) and `FrameSourceCoreTests` (26) pass on the PC; the latter also
-  pass on the Mac.
+  `FrameSourceCoreTests` (30, on the Mac) pass. `StreamHostWindowsTests` (13
+  cases) passed on the PC before the second review's fixes. Its updated
+  version (16 cases: a single and a persistent fence stall, the fence forced
+  to `UINT64_MAX`, a forged sequence) is written but *not yet built or run*:
+  the PC was in use. The
+  same scenarios, driven through the C API by a scratch program, passed three
+  times on `winvm`'s VMware GPU, and all the Windows C++ compiles with MSVC.
 - *With a real game sharing the GPU* (Cyberpunk 2077 running on the PC during
   a later 40 s run, plus the load process): both columns slow alike,
   in-process 2.689 ms and cross-process 2.684 ms p99 present → encode start.
@@ -1137,7 +1158,13 @@ GPU at about 70% (`gpu-load`), which raises clocks the way a game does.
   same-integrity runs happened); D3D12 or Vulkan producers (they can open the
   same NT handles, but no producer library exists for them); formats other
   than BGRA8 into the encoder (NVENC takes BGRA8 today, so 10-bit, HDR and
-  depth need a conversion pass first); TDR and device removal mid-stream.
+  depth need a conversion pass first); TDR and device removal mid-stream,
+  including whether a *producer's* device removal can make the shared fence
+  read `UINT64_MAX` on the host (it would count as a producer fault).
+  `lw_capture_stop` has the stop-from-callback hazard the frame source had.
+  Called from a capture callback, it joins its own thread (DXGI
+  duplication) and takes the delivery mutex that the running callback
+  already holds. It isn't fixed yet.
 
 Why: Swift on Windows is proven here only for headless engine code (Oneiros'
 engine suite on Swift 6.2.4 on `gaming-pc`; its

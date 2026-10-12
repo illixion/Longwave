@@ -1,4 +1,5 @@
 module CStreamWin {
     header "lw_stream.h"
+    header "lw_frame_source.h"
     export *
 }

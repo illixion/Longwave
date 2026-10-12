@@ -1,6 +1,8 @@
 # Builds, tests or packages LongwaveStream on Windows x64.
 #
-#   scripts\windows.ps1 -Action Build|Test|Package [-Strip] [-StaticStdlib] [-Out <dir>]
+#   scripts\windows.ps1 -Action Build|Release|Test|Package [-Strip] [-StaticStdlib] [-Out <dir>]
+#
+# Release builds everything optimised (frame-source-spike latency runs need it).
 #
 # -Strip builds without debug info. SwiftPM's release configuration embeds
 # DWARF in the .exe on Windows (measured: 15.5 MB of a 19.3 MB exe); a shipping
@@ -18,7 +20,7 @@
 # registry, then enter the Visual Studio x64 developer shell for link.exe,
 # the Windows SDK libraries and dumpbin.
 param(
-    [ValidateSet('Build', 'Test', 'Package')]
+    [ValidateSet('Build', 'Release', 'Test', 'Package')]
     [string]$Action = 'Build',
     [switch]$StaticStdlib,
     [switch]$Strip,
@@ -52,6 +54,7 @@ if ($Strip) {
 
 switch ($Action) {
     'Build' { & swift build @buildArgs; exit $LASTEXITCODE }
+    'Release' { & swift build -c release @buildArgs; exit $LASTEXITCODE }
     'Test' { & swift test @buildArgs; exit $LASTEXITCODE }
 }
 

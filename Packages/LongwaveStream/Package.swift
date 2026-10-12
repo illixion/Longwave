@@ -6,12 +6,17 @@
 //   core     StreamWire         v3 wire types (frames, shard headers, format,
 //            StreamWireTests    side data, input, STATE, capabilities);
 //                               Foundation-free, builds on every platform
-//   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows)
+//   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
+//                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
+//            CFrameSourceCore   the external frame source's shared-memory layout and
+//                                 protocol (section 7.2), portable so it is tested everywhere
 //   spike    StreamSpikeWire, longwave-host-spike, stream-spike-receiver,
 //            StreamSpikeTests   - a throwaway packetizer and test tools, to be
 //                                 replaced by the Phase 1 core (StreamWire,
 //                                 StreamTransport, ...).
+//   spike    frame-source-spike - synthetic producer and latency harness for the
+//                                 external frame source (open question 18)
 //
 // Windows-only targets exist only when the manifest is evaluated on Windows,
 // so the package resolves and builds on macOS and Linux without them.
@@ -25,6 +30,8 @@ var products: [Product] = [
 var targets: [Target] = [
     .target(name: "StreamWire"),
     .testTarget(name: "StreamWireTests", dependencies: ["StreamWire"]),
+    .target(name: "CFrameSourceCore"),
+    .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),
     .executableTarget(name: "stream-spike-receiver", dependencies: ["StreamSpikeWire"]),
     .testTarget(
@@ -35,12 +42,19 @@ var targets: [Target] = [
 
 #if os(Windows)
 products.append(.executable(name: "longwave-host-spike", targets: ["longwave-host-spike"]))
+products.append(.executable(name: "frame-source-spike", targets: ["frame-source-spike"]))
 targets += [
     .target(
         name: "CStreamWin",
+        dependencies: ["CFrameSourceCore"],
         exclude: ["third_party/nvenc/README.md"],
         cxxSettings: [
             .headerSearchPath("third_party/nvenc"),
+            // Include CFrameSourceCore's headers textually. Without this, clang
+            // (6.2.4 toolchain, explicit module maps, no implicit modules) refuses a
+            // C++ #include of another target's modular header: "module
+            // 'CFrameSourceCore' is needed but has not been provided".
+            .unsafeFlags(["-fmodule-name=CFrameSourceCore"]),
             .define("WIN32_LEAN_AND_MEAN"),
             .define("NOMINMAX"),
             .define("UNICODE"),
@@ -54,9 +68,12 @@ targets += [
             .linkedLibrary("avrt"),       // MMCSS thread priorities
             .linkedLibrary("winmm"),      // timeBeginPeriod
             .linkedLibrary("user32"),
+            .linkedLibrary("advapi32"),   // security descriptors for the frame source's named objects
         ]
     ),
     .target(name: "StreamHostWindows", dependencies: ["CStreamWin"]),
+    .executableTarget(name: "frame-source-spike", dependencies: ["CStreamWin"]),
+    .testTarget(name: "StreamHostWindowsTests", dependencies: ["StreamHostWindows", "CStreamWin"]),
     .executableTarget(
         name: "longwave-host-spike",
         dependencies: [

@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 
+#include "lw_frame_source.h"
 #include "lw_stream.h"
 
 namespace lw {
@@ -66,6 +67,19 @@ void leave_mmcss(HANDLE handle);
 void precise_sleep(int64_t microseconds);
 
 } // namespace lw
+
+// The concrete type behind lw_frame. Each source derives from it; deleting a
+// frame (lw_frame_release) runs the source's destructor, which gives its slot
+// back.
+struct lw_frame {
+    lw_frame_info info{};
+    lw_frame() = default;
+    lw_frame(const lw_frame &) = delete;
+    lw_frame &operator=(const lw_frame &) = delete;
+    virtual ~lw_frame() = default;
+    // Non-NULL for frames from an external frame source.
+    virtual const lw_frame_source_info *source_info() const { return nullptr; }
+};
 
 // The concrete type behind lw_device.
 struct lw_device {

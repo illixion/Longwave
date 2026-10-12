@@ -275,4 +275,6 @@ extern "C" void lw_device_get_info(const lw_device *device, lw_device_info *out)
     if (device && out) *out = device->info;
 }
 
+extern "C" void *lw_device_get_d3d11(const lw_device *device) { return device ? device->device.get() : nullptr; }
+
 extern "C" void lw_device_release(lw_device *device) { delete device; }

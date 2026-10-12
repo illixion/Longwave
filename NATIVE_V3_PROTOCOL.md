@@ -25,12 +25,15 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   optional depth stream that turns a flat game into 3D on the headset (§4.8).
   Both rest on two general mechanisms, frame side data and auxiliary streams
   (§4.2), which land in Phase 1 with the core.
-- **`StreamWire` built (2026-10-12, branch `v3-wire`).** The wire types of §4
+- **`StreamWire` built (2026-10-12).** The wire types of §4
   exist as a Foundation-free module in `Packages/LongwaveStream`, with golden
   byte vectors (the interop reference for the C++ side) and a fuzzed decoder.
   Writing them down settled the encoding details §4 left open, and each is
   noted in place, marked 2026-10-12. Questions that need measurement or a
   design decision are §9 items 19–21.
+- **External frame sources: built and measured (2026-10-12).** The
+  cross-process handoff that both of those use on Windows added 0.007 ms at
+  p99 at 90 Hz (pass mark 1 ms). See §7.2 and open question 18.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -1265,8 +1268,157 @@ or readback. Two producers use it:
 The contract is how the public/private line stays at the module boundary.
 Everything that streams is public and in this host. The private side only
 produces frames and never links the core. The cost is one cross-process GPU
-handoff per frame, expected well under a millisecond and to be measured first
-(open question 18).
+handoff per frame: *measured* at under 0.01 ms p99 added at 90 Hz
+(open question 18, and the result below).
+
+*Built (2026-10-12), in `Packages/LongwaveStream`:*
+
+- `CFrameSourceCore/include/lw_frame_source_layout.h` is the contract: one
+  named section (9,280 bytes, `LW_FS_VERSION` 2, layout `static_assert`ed) with
+  the attach handshake, up to eight slots (state word, fence value, frame
+  number, submit time, up to 1 KB of opaque side-data TLVs each) and a
+  seqlocked host state (head pose with display time and space epoch, eye
+  offsets and fields of view, gaze with a valid flag, refresh rate, next frame
+  start). Its conventions are StreamWire's (§4.7): poses laid out as `XrPosef`
+  (orientation, then position), fields of view as `XrFovf` (signed angles in
+  radians, left and down negative), and a u32 pose sequence compared with
+  wrap-aware serial-number order (`lw_fs_serial_newer`, StreamWire's
+  `SerialNumber.isNewer`). Version 2 made those changes; version 1 had
+  position-first poses, tangent fields of view and a u64 sequence. The layout (one texture, side by side, or one per eye, plus an
+  optional depth texture) and the formats are declared at attach.
+  `CFrameSourceCore` also holds every state transition, portable, so its tests
+  run on the Mac as well as Windows.
+- `CStreamWin/include/lw_frame_source.h` has the two APIs.
+  `lw_frame_producer_*` is what a game component or a compositor links: no
+  Swift runtime, four C++ files. `lw_frame_source_*` is the host side.
+  It delivers each frame as an ordinary `lw_frame` whose texture *is* the
+  shared slot texture, so it goes to `lw_encoder_encode` exactly like a WGC
+  frame (`ExternalFrameSource` in `StreamHostWindows` on the Swift side).
+- The host creates the textures and the fence on its own device. They are
+  `D3D11_RESOURCE_MISC_SHARED_NTHANDLE` textures and a `D3D11_FENCE_FLAG_SHARED`
+  `ID3D11Fence`. The producer opens them on its device; the host waits for the
+  fence value on the CPU (`SetEventOnCompletion`) before encoding.
+- *Handles, not names, for GPU objects.* D3D11 can open a shared texture by
+  name but has no way to open a shared fence by name (only D3D12 does). So the
+  host duplicates every handle into the producer's process and writes the
+  values into the section. Only the section and two events are named
+  (`Local\lw_frame_source.<channel>`, `.host`, `.producer`). Their security
+  descriptor is explicit:
+  `O:<host user>D:P(A;;GA;;;SY)(A;;GA;;;<host user>)S:(ML;;NW;;;LW)`, plus
+  optionally one more account. The low mandatory label lets a producer at
+  medium or low integrity open what an elevated host created. The owner lets a
+  restarted host tell its own section from a squatter's.
+- *Latest wins, in order.* With no free slot the producer reclaims its oldest
+  frame the host hasn't taken. The host takes the newest ready frame and drops
+  older ones. A frame older than the last one taken is never delivered: the
+  concurrent ring test caught exactly that reordering, once in about 25 runs,
+  before the fix. Every transition is one compare-and-swap on a word that
+  carries the attach generation, so a stale frame or detach can't touch a
+  newer ring.
+- *Lifetimes.* The host waits on the producer's process handle, so a producer
+  crash ends its attach at once. The producer holds a `SYNCHRONIZE` handle to
+  the host, so it sees a host crash on its next acquire and attaches again.
+  `lw_frame_source_stop` may be called from the frame callback, which runs on
+  the source's own thread; a Swift handler that drops the last reference to
+  the source does the same. The call then returns at once, no callback follows
+  the current one, and the thread finishes the teardown itself. Joining from
+  that thread would have thrown across the C ABI.
+- *The host trusts nothing in the section.* A producer, possibly at a lower
+  integrity level, can write any byte of it, bypassing the producer API's
+  checks. So the host keeps its own copies of the validated format, the slot
+  count, the generation counter and the ring position (`lw_fs_host_ring`). It
+  reads each producer-written field once (`lw_fs_host_snapshot`) and copies the
+  side data into the frame. These are producer faults: the frame is dropped,
+  that producer's attach ends, and `producer_faults` counts it.
+  - a side data size over 1 KB;
+  - a fence value no higher than the last delivered frame's;
+  - a submit sequence more than `lw_fs_sequence_window` ahead of the last
+    frame taken. The window is the slot count, plus 64, plus 10 per
+    millisecond since that take, which is ten times any display-paced
+    producer. Without the bound, one forged huge sequence froze delivery for
+    the rest of the attach;
+  - the fence forced to `UINT64_MAX`, the value D3D also uses for a removed
+    device. The host tells the two apart by asking its own device
+    (`GetDeviceRemovedReason`). If the host's device really was removed, that
+    is `host_device_lost`, not a fault.
+  - a fence that hasn't moved through 3 consecutive 1 s timeouts. A single
+    timeout only drops that frame, and the attach carries on. A game stalling
+    on shader compiles or level loads delays its next submit, never a fence
+    value it already submitted. And Windows resets a GPU stuck on one piece of
+    work past TdrDelay (2 s by default), so after 3 s an honest producer's
+    fence has moved or its device was reset.
+
+  A code review found that version 1 copied `side_data_size` bytes straight
+  from the slot, so a rogue producer could make the host read gigabytes past
+  the mapped view. Version 1 also took its slot count from the section, so a
+  producer could point the host at slots that have no textures. A second
+  review found the fence and sequence cases above.
+
+*Measured (2026-10-12, `gaming-pc`: Windows 10 22H2, RTX 3080 on driver 610.88,
+hardware GPU scheduling off (registry default), both processes in the
+console session, 90 Hz, 60–70 s per run, first second dropped):* the
+synthetic producer (`frame-source-spike produce`, spike-only) draws a panning
+noise picture with its frame number into the ring. The host
+(`frame-source-spike consume`) waits on the fence and encodes it with the
+Phase 2 encoder settings (HEVC, P1, ultra-low latency, 50 Mbit/s CBR, async).
+The baseline (`inprocess`) draws the same picture into a texture of the same
+description on the host's own device, waits on a local fence and encodes it
+the same way: everything but the handoff. "Load" is a third process holding the
+GPU at about 70% (`gpu-load`), which raises clocks the way a game does.
+
+| run (p50 / p99, ms) | present → fence reached | present → encode start | present → encoded |
+|---|---|---|---|
+| 1440p, idle GPU, in-process | 1.247 / 2.727 | 1.262 / 2.751 | 7.887 / 13.699 |
+| 1440p, idle GPU, cross-process | 1.142 / 2.175 | 1.154 / 2.666 | 7.936 / 13.734 |
+| 1440p, load, in-process | 0.471 / 0.997 | 0.485 / 1.013 | 3.556 / 4.615 |
+| 1440p, load, cross-process | 0.470 / 1.006 | 0.485 / 1.020 | 3.543 / 4.607 |
+| 3840×1920, load, in-process | 0.517 / 1.040 | 0.532 / 1.055 | 5.702 / 6.896 |
+| 3840×1920, load, cross-process | 0.521 / 1.049 | 0.534 / 1.063 | 5.649 / 6.812 |
+
+- **The handoff costs nothing measurable.** Present to encode start differs by
+  +0.007 ms (1440p) and +0.008 ms (3840×1920) at p99 under load, against a pass
+  mark of 1 ms. Idle runs are noisier than that in both directions. The
+  host's wake-up after the producer's submit takes 8 µs p50 and 14 µs p99.
+  "Fence reached" is dominated by the GPU executing the producer's own drawing
+  (a 15–30 MB copy here), which is the same in both columns.
+- Producer CPU per frame: acquire 1 µs, submit (fence signal, flush, publish)
+  60 µs p50 and 76 µs p99, almost all of it the `Flush`. Attach takes about
+  2 ms, a reattach under 1 ms.
+- *Checks that pass:* every frame's picture, depth texture (R32_FLOAT holding
+  the frame number) and side data read back and matched its slot (1,070 of
+  1,070 in a 12 s run, `--verify`). A WARP-adapter producer is refused with
+  `LW_FS_REFUSE_ADAPTER`. When the host held every frame for 2 s the producer
+  got `LW_E_BUSY` 179 times (2 s at 90 Hz), then carried on in the same attach.
+  A producer killed mid-stream was detected at once and a new one attached as
+  generation 2. A host stopped, or killed and restarted at once, was seen by
+  the producer within a frame, and it re-attached. NVENC registers and encodes
+  the shared texture with no change to the encoder.
+  `FrameSourceCoreTests` (30) pass on the Mac and on the PC.
+  `StreamHostWindowsTests` (16 cases in one process) passes on the PC. Its
+  cases include a forged side data size, a raised slot count, a single and a
+  persistent fence stall, the fence forced to `UINT64_MAX`, a forged
+  sequence, and stopping from the callback; 52 of 52 tests in all. The same
+  scenarios also passed through the C API on `winvm`'s VMware GPU, and the
+  Windows C++ compiles with MSVC as well as clang.
+- *With a real game sharing the GPU* (Cyberpunk 2077 running on the PC during
+  a later 40 s run, plus the load process): both columns slow alike,
+  in-process 2.689 ms and cross-process 2.684 ms p99 present → encode start.
+  The handoff stays invisible; the game's contention sets the number.
+- *Not measured or not verified:* hardware-accelerated GPU scheduling on;
+  Windows 11; a real game as the producer (the depth component and its
+  per-frame `Flush` in a game's render thread); a producer at a different
+  integrity level from the host, and a host running as SYSTEM with
+  `producer_sid` (the descriptor is built for both; only same-user,
+  same-integrity runs happened); D3D12 or Vulkan producers (they can open the
+  same NT handles, but no producer library exists for them); formats other
+  than BGRA8 into the encoder (NVENC takes BGRA8 today, so 10-bit, HDR and
+  depth need a conversion pass first); TDR and device removal mid-stream,
+  including whether a *producer's* device removal can make the shared fence
+  read `UINT64_MAX` on the host (it would count as a producer fault).
+  `lw_capture_stop` has the stop-from-callback hazard the frame source had.
+  Called from a capture callback, it joins its own thread (DXGI
+  duplication) and takes the delivery mutex that the running callback
+  already holds. It isn't fixed yet.
 
 Why: Swift on Windows is proven here only for headless engine code (Oneiros'
 engine suite on Swift 6.2.4 on `gaming-pc`; its
@@ -1970,12 +2122,14 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
     each frame is submitted with its true render pose. Translation since render
     and late frames are ours to handle. That is the hard part of the PCVR
     profile, and the reason to stress-test it early, not a reason to wait.
-18. **Cost of the external frame source handoff.** A fence wait on a shared
-    texture between two processes on one adapter should add well under a
-    millisecond, but it is unmeasured. The PCVR compositor is the case that
-    matters (90 Hz or more). The fallback if it isn't
-    small is to load the public host into the producer as a DLL. That keeps the
-    code public but adds the Swift runtime to that process.
+18. **Cost of the external frame source handoff.** *Answered (2026-10-12):
+    negligible.* Built as `lw_frame_source.h` and measured on `gaming-pc`
+    against an in-process baseline in the same harness (§7.2). At 90 Hz, with a
+    game-like GPU load, it added 0.007 ms at p99 between the producer's submit
+    and the encode start, at 1440p and at 3840×1920 alike, against a 1 ms pass
+    mark. The DLL-in-producer fallback isn't needed. Still open: HAGS on,
+    Windows 11, a real game as the producer, and mixed integrity levels
+    (listed under the §7.2 result).
 19. **Packet rate and pacing at 90 Hz stereo** (arithmetic from the shard
     layout, 2026-10-12). Assume a 3840×1920 HEVC stream at 150 Mbps and 90 fps.
     - **Frame size:** about 208 KB per frame, which is 183 data shards of

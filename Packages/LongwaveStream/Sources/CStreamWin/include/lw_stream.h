@@ -36,6 +36,8 @@ typedef int32_t lw_status;
 #define LW_E_ENCODER (-4)     /* NVENC returned an error */
 #define LW_E_ACCESS_LOST (-5) /* the capture source went away; start again */
 #define LW_E_BUSY (-6)
+#define LW_E_UNAVAILABLE (-7) /* nobody on the other end yet (no host listening) */
+#define LW_E_REFUSED (-8)     /* the other end refused (lw_frame_source.h) */
 
 const char *lw_last_error(void);
 
@@ -73,6 +75,8 @@ typedef struct lw_device_info {
  * NULL for the first hardware adapter. */
 lw_status lw_device_create(void *monitor, lw_device **out);
 void lw_device_get_info(const lw_device *device, lw_device_info *out);
+/* The ID3D11Device* itself, for code that renders on the shim's device. */
+void *lw_device_get_d3d11(const lw_device *device);
 void lw_device_release(lw_device *device);
 
 /* ---- Capture -------------------------------------------------------------- */
@@ -135,6 +139,24 @@ void lw_spike_gpu_load_stop(lw_gpu_load *load);
 
 const lw_frame_info *lw_frame_get_info(const lw_frame *frame);
 void lw_frame_release(lw_frame *frame);
+
+/* SPIKE ONLY: a test pattern for the external frame source measurements
+ * (frame-source-spike). On any D3D11 device. Drawing is GPU work only, on the
+ * device's immediate context: a panning noise background (so the encoder has
+ * real work), a moving bar, and the frame number as 32 black/white 16-pixel
+ * blocks along the top edge; `aux`, if given (R32_FLOAT), is cleared to the
+ * frame number. Both textures must be render targets at least 512 pixels wide. */
+typedef struct lw_spike_pattern lw_spike_pattern;
+lw_status lw_spike_pattern_create(void *d3d11_device, int32_t width, int32_t height, lw_spike_pattern **out);
+lw_status lw_spike_pattern_draw(lw_spike_pattern *pattern, void *texture, void *aux, uint64_t frame_number);
+/* Reads back what draw painted (blocks on the GPU; verification only). aux may be NULL. */
+lw_status lw_spike_pattern_read(lw_spike_pattern *pattern, void *texture, void *aux, uint32_t *out_frame_number,
+                                float *out_aux);
+void lw_spike_pattern_release(lw_spike_pattern *pattern);
+
+/* SPIKE ONLY: the frame-source-spike command line (produce, consume,
+ * inprocess, gpu-load); see spike_frame_source_tool.cpp. Returns the exit code. */
+int lw_spike_frame_source_tool(int argc, char **argv);
 
 /* ---- Video encoder (NVENC) ------------------------------------------------ */
 #define LW_CODEC_H264 1

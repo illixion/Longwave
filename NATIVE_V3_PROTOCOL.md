@@ -1139,13 +1139,13 @@ GPU at about 70% (`gpu-load`), which raises clocks the way a game does.
   generation 2. A host stopped, or killed and restarted at once, was seen by
   the producer within a frame, and it re-attached. NVENC registers and encodes
   the shared texture with no change to the encoder.
-  `FrameSourceCoreTests` (30, on the Mac) pass. `StreamHostWindowsTests` (13
-  cases) passed on the PC before the second review's fixes. Its updated
-  version (16 cases: a single and a persistent fence stall, the fence forced
-  to `UINT64_MAX`, a forged sequence) is written but *not yet built or run*:
-  the PC was in use. The
-  same scenarios, driven through the C API by a scratch program, passed three
-  times on `winvm`'s VMware GPU, and all the Windows C++ compiles with MSVC.
+  `FrameSourceCoreTests` (30) pass on the Mac and on the PC.
+  `StreamHostWindowsTests` (16 cases in one process) passes on the PC. Its
+  cases include a forged side data size, a raised slot count, a single and a
+  persistent fence stall, the fence forced to `UINT64_MAX`, a forged
+  sequence, and stopping from the callback; 52 of 52 tests in all. The same
+  scenarios also passed through the C API on `winvm`'s VMware GPU, and the
+  Windows C++ compiles with MSVC as well as clang.
 - *With a real game sharing the GPU* (Cyberpunk 2077 running on the PC during
   a later 40 s run, plus the load process): both columns slow alike,
   in-process 2.689 ms and cross-process 2.684 ms p99 present → encode start.

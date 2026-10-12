@@ -23,6 +23,13 @@ final class DepthScreenController {
     private(set) var stats = DepthScreenStats()
     @ObservationIgnored private var lastStatsPublish: CFTimeInterval = 0
 
+    /// For a new source: drops held frames and the renderer's fade, so
+    /// nothing of the previous source's depth is drawn under the new one.
+    func reset() {
+        feed.reset()
+        renderer.stop()
+    }
+
     init() {
         feed.onFrame = { [weak self] frame in self?.renderer.show(frame) }
         renderer.onStats = { [weak self] stats in

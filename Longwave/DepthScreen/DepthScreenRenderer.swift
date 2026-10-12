@@ -157,9 +157,14 @@ final class DepthScreenRenderer {
         updateMesh()
     }
 
+    /// Stops drawing and forgets the stream: the next frame, from whatever
+    /// source, starts flat and fades in, and the last frame's depth (and the
+    /// decoder surface behind it) is released.
     func stop() {
         fadeTask?.cancel()
         fadeTask = nil
+        fade.reset()
+        lastFrame = nil
     }
 
     // MARK: - Mesh

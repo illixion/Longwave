@@ -130,25 +130,36 @@ final class DepthScreenTests: XCTestCase {
         return DepthScreenGeometry.relief(normalized: v, range: gameRange, convergence: 2.5, popOutLimit: 0.35) * state.blend
     }
 
+    /// Steps `fade` at 60 fps from `start` for `seconds`; returns the end time.
+    @discardableResult
+    private func run(_ fade: inout DepthReliefFade<Float>, depth: Float?, from start: Double, for seconds: Double) -> Double {
+        var time = start
+        fade.advance(frameDepth: depth, at: time)
+        while time < start + seconds {
+            time += 1.0 / 60
+            fade.advance(frameDepth: depth, at: time)
+        }
+        return time
+    }
+
     /// A cutscene starting: the first frame without depth must stand where the
     /// last frame with depth stood (within one frame's fade step), not jump to
     /// the far plane and creep forward from there.
     func testFadeOutStartsFromTheLastRealRelief() {
         var fade = DepthReliefFade<Float>(duration: 0.35)
         let background = gameRange.normalized(distance: 10)   // relief −0.75
-        fade.advance(frameDepth: background, at: 0)
-        fade.advance(frameDepth: background, at: 1)
-        let last = fade.advance(frameDepth: background, at: 1.016)
+        let settled = run(&fade, depth: background, from: 0, for: 1)
+        let last = fade.advance(frameDepth: background, at: settled + 0.016)
         XCTAssertEqual(last.blend, 1)
-        let first = fade.advance(frameDepth: nil, at: 1.032)
+        let first = fade.advance(frameDepth: nil, at: settled + 0.032)
         let lastRelief = drawnRelief(last)
         XCTAssertEqual(drawnRelief(first), lastRelief, accuracy: abs(lastRelief) * 0.016 / 0.35 + 1e-6)
 
         // It then eases monotonically onto the window plane and lets go of the
         // old depth.
         var previous = drawnRelief(first)
-        var time = 1.032
-        while time < 1.5 {
+        var time = settled + 0.032
+        while time < settled + 0.5 {
             time += 0.016
             let drawn = drawnRelief(fade.advance(frameDepth: nil, at: time))
             XCTAssertGreaterThanOrEqual(drawn, previous)
@@ -164,9 +175,48 @@ final class DepthScreenTests: XCTestCase {
         var fade = DepthReliefFade<Float>(duration: 0.35)
         XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 5).blend, 0)
         XCTAssertFalse(fade.isSettled)
-        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 5.175).blend, 0.5, accuracy: 1e-5)
-        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 6).blend, 1)
+        for step in 1...10 {
+            XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 5 + Double(step) * 0.0175).blend, Float(step) * 0.05, accuracy: 1e-5)
+        }
+        run(&fade, depth: 0.5, from: 5.2, for: 0.5)
+        XCTAssertEqual(fade.blend, 1)
         XCTAssertTrue(fade.isSettled)
+    }
+
+    /// The view went away for minutes and came back: the fade starts flat
+    /// and moves by one ordinary step, not all the way.
+    func testReappearAfterALongGapStartsFlat() {
+        var fade = DepthReliefFade<Float>(duration: 0.35)
+        run(&fade, depth: 0.5, from: 0, for: 1)
+        XCTAssertEqual(fade.blend, 1)
+        fade.reset()
+        XCTAssertEqual(fade.advance(frameDepth: 0.5, at: 600).blend, 0)
+        let second = fade.advance(frameDepth: 0.5, at: 900).blend
+        XCTAssertEqual(second, Float(DepthReliefFade<Float>.maxStepInterval / 0.35), accuracy: 1e-5)
+
+        // Even without a reset, a long gap is one step, not a jump.
+        var idle = DepthReliefFade<Float>(duration: 0.35)
+        idle.advance(frameDepth: nil, at: 0)
+        XCTAssertLessThan(idle.advance(frameDepth: 0.5, at: 300).blend, 0.1)
+    }
+
+    /// A new source mid-fade-out: none of its frames, with depth or without,
+    /// is ever drawn with the previous source's depth.
+    func testSourceSwitchMidFadeNeverShowsThePreviousDepth() {
+        let previous: Float = 0.9, next: Float = 0.3
+        for nextHasDepth in [false, true] {
+            var fade = DepthReliefFade<Float>(duration: 0.35)
+            let settled = run(&fade, depth: previous, from: 0, for: 1)
+            run(&fade, depth: nil, from: settled + 1.0 / 60, for: 0.15)   // part way out, still holding it
+            XCTAssertEqual(fade.depth, previous)
+            XCTAssertGreaterThan(fade.blend, 0)
+            fade.reset()
+            for step in 0..<40 {
+                let state = fade.advance(frameDepth: nextHasDepth ? next : nil, at: 1.2 + Double(step) * 0.016)
+                XCTAssertNotEqual(state.depth, previous)
+                if !nextHasDepth { XCTAssertEqual(state.blend, 0) }
+            }
+        }
     }
 
     func testFeatherFlattensTheBorder() {

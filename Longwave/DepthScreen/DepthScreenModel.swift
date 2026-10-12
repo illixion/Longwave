@@ -266,6 +266,10 @@ nonisolated enum DepthScreenGeometry {
 /// generic so the rule is testable; the renderer passes texture-backed depth.
 nonisolated struct DepthReliefFade<Depth> {
     let duration: Double
+    /// The most time one step may account for. A gap longer than this (the
+    /// view off screen, a stalled stream, the first frame after a reset) still
+    /// moves the fade by one ordinary step, never all the way at once.
+    static var maxStepInterval: Double { 1.0 / 30 }
     /// 0 flat, 1 full relief.
     private(set) var blend: Float = 0
     /// What to draw: the frame's own depth, or while fading out the last
@@ -282,7 +286,7 @@ nonisolated struct DepthReliefFade<Depth> {
     /// The first call starts the fade rather than jumping to full relief.
     @discardableResult
     mutating func advance(frameDepth: Depth?, at time: Double) -> (depth: Depth?, blend: Float) {
-        let elapsed = lastTime.map { max(time - $0, 0) } ?? 0
+        let elapsed = lastTime.map { min(max(time - $0, 0), Self.maxStepInterval) } ?? 0
         lastTime = time
         let step = duration > 0 ? Float(min(elapsed / duration, 1)) : 1
         hasFrameDepth = frameDepth != nil
@@ -298,6 +302,15 @@ nonisolated struct DepthReliefFade<Depth> {
 
     /// Whether advancing again without a new frame would change nothing.
     var isSettled: Bool { hasFrameDepth ? blend == 1 : blend == 0 }
+
+    /// Flat, with no depth held and no time base: for a stop or a new source,
+    /// whose frames must never be drawn with the previous source's depth.
+    mutating func reset() {
+        blend = 0
+        depth = nil
+        hasFrameDepth = false
+        lastTime = nil
+    }
 }
 
 /// The mesh's grid: vertices across and down, following the depth texture.

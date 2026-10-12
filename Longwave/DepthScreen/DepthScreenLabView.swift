@@ -117,6 +117,7 @@ struct DepthScreenLabView: View {
                 startSynthetic()
             } else {
                 synthetic?.stop()
+                controller.reset()
                 if stillName == nil { showStillPicker = true }
             }
         }
@@ -172,7 +173,7 @@ struct DepthScreenLabView: View {
             source.sceneTime = UserDefaults.standard.double(forKey: "DepthLabTime")
         }
         source.configuration.depthDivisor = quarterDepth ? 4 : 2
-        controller.feed.reset()
+        controller.reset()
         source.start()
         synthetic = source
     }
@@ -182,7 +183,7 @@ struct DepthScreenLabView: View {
         do {
             let still = try DepthStillLoader.load(urls)
             synthetic?.stop()
-            controller.feed.reset()
+            controller.reset()
             // One frame number for both halves, as the stream pairs them.
             controller.feed.submit(depth: still.depth, range: still.range, frameNumber: 1)
             controller.feed.submit(colour: still.colour, frameNumber: 1)

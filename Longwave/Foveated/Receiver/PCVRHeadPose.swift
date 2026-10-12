@@ -19,7 +19,8 @@ nonisolated struct PCVRGazeSample: Equatable, Sendable {
 /// §4.7's uplink head-pose STATE, as the plain value the v3 client will
 /// serialise and send at the display rate. Nothing here is a wire encoding yet.
 nonisolated struct PCVRHeadPoseSnapshot: Equatable, Sendable {
-    var sequence: UInt64
+    /// Wraps; compare with `PCVRSerialNumber`.
+    var sequence: UInt32
     /// When the pose was queried, receiver clock. Not on the wire; kept so a
     /// frame's pose-to-present time can be measured when it comes back.
     var sampledAt: TimeInterval
@@ -30,12 +31,14 @@ nonisolated struct PCVRHeadPoseSnapshot: Equatable, Sendable {
     var head: PCVRPose
     /// Bumped whenever the immersive space's origin moves under the poses (a
     /// recentre), so the host never blends poses from two different origins.
-    var spaceEpoch: UInt32
-    /// Per-eye offsets and frusta: set on the first snapshot and whenever they
-    /// change (IPD), nil otherwise.
-    var eyes: PCVRStereo<PCVREyeGeometry>?
+    var spaceEpoch: UInt16
+    /// Per-eye offsets and frusta, in every snapshot. STATE frames are
+    /// unreliable, so a value sent only when it changed could be lost for good,
+    /// and the host cannot render without the headset's per-eye projection
+    /// (the encoding StreamWire settled for §4.7).
+    var eyes: PCVRStereo<PCVREyeGeometry>
     /// The last frame shown and when, for motion-to-photon on every frame.
-    var lastPresentedFrame: UInt64?
+    var lastPresentedFrame: UInt32?
     var lastPresentTime: TimeInterval?
     var gaze: PCVRGazeSample
 }
@@ -60,14 +63,13 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     static let maximumPredictionHorizon: TimeInterval = 0.1
 
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
-    private let epoch = OSAllocatedUnfairLock(initialState: UInt32(0))
+    private let epoch = OSAllocatedUnfairLock(initialState: UInt16(0))
 
-    private var sequence: UInt64 = 0
-    private var lastSentEyes: PCVRStereo<PCVREyeGeometry>?
-    private var lastPresented: (frame: UInt64, time: TimeInterval)?
+    private var sequence: UInt32 = 0
+    private var lastPresented: (frame: UInt32, time: TimeInterval)?
     /// Recent snapshots by sequence, to match a frame's `poseSequence` back to
     /// when and for what time its pose was taken.
-    private var history: [(sequence: UInt64, sampledAt: TimeInterval, baseDisplayTime: TimeInterval)] = []
+    private var history: [(sequence: UInt32, sampledAt: TimeInterval, baseDisplayTime: TimeInterval)] = []
     private static let historyLength = 256
     private var smoothedLatency: TimeInterval?
     private var lastLogTime: TimeInterval = 0
@@ -78,7 +80,7 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     }
 
     /// Starts a new space epoch: call when the immersive space's origin moves
-    /// (a recentre). The next snapshot carries the new epoch and the eye offsets.
+    /// (a recentre). The next snapshot carries the new epoch.
     func bumpSpaceEpoch() {
         epoch.withLock { $0 &+= 1 }
     }
@@ -91,17 +93,15 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     @discardableResult
     func makeSnapshot(head: PCVRPose, eyes: PCVRStereo<PCVREyeGeometry>, sampledAt: TimeInterval,
                       baseDisplayTime: TimeInterval, displayTime: TimeInterval) -> PCVRHeadPoseSnapshot {
-        sequence += 1
+        sequence &+= 1
         let spaceEpoch = epoch.withLock { $0 }
-        let eyesChanged = lastSentEyes.map { !($0.left.isClose(to: eyes.left) && $0.right.isClose(to: eyes.right)) } ?? true
-        if eyesChanged { lastSentEyes = eyes }
         let snapshot = PCVRHeadPoseSnapshot(
             sequence: sequence,
             sampledAt: sampledAt,
             displayTime: displayTime,
             head: head,
             spaceEpoch: spaceEpoch,
-            eyes: eyesChanged ? eyes : nil,
+            eyes: eyes,
             lastPresentedFrame: lastPresented?.frame,
             lastPresentTime: lastPresented?.time,
             gaze: .invalid
@@ -117,7 +117,7 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     /// time (motion-to-photon for the content), or nil when its pose is too old
     /// to still be in the history.
     @discardableResult
-    func recordPresentation(frameNumber: UInt64, poseSequence: UInt64,
+    func recordPresentation(frameNumber: UInt32, poseSequence: UInt32,
                             presentTime: TimeInterval) -> TimeInterval? {
         lastPresented = (frameNumber, presentTime)
         guard let entry = history.last(where: { $0.sequence == poseSequence }) else { return nil }
@@ -131,18 +131,18 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         history.removeAll()
         smoothedLatency = nil
         lastPresented = nil
-        lastSentEyes = nil
     }
 
     /// One line a second: enough to see the uplink is alive and sane in a trace
-    /// without flooding the console at 90 Hz. Poses are room-scale numbers about
-    /// the headset, not about the person, so they are logged as plain numbers.
+    /// without flooding the console at 90 Hz. Head position is a room-scale
+    /// number about the headset and is logged plainly; the eye offsets are the
+    /// wearer's IPD, a measurement of the person, and are not logged.
     private func logIfDue(_ snapshot: PCVRHeadPoseSnapshot) {
         guard snapshot.sampledAt - lastLogTime >= 1 else { return }
         lastLogTime = snapshot.sampledAt
         let p = snapshot.head.position
         let ahead = (snapshot.displayTime - snapshot.sampledAt) * 1000
-        log.info("Head pose #\(snapshot.sequence) epoch \(snapshot.spaceEpoch) at (\(p.x, format: .fixed(precision: 3)), \(p.y, format: .fixed(precision: 3)), \(p.z, format: .fixed(precision: 3))) predicted \(ahead, format: .fixed(precision: 1)) ms ahead, horizon \(self.predictionHorizon * 1000, format: .fixed(precision: 1)) ms, last presented \(snapshot.lastPresentedFrame.map { Int($0) } ?? -1)\(snapshot.eyes != nil ? ", eye offsets changed" : "", privacy: .public)")
+        log.info("Head pose #\(snapshot.sequence) epoch \(snapshot.spaceEpoch) at (\(p.x, format: .fixed(precision: 3)), \(p.y, format: .fixed(precision: 3)), \(p.z, format: .fixed(precision: 3))) predicted \(ahead, format: .fixed(precision: 1)) ms ahead, horizon \(self.predictionHorizon * 1000, format: .fixed(precision: 1)) ms, last presented \(snapshot.lastPresentedFrame.map { Int($0) } ?? -1)")
     }
 }
 #endif

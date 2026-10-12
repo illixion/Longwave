@@ -50,12 +50,12 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
     private let pool: TexturePool
     private let mailbox: PCVRFrameMailbox
     private let delivery = DispatchQueue(label: "pro.longwave.pcvr.fake-remote.delivery", qos: .userInteractive)
-    private let latest = OSAllocatedUnfairLock<(snapshot: PCVRHeadPoseSnapshot, eyes: PCVRStereo<PCVREyeGeometry>)?>(initialState: nil)
+    private let latest = OSAllocatedUnfairLock<PCVRHeadPoseSnapshot?>(initialState: nil)
     private let tally = OSAllocatedUnfairLock(initialState: (rendered: 0, stalled: 0))
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
     private let startTime = CACurrentMediaTime()
-    private var frameNumber: UInt64 = 0
+    private var frameNumber: UInt32 = 0
 
     init(device: any MTLDevice, mailbox: PCVRFrameMailbox) throws {
         guard let queue = device.makeCommandQueue() else {
@@ -76,12 +76,12 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
         pool = TexturePool(device: device, width: Self.eyeSize * 2, height: Self.eyeSize, capacity: 12)
     }
 
-    /// The uplink: keeps the newest snapshot, and the newest eye offsets (which
-    /// only ride on snapshots where they changed).
+    /// The uplink: keeps the newest snapshot. Each one carries the eye offsets
+    /// and fields of view, so any single snapshot is enough to render from.
     func receive(_ snapshot: PCVRHeadPoseSnapshot) {
         latest.withLock { latest in
-            guard let eyes = snapshot.eyes ?? latest?.eyes else { return }
-            latest = (snapshot, eyes)
+            if let current = latest, !PCVRSerialNumber.isNewer(snapshot.sequence, than: current.sequence) { return }
+            latest = snapshot
         }
     }
 
@@ -116,17 +116,19 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
     }
 
     private func renderFrame(settings: PCVRFakeRemoteSettings) {
-        guard let current = latest.withLock({ $0 }) else { return }
-        let (snapshot, eyes) = current
+        guard let snapshot = latest.withLock({ $0 }) else { return }
+        // A lease returns its texture to the pool when its last reference goes,
+        // on every path: a failed command buffer below, or the frame's end.
         guard let lease = pool.checkOut() else {
             tally.withLock { $0.stalled += 1 }
             return
         }
-        frameNumber += 1
+        frameNumber &+= 1
         let renderPose = PCVRRenderPose(
             poseSequence: snapshot.sequence,
+            spaceEpoch: snapshot.spaceEpoch,
             displayTime: snapshot.displayTime,
-            eyes: eyes.map { geometry in
+            eyes: snapshot.eyes.map { geometry in
                 var view = geometry.view(head: snapshot.head)
                 view.fieldOfView = view.fieldOfView.expanded(by: settings.overscan)
                 return view
@@ -142,7 +144,8 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
             let due = renderedAt + settings.delay
             delivery.asyncAfter(deadline: .now() + max(due - CACurrentMediaTime(), 0)) {
                 let frame = PCVRDecodedFrame(frameNumber: number, texture: lease.texture, renderPose: renderPose,
-                                             arrivalTime: CACurrentMediaTime(), release: { lease.checkIn() })
+                                             arrivalTime: CACurrentMediaTime(),
+                                             release: { withExtendedLifetime(lease) {} })
                 mailbox.deliver(frame)
                 tally.withLock { $0.rendered += 1 }
             }
@@ -167,7 +170,7 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
             let view = renderPose.eyes[eye]
             let fov = view.fieldOfView
             var uniforms = EyeUniforms(worldFromEye: view.pose.matrix,
-                                       tangents: SIMD4(-fov.left, fov.right, fov.up, -fov.down),
+                                       tangents: fov.tangents,
                                        parameters: SIMD4(time, Float(labels.count), 0, 0))
             encoder.setViewport(MTLViewport(originX: half * Double(eye), originY: 0, width: half,
                                             height: Double(texture.height), znear: 0, zfar: 1))
@@ -247,7 +250,8 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
 
     // MARK: Texture pool
 
-    /// Stream textures, reused once nothing leases them. Grows on demand to
+    /// Stream textures, reused once nothing leases them: a lease hands its
+    /// texture back when it is deallocated, so no exit path can forget to. Grows on demand to
     /// `capacity`: at zero delay a handful suffice; at 60 ms and 90 fps about
     /// six are queued for delivery while the receiver holds two or three more.
     private final class TexturePool: @unchecked Sendable {
@@ -258,7 +262,7 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
                 self.texture = texture
                 self.pool = pool
             }
-            func checkIn() { pool?.recycle(texture) }
+            deinit { pool?.recycle(texture) }
         }
 
         private let device: any MTLDevice
@@ -303,7 +307,7 @@ nonisolated final class PCVRFakeRemote: @unchecked Sendable {
 
     struct EyeUniforms {
         float4x4 worldFromEye;
-        float4 tangents;     // signed: -left, right, up, -down
+        float4 tangents;     // signed tangents (left, right, up, down), left and down negative
         float4 parameters;   // x: seconds, y: label count
     };
 

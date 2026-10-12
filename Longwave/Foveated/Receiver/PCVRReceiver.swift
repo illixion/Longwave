@@ -150,7 +150,7 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
         return Uniforms(
             sourceFromDisplay: PCVRReprojection.sourceFromDisplay(render: render, display: target.display, mode: options.mode),
             sourceRect: Self.eyeRect(eye: target.eye, texture: frame.texture),
-            displayTangents: SIMD4(-fov.left, fov.right, fov.up, -fov.down),
+            displayTangents: fov.tangents,
             displayPlane: PCVRReprojection.displayPlane(render: render, display: target.display, mode: options.mode),
             displayProjection: target.displayProjection,
             parameters: SIMD4(max(options.edgeFade, 1e-4), 1, 0, 0)
@@ -190,7 +190,7 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
     struct PCVRReprojectUniforms {
         float3x3 sourceFromDisplay;
         float4 sourceRect;
-        float4 displayTangents;   // signed: -left, right, up, -down
+        float4 displayTangents;   // signed tangents (left, right, up, down), left and down negative
         float4 displayPlane;      // n.xyz, d with dot(n, p) = d in display-eye space
         float4x4 displayProjection;
         float4 parameters;        // x: edge fade (NDC), y: frame bound

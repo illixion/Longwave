@@ -13,20 +13,24 @@ final class PCVRPlayoutTests: XCTestCase {
 
     // MARK: Latest-frame slot
 
+    private struct Frame: PCVRNumberedFrame, Equatable {
+        let frameNumber: UInt32
+    }
+
     func testNothingToShowBeforeTheFirstFrame() {
-        var slot = PCVRLatestFrameSlot<Int>()
+        var slot = PCVRLatestFrameSlot<Frame>()
         XCTAssertNil(slot.takeForPresentation())
         XCTAssertEqual(slot.repeated, 0, "an empty slot is not a repeat")
     }
 
     func testHalfRateSourceRepeatsEveryOtherSlot() {
         // 45 fps into a 90 Hz display: new, repeat, new, repeat.
-        var slot = PCVRLatestFrameSlot<Int>()
-        var shown: [(Int, Bool)] = []
-        for frame in 1...4 {
-            slot.deliver(frame)
+        var slot = PCVRLatestFrameSlot<Frame>()
+        var shown: [(UInt32, Bool)] = []
+        for number in UInt32(1)...4 {
+            slot.deliver(Frame(frameNumber: number))
             for _ in 0..<2 {
-                if let next = slot.takeForPresentation() { shown.append((next.frame, next.isNew)) }
+                if let next = slot.takeForPresentation() { shown.append((next.frame.frameNumber, next.isNew)) }
             }
         }
         XCTAssertEqual(shown.map(\.0), [1, 1, 2, 2, 3, 3, 4, 4])
@@ -39,21 +43,56 @@ final class PCVRPlayoutTests: XCTestCase {
     func testFramesArrivingTogetherDropAllButTheNewest() {
         // A network burst: three frames land inside one display slot. VR shows
         // the newest; queueing the others would only add latency.
-        var slot = PCVRLatestFrameSlot<Int>()
-        slot.deliver(1)
-        slot.deliver(2)
-        slot.deliver(3)
-        XCTAssertEqual(slot.takeForPresentation()?.frame, 3)
+        var slot = PCVRLatestFrameSlot<Frame>()
+        XCTAssertNil(slot.deliver(Frame(frameNumber: 1)))
+        XCTAssertEqual(slot.deliver(Frame(frameNumber: 2)), Frame(frameNumber: 1), "the displaced frame comes back")
+        slot.deliver(Frame(frameNumber: 3))
+        XCTAssertEqual(slot.takeForPresentation()?.frame, Frame(frameNumber: 3))
         XCTAssertEqual(slot.dropped, 2)
         XCTAssertEqual(slot.takeForPresentation()?.isNew, false)
     }
 
-    func testResetForgetsFramesButKeepsCounts() {
-        var slot = PCVRLatestFrameSlot<Int>()
-        slot.deliver(1)
-        slot.deliver(2)
+    func testPresentingANewFrameHandsBackTheOldCurrent() {
+        // The mailbox lets that frame go after unlocking, so its texture's
+        // release never runs under the lock.
+        var slot = PCVRLatestFrameSlot<Frame>()
+        slot.deliver(Frame(frameNumber: 1))
+        XCTAssertNil(slot.takeForPresentation()?.displaced)
+        slot.deliver(Frame(frameNumber: 2))
+        XCTAssertEqual(slot.takeForPresentation()?.displaced, Frame(frameNumber: 1))
+        XCTAssertNil(slot.takeForPresentation()?.displaced, "a repeat displaces nothing")
+    }
+
+    func testLateFramesAreDroppedAcrossTheWrap() {
+        var slot = PCVRLatestFrameSlot<Frame>()
+        slot.deliver(Frame(frameNumber: .max - 1))
         _ = slot.takeForPresentation()
-        slot.reset()
+        // Older than what is showing: never steps the picture backwards.
+        XCTAssertEqual(slot.deliver(Frame(frameNumber: .max - 3)), Frame(frameNumber: .max - 3))
+        XCTAssertEqual(slot.dropped, 1)
+        // Wrapped past zero is newer, not older.
+        XCTAssertNil(slot.deliver(Frame(frameNumber: 2)))
+        XCTAssertEqual(slot.takeForPresentation()?.frame, Frame(frameNumber: 2))
+        XCTAssertEqual(slot.dropped, 1)
+    }
+
+    func testSerialNumberComparisonWraps() {
+        XCTAssertTrue(PCVRSerialNumber.isNewer(1, than: 0))
+        XCTAssertTrue(PCVRSerialNumber.isNewer(0, than: .max))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(.max, than: 0))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(7, than: 7))
+        XCTAssertTrue(PCVRSerialNumber.isNewer(0x7FFF_FFFF, than: 0))
+        XCTAssertFalse(PCVRSerialNumber.isNewer(0x8000_0000, than: 0), "half the range ahead counts as behind")
+    }
+
+    func testResetForgetsFramesButKeepsCounts() {
+        var slot = PCVRLatestFrameSlot<Frame>()
+        slot.deliver(Frame(frameNumber: 1))
+        slot.deliver(Frame(frameNumber: 2))
+        _ = slot.takeForPresentation()
+        let released = slot.reset()
+        XCTAssertNil(released.0)
+        XCTAssertEqual(released.1, Frame(frameNumber: 2))
         XCTAssertNil(slot.takeForPresentation())
         XCTAssertEqual(slot.dropped, 1)
         XCTAssertEqual(slot.presentedNew, 1)
@@ -63,9 +102,9 @@ final class PCVRPlayoutTests: XCTestCase {
 
     private let eyes = PCVRStereo(
         left: PCVREyeGeometry(deviceFromEye: PCVRPose(rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), position: SIMD3(-0.032, 0, 0)),
-                              fieldOfView: PCVRFieldOfView(left: 1, right: 0.9, up: 1, down: 1.1)),
+                              fieldOfView: PCVRFieldOfView(tangentLeft: -1, tangentRight: 0.9, tangentUp: 1, tangentDown: -1.1)),
         right: PCVREyeGeometry(deviceFromEye: PCVRPose(rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), position: SIMD3(0.032, 0, 0)),
-                               fieldOfView: PCVRFieldOfView(left: 0.9, right: 1, up: 1, down: 1.1)))
+                               fieldOfView: PCVRFieldOfView(tangentLeft: -0.9, tangentRight: 1, tangentUp: 1, tangentDown: -1.1)))
 
     private func snapshot(_ producer: PCVRHeadPoseProducer, at time: TimeInterval,
                           eyes: PCVRStereo<PCVREyeGeometry>? = nil, horizon: TimeInterval = 0) -> PCVRHeadPoseSnapshot {
@@ -73,24 +112,21 @@ final class PCVRPlayoutTests: XCTestCase {
                               baseDisplayTime: time + 0.02, displayTime: time + 0.02 + horizon)
     }
 
-    func testSnapshotsAreSequencedAndCarryEyeOffsetsOnlyWhenChanged() {
+    func testEverySnapshotCarriesTheEyes() {
+        // STATE frames can be lost: a host that missed every snapshot but one
+        // must still be able to render from that one.
         let producer = PCVRHeadPoseProducer()
         let first = snapshot(producer, at: 10)
         let second = snapshot(producer, at: 10.011)
         XCTAssertEqual(first.sequence, 1)
         XCTAssertEqual(second.sequence, 2)
-        XCTAssertEqual(first.eyes, eyes, "the first snapshot introduces the eyes")
-        XCTAssertNil(second.eyes, "unchanged eyes are not resent")
-
-        // Sub-tenth-of-a-millimetre jitter is noise, not an IPD change.
-        var jittered = eyes
-        jittered.left.deviceFromEye.position.x += 0.00002
-        XCTAssertNil(snapshot(producer, at: 10.022, eyes: jittered).eyes)
+        XCTAssertEqual(first.eyes, eyes)
+        XCTAssertEqual(second.eyes, eyes, "unchanged eyes are sent again")
 
         var wider = eyes
         wider.left.deviceFromEye.position.x -= 0.001
         wider.right.deviceFromEye.position.x += 0.001
-        XCTAssertEqual(snapshot(producer, at: 10.033, eyes: wider).eyes, wider)
+        XCTAssertEqual(snapshot(producer, at: 10.022, eyes: wider).eyes, wider)
         XCTAssertFalse(second.gaze.isValid, "gaze stays invalid without the entitlement")
     }
 

@@ -15,7 +15,8 @@ final class PCVRReprojectionTests: XCTestCase {
 
     private var generator = SeededGenerator(seed: 0x5EED_CAFE)
 
-    private let headsetFOV = PCVRFieldOfView(left: 1.05, right: 0.85, up: 0.95, down: 1.15)
+    /// Signed tangents, left and down negative (stored as `XrFovf` angles).
+    private let headsetFOV = PCVRFieldOfView(tangentLeft: -1.05, tangentRight: 0.85, tangentUp: 0.95, tangentDown: -1.15)
 
     // MARK: Helpers
 
@@ -73,16 +74,30 @@ final class PCVRReprojectionTests: XCTestCase {
     }
 
     func testFieldOfViewNDCMapsEdgesToUnitSquare() {
-        let fov = headsetFOV
-        assertClose(fov.ndc(ofEyePoint: SIMD3(-fov.left, 0, -1)).map { SIMD2($0.x, 0) }, SIMD2(-1, 0))
-        assertClose(fov.ndc(ofEyePoint: SIMD3(fov.right, 0, -1)).map { SIMD2($0.x, 0) }, SIMD2(1, 0))
-        assertClose(fov.ndc(ofEyePoint: SIMD3(0, fov.up, -1)).map { SIMD2(0, $0.y) }, SIMD2(0, 1))
-        assertClose(fov.ndc(ofEyePoint: SIMD3(0, -fov.down, -1)).map { SIMD2(0, $0.y) }, SIMD2(0, -1))
+        let fov = headsetFOV, t = fov.tangents
+        assertClose(fov.ndc(ofEyePoint: SIMD3(t.x, 0, -1)).map { SIMD2($0.x, 0) }, SIMD2(-1, 0))
+        assertClose(fov.ndc(ofEyePoint: SIMD3(t.y, 0, -1)).map { SIMD2($0.x, 0) }, SIMD2(1, 0))
+        assertClose(fov.ndc(ofEyePoint: SIMD3(0, t.z, -1)).map { SIMD2(0, $0.y) }, SIMD2(0, 1))
+        assertClose(fov.ndc(ofEyePoint: SIMD3(0, t.w, -1)).map { SIMD2(0, $0.y) }, SIMD2(0, -1))
         XCTAssertNil(fov.ndc(ofEyePoint: SIMD3(0, 0, 1)), "a point behind the eye has no NDC")
         let roundTrip = fov.ndcFromTangent * fov.tangentFromNDC
         for column in 0..<3 {
             XCTAssertLessThan(simd_distance(roundTrip[column], matrix_identity_float3x3[column]), 1e-6)
         }
+    }
+
+    func testFieldOfViewUsesOpenXRSignedAngles() {
+        // XrFovf: radians, left and down negative.
+        let fov = PCVRFieldOfView(angleLeft: -.pi / 4, angleRight: .pi / 6, angleUp: .pi / 5, angleDown: -.pi / 3)
+        let t = fov.tangents
+        XCTAssertEqual(t.x, -1, accuracy: 1e-6)
+        XCTAssertEqual(t.y, tan(Float.pi / 6), accuracy: 1e-6)
+        XCTAssertEqual(t.w, -tan(Float.pi / 3), accuracy: 1e-5)
+        XCTAssertEqual(headsetFOV.angleLeft, atan(-1.05), accuracy: 1e-6)
+        XCTAssertLessThan(headsetFOV.angleDown, 0)
+        // The view axis sits off centre in an asymmetric frustum.
+        assertClose(fov.ndc(ofEyePoint: SIMD3(0, 0, -1)),
+                    SIMD2(-(t.y + t.x) / (t.y - t.x), -(t.z + t.w) / (t.z - t.w)))
     }
 
     func testFieldOfViewRecoveredFromProjection() {
@@ -101,8 +116,9 @@ final class PCVRReprojectionTests: XCTestCase {
 
     func testOverscanWidensEveryEdge() {
         let wide = headsetFOV.expanded(by: 0.1)
-        XCTAssertEqual(wide.left, headsetFOV.left * 1.1, accuracy: 1e-6)
-        XCTAssertEqual(wide.down, headsetFOV.down * 1.1, accuracy: 1e-6)
+        XCTAssertEqual(wide.tangents.x, headsetFOV.tangents.x * 1.1, accuracy: 1e-5)
+        XCTAssertEqual(wide.tangents.w, headsetFOV.tangents.w * 1.1, accuracy: 1e-5)
+        XCTAssertLessThan(wide.angleLeft, headsetFOV.angleLeft, "wider means further from the axis")
         XCTAssertEqual(headsetFOV.expanded(by: -1), headsetFOV, "negative overscan is ignored")
     }
 
@@ -167,7 +183,7 @@ final class PCVRReprojectionTests: XCTestCase {
         // (1/d − 1/D) in tangent units.
         let renderPose = PCVRPose(rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), position: SIMD3(0, 1.6, 0))
         let displayPose = PCVRPose(rotation: renderPose.rotation, position: renderPose.position + SIMD3(0.02, 0, 0))
-        let fov = PCVRFieldOfView(left: 1, right: 1, up: 1, down: 1)
+        let fov = PCVRFieldOfView(tangentLeft: -1, tangentRight: 1, tangentUp: 1, tangentDown: -1)
         let render = PCVREyeView(pose: renderPose, fieldOfView: fov)
         let display = PCVREyeView(pose: displayPose, fieldOfView: fov)
         let h = PCVRReprojection.sourceFromDisplay(render: render, display: display,
@@ -253,7 +269,7 @@ final class PCVRReprojectionTests: XCTestCase {
         let depth = try XCTUnwrap(device.makeTexture(descriptor: depthDescriptor))
         let eye = PCVREyeView(pose: .identity, fieldOfView: headsetFOV)
         let frame = PCVRDecodedFrame(frameNumber: 1, texture: source,
-                                     renderPose: PCVRRenderPose(poseSequence: 1, displayTime: 0, eyes: PCVRStereo(left: eye, right: eye)),
+                                     renderPose: PCVRRenderPose(poseSequence: 1, spaceEpoch: 0, displayTime: 0, eyes: PCVRStereo(left: eye, right: eye)),
                                      arrivalTime: 0)
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())

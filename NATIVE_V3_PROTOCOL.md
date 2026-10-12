@@ -19,6 +19,12 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   [Phase 2 spike result](#phase-2-spike-result-2026-10-04-go).
 - The v2 protocol (`Shared/MacNativeStreamProtocol.swift`) stays the shipping
   protocol, and remains served until every client in the field speaks v3.
+- **PCVR and depth are in scope (2026-10-12).** v3 is also the wire for
+  native PCVR (§4.7), so the protocol is stress-tested by a 90 Hz stereo
+  stream from its first build rather than retrofitted. It also carries an
+  optional depth stream that turns a flat game into 3D on the headset (§4.8).
+  Both rest on two general mechanisms, frame side data and auxiliary streams
+  (§4.2), which land in Phase 1 with the core.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -42,6 +48,9 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
    per-window streams, multi-viewer fan-out, the X25519 commit-reveal pairing and
    knock gate, PSK-rooted authentication, and the audio receiver's sample-index
    stamping and drift correction.
+6. **Ready for PCVR and 3D from the start.** The same transport carries a
+   stereo PCVR stream (head pose up, frames with their render pose down) and a
+   depth stream beside a flat game's video. Neither gets a protocol of its own.
 
 The north star is Windows and Linux hosts, where Moonlight is the incumbent. On
 the Mac, v3 replaces v2 because a single protocol is cheaper than two, not
@@ -56,9 +65,10 @@ because the Mac needs to beat Moonlight. No Mac host for Moonlight exists anyway
 - WAN/Internet streaming through NAT (no STUN/TURN/relay). LAN, routed LAN and
   Tailscale are in scope; Tailscale's 1280-byte MTU sets the default packet size.
 - Browser clients or WebRTC compatibility.
-- PCVR. That has its own path (CloudXR today, a visionOS 27 foveated-streaming
-  provider later); see `Longwave-PCVR-Host/docs/`. v3's transport may be reused
-  there later, but nothing here depends on it.
+- The PCVR host's internals. v3 defines the PCVR stream on the wire (§4.7).
+  How the Windows host produces it, and the OpenXR side behind it, live in the
+  private `Longwave-PCVR-Host/docs/` (`NATIVE_PROVIDER_PLAN.md`). CloudXR stays
+  the shipping PCVR path until the v3 path passes that plan's gates.
 - Replacing the Companion's audio-only Music mode on day one. The VVAS audio
   stream (`Shared/AudioStreamProtocol.swift`, port 4855) keeps serving
   audio-only connections until v3's audio channel has matched it.
@@ -329,7 +339,7 @@ UDP datagram
       ├─ CTRL      reliable ordered bytes, channel 0 (control) / 1 (input events) / 2 (bulk: clipboard, artwork)
       ├─ ACK       selective ack ranges for the reliable channels
       ├─ MEDIA     one video or audio shard (§4.2, §4.4)
-      ├─ STATE     unreliable latest-wins snapshot (pointer position, gamepad)
+      ├─ STATE     unreliable latest-wins snapshot (pointer position, gamepad, head pose)
       ├─ FEEDBACK  receive report for rate control (§6)
       ├─ PING/PONG clock sync and liveness (§5)
       └─ PADDING
@@ -428,6 +438,28 @@ treating a shard as missing. moonlight-common-c learned the same lesson: once it
 sees out-of-order packets it stops speculative recovery requests for five
 minutes [M2].
 
+**Frame side data.** Some streams need per-frame facts that the receiver must
+apply to exactly that picture: the pose a PCVR frame was rendered from, or a
+depth frame's near and far planes. They travel **inside the frame payload**, as
+a small TLV record (`type u8 | length u16 | value`) ahead of the first NAL
+unit, when the stream's `formatDescription` declares `sideData` with the types
+it uses. Putting them in the payload, not a separate message, means FEC and
+NACK protect them, they can't be paired with the wrong frame, and the 24-byte
+shard header stays the same for every stream. Unknown types are skipped by
+length. Types: `renderPose` and `foveation` (§4.7), `depthRange` (§4.8), with
+more added append-only.
+
+**Auxiliary streams.** A stream can be an auxiliary of another: its
+`formatDescription` names a `primaryStreamID` and a `role` (`alpha`, `depth`).
+An auxiliary frame uses the same `frameNumber` and `captureTime` as the primary
+frame it belongs to, so the receiver pairs them by number, with no extra field.
+It gets its own FEC blocks, NACKs and recovery, and the rate controller budgets
+it as a share of its primary. A receiver that doesn't announce the role's
+capability never subscribes to it. If an auxiliary frame is missing, the receiver
+shows the primary frame with the last good auxiliary, and treats a primary
+frame without one as normal. Alpha (`alphaVideo`) and depth (`depthVideo`, §4.8)
+are the first two roles.
+
 ### 4.3 Input
 
 - **Events** (reliable, channel 1): key down/up (keycode in the host's
@@ -442,7 +474,8 @@ minutes [M2].
   so loss can't drop motion), and gamepad snapshots (buttons bitmask, two sticks,
   two analog triggers, optional gyro/accelerometer and touchpad). State is
   re-sent every 8 ms while changing and every 100 ms while idle, so a lost
-  snapshot costs at most one interval.
+  snapshot costs at most one interval. With `pcvr`, a **head pose** snapshot is
+  sent at the display rate instead, with no idle interval (§4.7).
 - **Every input carries the client's estimate of host time** when it was
   generated (§5), so the host can log input latency and order input against the
   frame the user was looking at.
@@ -519,7 +552,8 @@ diagnostics overlay), and `bye` with a reason.
   intersection. Initial set: `windowStreams`, `alphaVideo`, `hevc422`,
   `hevc10bitHDR`, `av1`, `h264`, `ltrRecovery`, `rfiRecovery`, `nack`,
   `audioOpus`, `audioPCM24`, `audioMultichannel`, `spatialObjects`, `gamepad`,
-  `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`.
+  `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
+  `sideData`, `depthVideo`, `pcvr`, `gaze`.
   Unknown capabilities are ignored, never fatal.
 - Message and frame types are append-only; a receiver skips unknown frame types
   by their length.
@@ -535,6 +569,103 @@ diagnostics overlay), and `bye` with a reason.
   shipping on the App Store and GitHub speaks v3 — the Windows companion and the
   App Store edition release independently of each other, so the window is
   calendar-based (≥ 3 months), not "next release".
+
+### 4.7 PCVR profile
+
+A PCVR session is a v3 session whose client announces `pcvr` and the host
+accepts it. Everything below is ordinary v3 (transport, FEC, NACK, recovery,
+rate control, audio). The profile only adds what VR needs on top. It is defined
+here, in public, because the visionOS receiver that implements it is MIT like
+the rest of the app. The host side is in the private PCVR docs.
+
+**Why now, before the provider entitlement.** visionOS 27's foveated-streaming
+provider extension gives a provider two things nothing else does: the wearer's
+**gaze** (`latestFocusRegion`), and the system's session plumbing (QR pairing
+with a remembered certificate, connection states, input grants, decode memory
+charged to the host app). Neither is needed to move VR frames. A normal app
+`ImmersiveSpace` with a CompositorServices layer gets predicted head poses from
+ARKit, per-eye Metal drawables and the system compositor's late reprojection,
+with no special entitlement (ALVR's visionOS client works this way). So the
+profile is built and stress-tested now, with foveation fixed at the view centre
+(what PCVR does today), and gaze is a field that starts carrying data when the
+entitlement arrives.
+
+**Uplink: head pose (STATE).** At the display rate: sequence number, the
+display time it was predicted for (host clock, §5), the head pose in the
+immersive space plus the space epoch (bumped on recentre), per-eye offsets
+when IPD changes, the `frameNumber` and present time of the last frame shown
+(motion-to-photon, measured on every frame), and a gaze sample (direction,
+distance, timestamp, valid flag) that stays invalid unless `gaze` was
+negotiated. Hands and controllers keep their existing paths for now.
+
+**Video.** One stream, both eyes side by side, HEVC Main10, 90–120 fps. Its
+`formatDescription` gives the layout, the per-eye render and wire sizes, and
+the foveation warp's parameter block. Side data on every frame:
+
+- `renderPose`: the pose sequence number it was rendered from, each eye's
+  render pose and field of view, and the display time it was rendered for.
+  The receiver needs this for reprojection: it shows the frame where it was
+  rendered, not where the head is now.
+- `foveation`: the warp centre per eye, and a parameter-block epoch. The
+  receiver's unwarp must use exactly the parameters the encoder used, and
+  logs a mismatch rather than drawing a slightly wrong image.
+
+**Receiver.** Decode is the existing VideoToolbox path. Unwarp and
+reprojection are Metal that produces a texture for each eye, presented by a
+thin layer: CompositorServices in the app now, and whatever the provider
+extension's `immersiveScene` allows later (a RealityKit `LowLevelTexture` if
+CompositorServices isn't available there). Keeping the presenter thin is what
+makes the extension a second shell around the same receiver instead of a
+rewrite.
+
+**Pacing.** The client reports its display refresh in the handshake and on
+every change. In game-mode playout (§5) a frame that misses its display slot is
+dropped, never queued: in VR a late frame is worse than a repeated one, which
+the compositor's reprojection covers.
+
+**What the entitlement adds later.** The gaze sample becomes valid, the warp
+centre follows it, and the system's QR pairing can replace v3's own enrollment
+for provider sessions. The wire format doesn't change.
+
+### 4.8 Depth for flat games (3D on the headset)
+
+A flat game becomes 3D on the headset when the host sends its depth buffer
+beside the picture and the headset does the stereo work. Reading the game's
+depth is more accurate and much cheaper than estimating it (the
+Depth Anything route used for movies), and unlike rendering each eye in turn
+(R.E.A.L.-style mods) the PC renders the game once. The result is a 3D screen,
+not VR.
+
+- **Source.** An in-game component, loaded only when the game is started
+  through Longwave (§7.6), reads the depth buffer at present time and hands
+  the host the frame and its depth as shared GPU textures stamped with one
+  frame number. It is built on ReShade's add-on API (BSD-3): that covers
+  D3D9–12, OpenGL and Vulkan and already solves picking the right depth buffer.
+  Some tuning per game is expected (reversed Z, near/far), kept as profiles
+  in the game library. Games not started through Longwave are captured as
+  usual, with no depth.
+- **Wire.** An auxiliary stream (§4.2) with `role = depth`, `depthVideo`
+  capability. The host converts depth to inverse depth (stereo disparity is
+  proportional to it, so precision lands where it is visible), quantises it
+  to 10 bits, and encodes it as luma in HEVC Main10 at half or quarter the
+  picture's resolution (NVENC has no 4:0:0, so chroma is flat and costs almost
+  nothing). Each depth frame carries `depthRange` side data: near, far and the
+  profile's suggested convergence. The headset therefore needs no per-game
+  knowledge.
+- **Headset.** First choice: a grid mesh in RealityKit, displaced by the depth
+  map and textured with the frame, so RealityKit renders each eye itself and
+  the user gets correct stereo plus parallax as the head moves. Gaps behind
+  objects become stretched triangles, which can be softened. Cheaper
+  alternative: a Vergence warp into a side-by-side texture on the existing
+  stereo player. With no depth stream (cutscenes, games with anti-cheat, the
+  Mac desktop), Depth Anything on the headset's Neural Engine is the fallback.
+- **Pre-rendered cutscenes** have no depth buffer (the component sees a
+  cleared or constant one). It marks those frames empty in `depthRange`, and
+  the headset switches to estimated depth until real depth returns, rather
+  than showing a flat plane.
+- **Reference rig.** ReShade with SuperDepth3D is installed in Cyberpunk 2077
+  on the test PC as a quality reference. SuperDepth3D's licence forbids
+  redistribution, so nothing of it ships.
 
 ## 5. Clock model and A/V sync
 
@@ -1097,6 +1228,14 @@ nothing is ever loaded into a process that is already running.
   verification and game updates are unaffected. It starts as an allowlist
   (Cyberpunk 2077 first), not a guess. Every other game's audio is WASAPI
   process loopback, at most 7.1.
+- **The depth component (§4.8)** follows the same rules: the same anti-cheat
+  refusal, loaded at process start, never written into the game folder, an
+  allowlist starting with Cyberpunk 2077, and one more line in the consent
+  text. It is a ReShade add-on, so the launch loads ReShade and the add-on
+  together, and it also supplies the frame itself (frame and depth with one
+  frame number), so a depth-enabled game skips WGC. Whether ReShade's own
+  launch-time loading fits the suspended-start flow, or the two components
+  should load as one, is open question 15.
 - **One public library (2026-10-05).** Launching is backed by the Companion's
   game library, which moved from the closed PCVR host to public code and now
   covers flat games too: Steam discovery with each title's kind (VR / flat /
@@ -1161,6 +1300,11 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
 - Client: v3 path in `MacNativeStreamClient` behind the `ns=3` capability, same
   renderer; audio over v3 into the existing receiver via `PlayoutController`.
 - LTR recovery if Phase 0 says it works on hardware HEVC; IDR otherwise.
+- Frame side data and auxiliary streams (§4.2) in `StreamWire` and the frame
+  assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
+  The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
+  pose snapshot uplink at the same rate) beside the desktop and game profiles,
+  so loss and recovery are tuned against the hardest stream from day one.
 
 Exit: v3 meets or beats v2 on every Phase 0 metric for the Mac desktop and
 Unity windows; simulator suite green at 2%/10% loss and the stall model; a week
@@ -1336,6 +1480,14 @@ settle the clock question (workaround 3).
   the user has played on it for two weeks without reaching for Moonlight.
   "Retire" means the docs and UI recommend v3; the Moonlight edition stays
   buildable for hosts that only run Sunshine.
+- **3D for flat games (§4.8):** the depth component through Launch game…
+  (Cyberpunk 2077 first), the `depthVideo` stream, the displaced-mesh renderer
+  on the headset, then Depth Anything as the fallback. Gate: Cyberpunk on the
+  headset matches the SuperDepth3D reference rig with no extra PC frame time
+  beyond the depth copy and its encode.
+- **PCVR over v3 (§4.7):** the CompositorServices receiver and the head-pose
+  uplink, against the host work in the private `NATIVE_PROVIDER_PLAN.md`. Its
+  phases and gates live there; this roadmap only owns the wire.
 
 ### Phase 4 — Linux host (4–6 weeks)
 
@@ -1517,6 +1669,20 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
     `EnableLowLatencyRateControl` does, a slower viewer needs its own
     frame-rate channel on single-engine Macs instead of a dropped layer.
     Measure it with the same harness as the encode-latency numbers.
+15. **ReShade under Launch game….** Unverified whether ReShade's launch-time
+    loading works with the created-suspended start the audio component uses,
+    or whether one loader should bring in both. Also unverified: which ReShade
+    build we need (the standard build is understood to withhold depth when it
+    sees network traffic, and the full add-on build is meant for single-player
+    games only), and how much the depth copy costs at 1440p.
+16. **CompositorServices inside the provider extension.** Unknown until the
+    entitlement is granted. If the extension can only present through
+    RealityKit, the PCVR receiver's thin presenter (§4.7) gets a RealityKit
+    implementation. Decode, unwarp and reprojection are unaffected.
+17. **Reprojection without CloudXR's.** The compositor corrects rotation when
+    each frame is submitted with its true render pose. Translation since render
+    and late frames are ours to handle. That is the hard part of the PCVR
+    profile, and the reason to stress-test it early, not a reason to wait.
 
 ### Sources
 

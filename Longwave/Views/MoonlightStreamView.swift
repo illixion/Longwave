@@ -94,7 +94,9 @@ struct MoonlightStreamView: View {
                         .twoHandPointerGesture(
                             isEngaged: $twoHandEngaged,
                             onEngage: cancelImplicitDrag,
-                            onScroll: scrollBy,
+                            onScroll: { delta, anchor in
+                                handScroll(delta, anchor: anchor, in: geometry.size)
+                            },
                             onSecondaryClick: rightClickAtCurrentPosition
                         )
                         .onContinuousHover { phase in
@@ -362,6 +364,17 @@ struct MoonlightStreamView: View {
     /// and the keyboard's scroll pad use, and horizontal is negated for the
     /// same reason it is there — a positive event scrolls right, while positive
     /// travel means the content followed the hands to the right.
+    /// Both hands' scroll. A Moonlight wheel event carries no position — the
+    /// host scrolls under its cursor — so Direct mode first puts the cursor
+    /// where the pinch landed (where the user was looking). Touchpad mode
+    /// leaves it where prior motion put it.
+    private func handScroll(_ delta: CGSize, anchor: CGPoint, in viewSize: CGSize) {
+        if !manager.isMouseConnected {
+            positionForTap(at: anchor, in: viewSize)
+        }
+        scrollBy(delta)
+    }
+
     private func scrollBy(_ delta: CGSize) {
         let steps = scrollSteps.steps(for: delta)
         if steps.dy != 0 {

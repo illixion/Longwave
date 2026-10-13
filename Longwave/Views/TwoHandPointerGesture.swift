@@ -26,8 +26,12 @@ struct TwoHandPointerGesture: ViewModifier {
     var onEngage: () -> Void
     /// Travel of the hands' midpoint in view points since the last callback —
     /// the same shape a wheel or trackpad reports, so both feed one
-    /// `ScrollStepAccumulator`.
-    var onScroll: (CGSize) -> Void
+    /// `ScrollStepAccumulator` — and the anchor: where the pair engaged, in
+    /// the view's local space. An indirect pinch lands where the user is
+    /// looking, so the anchor is the gaze point the scroll is meant for; it
+    /// stays put while the hands travel. Direct-mode surfaces scroll there,
+    /// since gaze produces no hover and they have no pointer of their own.
+    var onScroll: (_ delta: CGSize, _ anchor: CGPoint) -> Void
     var onSecondaryClick: () -> Void
 
     /// Midpoint travel that still counts as "held still".
@@ -39,6 +43,7 @@ struct TwoHandPointerGesture: ViewModifier {
 
     @State private var isTracking = false
     @State private var lastMidpoint: CGPoint?
+    @State private var anchor: CGPoint = .zero
     @State private var travel: CGFloat = 0
     @State private var startedAt: Date?
     @State private var disengageTask: Task<Void, Never>?
@@ -82,7 +87,7 @@ struct TwoHandPointerGesture: ViewModifier {
         // Nothing is emitted inside the slop, so the hand-jitter of a
         // right-click can't scroll the remote a line before it fires.
         guard travel > Self.clickSlop else { return }
-        onScroll(delta)
+        onScroll(delta, anchor)
     }
 
     private func engage(at midpoint: CGPoint) {
@@ -90,6 +95,7 @@ struct TwoHandPointerGesture: ViewModifier {
         disengageTask = nil
         isTracking = true
         lastMidpoint = midpoint
+        anchor = midpoint
         travel = 0
         startedAt = Date()
         isEngaged = true
@@ -151,7 +157,7 @@ extension View {
     func twoHandPointerGesture(
         isEngaged: Binding<Bool>,
         onEngage: @escaping () -> Void = {},
-        onScroll: @escaping (CGSize) -> Void,
+        onScroll: @escaping (_ delta: CGSize, _ anchor: CGPoint) -> Void,
         onSecondaryClick: @escaping () -> Void
     ) -> some View {
         modifier(

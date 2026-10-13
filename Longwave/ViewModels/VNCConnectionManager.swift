@@ -432,15 +432,28 @@ final class VNCConnectionManager: NSObject, VNCConnectionDelegate {
     // MARK: - Input Forwarding
 
     func sendMouseMove(x: UInt16, y: UInt16) {
+        notePointer(x: x, y: y)
         connection?.mouseMove(x: x, y: y)
     }
 
     func sendMouseDown(button: VNCMouseButton, x: UInt16, y: UInt16) {
+        notePointer(x: x, y: y)
         connection?.mouseButtonDown(button, x: x, y: y)
     }
 
     func sendMouseUp(button: VNCMouseButton, x: UInt16, y: UInt16) {
+        notePointer(x: x, y: y)
         connection?.mouseButtonUp(button, x: x, y: y)
+    }
+
+    /// Every pointer event moves the remote cursor, so the virtual cursor
+    /// follows it: after a Direct-mode tap, Touchpad mode and the wheel carry
+    /// on from where the cursor really is rather than from wherever the
+    /// virtual one was left (the middle of the screen, at first).
+    private func notePointer(x: UInt16, y: UInt16) {
+        virtualCursorX = x
+        virtualCursorY = y
+        virtualCursorInitialized = true
     }
 
     func sendScroll(wheel: VNCMouseWheel, x: UInt16, y: UInt16, steps: UInt32 = 3) {

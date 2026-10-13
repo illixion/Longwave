@@ -104,7 +104,7 @@ struct NativeWindowStreamView: View {
             .twoHandPointerGesture(
                 isEngaged: $twoHandEngaged,
                 onEngage: { cancelImplicitDrag(session) },
-                onScroll: { delta in indirectScroll(delta, session) },
+                onScroll: { delta, anchor in handScroll(delta, anchor: anchor, session) },
                 onSecondaryClick: { rightClick(session) }
             )
             .onContinuousHover { phase in
@@ -298,6 +298,18 @@ struct NativeWindowStreamView: View {
         let steps = scrollSteps.steps(for: delta)
         guard steps.dx != 0 || steps.dy != 0 else { return }
         sendScroll(session, deltaX: steps.dx, deltaY: steps.dy)
+    }
+
+    /// Both hands' scroll. Touchpad mode scrolls at the tracked pointer, as the
+    /// wheel does; Direct mode where the pinch landed — where the user was
+    /// looking — since gaze moves no pointer and the tracked one falls back to
+    /// the middle of the window.
+    private func handScroll(_ delta: CGSize, anchor: CGPoint, _ session: MacNativeWindowSession) {
+        if screenManager.touchMode == .absolute,
+           let point = translator(session)?.viewToFramebuffer(anchor) {
+            lastPointerPoint = point
+        }
+        indirectScroll(delta, session)
     }
 
     private func sendScroll(_ session: MacNativeWindowSession, deltaX: Int16, deltaY: Int16) {

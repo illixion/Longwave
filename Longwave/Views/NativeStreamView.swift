@@ -510,7 +510,7 @@ struct NativeStreamView: View {
                     .twoHandPointerGesture(
                         isEngaged: $twoHandEngaged,
                         onEngage: cancelImplicitDrag,
-                        onScroll: indirectScroll,
+                        onScroll: handScroll,
                         onSecondaryClick: rightClickAtCursor
                     )
                     .onContinuousHover { phase in
@@ -923,6 +923,24 @@ struct NativeStreamView: View {
         } else {
             screenManager.scrollAtVirtualCursor(deltaX: steps.dx, deltaY: steps.dy)
         }
+    }
+
+    /// Both hands' scroll. Touchpad mode scrolls at the virtual cursor, as the
+    /// wheel does. Direct mode scrolls where the pinch landed — where the user
+    /// was looking: gaze produces no hover, so `lastPointerPoint` is only ever
+    /// set by a mouse and the wheel's fallback would put every hand scroll in
+    /// the middle of the screen.
+    private func handScroll(_ delta: CGSize, anchor: CGPoint) {
+        guard screenManager.touchMode == .absolute, !mouseOwnsPointer else {
+            indirectScroll(delta)
+            return
+        }
+        guard screenManager.streamSize.width > 0 else { return }
+        let flat = activeCurve.map { $0.flatPoint(forPlanePoint: anchor) } ?? anchor
+        guard let point = framebufferPoint(flat) else { return }
+        let steps = scrollSteps.steps(for: delta)
+        guard steps.dx != 0 || steps.dy != 0 else { return }
+        screenManager.sendScroll(x: point.x, y: point.y, deltaX: steps.dx, deltaY: steps.dy)
     }
 
     private func leftClick(at location: CGPoint) {

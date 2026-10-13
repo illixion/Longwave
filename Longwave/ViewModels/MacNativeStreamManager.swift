@@ -535,18 +535,29 @@ final class MacNativeStreamManager {
     // MARK: - Remote control (mouse/keyboard)
 
     func sendMouseMove(x: UInt16, y: UInt16) {
-        lastDesktopPointer = (x, y)
+        notePointer(x: x, y: y)
         client?.sendMouseMove(x: x, y: y)
     }
 
     func sendMouseDown(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
-        lastDesktopPointer = (x, y)
+        notePointer(x: x, y: y)
         client?.sendMouseDown(button: button, x: x, y: y)
     }
 
     func sendMouseUp(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
-        lastDesktopPointer = (x, y)
+        notePointer(x: x, y: y)
         client?.sendMouseUp(button: button, x: x, y: y)
+    }
+
+    /// Every desktop pointer event moves the Mac's cursor, so the virtual
+    /// cursor follows it too: after a Direct-mode tap, switching to Touchpad
+    /// carries on from where the cursor really is rather than from wherever
+    /// the virtual one was left (the middle of the screen, at first).
+    private func notePointer(x: UInt16, y: UInt16) {
+        lastDesktopPointer = (x, y)
+        virtualCursorX = x
+        virtualCursorY = y
+        virtualCursorInitialized = true
     }
 
     var canRightClickDesktop: Bool {

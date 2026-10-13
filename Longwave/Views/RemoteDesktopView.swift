@@ -133,7 +133,7 @@ struct RemoteDesktopView: View {
                 .twoHandPointerGesture(
                     isEngaged: $twoHandEngaged,
                     onEngage: cancelImplicitDrag,
-                    onScroll: scrollBy,
+                    onScroll: handScroll,
                     onSecondaryClick: rightClickAtCursor
                 )
                 .onContinuousHover { phase in
@@ -414,9 +414,8 @@ struct RemoteDesktopView: View {
     /// only, and indistinguishable from the start of a two-hand right-click.
     ///
     /// Both axes go out at the virtual cursor, which the hover handler keeps on
-    /// the pointer in either touch mode — the old code aimed absolute-mode
-    /// scrolls at the middle of the framebuffer instead, which is rarely what
-    /// anyone was looking at.
+    /// a mouse or trackpad pointer in either touch mode. The hands go through
+    /// `handScroll`, since gaze moves no pointer.
     private func scrollBy(_ delta: CGSize) {
         let steps = scrollSteps.steps(for: delta)
         if steps.dy != 0 {
@@ -433,6 +432,19 @@ struct RemoteDesktopView: View {
                 steps: UInt32(abs(Int(steps.dx)))
             )
         }
+    }
+
+    /// Both hands' scroll. Touchpad mode scrolls at the cursor like the wheel
+    /// does; Direct mode scrolls where the pinch landed — where the user was
+    /// looking — since gaze produces no hover and the virtual cursor would
+    /// otherwise sit wherever it last was, the middle of the screen at first.
+    private func handScroll(_ delta: CGSize, anchor: CGPoint) {
+        if connectionManager.touchMode == .absolute,
+           let point = translator?.viewToFramebuffer(anchor),
+           point.x != connectionManager.virtualCursorX || point.y != connectionManager.virtualCursorY {
+            connectionManager.moveCursorAbsolute(x: point.x, y: point.y)
+        }
+        scrollBy(delta)
     }
 
     /// A second hand arriving turns whatever the first one was doing into a

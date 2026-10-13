@@ -40,18 +40,18 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
     // and then fed a key frame, and the host encodes key frames only when
     // asked (`MacHEVCEncoder`'s interval is an hour), so not asking left the
     // picture frozen on its last frame for good. RAVEMedia's
-    // `RAVEDecoderRecovery` does the noticing, waiting and retrying (shared
+    // `DecoderRecovery` does the noticing, waiting and retrying (shared
     // with Convolution's players); this renderer only resets and asks. It
     // also gates on the key frame after any reset, asking again if only
     // delta frames keep coming.
 
     /// Made in `init`; never nil after.
-    private var recovery: RAVEDecoderRecovery!
+    private var recovery: DecoderRecovery!
 
     init(displayLayer: AVSampleBufferDisplayLayer) {
         self.displayLayer = displayLayer
         self.sink = displayLayer.sampleBufferRenderer
-        recovery = RAVEDecoderRecovery(
+        recovery = DecoderRecovery(
             renderer: sink,
             // A display layer that fails while decoding is available is a
             // stream it can't take; three tries, then the old error.
@@ -73,7 +73,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
 
     /// On the recovery's queue: reset whichever decoder is in use, then ask
     /// the host for a key frame.
-    private func recoverFromLoss(_ reason: RAVEDecoderRecovery.Reason) {
+    private func recoverFromLoss(_ reason: DecoderRecovery.Reason) {
         lock.lock()
         guard formatDescription != nil else {
             lock.unlock()

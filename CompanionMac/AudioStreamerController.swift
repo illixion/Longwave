@@ -312,13 +312,12 @@ final class AudioStreamerController {
         server.onInjectBackspace = { [weak self] count in
             Task { @MainActor [weak self] in self?.injection.deleteBackward(count) }
         }
-        do {
-            try server.start()
-            server.setAvailability(injection.statusByte)
-            injectServer = server
-        } catch {
-            lastError = error.localizedDescription
+        server.onListenerUnavailable = { [weak self] message in
+            Task { @MainActor [weak self] in self?.lastError = message }
         }
+        server.start()
+        server.setAvailability(injection.statusByte)
+        injectServer = server
     }
 
     /// Prompts for Accessibility, then refreshes the live channel's availability.
@@ -490,13 +489,10 @@ final class AudioStreamerController {
             self?.microphoneStatus = status
         }
         microphone.refreshStatus()
-        do {
-            try server.start()
-        } catch {
-            lastError = error.localizedDescription
-            serverRunning = false
-            return
+        server.onListenerUnavailable = { [weak self] message in
+            Task { @MainActor [weak self] in self?.lastError = message }
         }
+        server.start()
 
         // System-wide now-playing metadata + transport commands. Covers every
         // player (Apple Music streaming, Spotify, browser video) via

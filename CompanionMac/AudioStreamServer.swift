@@ -32,6 +32,9 @@ final class AudioStreamServer: @unchecked Sendable {
     nonisolated(unsafe) var onMicrophone: (@Sendable (MicrophonePacket) -> Void)?
     /// The headset stopped sending its microphone (fires on `queue`).
     nonisolated(unsafe) var onMicrophoneStopped: (@Sendable () -> Void)?
+    /// The port has stayed unbindable for a few seconds; still retrying
+    /// (fires on `queue`).
+    nonisolated(unsafe) var onListenerUnavailable: (@Sendable (String) -> Void)?
 
     private final class Client {
         let connection: NWConnection
@@ -82,7 +85,7 @@ final class AudioStreamServer: @unchecked Sendable {
     /// on `queue`.
     private nonisolated(unsafe) var header: AudioStreamHeader?
     private let queue = DispatchQueue(label: "pro.longwave.companion.server", qos: .userInteractive)
-    private nonisolated(unsafe) var listener: NWListener?
+    private let portListener: CompanionPortListener
     private nonisolated(unsafe) var clients: [ObjectIdentifier: Client] = [:]
     /// Heartbeat for the UDP/DTLS path so the receiver sees liveness during
     /// silence (no audio → no PCM datagrams). Runs on `queue`.
@@ -100,6 +103,7 @@ final class AudioStreamServer: @unchecked Sendable {
     nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
         self.keyring = keyring
+        portListener = CompanionPortListener(name: "Audio", queue: queue, log: log)
     }
 
     private nonisolated func makeListener() throws -> NWListener {
@@ -120,35 +124,18 @@ final class AudioStreamServer: @unchecked Sendable {
             for client in clients.values where client.credential != nil {
                 if !keyring.allows(client.credential?.deviceID, .audio) { remove(client.connection) }
             }
-            guard let old = listener else { return }
-            old.newConnectionHandler = nil
-            old.cancel()
-            listener = nil
-            rebind(attempt: 0)
+            portListener.replace()
         }
     }
 
-    private nonisolated func rebind(attempt: Int) {
-        do {
-            let listener = try makeListener()
-            self.listener = listener
-            listener.start(queue: queue)
-        } catch {
-            guard attempt < 20, keepAliveTimer != nil else {
-                log.error("Audio listener couldn't restart: \(error.localizedDescription, privacy: .public)")
-                return
-            }
-            queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [self] in
-                guard listener == nil, keepAliveTimer != nil else { return }
-                rebind(attempt: attempt + 1)
+    nonisolated func start() {
+        queue.async { [self] in
+            portListener.onUnavailable = { [weak self] message in self?.onListenerUnavailable?(message) }
+            portListener.start { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try makeListener()
             }
         }
-    }
-
-    nonisolated func start() throws {
-        let listener = try makeListener()
-        self.listener = listener
-        listener.start(queue: queue)
 
         // Heartbeat so a silent source still proves liveness. The source now
         // suppresses silent PCM (see SystemAudioTap), so without a beat a
@@ -185,8 +172,7 @@ final class AudioStreamServer: @unchecked Sendable {
         queue.async { [self] in
             keepAliveTimer?.cancel()
             keepAliveTimer = nil
-            listener?.cancel()
-            listener = nil
+            portListener.stop()
             for client in clients.values {
                 client.connection.cancel()
                 client.udp?.cancel()

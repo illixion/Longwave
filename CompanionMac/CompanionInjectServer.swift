@@ -14,11 +14,13 @@ final class CompanionInjectServer: @unchecked Sendable {
 
     nonisolated(unsafe) var onInjectText: (@Sendable (String) -> Void)?
     nonisolated(unsafe) var onInjectBackspace: (@Sendable (Int) -> Void)?
+    /// The port has stayed unbindable for a few seconds; still retrying.
+    nonisolated(unsafe) var onListenerUnavailable: (@Sendable (String) -> Void)?
 
     private let port: UInt16
     private let keyring: CompanionKeyring
     private let queue = DispatchQueue(label: "pro.longwave.companion.inject", qos: .userInitiated)
-    private nonisolated(unsafe) var listener: NWListener?
+    private let portListener: CompanionPortListener
     private nonisolated(unsafe) var client: NWConnection?
     private nonisolated(unsafe) var inbound = Data()
     /// Set once the client's `hello` proved a device holding the input grant.
@@ -29,24 +31,29 @@ final class CompanionInjectServer: @unchecked Sendable {
     nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
         self.keyring = keyring
+        portListener = CompanionPortListener(name: "Inject", queue: queue, log: log)
     }
 
-    nonisolated func start() throws {
-        let parameters = CompanionInjectCrypto.tlsTCPParameters(credentials: keyring.credentials)
-        parameters.allowLocalEndpointReuse = true
-        let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
-        self.listener = listener
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
+    nonisolated func start() {
+        queue.async { [self] in
+            portListener.onUnavailable = { [weak self] message in self?.onListenerUnavailable?(message) }
+            portListener.start { [weak self] in
+                guard let self else { throw CancellationError() }
+                let parameters = CompanionInjectCrypto.tlsTCPParameters(credentials: keyring.credentials)
+                parameters.allowLocalEndpointReuse = true
+                let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+                listener.newConnectionHandler = { [weak self] connection in
+                    self?.accept(connection)
+                }
+                return listener
+            }
+            log.info("Inject server starting on \(self.port)")
         }
-        listener.start(queue: queue)
-        log.info("Inject server listening on \(self.port)")
     }
 
     nonisolated func stop() {
         queue.async { [self] in
-            listener?.cancel()
-            listener = nil
+            portListener.stop()
             client?.cancel()
             client = nil
             inbound.removeAll()

@@ -169,7 +169,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
         category: "MacNativeStreamServer"
     )
 
-    private nonisolated(unsafe) var listener: NWListener?
+    private let portListener: CompanionPortListener
     /// Every viewer past its handshake, in the order they joined.
     private nonisolated(unsafe) var clients: [Client] = []
     /// Sockets that have completed TLS but not yet said hello. They receive
@@ -192,7 +192,6 @@ final class MacNativeStreamServer: @unchecked Sendable {
     private nonisolated(unsafe) var currentWindowFormats: [UInt32: Data] = [:]
     private nonisolated(unsafe) var mouseAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var keyboardAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
-    private nonisolated(unsafe) var stoppingListener: NWListener?
     /// The newest captured desktop frame, kept for still viewers: the screen
     /// only produces frames when it changes, but a viewport change must be
     /// answered from the picture already there.
@@ -207,24 +206,28 @@ final class MacNativeStreamServer: @unchecked Sendable {
     /// Fastest rate a still viewer is sent pictures at.
     private static let minStillIntervalNanos: UInt64 = 80_000_000
     private static let stillLossTimeoutNanos: UInt64 = 1_500_000_000
-    private nonisolated(unsafe) var stopCompletion: (@Sendable () -> Void)?
 
     nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
         self.keyring = keyring
+        portListener = CompanionPortListener(name: "Native stream", queue: queue, log: log)
     }
 
-    nonisolated func start() throws {
-        let listener = try makeListener()
-        self.listener = listener
-        listener.start(queue: queue)
+    nonisolated func start() {
+        queue.async { [self] in
+            portListener.onUnavailable = { [weak self] message in self?.onError?(message) }
+            portListener.start { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try makeListener()
+            }
+        }
     }
 
     /// A listener holds its PSKs for life, so a device enrolled or revoked
     /// needs a new one. Viewers already connected keep their connections —
     /// those still enrolled with the same grants stay, the rest are told why
-    /// and dropped. The port is rebound right after the old listener goes, so
-    /// only a connection attempt in that instant can miss.
+    /// and dropped. The port is rebound once the old listener has let it go,
+    /// so only a connection attempt in that instant can miss.
     nonisolated func reloadCredentials() {
         queue.async { [self] in
             for client in clients where client.isActive {
@@ -235,29 +238,7 @@ final class MacNativeStreamServer: @unchecked Sendable {
                     continue
                 }
             }
-            guard let old = listener else { return }
-            old.stateUpdateHandler = nil
-            old.newConnectionHandler = nil
-            old.cancel()
-            listener = nil
-            rebind(attempt: 0)
-        }
-    }
-
-    private nonisolated func rebind(attempt: Int) {
-        do {
-            let listener = try makeListener()
-            self.listener = listener
-            listener.start(queue: queue)
-        } catch {
-            guard attempt < 20 else {
-                onError?("Native stream listener couldn't restart: \(error.localizedDescription)")
-                return
-            }
-            queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [self] in
-                guard listener == nil, stopCompletion == nil else { return }
-                rebind(attempt: attempt + 1)
-            }
+            portListener.replace()
         }
     }
 
@@ -272,30 +253,12 @@ final class MacNativeStreamServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
-        listener.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .failed(let error):
-                self?.onError?("Native stream listener failed: \(error.localizedDescription)")
-                self?.finishStop()
-            case .cancelled:
-                self?.finishStop()
-            default:
-                break
-            }
-        }
         return listener
     }
 
     nonisolated func stop(completion: (@Sendable () -> Void)? = nil) {
         queue.async { [self] in
-            stopCompletion = completion
-            guard let listener else {
-                finishStop()
-                return
-            }
-            stoppingListener = listener
-            listener.cancel()
-            self.listener = nil
+            portListener.stop(completion: completion)
             for client in clients + pendingClients {
                 client.connection.cancel()
             }
@@ -305,10 +268,6 @@ final class MacNativeStreamServer: @unchecked Sendable {
             currentInventoryFrame = nil
             currentDisplayListFrame = nil
             currentWindowFormats = [:]
-            queue.asyncAfter(deadline: .now() + .milliseconds(250)) { [self] in
-                guard stopCompletion != nil else { return }
-                finishStop()
-            }
         }
     }
 
@@ -1038,15 +997,6 @@ final class MacNativeStreamServer: @unchecked Sendable {
                 onWindowStreamStop?(streamID)
             }
             onClientsChanged?(clients.map(\.summary))
-        }
-    }
-
-    private nonisolated func finishStop() {
-        queue.async { [self] in
-            let completion = stopCompletion
-            stopCompletion = nil
-            stoppingListener = nil
-            completion?()
         }
     }
 }

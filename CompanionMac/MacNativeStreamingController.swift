@@ -691,16 +691,11 @@ final class MacNativeStreamingController {
             log.error("Watch server failed to start: \(error.localizedDescription, privacy: .public)")
         }
 
-        do {
-            self.server = server
-            try server.start()
-            server.setMouseAvailability(input.mouseStatusByte)
-            server.setKeyboardAvailability(input.keyboardStatusByte)
-            refreshDisplays()
-        } catch {
-            self.server = nil
-            lastError = error.localizedDescription
-        }
+        self.server = server
+        server.start()
+        server.setMouseAvailability(input.mouseStatusByte)
+        server.setKeyboardAvailability(input.keyboardStatusByte)
+        refreshDisplays()
     }
 
     private func stopServer() {

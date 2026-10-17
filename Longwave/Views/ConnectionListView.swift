@@ -116,42 +116,49 @@ struct ConnectionListView: View {
                     .padding()
                 }
             }
-            .sheet(isPresented: $showingNewConnection) {
-                NavigationStack {
-                    ConnectionFormView(savedConnection: nil)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Cancel") {
-                                    showingNewConnection = false
-                                }
-                            }
-                        }
-                }
-            }
-            .sheet(item: $connectionToEdit) { connection in
-                NavigationStack {
-                    ConnectionFormView(savedConnection: connection)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Cancel") {
-                                    connectionToEdit = nil
-                                }
-                            }
-                        }
-                }
-            }
-            #if MOONLIGHT_ENABLED
-            .sheet(item: $moonlightSheet) { target in
-                MoonlightPairingView(connection: target.connection)
-                    .environment(target.session)
-            }
-            .alert("All Moonlight sessions are in use", isPresented: $showingMoonlightSessionsBusy) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Longwave can stream from \(MoonlightLibrary.count) hosts at once. Disconnect one of the running streams to start another.")
-            }
-            #endif
         }
+        // Presented from the NavigationStack, not from inside it. As the
+        // detail column of LongwaveMac's NavigationSplitView, a `.sheet`
+        // inside the stack never appears on macOS 15 once the window has
+        // restored its saved split-view frames, which is every launch after
+        // the first: the binding turns true, SwiftUI builds no sheet, nothing
+        // is logged, and every later click is a no-op. Seen on 15.8; macOS 27
+        // presents either way.
+        .sheet(isPresented: $showingNewConnection) {
+            NavigationStack {
+                ConnectionFormView(savedConnection: nil)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showingNewConnection = false
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(item: $connectionToEdit) { connection in
+            NavigationStack {
+                ConnectionFormView(savedConnection: connection)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                connectionToEdit = nil
+                            }
+                        }
+                    }
+            }
+        }
+        #if MOONLIGHT_ENABLED
+        .sheet(item: $moonlightSheet) { target in
+            MoonlightPairingView(connection: target.connection)
+                .environment(target.session)
+        }
+        .alert("All Moonlight sessions are in use", isPresented: $showingMoonlightSessionsBusy) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Longwave can stream from \(MoonlightLibrary.count) hosts at once. Disconnect one of the running streams to start another.")
+        }
+        #endif
     }
 
     private var emptyStateDescription: String {

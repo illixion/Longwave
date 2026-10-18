@@ -356,6 +356,32 @@ struct ConnectionListView: View {
     #if !os(macOS)
     private func connectSSH(_ connection: SavedConnection) {
         do {
+            #if os(iOS)
+            let id: SSHSessionID
+            if let fingerprint = connection.sshYubiKeyFingerprint {
+                id = try sshManager.newYubiKeyShellSession(
+                    host: connection.hostname,
+                    port: connection.port,
+                    username: connection.sshUsername,
+                    displayName: connection.displayName,
+                    command: connection.sshLaunchCommand,
+                    environment: connection.sshEnvironmentVariables(),
+                    useTmux: connection.sshUseTmux,
+                    keyFingerprint: fingerprint,
+                    hostFingerprint: connection.sshHostFingerprint ?? ""
+                )
+            } else {
+                id = try sshManager.newShellSession(
+                    host: connection.hostname,
+                    port: connection.port,
+                    username: connection.sshUsername,
+                    displayName: connection.displayName,
+                    command: connection.sshLaunchCommand,
+                    environment: connection.sshEnvironmentVariables(),
+                    useTmux: connection.sshUseTmux
+                )
+            }
+            #else
             let id = try sshManager.newShellSession(
                 host: connection.hostname,
                 port: connection.port,
@@ -365,6 +391,7 @@ struct ConnectionListView: View {
                 environment: connection.sshEnvironmentVariables(),
                 useTmux: connection.sshUseTmux
             )
+            #endif
             openWindow(id: "ssh-terminal", value: id)
         } catch {
             // Device-key generation failure is rare; the terminal window

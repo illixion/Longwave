@@ -20,9 +20,12 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate {
 
     /// Reading `ProcessInfo.processInfo.hostName` performs a local-network
     /// lookup, which is enough to make the system show the Local Network
-    /// permission dialog. The value is discarded — the read is the trigger.
+    /// permission dialog. The lookup can block while iOS resolves the device
+    /// name, so keep it off the launch callback's main thread.
     private func triggerLocalNetworkAccessPrompt() {
-        let hostName = ProcessInfo.processInfo.hostName
-        AppLog.app.log("Local network access prompt triggered (host: \(hostName))")
+        DispatchQueue.global(qos: .utility).async {
+            let hostName = ProcessInfo.processInfo.hostName
+            AppLog.app.log("Local network access prompt triggered (host: \(hostName))")
+        }
     }
 }

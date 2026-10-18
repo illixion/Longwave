@@ -91,6 +91,9 @@ final class SSHSession: Identifiable {
     /// connect (or a terminate) can't open a stale PTY.
     private var connectGeneration = 0
     private var privateKey: NIOSSHPrivateKey?
+    private var authenticationProvider: (any SSHAuthenticationProvider)?
+    private var authenticationPreparation: Task<Void, Never>?
+    private var preparedAuthentication: SSHPreparedAuthentication?
     private var group: NIOTSEventLoopGroup?
 
     // Auto-reconnect (mirrors AudioStreamManager's idioms): a drop while the
@@ -125,6 +128,17 @@ final class SSHSession: Identifiable {
                prelaunch: Prelaunch? = nil) {
         self.config = config
         self.privateKey = privateKey
+        self.authenticationProvider = nil
+        self.group = group
+        self.prelaunch = prelaunch
+        connect()
+    }
+
+    func start(config: SSHConnection.Config, authenticationProvider: any SSHAuthenticationProvider,
+               group: NIOTSEventLoopGroup, prelaunch: Prelaunch? = nil) {
+        self.config = config
+        self.privateKey = nil
+        self.authenticationProvider = authenticationProvider
         self.group = group
         self.prelaunch = prelaunch
         connect()
@@ -148,6 +162,10 @@ final class SSHSession: Identifiable {
     /// claude after Ctrl+C), then the PTY re-attaches.
     func restart() {
         userTerminated = false
+        authenticationPreparation?.cancel()
+        authenticationPreparation = nil
+        authenticationProvider?.cancelAuthentication()
+        preparedAuthentication = nil
         retryTask?.cancel()
         retryTask = nil
         connection?.close()
@@ -203,7 +221,9 @@ final class SSHSession: Identifiable {
     }
 
     private func scheduleRetry() {
-        guard windowVisible, !userTerminated else { return }
+        // A hardware key needs a fresh, explicit NFC interaction on every
+        // handshake. Don't repeatedly raise the NFC sheet on a timer.
+        guard windowVisible, !userTerminated, authenticationProvider == nil else { return }
         retryTask?.cancel()
         let delay = retryDelay
         retryDelay = Self.nextRetryDelay(retryDelay)
@@ -246,28 +266,67 @@ final class SSHSession: Identifiable {
             }
             return
         }
-        guard let privateKey, let group, config != nil else { return }
+        guard config != nil, privateKey != nil || authenticationProvider != nil else { return }
         state = .connecting
         connectGeneration += 1
-        guard let prelaunch else {
-            openTerminal()
+        let generation = connectGeneration
+        authenticationPreparation?.cancel()
+        preparedAuthentication = nil
+
+        if let authenticationProvider {
+            authenticationPreparation = Task { @MainActor [weak self, weak authenticationProvider] in
+                guard let self, let authenticationProvider else { return }
+                do {
+                    let prepared = try await authenticationProvider.prepareAuthentication()
+                    guard generation == self.connectGeneration, !self.userTerminated else {
+                        authenticationProvider.cancelAuthentication()
+                        return
+                    }
+                    self.preparedAuthentication = prepared
+                    self.startTransport(generation: generation)
+                } catch {
+                    guard generation == self.connectGeneration, !self.userTerminated else { return }
+                    authenticationProvider.cancelAuthentication()
+                    self.state = .failed(error.localizedDescription)
+                    self.isAutoReconnecting = false
+                }
+            }
             return
         }
-        let generation = connectGeneration
+
+        startTransport(generation: generation)
+    }
+
+    private func startTransport(generation: Int) {
+        guard generation == connectGeneration, let group else { return }
+        guard privateKey != nil || preparedAuthentication != nil else { return }
+        guard let prelaunch else {
+            openTerminal(authentication: preparedAuthentication)
+            return
+        }
         connection = nil
-        SSHCommandRunner.run(host: host, port: port, username: username, command: prelaunch.command,
-                             stdin: prelaunch.stdin, privateKey: privateKey, group: group) { result in
-            Task { @MainActor [weak self] in
-                guard let self, generation == self.connectGeneration, !self.userTerminated else { return }
-                self.finishPrelaunch(result)
+        let session = self
+        let completion: @Sendable (Result<String, Error>) -> Void = { [weak session] result in
+            Task { @MainActor [weak session] in
+                guard let session, generation == session.connectGeneration, !session.userTerminated else { return }
+                session.finishPrelaunch(result)
             }
+        }
+        if let preparedAuthentication {
+            SSHCommandRunner.run(host: host, port: port, username: username, command: prelaunch.command,
+                                 stdin: prelaunch.stdin, authentication: preparedAuthentication,
+                                 group: group, completion: completion)
+        } else if let privateKey {
+            SSHCommandRunner.run(host: host, port: port, username: username, command: prelaunch.command,
+                                 stdin: prelaunch.stdin, privateKey: privateKey, group: group,
+                                 completion: completion)
         }
     }
 
     private func finishPrelaunch(_ result: Result<String, Error>) {
         switch result {
         case .success(let output) where output.contains(SSHTerminalManager.agentCreatedMarker):
-            openTerminal()
+            openTerminal(authentication: preparedAuthentication)
         case .success(let output) where output.contains(SSHTerminalManager.agentNoTmuxMarker):
             // Retrying can't install tmux, so don't schedule one.
             state = .failed("tmux isn't installed on this host (or isn't on the login shell's PATH).")
@@ -275,16 +334,24 @@ final class SSHSession: Identifiable {
             state = .failed("The session couldn't be created on the host.")
             scheduleRetry()
         case .failure(let error):
+            authenticationProvider?.finishAuthentication()
+            preparedAuthentication = nil
             state = .failed(error.localizedDescription)
-            scheduleRetry()
+            if authenticationProvider == nil { scheduleRetry() }
         }
     }
 
-    private func openTerminal() {
-        guard var config, let privateKey, let group else { return }
+    private func openTerminal(authentication: SSHPreparedAuthentication?) {
+        guard var config, let group else { return }
         config.cols = lastCols
         config.rows = lastRows
-        let conn = SSHConnection(config: config, privateKey: privateKey, group: group)
+        let conn: SSHConnection
+        if let authentication {
+            conn = SSHConnection(config: config, authenticationOffer: authentication.offer,
+                                 serverAuthDelegate: authentication.serverAuthDelegate, group: group)
+        } else if let privateKey {
+            conn = SSHConnection(config: config, privateKey: privateKey, group: group)
+        } else { return }
         // Events are dropped unless they come from the *current* connection, so
         // a discarded connection's close can't clobber a restarted session.
         conn.onEvent = { [weak self, weak conn] event in
@@ -303,6 +370,8 @@ final class SSHSession: Identifiable {
             state = .ready
             retryDelay = 2
             isAutoReconnecting = false
+            authenticationProvider?.finishAuthentication()
+            preparedAuthentication = nil
             // Belt-and-braces: replay the live size in case the PTY opened at
             // the config default (idempotent — tmux ignores no-op resizes).
             connection?.resize(cols: lastCols, rows: lastRows)
@@ -321,10 +390,14 @@ final class SSHSession: Identifiable {
             }
         case .closed(let reason):
             state = .closed(reason)
-            scheduleRetry()
+            authenticationProvider?.finishAuthentication()
+            preparedAuthentication = nil
+            if authenticationProvider == nil { scheduleRetry() }
         case .failed(let message):
+            authenticationProvider?.finishAuthentication()
+            preparedAuthentication = nil
             state = .failed(message)
-            scheduleRetry()
+            if authenticationProvider == nil { scheduleRetry() }
         }
     }
 
@@ -446,6 +519,10 @@ final class SSHSession: Identifiable {
 
     func terminate() {
         userTerminated = true
+        authenticationPreparation?.cancel()
+        authenticationPreparation = nil
+        authenticationProvider?.cancelAuthentication()
+        preparedAuthentication = nil
         retryTask?.cancel()
         retryTask = nil
         pendingDetachTask?.cancel()
@@ -522,6 +599,33 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
                                 username: username, command: launch, kind: .shell, cwd: nil)
     }
 
+    #if os(iOS)
+    /// Opens a terminal using an enrolled OpenPGP authentication key. The
+    /// provider scans and verifies the selected card before every SSH
+    /// handshake; a reconnect starts a fresh, user-visible NFC scan.
+    @discardableResult
+    func newYubiKeyShellSession(host: String, port: Int, username: String,
+                                displayName: String, command: String,
+                                environment: [(name: String, value: String)] = [],
+                                useTmux: Bool = true,
+                                keyFingerprint: String,
+                                hostFingerprint: String) throws -> SSHSessionID {
+        let title = displayName.isEmpty ? host : displayName
+        let slug = Self.slug(title)
+        let launch = useTmux
+            ? Self.persistentShellCommand(tmuxSession: "vnc-\(slug)", launch: command,
+                                          environment: environment)
+            : Self.shellCommand(launch: command, environment: environment)
+        let provider = YubiKeySSHAuthenticationProvider(
+            keyFingerprint: keyFingerprint,
+            expectedHostFingerprint: hostFingerprint
+        )
+        return try startSession(slug: slug, title: title, host: host, port: port,
+                                username: username, command: launch, kind: .shell, cwd: nil,
+                                authenticationProvider: provider)
+    }
+    #endif
+
     /// Open or re-attach a managed Claude session in `folder`, tmux-backed so it
     /// survives disconnects (created if absent, then attached) under a
     /// login+interactive shell (brew/nvm/bun PATHs resolve). Creation and attach
@@ -556,18 +660,26 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
     private func startSession(slug: String, title: String, host: String, port: Int,
                               username: String, command: String,
                               kind: SSHSession.Kind, cwd: String?,
-                              prelaunch: SSHSession.Prelaunch? = nil) throws -> SSHSessionID {
+                              prelaunch: SSHSession.Prelaunch? = nil,
+                              authenticationProvider: (any SSHAuthenticationProvider)? = nil) throws -> SSHSessionID {
         let id = SSHSessionID(raw: slug)
         if let existing = session(id) { return existing.id }
+        let key: SecureEnclaveSSHKey?
+        if authenticationProvider == nil { key = try deviceKey() }
+        else { key = nil }
 
-        let key = try deviceKey()
         let config = SSHConnection.Config(
             host: host, port: port, username: username,
             command: command, cols: 80, rows: 24
         )
         let session = SSHSession(id: id, title: title, host: host, port: port, username: username, kind: kind, cwd: cwd)
         sessions.append(session)
-        session.start(config: config, privateKey: key.nioPrivateKey, group: group, prelaunch: prelaunch)
+        if let authenticationProvider {
+            session.start(config: config, authenticationProvider: authenticationProvider,
+                          group: group, prelaunch: prelaunch)
+        } else if let key {
+            session.start(config: config, privateKey: key.nioPrivateKey, group: group, prelaunch: prelaunch)
+        }
         log.info("Opened SSH session \(slug, privacy: .private(mask: .hash)) to \(host, privacy: .private(mask: .hash))")
         return id
     }

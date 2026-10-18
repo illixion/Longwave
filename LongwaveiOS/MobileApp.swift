@@ -35,6 +35,7 @@ import DebugTraceServer
 @main
 struct LongwaveMobileApp: App {
     @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var appDelegate
+    @State private var modelContainer: ModelContainer
     @State private var connectionManager = VNCConnectionManager()
     @State private var audioManager = AudioStreamManager()
     @State private var macNativeSessions = MacNativeSessionStore()
@@ -46,6 +47,16 @@ struct LongwaveMobileApp: App {
     init() {
         AppLog.configureDebugTrace()
         DebugTraceServer.startIfRequested()
+
+        let cloudKitDatabase: ModelConfiguration.CloudKitDatabase =
+            Bundle.main.bundleIdentifier == "pro.longwave.ios" ? .automatic : .none
+        let configuration = ModelConfiguration(cloudKitDatabase: cloudKitDatabase)
+        _modelContainer = State(
+            initialValue: try! ModelContainer(
+                for: SavedConnection.self,
+                configurations: configuration
+            )
+        )
     }
 
     var body: some Scene {
@@ -64,6 +75,6 @@ struct LongwaveMobileApp: App {
                     connectionManager.audioManager = audioManager
                 }
         }
-        .modelContainer(for: SavedConnection.self)
+        .modelContainer(modelContainer)
     }
 }

@@ -7,16 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		EE30AD100000000000000024 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000014 /* RoyalVNCKit */; };
-		EE30AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000010 /* NIOSSH */; };
-		EE30AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000011 /* NIOCore */; };
-		EE30AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000012 /* NIOTransportServices */; };
-		EE30AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000013 /* Crypto */; };
-		EE20AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000010 /* NIOSSH */; };
-		EE20AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000011 /* NIOCore */; };
-		EE20AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000012 /* NIOTransportServices */; };
-		EE20AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000013 /* Crypto */; };
 		113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = FEC92747F5953D917428BFA0 /* RoyalVNCKit */; };
+		1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 963354E9CC7BD15748B4C6C1 /* DebugTraceUI */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
 		1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B42F7FCBFA00C67700 /* Opus */; };
 		1D8097C10000000000000002 /* MoonlightCommonC1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097C10000000000000001 /* MoonlightCommonC1 */; };
@@ -33,8 +25,14 @@
 		5511C0DE0000000000000023 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000013 /* NIOCore */; };
 		5511C0DE0000000000000024 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000014 /* NIOTransportServices */; };
 		5511C0DE0000000000000025 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 5511C0DE0000000000000015 /* Crypto */; };
+		581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 49DA0DAB242221098318CF98 /* DebugTraceServer */; };
 		5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9B918A25E70DE211DA3B92A /* Cocoa.framework */; };
+		60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 3DBD8B1498560A799C9CBA40 /* DebugTraceUI */; };
+		8E25FB7284363F3A2FAA7DE6 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A115112080FBEE8A24FD5E66 /* DebugTraceUI */; };
 		A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */; };
+		A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000010 /* WatchLinkProtocol.swift */; };
+		A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000011 /* MacNativeStreamProtocol.swift */; };
+		A7C400000000000000000022 /* CompanionDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000012 /* CompanionDevices.swift */; };
 		AA03000000000000000000A3 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A2 /* RAVEInput */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B2 /* RAVEDiagnostics */; };
@@ -45,12 +43,18 @@
 		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
 		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
 		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
-		AA07000000000000000000F1 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F0 /* RAVESpatialAudio */; };
-		AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F2 /* RAVESpatialAudio */; };
-		AA07000000000000000000F5 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F4 /* RAVESpatialAudio */; };
 		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
 		AA07000000000000000000DF /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DE /* RAVECamera */; };
 		AA07000000000000000000E9 /* RAVEBrowser in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000E8 /* RAVEBrowser */; };
+		AA07000000000000000000F1 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F0 /* RAVESpatialAudio */; };
+		AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F2 /* RAVESpatialAudio */; };
+		AA07000000000000000000F5 /* RAVESpatialAudio in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000F4 /* RAVESpatialAudio */; };
+		AA0D00000000000000000011 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000010 /* DebugTrace */; };
+		AA0D00000000000000000013 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000012 /* DebugTrace */; };
+		AA0D00000000000000000015 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000014 /* DebugTrace */; };
+		AA0D00000000000000000017 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000016 /* DebugTrace */; };
+		AA0D00000000000000000019 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000018 /* DebugTrace */; };
+		AA0E00000000000000000001 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA0E00000000000000000002 /* RAVEConsole */; };
 		CCBB0000000000000000000E /* LongwaveBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* LongwaveBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CCBB00000000000000000031 /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = CCBB00000000000000000030 /* RAVECamera */; };
 		DD1010000000000000000021 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000011 /* RoyalVNCKit */; };
@@ -64,24 +68,20 @@
 		DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000019 /* RAVEDiagnostics */; };
 		DD101000000000000000002B /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = DD101000000000000000002A /* RAVEMedia */; };
 		DD101000000000000000002D /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = DD101000000000000000002C /* RAVEUI */; };
-		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
-		AA0D00000000000000000011 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000010 /* DebugTrace */; };
-		581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 49DA0DAB242221098318CF98 /* DebugTraceServer */; };
-		8E25FB7284363F3A2FAA7DE6 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = A115112080FBEE8A24FD5E66 /* DebugTraceUI */; };
-		AA0D00000000000000000013 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000012 /* DebugTrace */; };
 		E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = F2152CE5902DF25125171222 /* DebugTraceServer */; };
+		EE20AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000010 /* NIOSSH */; };
+		EE20AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000011 /* NIOCore */; };
+		EE20AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000012 /* NIOTransportServices */; };
+		EE20AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE20AD100000000000000013 /* Crypto */; };
+		EE30AD100000000000000020 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000010 /* NIOSSH */; };
+		EE30AD100000000000000021 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000011 /* NIOCore */; };
+		EE30AD100000000000000022 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000012 /* NIOTransportServices */; };
+		EE30AD100000000000000023 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000013 /* Crypto */; };
+		EE30AD100000000000000024 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = EE30AD100000000000000014 /* RoyalVNCKit */; };
 		F86FABAC05A9C0902FA2AFB0 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 811CE68C9E31A423F2FD2891 /* DebugTraceUI */; };
-		AA0D00000000000000000015 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000014 /* DebugTrace */; };
-		FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 5AA06485057FFDC64EA7AB06 /* DebugTraceServer */; };
-		1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 963354E9CC7BD15748B4C6C1 /* DebugTraceUI */; };
-		AA0E00000000000000000001 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA0E00000000000000000002 /* RAVEConsole */; };
-		AA0D00000000000000000017 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000016 /* DebugTrace */; };
-		AA0D00000000000000000019 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000018 /* DebugTrace */; };
+		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
 		F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 2400FFE83ED88B2946B909F6 /* DebugTraceServer */; };
-		60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 3DBD8B1498560A799C9CBA40 /* DebugTraceUI */; };
-		A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000010 /* WatchLinkProtocol.swift */; };
-		A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000011 /* MacNativeStreamProtocol.swift */; };
-		A7C400000000000000000022 /* CompanionDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000012 /* CompanionDevices.swift */; };
+		FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 5AA06485057FFDC64EA7AB06 /* DebugTraceServer */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -126,16 +126,16 @@
 		1DA30DF53068EFCD00952C39 /* LongwaveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LongwaveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1DC83C272F74524200BF0482 /* Longwave.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Longwave.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5B135754F5FB6AA031143FD /* LongwaveMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A7C400000000000000000001 /* LongwaveWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A7C400000000000000000010 /* WatchLinkProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchLinkProtocol.swift; path = Shared/WatchLinkProtocol.swift; sourceTree = SOURCE_ROOT; };
+		A7C400000000000000000011 /* MacNativeStreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MacNativeStreamProtocol.swift; path = Shared/MacNativeStreamProtocol.swift; sourceTree = SOURCE_ROOT; };
+		A7C400000000000000000012 /* CompanionDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CompanionDevices.swift; path = Shared/CompanionDevices.swift; sourceTree = SOURCE_ROOT; };
 		A9B918A25E70DE211DA3B92A /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		AA10AD100000000000000001 /* LongwaveCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA10AD10000000000000000C /* Longwave.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Longwave.xcconfig; path = Configuration/Longwave.xcconfig; sourceTree = "<group>"; };
 		BBAA00000000000000000001 /* LongwaveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LongwaveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CCBB00000000000000000001 /* LongwaveBroadcast.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LongwaveBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD1010000000000000000001 /* LongwaveiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A7C400000000000000000001 /* LongwaveWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LongwaveWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A7C400000000000000000010 /* WatchLinkProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchLinkProtocol.swift; path = Shared/WatchLinkProtocol.swift; sourceTree = SOURCE_ROOT; };
-		A7C400000000000000000011 /* MacNativeStreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MacNativeStreamProtocol.swift; path = Shared/MacNativeStreamProtocol.swift; sourceTree = SOURCE_ROOT; };
-		A7C400000000000000000012 /* CompanionDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CompanionDevices.swift; path = Shared/CompanionDevices.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -145,6 +145,13 @@
 				Info.plist,
 			);
 			target = 1DC83C262F74524200BF0482 /* Longwave */;
+		};
+		A7C400000000000000000003 /* Exceptions for "LongwaveWatch" folder in "LongwaveWatch" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A7C400000000000000000004 /* LongwaveWatch */;
 		};
 		AA10AD100000000000000003 /* Exceptions for "CompanionMac" folder in "LongwaveCompanion" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -219,13 +226,6 @@
 			);
 			target = 228F25EB1D6A2BB4D767CB5C /* LongwaveMac */;
 		};
-		A7C400000000000000000003 /* Exceptions for "LongwaveWatch" folder in "LongwaveWatch" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = A7C400000000000000000004 /* LongwaveWatch */;
-		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -242,6 +242,14 @@
 				DD1010000000000000000004 /* Exceptions for "Longwave" folder in "LongwaveiOS" target */,
 			);
 			path = Longwave;
+			sourceTree = "<group>";
+		};
+		A7C400000000000000000002 /* LongwaveWatch */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A7C400000000000000000003 /* Exceptions for "LongwaveWatch" folder in "LongwaveWatch" target */,
+			);
+			path = LongwaveWatch;
 			sourceTree = "<group>";
 		};
 		AA10AD100000000000000002 /* CompanionMac */ = {
@@ -288,14 +296,6 @@
 			path = LongwaveiOS;
 			sourceTree = "<group>";
 		};
-		A7C400000000000000000002 /* LongwaveWatch */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				A7C400000000000000000003 /* Exceptions for "LongwaveWatch" folder in "LongwaveWatch" target */,
-			);
-			path = LongwaveWatch;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -311,7 +311,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000011 /* DebugTrace in Frameworks */,
-				581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */,	8E25FB7284363F3A2FAA7DE6 /* DebugTraceUI in Frameworks */,
+				581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */,
+				8E25FB7284363F3A2FAA7DE6 /* DebugTraceUI in Frameworks */,
 				1DC83C3D2F74587300BF0482 /* RoyalVNCKit in Frameworks */,
 				1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */,
 				1D8097B52F7FCBFA00C67700 /* Opus in Frameworks */,
@@ -334,12 +335,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A7C400000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA10AD100000000000000007 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000015 /* DebugTrace in Frameworks */,
-				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,	1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */,
+				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,
+				1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */,
 				AA0E00000000000000000001 /* RAVEConsole in Frameworks */,
 				EE30AD100000000000000020 /* NIOSSH in Frameworks */,
 				EE30AD100000000000000021 /* NIOCore in Frameworks */,
@@ -370,7 +379,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0D00000000000000000019 /* DebugTrace in Frameworks */,
-				F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */,	60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */,
+				F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */,
+				60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */,
 				DD1010000000000000000021 /* RoyalVNCKit in Frameworks */,
 				1D8097C30000000000000002 /* MoonlightCommonC in Frameworks */,
 				1D8097C30000000000000004 /* Opus in Frameworks */,
@@ -399,7 +409,8 @@
 				EE20AD100000000000000022 /* NIOTransportServices in Frameworks */,
 				EE20AD100000000000000023 /* Crypto in Frameworks */,
 				AA0D00000000000000000013 /* DebugTrace in Frameworks */,
-				E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */,	F86FABAC05A9C0902FA2AFB0 /* DebugTraceUI in Frameworks */,
+				E2ACCDA7080025FA91856AFE /* DebugTraceServer in Frameworks */,
+				F86FABAC05A9C0902FA2AFB0 /* DebugTraceUI in Frameworks */,
 				5FCDCC2C45E796069E924C00 /* Cocoa.framework in Frameworks */,
 				113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */,
 				A2CD5A8858F7828762675B5E /* MoonlightCommonC in Frameworks */,
@@ -412,13 +423,6 @@
 				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
 				AA07000000000000000000DD /* RAVEMedia in Frameworks */,
 				AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A7C400000000000000000006 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -552,7 +556,8 @@
 			name = Longwave;
 			packageProductDependencies = (
 				AA0D00000000000000000010 /* DebugTrace */,
-				49DA0DAB242221098318CF98 /* DebugTraceServer */,	A115112080FBEE8A24FD5E66 /* DebugTraceUI */,
+				49DA0DAB242221098318CF98 /* DebugTraceServer */,
+				A115112080FBEE8A24FD5E66 /* DebugTraceUI */,
 				1DC83C3C2F74587300BF0482 /* RoyalVNCKit */,
 				1D8097B12F7FCBED00C67700 /* MoonlightCommonC */,
 				1D8097B42F7FCBFA00C67700 /* Opus */,
@@ -601,7 +606,8 @@
 				EE20AD100000000000000012 /* NIOTransportServices */,
 				EE20AD100000000000000013 /* Crypto */,
 				AA0D00000000000000000012 /* DebugTrace */,
-				F2152CE5902DF25125171222 /* DebugTraceServer */,	811CE68C9E31A423F2FD2891 /* DebugTraceUI */,
+				F2152CE5902DF25125171222 /* DebugTraceServer */,
+				811CE68C9E31A423F2FD2891 /* DebugTraceUI */,
 				FEC92747F5953D917428BFA0 /* RoyalVNCKit */,
 				3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */,
 				BCF95F097C7D2DFE3EF72400 /* Opus */,
@@ -616,6 +622,28 @@
 			);
 			productName = LongwaveMac;
 			productReference = A5B135754F5FB6AA031143FD /* LongwaveMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A7C400000000000000000004 /* LongwaveWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7C400000000000000000008 /* Build configuration list for PBXNativeTarget "LongwaveWatch" */;
+			buildPhases = (
+				A7C400000000000000000005 /* Sources */,
+				A7C400000000000000000006 /* Frameworks */,
+				A7C400000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A7C400000000000000000002 /* LongwaveWatch */,
+			);
+			name = LongwaveWatch;
+			packageProductDependencies = (
+			);
+			productName = LongwaveWatch;
+			productReference = A7C400000000000000000001 /* LongwaveWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 		AA10AD100000000000000005 /* LongwaveCompanion */ = {
@@ -639,7 +667,8 @@
 			name = LongwaveCompanion;
 			packageProductDependencies = (
 				AA0D00000000000000000014 /* DebugTrace */,
-				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,	963354E9CC7BD15748B4C6C1 /* DebugTraceUI */,
+				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,
+				963354E9CC7BD15748B4C6C1 /* DebugTraceUI */,
 				AA0E00000000000000000002 /* RAVEConsole */,
 				EE30AD100000000000000010 /* NIOSSH */,
 				EE30AD100000000000000011 /* NIOCore */,
@@ -717,7 +746,8 @@
 			name = LongwaveiOS;
 			packageProductDependencies = (
 				AA0D00000000000000000018 /* DebugTrace */,
-				2400FFE83ED88B2946B909F6 /* DebugTraceServer */,	3DBD8B1498560A799C9CBA40 /* DebugTraceUI */,
+				2400FFE83ED88B2946B909F6 /* DebugTraceServer */,
+				3DBD8B1498560A799C9CBA40 /* DebugTraceUI */,
 				DD1010000000000000000011 /* RoyalVNCKit */,
 				1D8097C30000000000000001 /* MoonlightCommonC */,
 				1D8097C30000000000000003 /* Opus */,
@@ -737,28 +767,6 @@
 			);
 			productName = LongwaveiOS;
 			productReference = DD1010000000000000000001 /* LongwaveiOS.app */;
-			productType = "com.apple.product-type.application";
-		};
-		A7C400000000000000000004 /* LongwaveWatch */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A7C400000000000000000008 /* Build configuration list for PBXNativeTarget "LongwaveWatch" */;
-			buildPhases = (
-				A7C400000000000000000005 /* Sources */,
-				A7C400000000000000000006 /* Frameworks */,
-				A7C400000000000000000007 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				A7C400000000000000000002 /* LongwaveWatch */,
-			);
-			name = LongwaveWatch;
-			packageProductDependencies = (
-			);
-			productName = LongwaveWatch;
-			productReference = A7C400000000000000000001 /* LongwaveWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -803,7 +811,7 @@
 				AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */,
 				AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */,
 				5511C0DE0000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
-				5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+				5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */,
 				5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */,
 				5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */,
 				5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */,
@@ -847,6 +855,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A7C400000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA10AD100000000000000008 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -869,13 +884,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		DD1010000000000000000008 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A7C400000000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -981,6 +989,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A7C400000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */,
+				A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */,
+				A7C400000000000000000022 /* CompanionDevices.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA10AD100000000000000006 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1006,16 +1024,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A7C400000000000000000005 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				A7C400000000000000000020 /* WatchLinkProtocol.swift in Sources */,
-				A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */,
-				A7C400000000000000000022 /* CompanionDevices.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1283,6 +1291,69 @@
 			};
 			name = Release;
 		};
+		A7C400000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9T5F88VJFL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LongwaveWatch/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = pro.longwave.ios;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		A7C40000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9T5F88VJFL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LongwaveWatch/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = pro.longwave.ios;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				VALIDATE_PRODUCT = YES;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
 		AA10AD10000000000000000A /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1525,14 +1596,20 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = LongwaveiOS/LongwaveiOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9T5F88VJFL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = LongwaveiOS/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
 				INFOPLIST_KEY_GCSupportsControllerUserInteraction = YES;
+				INFOPLIST_KEY_NFCReaderUsageDescription = "Longwave reads public metadata from your OpenPGP YubiKey to test NFC SSH authentication.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Longwave connects to remote desktops, SSH hosts, and the Companion on your local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1560,14 +1637,20 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = LongwaveiOS/LongwaveiOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9T5F88VJFL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = LongwaveiOS/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
 				INFOPLIST_KEY_GCSupportsControllerUserInteraction = YES;
+				INFOPLIST_KEY_NFCReaderUsageDescription = "Longwave reads public metadata from your OpenPGP YubiKey to test NFC SSH authentication.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Longwave connects to remote desktops, SSH hosts, and the Companion on your local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1586,69 +1669,6 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		A7C400000000000000000009 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9T5F88VJFL;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = LongwaveWatch/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = pro.longwave.ios;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios.watchkitapp;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "watchos watchsimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = Debug;
-		};
-		A7C40000000000000000000A /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9T5F88VJFL;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = LongwaveWatch/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Longwave;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = pro.longwave.ios;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = pro.longwave.ios.watchkitapp;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "watchos watchsimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -1692,6 +1712,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A7C400000000000000000008 /* Build configuration list for PBXNativeTarget "LongwaveWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7C400000000000000000009 /* Debug */,
+				A7C40000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		AA10AD100000000000000009 /* Build configuration list for PBXNativeTarget "LongwaveCompanion" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1728,15 +1757,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A7C400000000000000000008 /* Build configuration list for PBXNativeTarget "LongwaveWatch" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				A7C400000000000000000009 /* Debug */,
-				A7C40000000000000000000A /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1751,6 +1771,10 @@
 		1DC83C3B2F74587300BF0482 /* XCLocalSwiftPackageReference "repos/royalvnc" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = repos/royalvnc;
+		};
+		5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "repos/swift-nio-ssh";
 		};
 		AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */ = {
 			isa = XCLocalSwiftPackageReference;
@@ -1773,14 +1797,6 @@
 			requirement = {
 				kind = exactVersion;
 				version = 1.13.0;
-			};
-		};
-		5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-nio-ssh";
-			requirement = {
-				kind = exactVersion;
-				version = 0.13.0;
 			};
 		};
 		5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
@@ -1811,50 +1827,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		EE30AD100000000000000014 /* RoyalVNCKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = RoyalVNCKit;
-		};
-		EE30AD100000000000000010 /* NIOSSH */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
-			productName = NIOSSH;
-		};
-		EE30AD100000000000000011 /* NIOCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
-			productName = NIOCore;
-		};
-		EE30AD100000000000000012 /* NIOTransportServices */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
-			productName = NIOTransportServices;
-		};
-		EE30AD100000000000000013 /* Crypto */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
-			productName = Crypto;
-		};
-		EE20AD100000000000000010 /* NIOSSH */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
-			productName = NIOSSH;
-		};
-		EE20AD100000000000000011 /* NIOCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
-			productName = NIOCore;
-		};
-		EE20AD100000000000000012 /* NIOTransportServices */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
-			productName = NIOTransportServices;
-		};
-		EE20AD100000000000000013 /* Crypto */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
-			productName = Crypto;
-		};
 		1D8097B12F7FCBED00C67700 /* MoonlightCommonC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;
@@ -1904,9 +1876,24 @@
 			package = 1DC83C3B2F74587300BF0482 /* XCLocalSwiftPackageReference "repos/royalvnc" */;
 			productName = RoyalVNCKit;
 		};
+		2400FFE83ED88B2946B909F6 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
+		};
 		3BBC1BE052346B5319DA0A43 /* MoonlightCommonC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;
+		};
+		3DBD8B1498560A799C9CBA40 /* DebugTraceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceUI;
+		};
+		49DA0DAB242221098318CF98 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
 		};
 		5511C0DE0000000000000011 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1915,7 +1902,7 @@
 		};
 		5511C0DE0000000000000012 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			package = 5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */;
 			productName = NIOSSH;
 		};
 		5511C0DE0000000000000013 /* NIOCore */ = {
@@ -1932,6 +1919,26 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
 			productName = Crypto;
+		};
+		5AA06485057FFDC64EA7AB06 /* DebugTraceServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceServer;
+		};
+		811CE68C9E31A423F2FD2891 /* DebugTraceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceUI;
+		};
+		963354E9CC7BD15748B4C6C1 /* DebugTraceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceUI;
+		};
+		A115112080FBEE8A24FD5E66 /* DebugTraceUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTraceUI;
 		};
 		AA03000000000000000000A2 /* RAVEInput */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1988,6 +1995,16 @@
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEMedia;
 		};
+		AA07000000000000000000DE /* RAVECamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECamera;
+		};
+		AA07000000000000000000E8 /* RAVEBrowser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEBrowser;
+		};
 		AA07000000000000000000F0 /* RAVESpatialAudio */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
@@ -2003,15 +2020,35 @@
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVESpatialAudio;
 		};
-		AA07000000000000000000DE /* RAVECamera */ = {
+		AA0D00000000000000000010 /* DebugTrace */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
-			productName = RAVECamera;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTrace;
 		};
-		AA07000000000000000000E8 /* RAVEBrowser */ = {
+		AA0D00000000000000000012 /* DebugTrace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTrace;
+		};
+		AA0D00000000000000000014 /* DebugTrace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTrace;
+		};
+		AA0D00000000000000000016 /* DebugTrace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTrace;
+		};
+		AA0D00000000000000000018 /* DebugTrace */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
+			productName = DebugTrace;
+		};
+		AA0E00000000000000000002 /* RAVEConsole */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
-			productName = RAVEBrowser;
+			productName = RAVEConsole;
 		};
 		BCF95F097C7D2DFE3EF72400 /* Opus */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2034,7 +2071,7 @@
 		};
 		DD1010000000000000000013 /* NIOSSH */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 5511C0DE0000000000000002 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			package = 5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */;
 			productName = NIOSSH;
 		};
 		DD1010000000000000000014 /* NIOCore */ = {
@@ -2051,11 +2088,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
 			productName = Crypto;
-		};
-		DD101000000000000000002C /* RAVEUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
-			productName = RAVEUI;
 		};
 		DD1010000000000000000017 /* RAVEConsole */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2077,79 +2109,63 @@
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEMedia;
 		};
-		FEC92747F5953D917428BFA0 /* RoyalVNCKit */ = {
+		DD101000000000000000002C /* RAVEUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVEUI;
+		};
+		EE20AD100000000000000010 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		EE20AD100000000000000011 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		EE20AD100000000000000012 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
+		};
+		EE20AD100000000000000013 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		EE30AD100000000000000010 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		EE30AD100000000000000011 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		EE30AD100000000000000012 /* NIOTransportServices */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000004 /* XCRemoteSwiftPackageReference "swift-nio-transport-services" */;
+			productName = NIOTransportServices;
+		};
+		EE30AD100000000000000013 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5511C0DE0000000000000005 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		EE30AD100000000000000014 /* RoyalVNCKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RoyalVNCKit;
-		};
-		AA0D00000000000000000010 /* DebugTrace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTrace;
-		};
-		49DA0DAB242221098318CF98 /* DebugTraceServer */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceServer;
-		};
-		A115112080FBEE8A24FD5E66 /* DebugTraceUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceUI;
-		};
-		AA0D00000000000000000012 /* DebugTrace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTrace;
 		};
 		F2152CE5902DF25125171222 /* DebugTraceServer */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
 			productName = DebugTraceServer;
 		};
-		811CE68C9E31A423F2FD2891 /* DebugTraceUI */ = {
+		FEC92747F5953D917428BFA0 /* RoyalVNCKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceUI;
-		};
-		AA0E00000000000000000002 /* RAVEConsole */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
-			productName = RAVEConsole;
-		};
-		AA0D00000000000000000014 /* DebugTrace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTrace;
-		};
-		5AA06485057FFDC64EA7AB06 /* DebugTraceServer */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceServer;
-		};
-		963354E9CC7BD15748B4C6C1 /* DebugTraceUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceUI;
-		};
-		AA0D00000000000000000016 /* DebugTrace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTrace;
-		};
-		AA0D00000000000000000018 /* DebugTrace */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTrace;
-		};
-		2400FFE83ED88B2946B909F6 /* DebugTraceServer */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceServer;
-		};
-		3DBD8B1498560A799C9CBA40 /* DebugTraceUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */;
-			productName = DebugTraceUI;
+			productName = RoyalVNCKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

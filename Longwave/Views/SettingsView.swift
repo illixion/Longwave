@@ -208,7 +208,15 @@ struct SettingsView: View {
                         Label("Depth 3D Lab", systemImage: "cube.transparent")
                     }
                 }
-
+                #endif
+                #if os(iOS)
+                Section("Developer") {
+                    NavigationLink {
+                        SSHKeyManagementView()
+                    } label: {
+                        Label("SSH Security Keys", systemImage: "key.horizontal")
+                    }
+                }
                 #endif
                 Section("About") {
                     LabeledContent("Version", value: appVersionString)

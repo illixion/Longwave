@@ -57,6 +57,9 @@ struct ConnectionBackup: Codable {
 
     // SSH
     var sshUsername: String
+    /// Non-secret key selection and host pin. The YubiKey PIN is never backed up.
+    var sshYubiKeyFingerprint: String?
+    var sshHostFingerprint: String?
     var sshLaunchCommand: String
     var sshClientCommand: String
     var sshEnvVars: String
@@ -114,6 +117,8 @@ struct ConnectionBackup: Codable {
         lowLatencyAudio = connection.lowLatencyAudio
         linkedCompanionConnectionID = connection.linkedCompanionConnectionID
         sshUsername = connection.sshUsername
+        sshYubiKeyFingerprint = connection.sshYubiKeyFingerprint
+        sshHostFingerprint = connection.sshHostFingerprint
         sshLaunchCommand = connection.sshLaunchCommand
         sshClientCommand = connection.sshClientCommand
         sshEnvVars = connection.sshEnvVars
@@ -167,6 +172,8 @@ struct ConnectionBackup: Codable {
         connection.lowLatencyAudio = lowLatencyAudio
         connection.linkedCompanionConnectionID = linkedCompanionConnectionID
         connection.sshUsername = sshUsername
+        connection.sshYubiKeyFingerprint = sshYubiKeyFingerprint
+        connection.sshHostFingerprint = sshHostFingerprint
         connection.sshLaunchCommand = sshLaunchCommand
         connection.sshClientCommand = sshClientCommand
         connection.sshEnvVars = sshEnvVars

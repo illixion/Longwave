@@ -391,6 +391,14 @@ final class SavedConnection {
     /// key is the credential. Default empty so lightweight migration is safe.
     var sshUsername: String = ""
 
+    /// Optional OpenPGP authentication-key fingerprint for iOS SSH. Empty/nil
+    /// keeps using this device's Secure Enclave identity.
+    var sshYubiKeyFingerprint: String? = nil
+
+    /// Pinned server identity required when an iOS connection uses a YubiKey.
+    /// The host key is verified before the card signs any SSH authentication.
+    var sshHostFingerprint: String? = nil
+
     /// Remote command to run under the PTY. Empty → an interactive login shell
     /// (generic terminal). The Projects tab overrides this per launch to run
     /// `claude` in a chosen folder via tmux.

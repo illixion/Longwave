@@ -17,6 +17,39 @@ enum SSHConnectionError: Error, CustomStringConvertible {
     }
 }
 
+/// Supplies a short-lived public-key offer for an SSH session. Implementations
+/// may need user interaction (for example, scanning an NFC security key) and
+/// must only return after the credential has been verified.
+@MainActor
+protocol SSHAuthenticationProvider: AnyObject {
+    func prepareAuthentication() async throws -> SSHPreparedAuthentication
+    func finishAuthentication()
+    func cancelAuthentication()
+}
+
+nonisolated final class SSHServerAuthDelegate: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
+    private let delegate: NIOSSHClientServerAuthenticationDelegate
+
+    init(_ delegate: NIOSSHClientServerAuthenticationDelegate) {
+        self.delegate = delegate
+    }
+
+    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        delegate.validateHostKey(hostKey: hostKey, validationCompletePromise: validationCompletePromise)
+    }
+}
+
+nonisolated struct SSHPreparedAuthentication: @unchecked Sendable {
+    let offer: NIOSSHUserAuthenticationOffer.Offer
+    let serverAuthDelegate: SSHServerAuthDelegate
+
+    init(offer: NIOSSHUserAuthenticationOffer.Offer,
+         serverAuthDelegate: NIOSSHClientServerAuthenticationDelegate) {
+        self.offer = offer
+        self.serverAuthDelegate = SSHServerAuthDelegate(serverAuthDelegate)
+    }
+}
+
 /// An interactive SSH session over swift-nio-ssh, driving a single remote PTY.
 ///
 /// Off-main worker (every member `nonisolated`) modeled on `AudioStreamReceiver`:
@@ -50,7 +83,8 @@ final class SSHConnection: @unchecked Sendable {
     nonisolated(unsafe) var onEvent: (@Sendable (Event) -> Void)?
 
     private let config: Config
-    private let privateKey: NIOSSHPrivateKey
+    private let authenticationOffer: NIOSSHUserAuthenticationOffer.Offer
+    private let serverAuthDelegate: SSHServerAuthDelegate
     private let group: NIOTSEventLoopGroup
     private let log = DebugLogger(subsystem: "pro.longwave", category: "SSH")
 
@@ -68,7 +102,19 @@ final class SSHConnection: @unchecked Sendable {
 
     nonisolated init(config: Config, privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup) {
         self.config = config
-        self.privateKey = privateKey
+        self.authenticationOffer = .privateKey(.init(privateKey: privateKey))
+        self.serverAuthDelegate = SSHServerAuthDelegate(AcceptAllHostKeysDelegate())
+        self.group = group
+        self.desiredCols = config.cols
+        self.desiredRows = config.rows
+    }
+
+    nonisolated init(config: Config, authenticationOffer: NIOSSHUserAuthenticationOffer.Offer,
+                     serverAuthDelegate: NIOSSHClientServerAuthenticationDelegate = AcceptAllHostKeysDelegate(),
+                     group: NIOTSEventLoopGroup) {
+        self.config = config
+        self.authenticationOffer = authenticationOffer
+        self.serverAuthDelegate = SSHServerAuthDelegate(serverAuthDelegate)
         self.group = group
         self.desiredCols = config.cols
         self.desiredRows = config.rows
@@ -81,7 +127,8 @@ final class SSHConnection: @unchecked Sendable {
     }
 
     nonisolated func start() {
-        let auth = SSHKeyAuthDelegate(username: config.username, privateKey: privateKey)
+        let auth = SSHKeyAuthDelegate(username: config.username, offer: authenticationOffer)
+        let serverAuthDelegate = self.serverAuthDelegate
         // TCP keepalive is the dead-connection detector: after the app resumes
         // from suspension (visionOS tracking loss), a connection the system
         // silently killed fails within ~20 s, firing `closeFuture` → `.closed`
@@ -99,7 +146,7 @@ final class SSHConnection: @unchecked Sendable {
                     let handler = NIOSSHHandler(
                         role: .client(.init(
                             userAuthDelegate: auth,
-                            serverAuthDelegate: AcceptAllHostKeysDelegate()
+                            serverAuthDelegate: serverAuthDelegate
                         )),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: nil
@@ -215,12 +262,17 @@ final class SSHConnection: @unchecked Sendable {
 /// cleanly) rather than looping.
 nonisolated final class SSHKeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
     private let username: String
-    private let privateKey: NIOSSHPrivateKey
+    private let offer: NIOSSHUserAuthenticationOffer.Offer
     private nonisolated(unsafe) var offered = false
 
     init(username: String, privateKey: NIOSSHPrivateKey) {
         self.username = username
-        self.privateKey = privateKey
+        self.offer = .privateKey(.init(privateKey: privateKey))
+    }
+
+    init(username: String, offer: NIOSSHUserAuthenticationOffer.Offer) {
+        self.username = username
+        self.offer = offer
     }
 
     nonisolated func nextAuthenticationType(
@@ -235,7 +287,7 @@ nonisolated final class SSHKeyAuthDelegate: NIOSSHClientUserAuthenticationDelega
         let offer = NIOSSHUserAuthenticationOffer(
             username: username,
             serviceName: "ssh-connection",
-            offer: .privateKey(.init(privateKey: privateKey))
+            offer: self.offer
         )
         nextChallengePromise.succeed(offer)
     }
@@ -353,18 +405,31 @@ nonisolated final class SSHCommandRunner: @unchecked Sendable {
                     completion: @escaping @Sendable (Result<String, Error>) -> Void) {
         SSHCommandRunner(completion: completion)
             .start(host: host, port: port, username: username, command: command, stdin: stdin,
-                   privateKey: privateKey, group: group)
+                   authenticationOffer: .privateKey(.init(privateKey: privateKey)),
+                   serverAuthDelegate: SSHServerAuthDelegate(AcceptAllHostKeysDelegate()), group: group)
+    }
+
+    static func run(host: String, port: Int, username: String, command: String,
+                    stdin: Data? = nil, authentication: SSHPreparedAuthentication,
+                    group: NIOTSEventLoopGroup,
+                    completion: @escaping @Sendable (Result<String, Error>) -> Void) {
+        SSHCommandRunner(completion: completion)
+            .start(host: host, port: port, username: username, command: command, stdin: stdin,
+                   authenticationOffer: authentication.offer,
+                   serverAuthDelegate: authentication.serverAuthDelegate, group: group)
     }
 
     private func start(host: String, port: Int, username: String, command: String, stdin: Data?,
-                       privateKey: NIOSSHPrivateKey, group: NIOTSEventLoopGroup) {
-        let auth = SSHKeyAuthDelegate(username: username, privateKey: privateKey)
+                       authenticationOffer: NIOSSHUserAuthenticationOffer.Offer,
+                       serverAuthDelegate: SSHServerAuthDelegate,
+                       group: NIOTSEventLoopGroup) {
+        let auth = SSHKeyAuthDelegate(username: username, offer: authenticationOffer)
         let bootstrap = NIOTSConnectionBootstrap(group: group)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     let handler = NIOSSHHandler(
                         role: .client(.init(userAuthDelegate: auth,
-                                            serverAuthDelegate: AcceptAllHostKeysDelegate())),
+                                            serverAuthDelegate: serverAuthDelegate)),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: nil
                     )

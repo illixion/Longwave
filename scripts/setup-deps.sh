@@ -20,6 +20,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROYALVNC_REF='337197a'
 MOONLIGHT_COMMON_C_REF='7b026e77be62175104640e7e722b758df6d3d0d7'
 OPUS_REF='788cc89ce4f2c42025d8c70ec1b4457dc89cd50f'
+NIOSSH_REF='1a915a324afefd4031e396e81a0e210178621be8'
 
 cd "$PROJECT_ROOT"
 
@@ -28,6 +29,19 @@ if [[ "${1:-}" == "--force" ]]; then
     rm -rf repos
 fi
 mkdir -p repos
+
+if [[ -d repos/swift-nio-ssh ]]; then
+    echo "==> repos/swift-nio-ssh exists — skipping (use --force to redo)"
+else
+    echo "==> Cloning and patching swift-nio-ssh ($NIOSSH_REF)"
+    git clone https://github.com/apple/swift-nio-ssh.git repos/swift-nio-ssh
+    (
+        cd repos/swift-nio-ssh
+        git checkout "$NIOSSH_REF"
+        # Add asynchronous custom Ed25519 signing for hardware-backed keys.
+        git apply ../../ci/patches/swift-nio-ssh-async-signer.patch
+    )
+fi
 
 if [[ -d repos/royalvnc ]]; then
     echo "==> repos/royalvnc exists — skipping (use --force to redo)"

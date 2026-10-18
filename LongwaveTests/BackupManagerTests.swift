@@ -16,6 +16,8 @@ final class BackupManagerTests: XCTestCase {
         connection.savedPassword = "super-secret-password"
         connection.companionToken = "super-secret-token"
         connection.autoLogin = true
+        connection.sshYubiKeyFingerprint = "SHA256:registered-key-fingerprint"
+        connection.sshHostFingerprint = "SHA256:pinned-host-fingerprint"
 
         let backup = ConnectionBackup(from: connection)
         let encoder = JSONEncoder()
@@ -26,6 +28,9 @@ final class BackupManagerTests: XCTestCase {
         XCTAssertFalse(json.contains("super-secret-token"))
         XCTAssertTrue(json.contains("mac.local"))
         XCTAssertTrue(json.contains("vlad"))
+        XCTAssertTrue(json.contains("registered-key-fingerprint"))
+        XCTAssertTrue(json.contains("pinned-host-fingerprint"))
+        XCTAssertFalse(json.contains("yubiKeyPIN"))
         XCTAssertEqual(backup.id, connection.id)
         XCTAssertTrue(backup.autoLogin)
     }
@@ -44,6 +49,8 @@ final class BackupManagerTests: XCTestCase {
         // `removed` is absent, so a restore should delete it.
         var keptBackup = ConnectionBackup(from: kept)
         keptBackup.label = "Kept (renamed)"
+        keptBackup.sshYubiKeyFingerprint = "SHA256:key-reference"
+        keptBackup.sshHostFingerprint = "SHA256:host-pin"
         let newID = UUID()
         var newConnectionBackup = ConnectionBackup(from: SavedConnection(hostname: "new.local", label: "New"))
         newConnectionBackup.id = newID
@@ -63,6 +70,8 @@ final class BackupManagerTests: XCTestCase {
 
         let restoredKept = all.first { $0.id == kept.id }
         XCTAssertEqual(restoredKept?.label, "Kept (renamed)")
+        XCTAssertEqual(restoredKept?.sshYubiKeyFingerprint, "SHA256:key-reference")
+        XCTAssertEqual(restoredKept?.sshHostFingerprint, "SHA256:host-pin")
         // The secret wasn't in the backup, so restore must leave it alone.
         XCTAssertEqual(restoredKept?.savedPassword, "kept-password")
 

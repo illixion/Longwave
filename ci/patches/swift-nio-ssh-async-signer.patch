@@ -1,0 +1,109 @@
+diff --git a/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift b/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift
+index be30e69..a3c8402 100644
+--- a/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift	
++++ b/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift	
+@@ -27,6 +27,18 @@ public struct NIOSSHSignature: Hashable, Sendable {
+     internal init(backingSignature: BackingSignature) {
+         self.backingSignature = backingSignature
+     }
++
++    /// Creates an Ed25519 SSH signature from its 64-byte raw representation.
++    public init(ed25519Signature: Data) throws {
++        guard ed25519Signature.count == 64 else {
++            throw NIOSSHSignatureError.invalidEd25519SignatureLength(actual: ed25519Signature.count)
++        }
++        self.backingSignature = .ed25519(.data(ed25519Signature))
++    }
++}
++
++public enum NIOSSHSignatureError: Error, Equatable {
++    case invalidEd25519SignatureLength(actual: Int)
+ }
+ 
+ // swift-format-ignore: DontRepeatTypeInStaticProperties
+diff --git a/Sources/NIOSSH/User Authentication/UserAuthenticationMethod.swift b/Sources/NIOSSH/User Authentication/UserAuthenticationMethod.swift
+index d66df2a..fd063e5 100644
+--- a/Sources/NIOSSH/User Authentication/UserAuthenticationMethod.swift	
++++ b/Sources/NIOSSH/User Authentication/UserAuthenticationMethod.swift	
+@@ -11,6 +11,11 @@
+ // SPDX-License-Identifier: Apache-2.0
+ //
+ //===----------------------------------------------------------------------===//
++#if canImport(FoundationEssentials)
++import FoundationEssentials
++#else
++import Foundation
++#endif
+ import NIOCore
+ 
+ /// The user authentication modes available at this point in time.
+@@ -177,6 +182,11 @@ extension NIOSSHUserAuthenticationOffer {
+         /// The client would like to perform private key authentication.
+         case privateKey(PrivateKey)
+ 
++        /// The client would like to authenticate with an Ed25519 public key whose signer is
++        /// asynchronous or backed by hardware. `sign` receives the exact SSH user-auth payload
++        /// and must return a raw 64-byte Ed25519 signature.
++        case customPublicKey(publicKey: NIOSSHPublicKey, sign: @Sendable (Data, EventLoop) -> EventLoopFuture<Data>)
++
+         /// The client would like to perform password authentication.
+         case password(Password)
+ 
+@@ -250,6 +260,8 @@ extension SSHMessage.UserAuthRequestMessage {
+             )
+             let signature = try privateKeyRequest.privateKey.sign(dataToSign)
+             self.method = .publicKey(.known(key: privateKeyRequest.publicKey, signature: signature))
++        case .customPublicKey:
++            preconditionFailure("Custom public-key offers must use the asynchronous initializer")
+         case .password(let passwordRequest):
+             self.method = .password(passwordRequest.password)
+         case .hostBased:
+@@ -258,6 +270,28 @@ extension SSHMessage.UserAuthRequestMessage {
+             self.method = .none
+         }
+     }
++
++    static func make(request: NIOSSHUserAuthenticationOffer, sessionID: ByteBuffer, on loop: EventLoop) -> EventLoopFuture<Self> {
++        switch request.offer {
++        case .customPublicKey(let publicKey, let sign):
++            let payload = UserAuthSignablePayload(
++                sessionIdentifier: sessionID,
++                userName: request.username,
++                serviceName: "ssh-connection",
++                publicKey: publicKey
++            )
++            let bytes = Data(payload.bytes.readableBytesView)
++            return sign(bytes, loop).flatMapThrowing { signatureBytes in
++                return Self(
++                    username: request.username,
++                    service: "ssh-connection",
++                    method: .publicKey(.known(key: publicKey, signature: try NIOSSHSignature(ed25519Signature: signatureBytes)))
++                )
++            }
++        default:
++            return loop.makeSucceededFuture(()).flatMapThrowing { try Self(request: request, sessionID: sessionID) }
++        }
++    }
+ }
+ 
+ /// The outcome of a user authentication attempt.
+diff --git a/Sources/NIOSSH/User Authentication/UserAuthenticationStateMachine.swift b/Sources/NIOSSH/User Authentication/UserAuthenticationStateMachine.swift
+index 3cda511..1c73eb0 100644
+--- a/Sources/NIOSSH/User Authentication/UserAuthenticationStateMachine.swift	
++++ b/Sources/NIOSSH/User Authentication/UserAuthenticationStateMachine.swift	
+@@ -448,8 +448,13 @@ extension UserAuthenticationStateMachine {
+         delegate.nextAuthenticationType(availableMethods: methods, nextChallengePromise: promise)
+ 
+         // The explicit capture list is here to force a copy of the buffer, rather than capturing self.
+-        return promise.futureResult.flatMapThrowing { [sessionID = self.sessionID] request in
+-            try request.map { try SSHMessage.UserAuthRequestMessage(request: $0, sessionID: sessionID) }
++        let loop = self.loop
++        return promise.futureResult.flatMap { [sessionID = self.sessionID] request in
++            guard let request else {
++                return loop.makeSucceededFuture(nil)
++            }
++            return SSHMessage.UserAuthRequestMessage.make(request: request, sessionID: sessionID, on: loop)
++                .map(Optional.some)
+         }
+     }
+ }

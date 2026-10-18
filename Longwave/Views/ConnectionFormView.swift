@@ -67,6 +67,11 @@ struct ConnectionFormView: View {
     @State private var sshClientCommand: String = ""
     @State private var sshEnvVars: String = ""
     @State private var sshUseTmux: Bool = true
+    #if os(iOS)
+    @State private var sshIdentityFingerprint = ""
+    @State private var sshTrustedHostFingerprint = ""
+    @State private var availableYubiKeyCredentials: [YubiKeySSHCredential] = []
+    #endif
 
     #if MOONLIGHT_ENABLED
     // Moonlight — Video
@@ -99,6 +104,21 @@ struct ConnectionFormView: View {
 
     private var isEditing: Bool {
         savedConnection != nil
+    }
+
+    private var canSaveConnection: Bool {
+        guard !hostname.trimmingCharacters(in: .whitespaces).isEmpty,
+              !(connectionType == .native && !nativeScreenEnabled && !nativeAudioEnabled && !nativeUnityEnabled) else {
+            return false
+        }
+        #if os(iOS)
+        if connectionType == .ssh, !sshIdentityFingerprint.isEmpty {
+            let hostFingerprint = sshTrustedHostFingerprint.trimmingCharacters(in: .whitespacesAndNewlines)
+            return availableYubiKeyCredentials.contains { $0.fingerprint == sshIdentityFingerprint }
+                && OpenPGPHostFingerprintDelegate.isValid(hostFingerprint)
+        }
+        #endif
+        return true
     }
 
     /// Only VNC/Moonlight connect to the hotspot host (the Windows box). Audio/SSH target a Mac.
@@ -166,13 +186,7 @@ struct ConnectionFormView: View {
                 Button("Save") {
                     saveConnection()
                 }
-                .disabled(
-                    hostname.trimmingCharacters(in: .whitespaces).isEmpty
-                    || (connectionType == .native
-                        && !nativeScreenEnabled
-                        && !nativeAudioEnabled
-                        && !nativeUnityEnabled)
-                )
+                .disabled(!canSaveConnection)
             }
         }
         .onAppear {
@@ -553,9 +567,58 @@ struct ConnectionFormView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
 
+            #if os(iOS)
+            Picker("Authentication key", selection: $sshIdentityFingerprint) {
+                Text("This iPhone (Secure Enclave)").tag("")
+                ForEach(availableYubiKeyCredentials) { credential in
+                    Text(credential.label).tag(credential.fingerprint)
+                }
+            }
+            NavigationLink {
+                SSHKeyManagementView()
+            } label: {
+                Label("Manage YubiKeys", systemImage: "key.horizontal")
+            }
+            if !sshIdentityFingerprint.isEmpty,
+               !availableYubiKeyCredentials.contains(where: { $0.fingerprint == sshIdentityFingerprint }) {
+                Text("This connection’s YubiKey is not registered on this iPhone. Register it again or select another key.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if !sshIdentityFingerprint.isEmpty {
+                TextField("Trusted SSH host fingerprint (SHA256:…)", text: $sshTrustedHostFingerprint)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.none)
+                if !sshTrustedHostFingerprint.isEmpty,
+                   !OpenPGPHostFingerprintDelegate.isValid(
+                    sshTrustedHostFingerprint.trimmingCharacters(in: .whitespacesAndNewlines)
+                   ) {
+                    Text("Enter the complete SHA256 fingerprint only, for example SHA256:… (without the key type or host name).")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Text("Required to verify the server before the YubiKey signs in. Find it on the host with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
+
+            #if os(iOS)
+            if sshIdentityFingerprint.isEmpty {
+                Text("Add this device's SSH key (Projects tab → Copy Public Key) to ~/.ssh/authorized_keys on the host. The private key never leaves the Secure Enclave.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Add the selected YubiKey's public key to ~/.ssh/authorized_keys. The PIN stays in this iPhone's Keychain; the physical key must be present for each SSH authentication.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #else
             Text("Key-based login. Add this device's SSH key (Projects tab → Copy Public Key) to ~/.ssh/authorized_keys on the host. The private key never leaves the Secure Enclave.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            #endif
         }
 
         Section("Command") {
@@ -740,6 +803,9 @@ struct ConnectionFormView: View {
     }
 
     private func loadFromSavedConnection() {
+        #if os(iOS)
+        availableYubiKeyCredentials = YubiKeySSHCredentialStore.all()
+        #endif
         guard let saved = savedConnection else { return }
         hideLocalCursor = saved.hideLocalCursor
 
@@ -769,6 +835,10 @@ struct ConnectionFormView: View {
         sshClientCommand = saved.sshClientCommand
         sshEnvVars = saved.sshEnvVars
         sshUseTmux = saved.sshUseTmux
+        #if os(iOS)
+        sshIdentityFingerprint = saved.sshYubiKeyFingerprint ?? ""
+        sshTrustedHostFingerprint = saved.sshHostFingerprint ?? ""
+        #endif
 
         #if MOONLIGHT_ENABLED
         // Moonlight fields
@@ -869,6 +939,11 @@ struct ConnectionFormView: View {
             connection.sshClientCommand = sshClientCommand.trimmingCharacters(in: .whitespacesAndNewlines)
             connection.sshEnvVars = sshEnvVars.trimmingCharacters(in: .whitespacesAndNewlines)
             connection.sshUseTmux = sshUseTmux
+            #if os(iOS)
+            connection.sshYubiKeyFingerprint = sshIdentityFingerprint.isEmpty ? nil : sshIdentityFingerprint
+            let hostFingerprint = sshTrustedHostFingerprint.trimmingCharacters(in: .whitespacesAndNewlines)
+            connection.sshHostFingerprint = hostFingerprint.isEmpty ? nil : hostFingerprint
+            #endif
         }
     }
 

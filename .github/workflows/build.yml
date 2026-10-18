@@ -12,6 +12,7 @@ env:
   ROYALVNC_REF: '337197a'
   MOONLIGHT_COMMON_C_REF: '7b026e77be62175104640e7e722b758df6d3d0d7'
   OPUS_REF: '788cc89ce4f2c42025d8c70ec1b4457dc89cd50f'
+  NIOSSH_REF: '1a915a324afefd4031e396e81a0e210178621be8'
 
 # Build jobs only upload workflow artifacts; the release job at the bottom
 # creates the GitHub Release with ALL assets in a single `gh release create`
@@ -69,6 +70,13 @@ jobs:
           # per-connection JPEG quality/compression settings and
           # pause/resumeFramebufferUpdates
           git apply ../../ci/patches/royalvnc-longwave.patch
+
+      - name: Clone and patch swift-nio-ssh
+        run: |
+          git clone https://github.com/apple/swift-nio-ssh.git repos/swift-nio-ssh
+          cd repos/swift-nio-ssh
+          git checkout $NIOSSH_REF
+          git apply ../../ci/patches/swift-nio-ssh-async-signer.patch
 
       # The MIT build must not compile or link any Moonlight code, but the
       # project's local package references still need to resolve — stand in

@@ -168,7 +168,7 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Label {
-                        Text("Sessions get an access token that lasts about 8 hours, renewed at each launch. For long or unattended work, use the Companion Sandbox in Projects: the sign-in stays on the Mac, which renews it for every launch and schedule without this device, and the agent runs as its own account, away from your files.")
+                        Text("Sessions get an access token that lasts about 8 hours, renewed at each launch. For long or unattended work, use the Companion Sandbox in Projects: the Mac keeps its sessions supplied with new tokens so they run past 8 hours, schedules run without this device, and the agent runs as its own account, away from your files.")
                     } icon: {
                         Image(systemName: "lightbulb")
                     }

@@ -65,10 +65,26 @@ final class LocalSandboxController {
     private let group = NIOTSEventLoopGroup()
     private let keeper = SandboxSessionKeeper()
     private var privateKey: NIOSSHPrivateKey?
+    private var credentialsKeeper: Task<Void, Never>?
+    /// Expiry of the Claude token last written to the sandbox's credentials
+    /// file in this run of the app; nil until one is written.
+    private var writtenClaudeExpiry: Date?
+
+    /// How often running sessions' credentials are checked, and how much life
+    /// a token must have left before it is renewed for them. Renewing at 45
+    /// minutes left means a session never reaches the end of the token it has.
+    private static let credentialsCheckInterval: Duration = .seconds(5 * 60)
+    private static let credentialsRenewalMargin: TimeInterval = 45 * 60
 
     init() {
         account = SandboxAgentAccount(id: Self.connectionID)
         account.refreshTokenFlagsFromKeychain()
+        credentialsKeeper = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.credentialsCheckInterval)
+                await self?.keepClaudeCredentialsCurrent()
+            }
+        }
     }
 
     var agentUser: String { status?.agentUser ?? LocalSandbox.defaultAgentUser }
@@ -140,6 +156,10 @@ final class LocalSandboxController {
         }
         guard await perform(.configureDesktop, label: "Configuring the sandbox desktop…",
                             stdin: Data((password + "\n").utf8)) else { return }
+        // The golden home is copied into every reset, so no credential may be
+        // in it, however short-lived.
+        _ = try? await ssh(ClaudeCredentialsFile.removeCommand)
+        writtenClaudeExpiry = nil
         guard await perform(.snapshotGolden, label: "Saving the set-up home…") else { return }
         setupComplete = true
         await ensureDesktopSession(force: true)
@@ -212,6 +232,7 @@ final class LocalSandboxController {
     func reset(logInAfter: Bool = false) async {
         guard await perform(.reset, label: "Resetting the sandbox…") else { return }
         sessions = []
+        writtenClaudeExpiry = nil
         if logInAfter { await ensureDesktopSession(force: true) }
     }
 
@@ -643,14 +664,49 @@ final class LocalSandboxController {
 
     private func sessionEnvironment(for agent: SSHAgent) async throws -> [(name: String, value: String)] {
         let environment = await account.resolvedSSHEnvironmentRenewingCredentials(for: agent)
-        let required: String?
-        if agent == .claude, account.hasClaudeCredential { required = SSHAgent.claude.defaultEnvName }
-        else if agent == .codex, account.hasCodexCredential { required = CodexOAuth.Constants.authJSONEnvName }
-        else { required = nil }
-        if let required, !environment.contains(where: { $0.name == required && !$0.value.isEmpty }) {
+        if let required = account.requiredCredentialEnvName(for: agent),
+           !environment.contains(where: { $0.name == required && !$0.value.isEmpty }) {
             throw SandboxError.message("Couldn't renew and store the \(agent.displayName) credential. Check its sign-in in Projects.")
         }
+        if agent == .claude, environment.contains(where: { $0.name == ClaudeCredentialsFile.envName }) {
+            writtenClaudeExpiry = ClaudeCredentialStore.load(connectionID: account.id)?.expiresAt
+        }
         return environment
+    }
+
+    /// Keeps the sandbox's Claude credentials file ahead of the token running
+    /// sessions hold, so they outlive one access token; see
+    /// `ClaudeCredentialsFile`. Only while sessions exist: with none, the last
+    /// token written simply runs out. A sign-out removes the file.
+    func keepClaudeCredentialsCurrent() async {
+        guard availability == .ready else { return }
+        guard account.hasClaudeCredential else {
+            if writtenClaudeExpiry != nil, (try? await ssh(ClaudeCredentialsFile.removeCommand)) != nil {
+                writtenClaudeExpiry = nil
+            }
+            return
+        }
+        await refreshSessions()
+        guard !sessions.isEmpty else { return }
+        guard let credential = await ClaudeCredentialStore.validCredential(
+            connectionID: account.id, margin: Self.credentialsRenewalMargin) else {
+            log.log("No live Claude credential for running sandbox sessions; sign-in required")
+            return
+        }
+        guard writtenClaudeExpiry == nil || credential.expiresAt != writtenClaudeExpiry,
+              let json = ClaudeCredentialsFile.json(for: credential) else { return }
+        do {
+            let out = try await ssh(ClaudeCredentialsFile.rewriteCommand,
+                                    stdin: AgentSessionCommands.envPayload([(ClaudeCredentialsFile.envName, json)]))
+            guard out.contains(ClaudeCredentialsFile.writtenMarker) else {
+                log.error("Sandbox credentials file rewrite reported no success")
+                return
+            }
+            writtenClaudeExpiry = credential.expiresAt
+            log.log("Rewrote sandbox Claude credentials for \(self.sessions.count, privacy: .public) session(s)")
+        } catch {
+            log.error("Sandbox credentials file rewrite failed")
+        }
     }
 
     enum SandboxError: LocalizedError {

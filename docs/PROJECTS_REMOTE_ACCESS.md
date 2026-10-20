@@ -66,7 +66,11 @@ automatically creates a replacement session after one has ended.
 
 Short-lived access/ID tokens still reach the CLI over loopback SSH stdin. Codex
 needs an access-only auth.json in the sandbox; refresh tokens stay on the owner
-side. Pasted PATs may be long-lived: storing them in the Companion does not shorten
+side. Claude's access token is written to the sandbox's
+`~/.claude/.credentials.json` with an empty refresh token, and the Companion
+rewrites it before expiry while sessions run, so they outlast one ~8h token
+(`ClaudeCredentialsFile`); full-user SSH hosts keep the environment variable and
+never touch the user's own credentials file. Pasted PATs may be long-lived: storing them in the Companion does not shorten
 their provider-defined lifetime. Prefer browser OAuth when available. Existing
 full-user SSH behavior is deliberate opt-in and retains its own credential policy.
 

@@ -66,10 +66,15 @@ enum ClaudeCredentialStore {
     /// refresh the server rejects outright (`invalid_grant` — an organisation's
     /// forced sign-out, a revocation) is recorded on the credential, so the
     /// setup sheet shows it and later launches don't retry a dead token.
-    static func validCredential(connectionID: UUID) async -> ClaudeOAuth.Credential? {
+    ///
+    /// `margin` is how much life the token must have left to be used as is: a
+    /// launch needs enough to start, while the sandbox's credentials keeper asks
+    /// for more so its rewrite lands well before a running session needs it.
+    static func validCredential(connectionID: UUID,
+                                margin: TimeInterval = 10 * 60) async -> ClaudeOAuth.Credential? {
         if let pending = refreshes[connectionID] { return await pending.value }
         guard let credential = load(connectionID: connectionID) else { return nil }
-        guard !credential.isFresh() else { return credential }
+        guard !credential.isFresh(margin: margin) else { return credential }
         guard credential.canRefresh else {
             log.log("Credential stale and not refreshable; expired=\(credential.isExpired, privacy: .public)")
             return unexpired(credential)

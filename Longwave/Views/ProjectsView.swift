@@ -419,8 +419,8 @@ struct ProjectsView: View {
             let environment = await host.resolvedSSHEnvironmentRenewingCredentials(for: agent)
             // An in-app Claude credential that couldn't produce a live token
             // would only start a session that fails with a 401.
-            if agent == .claude, host.hasClaudeCredential,
-               !environment.contains(where: { $0.name == ClaudeOAuth.Constants.tokenEnvName }) {
+            if agent == .claude, let required = host.requiredCredentialEnvName(for: agent),
+               !environment.contains(where: { $0.name == required }) {
                 self.error = "The Claude sign-in for this host has expired or was revoked. Sign in again in the agent's setup."
                 return
             }

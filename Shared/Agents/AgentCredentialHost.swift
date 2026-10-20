@@ -31,7 +31,9 @@ protocol AgentCredentialHost: AnyObject {
     var sshAuthEnvName: String { get set }
     /// Extra non-secret `KEY=VALUE` lines injected into each session.
     var sshEnvVars: String { get set }
-    /// The Companion's agent sandbox rather than an SSH host.
+    /// The Companion's agent sandbox rather than an SSH host. Its Claude
+    /// sessions read Claude Code's credentials file, which the Companion keeps
+    /// current, instead of a token fixed in their environment.
     var isAgentSandbox: Bool { get }
     func credentialSetupInstructions(for agent: SSHAgent) -> String
 
@@ -272,7 +274,7 @@ extension AgentCredentialHost {
     func resolvedSSHEnvironment(for agent: SSHAgent) -> [(name: String, value: String)] {
         var env = sshEnvironmentVariables()
         if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
-            Self.merge(&env, credential.sessionEnvironment())
+            Self.merge(&env, claudeSessionEnvironment(credential))
             return env
         }
         // A ChatGPT credential wins over a pasted PAT, and replaces it rather
@@ -312,8 +314,29 @@ extension AgentCredentialHost {
         guard let credential = await ClaudeCredentialStore.validCredential(connectionID: id) else {
             return env
         }
-        Self.merge(&env, credential.sessionEnvironment())
+        Self.merge(&env, claudeSessionEnvironment(credential))
         return env
+    }
+
+    /// How `credential` reaches a Claude session: the CLI's environment
+    /// variables on an SSH host, its credentials file in the agent sandbox.
+    fileprivate func claudeSessionEnvironment(_ credential: ClaudeOAuth.Credential) -> [(name: String, value: String)] {
+        guard isAgentSandbox else { return credential.sessionEnvironment() }
+        guard let json = ClaudeCredentialsFile.json(for: credential) else { return [] }
+        return [(name: ClaudeCredentialsFile.envName, value: json)]
+    }
+
+    /// The variable a launch must carry for an in-app `agent` credential to
+    /// reach the session, or nil when nothing in-app is stored for it.
+    func requiredCredentialEnvName(for agent: SSHAgent) -> String? {
+        switch agent {
+        case .claude where hasClaudeCredential:
+            isAgentSandbox ? ClaudeCredentialsFile.envName : ClaudeOAuth.Constants.tokenEnvName
+        case .codex where hasCodexCredential:
+            CodexOAuth.Constants.authJSONEnvName
+        default:
+            nil
+        }
     }
 
     /// The create-step setup a session running `agent` with `environment`
@@ -322,7 +345,11 @@ extension AgentCredentialHost {
     func sessionSetup(for agent: SSHAgent,
                       environment: [(name: String, value: String)],
                       sessionID: String? = nil) -> AgentSessionSetup? {
-        agent == .codex ? CodexOAuth.sessionSetup(for: environment, sessionID: sessionID) : nil
+        switch agent {
+        case .codex: CodexOAuth.sessionSetup(for: environment, sessionID: sessionID)
+        case .claude: ClaudeCredentialsFile.sessionSetup(for: environment)
+        case .copilot, .custom: nil
+        }
     }
 
     /// Back-compat: the Claude session environment.

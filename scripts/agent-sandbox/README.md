@@ -29,8 +29,10 @@ injection from something it fetched or a bad tool call, doing any of these:
   fixed by hand, so check with `ls -ld ~`.
 - **Your SSH agent, keychain and browser profiles.** They belong to your account.
 - **Credentials.** Each session gets its tokens on stdin from the app, never on a command
-  line. Refresh tokens stay in the app's keychain. Claude's access token (about 8 h) lives
-  only in the session's environment. Codex reads ChatGPT logins from no environment
+  line. Refresh tokens stay in the app's keychain. Claude's access token (about 8 h) goes in
+  Claude Code's own `~/.claude/.credentials.json` with an empty refresh token; while sessions
+  run, the Companion renews it before it runs out and rewrites the file, which a running
+  `claude` re-reads, so sessions outlive one token. Codex reads ChatGPT logins from no environment
   variable, so its session gets an `auth.json` (access token, which lasts about 10 days, and
   no refresh token) under `~/.codex-longwave/`; `reset` wipes it with the rest of the home.
 - **Persistence.** `reset` logs the agent out, restores its home from a golden copy with an

@@ -20,7 +20,7 @@ final class SandboxAgentAccount: AgentCredentialHost {
         let common = "The login is stored in the Companion's Keychain on this Mac. Mobile Projects clients control sessions without receiving agent credentials. "
         switch agent {
         case .claude, .codex:
-            return common + "Sign in below. The Companion renews access tokens before launch; refresh tokens stay here. The access token is still readable by code running as the sandbox account."
+            return common + "Sign in below. Refresh tokens stay here; the Companion renews access tokens for every launch, and keeps running Claude sessions supplied with new ones so they aren't limited to one 8-hour token. The access token is still readable by code running as the sandbox account."
         case .copilot, .custom:
             return common + "Sign in or paste a token below. The token is passed to the sandbox CLI at launch and is readable by code running as that account. Its lifetime is determined by the provider."
         }

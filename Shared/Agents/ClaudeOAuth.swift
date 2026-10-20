@@ -114,6 +114,16 @@ enum ClaudeOAuth {
         var expiresAt: Date?
         /// Scopes the **server** granted, which can be narrower than requested.
         var scopes: [String]
+        /// When `refreshToken` itself stops working, from the token response's
+        /// `refresh_token_expires_in`. nil → the server didn't say. This is
+        /// where an organisation's forced sign-out interval shows up.
+        var refreshTokenExpiresAt: Date?
+        /// When the token endpoint rejected `refreshToken` with `invalid_grant`:
+        /// the server has signed this device out (an organisation's forced
+        /// logout, a revocation, or a refresh token rotated by another client)
+        /// and only a new sign-in recovers. Recorded rather than deleting the
+        /// credential, so the setup sheet can say why sessions stopped working.
+        var refreshRejectedAt: Date?
 
         // Profile fields, fetched separately from the token. All optional: a
         // failed profile fetch must never block a sign-in that otherwise worked.
@@ -149,7 +159,24 @@ enum ClaudeOAuth {
             return expiresAt.timeIntervalSinceNow > margin
         }
 
-        var canRefresh: Bool { !(refreshToken ?? "").isEmpty }
+        /// Past `expiresAt`: a session handed this token gets a 401.
+        var isExpired: Bool {
+            guard let expiresAt else { return false }
+            return expiresAt <= Date()
+        }
+
+        var canRefresh: Bool {
+            guard !(refreshToken ?? "").isEmpty, refreshRejectedAt == nil else { return false }
+            guard let refreshTokenExpiresAt else { return true }
+            return refreshTokenExpiresAt > Date()
+        }
+
+        /// Nothing stored can authenticate a session any more — or soon won't,
+        /// once the server has refused the refresh token — so the only way
+        /// forward is signing in again.
+        var needsSignIn: Bool {
+            refreshRejectedAt != nil || (isExpired && !canRefresh)
+        }
 
         /// Everything a managed session needs in its environment, the access
         /// token included.
@@ -183,7 +210,7 @@ enum ClaudeOAuth {
             }
             // The CLI rejects a refresh token that arrives without scopes; those
             // are always set above, so the pairing is satisfied by construction.
-            if includeRefreshToken, let refreshToken, !refreshToken.isEmpty {
+            if includeRefreshToken, canRefresh, let refreshToken {
                 env.append((Constants.refreshTokenEnvName, refreshToken))
             }
             return env
@@ -211,6 +238,11 @@ enum ClaudeOAuth {
         case malformedResponse
         case stateMismatch
         case noRefreshToken
+        /// The token endpoint answered `invalid_grant` to a code exchange.
+        case invalidGrant(String?)
+        /// The token endpoint answered `invalid_grant` to a refresh: this
+        /// device's sign-in is over and must be redone.
+        case signedOut
         case cancelled
 
         var errorDescription: String? {
@@ -224,6 +256,11 @@ enum ClaudeOAuth {
                 return "The sign-in response didn't match this request. Try again."
             case .noRefreshToken:
                 return "This credential can't be refreshed — sign in again."
+            case .invalidGrant(let detail):
+                if let detail, !detail.isEmpty { return "Claude rejected the sign-in: \(detail). Try again." }
+                return "Claude rejected the sign-in. Try again."
+            case .signedOut:
+                return "Claude signed this device out. Sign in again."
             case .cancelled:
                 return "Sign-in was cancelled."
             }
@@ -387,13 +424,23 @@ enum ClaudeOAuth {
     /// current CLI sends the same list for the same reason.
     ///
     /// A refresh response that omits `refresh_token` keeps the existing one
-    /// (the CLI does this too — not every server rotates on use).
+    /// (the CLI does this too — not every server rotates on use), and one that
+    /// omits `refresh_token_expires_in` keeps the known expiry.
+    ///
+    /// `invalid_grant` comes back as `FlowError.signedOut`: the refresh token is
+    /// dead for good, which is a different thing from a refresh that failed.
     static func refresh(_ credential: Credential) async throws -> Credential {
         guard let refreshToken = credential.refreshToken, !refreshToken.isEmpty else {
             throw FlowError.noRefreshToken
         }
-        var refreshed = try await postToken(refreshBody(refreshToken: refreshToken))
+        var refreshed: Credential
+        do {
+            refreshed = try await postToken(refreshBody(refreshToken: refreshToken))
+        } catch FlowError.invalidGrant {
+            throw FlowError.signedOut
+        }
         if refreshed.refreshToken == nil { refreshed.refreshToken = refreshToken }
+        refreshed.refreshTokenExpiresAt = refreshed.refreshTokenExpiresAt ?? credential.refreshTokenExpiresAt
         // Carry the profile across rather than re-fetching on every launch — the
         // tier doesn't change token-to-token, and a refresh sits directly in front
         // of a session start where an extra round-trip is felt.
@@ -455,15 +502,20 @@ enum ClaudeOAuth {
         guard (200...299).contains(http.statusCode) else {
             // Surface the server's own message; never log the body, which on a
             // success path would carry the token itself.
-            let detail = (json?["error_description"] as? String)
-                ?? (json?["error"] as? String)
-            log.log("Token endpoint failed status=\(http.statusCode)")
+            let code = errorCode(json)
+            let detail = (json?["error_description"] as? String) ?? code
+            log.log("Token endpoint failed status=\(http.statusCode) error=\(code ?? "none", privacy: .public)")
+            // Mirrors the CLI's own test for a dead refresh token.
+            if http.statusCode == 400 || http.statusCode == 401, code == "invalid_grant" {
+                throw FlowError.invalidGrant(json?["error_description"] as? String)
+            }
             throw FlowError.http(http.statusCode, detail)
         }
         guard let json, let access = json["access_token"] as? String, !access.isEmpty else {
             throw FlowError.malformedResponse
         }
         let expiresIn = (json["expires_in"] as? NSNumber)?.doubleValue
+        let refreshExpiresIn = (json["refresh_token_expires_in"] as? NSNumber)?.doubleValue
         let scopeString = (json["scope"] as? String) ?? ""
         let scopes = scopeString.split(whereSeparator: { $0 == " " || $0 == "," })
             .map(String.init)
@@ -473,8 +525,17 @@ enum ClaudeOAuth {
             refreshToken: json["refresh_token"] as? String,
             expiresAt: expiresIn.map { Date().addingTimeInterval($0) },
             // An empty `scope` in the response means "what you asked for".
-            scopes: scopes.isEmpty ? Constants.fullScopes : scopes
+            scopes: scopes.isEmpty ? Constants.fullScopes : scopes,
+            refreshTokenExpiresAt: refreshExpiresIn.map { Date().addingTimeInterval($0) }
         )
+    }
+
+    /// The OAuth `error` code of a token-endpoint error body. It arrives either
+    /// as the standard string or as an object carrying it in `type`; the CLI
+    /// accepts both.
+    static func errorCode(_ json: [String: Any]?) -> String? {
+        let error = json?["error"]
+        return (error as? String) ?? ((error as? [String: Any])?["type"] as? String)
     }
 }
 

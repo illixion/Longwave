@@ -110,7 +110,7 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                 Button("Done") { dismiss() }
             }
         }
-        .onAppear { reloadClaudeCredential(); reloadCodexCredential() }
+        .onAppear { reloadClaudeCredential(); reloadCodexCredential(); renewStaleClaudeCredential() }
         .onDisappear { flowTask?.cancel() }
         .sheet(isPresented: $showingWebLogin) {
             ClaudeLoginSheet { credential in
@@ -143,15 +143,21 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
             }
 
             if let credential = claudeCredential {
+                let healthy = credential.hasProfileScope && !credential.needsSignIn
                 Label {
                     Text(claudeCredentialSummary ?? "").font(.caption)
                 } icon: {
-                    Image(systemName: credential.hasProfileScope
-                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    Image(systemName: healthy ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                 }
-                .foregroundStyle(credential.hasProfileScope ? .green : .orange)
+                .foregroundStyle(credential.needsSignIn ? .red : healthy ? .green : .orange)
 
-                if !credential.hasProfileScope {
+                if credential.needsSignIn {
+                    Text(credential.refreshRejectedAt != nil
+                         ? "Claude no longer accepts this sign-in, so sessions can't get a new token. Organizations can sign members out on a schedule, and signing out elsewhere does the same. Sign in again to keep launching sessions."
+                         : "This token has expired and can't be renewed. Sign in again to keep launching sessions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !credential.hasProfileScope {
                     Text("Without user:profile the agent can't read your plan's model entitlements. Sign in again, and if it keeps coming back narrowed, Anthropic has tightened what this flow may request.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -195,6 +201,17 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
     private func reloadClaudeCredential() {
         claudeCredential = host.claudeCredential
         claudeCredentialSummary = ClaudeCredentialStore.summary(connectionID: host.id)
+    }
+
+    /// Renews a stale credential as soon as the sheet opens rather than at the
+    /// next launch, so a sign-in Claude has since revoked shows up here instead
+    /// of as a 401 inside a session.
+    private func renewStaleClaudeCredential() {
+        guard let credential = host.claudeCredential, !credential.isFresh(), credential.canRefresh else { return }
+        Task {
+            _ = await ClaudeCredentialStore.validCredential(connectionID: host.id)
+            reloadClaudeCredential()
+        }
     }
 
     private var deviceSignIn: AgentDeviceSignIn? {

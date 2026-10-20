@@ -296,8 +296,10 @@ extension AgentCredentialHost {
     /// Claude's full-scope tokens are short-lived (a custom expiry is refused for
     /// this scope set), so the working model is: mint a fresh access token
     /// immediately before `claude` reads it, and let the tmux idle reaper clear
-    /// out sessions that outlive one. Refresh failures fall through to the stored
-    /// credential rather than blocking the launch.
+    /// out sessions that outlive one. A refresh that fails falls through to the
+    /// stored credential while its token is still valid; once it has expired the
+    /// Claude variables are left out, and the launch path reports a sign-in
+    /// problem instead of starting a session that can only get a 401.
     ///
     /// With `sshInjectClaudeRefreshToken` on, the CLI renews itself and this
     /// pre-launch refresh stops being load-bearing — it's still done, since

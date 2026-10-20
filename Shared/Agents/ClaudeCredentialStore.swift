@@ -50,7 +50,8 @@ enum ClaudeCredentialStore {
 
     // MARK: - Access
 
-    /// The access token to inject, refreshed first if it's near expiry.
+    /// The credential to inject, refreshed first if it's near expiry, or nil
+    /// when nothing stored can authenticate a session.
     ///
     /// This is the piece that makes an 8-hour credential workable: a managed
     /// session gets a token minted moments before `claude` reads it, so the
@@ -58,17 +59,20 @@ enum ClaudeCredentialStore {
     /// sessions that outlive their token don't accumulate, they get reaped, and
     /// the next launch mints again.
     ///
-    /// A refresh failure is non-fatal: the existing token is returned and the
-    /// session is allowed to start. A still-valid-but-unrefreshable token beats
-    /// refusing to launch, and if it really is dead the agent's own auth error is
-    /// a clearer signal than a launch that silently didn't happen.
+    /// A refresh that fails for a passing reason (network, a 5xx) still returns
+    /// the stored token while it hasn't expired. An **expired** token is never
+    /// returned: handing it to a session only produces a 401 from inside the
+    /// agent, so the caller gets nil and can say "sign in again" instead. A
+    /// refresh the server rejects outright (`invalid_grant` — an organisation's
+    /// forced sign-out, a revocation) is recorded on the credential, so the
+    /// setup sheet shows it and later launches don't retry a dead token.
     static func validCredential(connectionID: UUID) async -> ClaudeOAuth.Credential? {
         if let pending = refreshes[connectionID] { return await pending.value }
         guard let credential = load(connectionID: connectionID) else { return nil }
         guard !credential.isFresh() else { return credential }
         guard credential.canRefresh else {
-            log.log("Credential stale and not refreshable; using it as-is")
-            return credential
+            log.log("Credential stale and not refreshable; expired=\(credential.isExpired, privacy: .public)")
+            return unexpired(credential)
         }
         let task = Task<ClaudeOAuth.Credential?, Never> {
             do {
@@ -76,21 +80,38 @@ enum ClaudeCredentialStore {
                 // A sign-out or new sign-in while awaiting the network must
                 // not be undone by an older refresh finishing afterwards.
                 guard load(connectionID: connectionID)?.refreshToken == credential.refreshToken else {
-                    return load(connectionID: connectionID)
+                    return load(connectionID: connectionID).flatMap(unexpired)
                 }
                 guard save(refreshed, connectionID: connectionID) else {
                     log.error("Couldn't persist refreshed Claude credential")
                     return nil
                 }
                 return refreshed
+            } catch ClaudeOAuth.FlowError.signedOut {
+                log.error("Refresh token rejected; Claude sign-in required")
+                markRefreshRejected(credential, connectionID: connectionID)
+                return load(connectionID: connectionID).flatMap(unexpired)
             } catch {
-                log.log("Refresh failed; using the currently stored credential")
-                return load(connectionID: connectionID)
+                log.log("Refresh failed; using the stored credential while it lasts")
+                return load(connectionID: connectionID).flatMap(unexpired)
             }
         }
         refreshes[connectionID] = task
         defer { refreshes.removeValue(forKey: connectionID) }
         return await task.value
+    }
+
+    private static func unexpired(_ credential: ClaudeOAuth.Credential) -> ClaudeOAuth.Credential? {
+        credential.isExpired ? nil : credential
+    }
+
+    /// Records that the server refused `credential`'s refresh token, unless a
+    /// new sign-in has replaced it in the meantime.
+    private static func markRefreshRejected(_ credential: ClaudeOAuth.Credential, connectionID: UUID) {
+        guard var stored = load(connectionID: connectionID),
+              stored.refreshToken == credential.refreshToken else { return }
+        stored.refreshRejectedAt = Date()
+        save(stored, connectionID: connectionID)
     }
 
     /// Convenience for callers that only need the token itself.
@@ -123,11 +144,26 @@ enum ClaudeCredentialStore {
         if let email = credential.accountEmail {
             parts.append(email)
         }
-        if let expiresAt = credential.expiresAt {
-            let style = Date.RelativeFormatStyle(presentation: .named)
-            parts.append(credential.isLongLived
-                         ? "long-lived, expires \(expiresAt.formatted(.dateTime.month().day().year()))"
-                         : "refreshes automatically, expires \(expiresAt.formatted(style))")
+        if credential.needsSignIn {
+            parts.append(credential.refreshRejectedAt != nil
+                         ? "⚠︎ signed out by Claude — sign in again"
+                         : "⚠︎ expired — sign in again")
+        } else if let expiresAt = credential.expiresAt {
+            let relative = expiresAt.formatted(Date.RelativeFormatStyle(presentation: .named))
+            if credential.isLongLived {
+                parts.append("long-lived, expires \(expiresAt.formatted(.dateTime.month().day().year()))")
+            } else if !credential.canRefresh {
+                parts.append("expires \(relative)")
+            } else if credential.isFresh() {
+                parts.append("refreshes automatically, expires \(relative)")
+            } else {
+                // Expired access tokens are normal between launches; the next
+                // launch mints a new one.
+                parts.append("renews at next launch")
+            }
+        }
+        if !credential.needsSignIn, let refreshEnd = credential.refreshTokenExpiresAt {
+            parts.append("sign in again by \(refreshEnd.formatted(.dateTime.month().day()))")
         }
         return parts.joined(separator: " · ")
     }

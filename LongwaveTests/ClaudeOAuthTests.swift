@@ -222,6 +222,77 @@ final class ClaudeOAuthTests: XCTestCase {
         XCTAssertFalse(credential(refresh: "").canRefresh)
     }
 
+    // MARK: - Signed out
+
+    /// An expired access token is the normal state between launches; with a
+    /// working refresh token it must not read as signed out.
+    func testExpiredAccessTokenWithARefreshTokenDoesNotNeedSignIn() {
+        let c = credential(expiresIn: -7 * 24 * 3600)
+        XCTAssertTrue(c.isExpired)
+        XCTAssertTrue(c.canRefresh)
+        XCTAssertFalse(c.needsSignIn)
+    }
+
+    /// What an organisation's forced sign-out leaves behind: the server refused
+    /// the refresh token, so nothing can mint a new access token.
+    func testRejectedRefreshTokenNeedsSignIn() {
+        var c = credential(expiresIn: -7 * 24 * 3600)
+        c.refreshRejectedAt = Date()
+        XCTAssertFalse(c.canRefresh)
+        XCTAssertTrue(c.needsSignIn)
+        // Even while the access token still works, the sign-in is over.
+        var live = credential()
+        live.refreshRejectedAt = Date()
+        XCTAssertTrue(live.needsSignIn)
+    }
+
+    func testRefreshTokenPastItsExpiryCannotRefresh() {
+        var c = credential(expiresIn: -60)
+        c.refreshTokenExpiresAt = Date().addingTimeInterval(-60)
+        XCTAssertFalse(c.canRefresh)
+        XCTAssertTrue(c.needsSignIn)
+        c.refreshTokenExpiresAt = Date().addingTimeInterval(3600)
+        XCTAssertTrue(c.canRefresh)
+        XCTAssertFalse(c.needsSignIn)
+    }
+
+    func testExpiredTokenWithoutRefreshNeedsSignIn() {
+        XCTAssertTrue(credential(expiresIn: -1, refresh: nil).needsSignIn)
+        XCTAssertFalse(credential(refresh: nil).needsSignIn, "still valid, just not renewable")
+        XCTAssertFalse(credential(expiresIn: nil, refresh: nil).needsSignIn, "no stated expiry")
+    }
+
+    /// A refresh token the server refused must not be delegated to the host.
+    func testRejectedRefreshTokenIsNotDelegated() {
+        var c = credential()
+        let names = { (c: ClaudeOAuth.Credential) in
+            Set(c.sessionEnvironment(includeRefreshToken: true).map(\.name))
+        }
+        XCTAssertTrue(names(c).contains(ClaudeOAuth.Constants.refreshTokenEnvName))
+        c.refreshRejectedAt = Date()
+        XCTAssertFalse(names(c).contains(ClaudeOAuth.Constants.refreshTokenEnvName))
+    }
+
+    /// The token endpoint has been seen sending `error` both as the standard
+    /// string and as an object carrying it in `type`.
+    func testErrorCodeAcceptsStringAndObject() {
+        XCTAssertEqual(ClaudeOAuth.errorCode(["error": "invalid_grant"]), "invalid_grant")
+        XCTAssertEqual(ClaudeOAuth.errorCode(["error": ["type": "invalid_grant"]]), "invalid_grant")
+        XCTAssertNil(ClaudeOAuth.errorCode(["message": "nope"]))
+        XCTAssertNil(ClaudeOAuth.errorCode(nil))
+    }
+
+    /// Credentials stored before the refresh-expiry fields existed must still
+    /// decode, or every existing sign-in would vanish on update.
+    func testCredentialStoredWithoutTheNewFieldsDecodes() throws {
+        let json = #"{"accessToken":"at","refreshToken":"rt","scopes":["user:profile"]}"#
+        let decoded = try JSONDecoder().decode(ClaudeOAuth.Credential.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.refreshToken, "rt")
+        XCTAssertNil(decoded.refreshTokenExpiresAt)
+        XCTAssertNil(decoded.refreshRejectedAt)
+        XCTAssertTrue(decoded.canRefresh)
+    }
+
     func testCredentialRoundTripsThroughJSON() {
         // The bundle is persisted as JSON in the keychain, so Codable fidelity is
         // what keeps a stored credential usable across launches.

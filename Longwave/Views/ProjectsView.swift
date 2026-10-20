@@ -417,6 +417,13 @@ struct ProjectsView: View {
         // the keychain and falls straight through.
         Task {
             let environment = await host.resolvedSSHEnvironmentRenewingCredentials(for: agent)
+            // An in-app Claude credential that couldn't produce a live token
+            // would only start a session that fails with a 401.
+            if agent == .claude, host.hasClaudeCredential,
+               !environment.contains(where: { $0.name == ClaudeOAuth.Constants.tokenEnvName }) {
+                self.error = "The Claude sign-in for this host has expired or was revoked. Sign in again in the agent's setup."
+                return
+            }
             do {
                 let id = try sshManager.newClaudeSession(
                     host: host.hostname, port: host.port, username: host.sshUsername,

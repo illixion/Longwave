@@ -317,6 +317,25 @@ final class SavedConnectionCredentialTests: XCTestCase {
         XCTAssertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "pasted-token")
     }
 
+    /// A credential Claude has signed out (refresh rejected, access token
+    /// expired) must not be injected: a session given it only gets a 401. No
+    /// network either, since a rejected refresh token is never retried.
+    func testRenewingResolverDropsASignedOutCredential() async {
+        let c = makeConnection()
+        defer { cleanUp(c) }
+
+        var dead = credential("expired-access")
+        dead.expiresAt = Date().addingTimeInterval(-7 * 24 * 3600)
+        dead.refreshRejectedAt = Date()
+        c.setClaudeCredential(dead)
+
+        let env = Dictionary(uniqueKeysWithValues:
+            await c.resolvedSSHEnvironmentRenewingCredentials(for: .claude)
+                .map { ($0.name, $0.value) })
+        XCTAssertNil(env["CLAUDE_CODE_OAUTH_TOKEN"])
+        XCTAssertNil(env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
+    }
+
     // MARK: - Codex (ChatGPT device sign-in)
 
     private func cleanUpCodex(_ c: SavedConnection) {

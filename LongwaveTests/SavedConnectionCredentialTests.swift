@@ -98,38 +98,20 @@ final class SavedConnectionCredentialTests: XCTestCase {
         XCTAssertNotNil(e["CLAUDE_CODE_OAUTH_TOKEN"], "the session must still authenticate")
     }
 
-    // MARK: - Refresh-token toggle
+    // MARK: - Refresh token
 
-    /// Default off: the ~8h access-token expiry is a deliberate blast-radius
-    /// bound if anything on the host can read a process's environment.
-    func testRefreshTokenIsNotSentByDefault() {
+    /// The refresh token never leaves the device: Claude rotates it on use, so a
+    /// host CLI renewing from a copy would sign this device out.
+    func testRefreshTokenIsNeverSent() async {
         let c = makeConnection()
         defer { cleanUp(c) }
 
         c.setClaudeCredential(credential("t"))
-        XCTAssertFalse(c.sshInjectClaudeRefreshToken)
         XCTAssertNil(env(c)["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
-    }
-
-    func testRefreshTokenIsSentWhenEnabled() {
-        let c = makeConnection()
-        defer { cleanUp(c) }
-
-        c.setClaudeCredential(credential("t"))
-        c.sshInjectClaudeRefreshToken = true
-        let e = env(c)
-        XCTAssertEqual(e["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"], "refresh")
-        // The CLI refuses a refresh token that arrives without scopes.
-        XCTAssertNotNil(e["CLAUDE_CODE_OAUTH_SCOPES"])
-    }
-
-    func testEnablingTheToggleWithNoRefreshTokenInjectsNothingExtra() {
-        let c = makeConnection()
-        defer { cleanUp(c) }
-
-        c.setClaudeCredential(credential("t", refresh: nil))
-        c.sshInjectClaudeRefreshToken = true
-        XCTAssertNil(env(c)["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
+        let renewing = Dictionary(uniqueKeysWithValues:
+            await c.resolvedSSHEnvironmentRenewingCredentials(for: .claude)
+                .map { ($0.name, $0.value) })
+        XCTAssertNil(renewing["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"])
     }
 
     /// A pasted token is most likely an inference-only `setup-token` credential,

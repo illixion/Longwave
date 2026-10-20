@@ -14,10 +14,7 @@ final class SandboxAgentAccount: AgentCredentialHost {
     var sshClientCommand: String { didSet { store(sshClientCommand, Keys.clientCommand) } }
     var sshAuthEnvName: String { didSet { store(sshAuthEnvName, Keys.authEnvName) } }
     var sshEnvVars: String { didSet { store(sshEnvVars, Keys.envVars) } }
-    /// Sandbox processes never receive the owner's refresh credential. Ignore
-    /// an older preference or a shared login sheet trying to enable delegation.
-    var sshInjectClaudeRefreshToken: Bool { get { false } set {} }
-    var allowsRefreshTokenDelegation: Bool { false }
+    var isAgentSandbox: Bool { true }
 
     func credentialSetupInstructions(for agent: SSHAgent) -> String {
         let common = "The login is stored in the Companion's Keychain on this Mac. Mobile Projects clients control sessions without receiving agent credentials. "

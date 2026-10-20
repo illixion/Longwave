@@ -69,7 +69,6 @@ enum ClaudeOAuth {
         static let scopesEnvName = "CLAUDE_CODE_OAUTH_SCOPES"
         static let subscriptionTypeEnvName = "CLAUDE_CODE_SUBSCRIPTION_TYPE"
         static let rateLimitTierEnvName = "CLAUDE_CODE_RATE_LIMIT_TIER"
-        static let refreshTokenEnvName = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN"
 
         /// The full managed-session scope set, matching the CLI's own `Hat`
         /// array — what `/login` grants and what the CLI re-requests on every
@@ -191,12 +190,11 @@ enum ClaudeOAuth {
         /// resolves no tier, prints the plan as "Claude API", and gates
         /// plan-dependent models behind separately-purchased usage credits.
         ///
-        /// `includeRefreshToken` hands the CLI the refresh token so it manages
-        /// renewal itself and a session stops being bounded by one token's life.
-        /// Off by default deliberately: the access token expires in ~8h, which is
-        /// a useful blast radius if anything on the host can read a process's
-        /// environment, and a refresh token has no such bound.
-        func sessionEnvironment(includeRefreshToken: Bool = false) -> [(name: String, value: String)] {
+        /// The refresh token is never part of it. Claude rotates refresh tokens
+        /// on use, so a CLI renewing from a copy would retire the one on this
+        /// device and sign it out; it would also outlive the ~8h bound the access
+        /// token puts on anything that reads a process's environment on the host.
+        func sessionEnvironment() -> [(name: String, value: String)] {
             var env: [(name: String, value: String)] = [
                 (Constants.tokenEnvName, accessToken),
                 // Report what the server actually granted, not what was asked for.
@@ -207,11 +205,6 @@ enum ClaudeOAuth {
             }
             if let rateLimitTier, !rateLimitTier.isEmpty {
                 env.append((Constants.rateLimitTierEnvName, rateLimitTier))
-            }
-            // The CLI rejects a refresh token that arrives without scopes; those
-            // are always set above, so the pairing is satisfied by construction.
-            if includeRefreshToken, canRefresh, let refreshToken {
-                env.append((Constants.refreshTokenEnvName, refreshToken))
             }
             return env
         }

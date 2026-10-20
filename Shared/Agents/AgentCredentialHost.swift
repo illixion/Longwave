@@ -31,10 +31,8 @@ protocol AgentCredentialHost: AnyObject {
     var sshAuthEnvName: String { get set }
     /// Extra non-secret `KEY=VALUE` lines injected into each session.
     var sshEnvVars: String { get set }
-    /// Hand Claude sessions the refresh token too (off by default — see
-    /// `SavedConnection.sshInjectClaudeRefreshToken`).
-    var sshInjectClaudeRefreshToken: Bool { get set }
-    var allowsRefreshTokenDelegation: Bool { get }
+    /// The Companion's agent sandbox rather than an SSH host.
+    var isAgentSandbox: Bool { get }
     func credentialSetupInstructions(for agent: SSHAgent) -> String
 
     var sshHasAuthToken: Bool { get set }
@@ -48,7 +46,7 @@ protocol AgentCredentialHost: AnyObject {
 }
 
 extension AgentCredentialHost {
-    var allowsRefreshTokenDelegation: Bool { true }
+    var isAgentSandbox: Bool { false }
     func credentialSetupInstructions(for agent: SSHAgent) -> String {
         agent.setupInstructions(envName: effectiveEnvName(for: agent))
     }
@@ -262,7 +260,7 @@ extension AgentCredentialHost {
     /// token — the CLI can't introspect a token handed to it via the environment,
     /// so it has to be told the granted scopes and the subscription tier
     /// separately or it assumes inference-only with no plan. See
-    /// `ClaudeOAuth.Credential.sessionEnvironment(includeRefreshToken:)`.
+    /// `ClaudeOAuth.Credential.sessionEnvironment()`.
     ///
     /// A **pasted** token deliberately gets none of that extra context: it's
     /// most likely a `setup-token` credential that really is inference-only, and
@@ -274,8 +272,7 @@ extension AgentCredentialHost {
     func resolvedSSHEnvironment(for agent: SSHAgent) -> [(name: String, value: String)] {
         var env = sshEnvironmentVariables()
         if agent == .claude, let credential = ClaudeCredentialStore.load(connectionID: id) {
-            Self.merge(&env, credential.sessionEnvironment(
-                includeRefreshToken: sshInjectClaudeRefreshToken && allowsRefreshTokenDelegation))
+            Self.merge(&env, credential.sessionEnvironment())
             return env
         }
         // A ChatGPT credential wins over a pasted PAT, and replaces it rather
@@ -300,10 +297,6 @@ extension AgentCredentialHost {
     /// stored credential while its token is still valid; once it has expired the
     /// Claude variables are left out, and the launch path reports a sign-in
     /// problem instead of starting a session that can only get a 401.
-    ///
-    /// With `sshInjectClaudeRefreshToken` on, the CLI renews itself and this
-    /// pre-launch refresh stops being load-bearing — it's still done, since
-    /// starting from a fresh token costs nothing.
     func resolvedSSHEnvironmentRenewingCredentials(for agent: SSHAgent) async -> [(name: String, value: String)] {
         if agent == .codex, hasCodexCredential {
             var env = sshEnvironmentVariables()
@@ -319,8 +312,7 @@ extension AgentCredentialHost {
         guard let credential = await ClaudeCredentialStore.validCredential(connectionID: id) else {
             return env
         }
-        Self.merge(&env, credential.sessionEnvironment(
-            includeRefreshToken: sshInjectClaudeRefreshToken && allowsRefreshTokenDelegation))
+        Self.merge(&env, credential.sessionEnvironment())
         return env
     }
 

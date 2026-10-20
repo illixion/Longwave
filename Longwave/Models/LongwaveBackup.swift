@@ -71,7 +71,6 @@ struct ConnectionBackup: Codable {
     /// written before Codex support simply lack the key and must still decode.
     var sshHasCodexToken: Bool?
     var sshAgentRawValue: String
-    var sshInjectClaudeRefreshToken: Bool
     var sshUseTmux: Bool
 
     // Moonlight (declared unconditionally, like `SavedConnection` itself —
@@ -128,7 +127,6 @@ struct ConnectionBackup: Codable {
         sshHasCustomToken = connection.sshHasCustomToken
         sshHasCodexToken = connection.sshHasCodexToken
         sshAgentRawValue = connection.sshAgentRawValue
-        sshInjectClaudeRefreshToken = connection.sshInjectClaudeRefreshToken
         sshUseTmux = connection.sshUseTmux
         moonlightBitrateStorage = connection.moonlightBitrateStorage
         moonlightFPSStorage = connection.moonlightFPSStorage
@@ -183,7 +181,6 @@ struct ConnectionBackup: Codable {
         connection.sshHasCustomToken = sshHasCustomToken
         connection.sshHasCodexToken = sshHasCodexToken ?? false
         connection.sshAgentRawValue = sshAgentRawValue
-        connection.sshInjectClaudeRefreshToken = sshInjectClaudeRefreshToken
         connection.sshUseTmux = sshUseTmux
         connection.moonlightBitrateStorage = moonlightBitrateStorage
         connection.moonlightFPSStorage = moonlightFPSStorage

@@ -163,24 +163,17 @@ struct AgentSetupSheet<Host: AgentCredentialHost & Observable>: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Toggle(isOn: Binding(
-                    get: { host.sshInjectClaudeRefreshToken },
-                    set: { host.sshInjectClaudeRefreshToken = $0; host.persistCredentialChanges() }
-                )) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Let sessions renew their own token")
-                        Text(host.sshInjectClaudeRefreshToken
-                             ? "The refresh token is sent to the Mac, so a session isn't limited to one 8-hour token. Unlike this device's keychain, a process environment there is readable by anything running as you, and a refresh token never expires on its own."
-                             : "Only the access token leaves this device, so anything that reads it on the Mac loses access within ~8 hours. Long sessions are renewed at launch instead.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .disabled(!credential.canRefresh || !host.allowsRefreshTokenDelegation)
-
-                if !host.allowsRefreshTokenDelegation {
+                if host.isAgentSandbox {
                     Text("Sandbox refresh credentials stay in the Companion's Keychain. Sessions receive only an access token.")
                         .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Label {
+                        Text("Sessions get an access token that lasts about 8 hours, renewed at each launch. For long or unattended work, use the Companion Sandbox in Projects: the sign-in stays on the Mac, which renews it for every launch and schedule without this device, and the agent runs as its own account, away from your files.")
+                    } icon: {
+                        Image(systemName: "lightbulb")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
 
                 Button("Sign Out of Claude", role: .destructive) {

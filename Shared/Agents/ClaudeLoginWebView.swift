@@ -11,11 +11,9 @@ import WebKit
 /// Persistent, so signing in again skips the emailed code. The claude.ai session
 /// cookie is a credential, but it lives in this app's container on visionOS —
 /// sandboxed and encrypted at rest, the same protection the OAuth credential in
-/// the keychain relies on. There's no separate decision to make about it. (Handing
-/// the *refresh token* to a managed session is different, and stays opt-in: that
-/// one leaves the headset and lands in a macOS process environment, where anything
-/// running as the same user can read it — see
-/// `SavedConnection.sshInjectClaudeRefreshToken`.)
+/// the keychain relies on. There's no separate decision to make about it. (The
+/// *refresh token* is different: it never leaves the device at all — see
+/// `ClaudeOAuth.Credential.sessionEnvironment()`.)
 ///
 /// A **dedicated identified** store rather than `WKWebsiteDataStore.default()`, so
 /// Claude's cookies never mix with any other web content the app loads and signing

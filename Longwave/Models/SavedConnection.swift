@@ -442,17 +442,6 @@ final class SavedConnection {
     /// Empty → `.claude`. Remembered across launches; flippable before launch.
     var sshAgentRawValue: String = ""
 
-    /// Hand managed Claude sessions the **refresh** token as well, so the CLI
-    /// renews its own credential instead of living inside one access token's ~8h
-    /// window.
-    ///
-    /// Default false, and that default is a security decision rather than
-    /// conservatism: the access token expires in ~8h, which bounds the damage if
-    /// anything on the host can read a process's environment, and a refresh token
-    /// carries no such bound. Turning this on trades that boundary for sessions
-    /// that don't need renewing at launch.
-    var sshInjectClaudeRefreshToken: Bool = false
-
     /// Wrap terminal sessions in tmux so they survive connection drops
     /// (visionOS tracking loss suspends the app and kills the TCP link). Falls
     /// back to a plain shell at launch when tmux isn't installed on the host.

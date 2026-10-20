@@ -262,15 +262,12 @@ final class ClaudeOAuthTests: XCTestCase {
         XCTAssertFalse(credential(expiresIn: nil, refresh: nil).needsSignIn, "no stated expiry")
     }
 
-    /// A refresh token the server refused must not be delegated to the host.
-    func testRejectedRefreshTokenIsNotDelegated() {
-        var c = credential()
-        let names = { (c: ClaudeOAuth.Credential) in
-            Set(c.sessionEnvironment(includeRefreshToken: true).map(\.name))
-        }
-        XCTAssertTrue(names(c).contains(ClaudeOAuth.Constants.refreshTokenEnvName))
-        c.refreshRejectedAt = Date()
-        XCTAssertFalse(names(c).contains(ClaudeOAuth.Constants.refreshTokenEnvName))
+    /// The session environment never carries the refresh token, whose value
+    /// would otherwise appear verbatim in it.
+    func testSessionEnvironmentNeverCarriesTheRefreshToken() {
+        let env = credential().sessionEnvironment()
+        XCTAssertFalse(env.contains { $0.name == "CLAUDE_CODE_OAUTH_REFRESH_TOKEN" })
+        XCTAssertFalse(env.contains { $0.value == "rt" })
     }
 
     /// The token endpoint has been seen sending `error` both as the standard

@@ -146,6 +146,10 @@ enum MoonlightBridge {
         library(slot).gamepadManager?.handleRumble(controllerNumber: controllerNumber, lowFreqMotor: lowFreqMotor, highFreqMotor: highFreqMotor)
     }
 
+    nonisolated static func setMotionEventState(_ slot: Int, _ controllerNumber: UInt16, _ motionType: UInt8, _ reportRateHz: UInt16) {
+        library(slot).gamepadManager?.setMotionEventState(controllerNumber: controllerNumber, motionType: motionType, reportRateHz: reportRateHz)
+    }
+
     nonisolated static func setHdrMode(_ slot: Int, _ hdrEnabled: Bool) {
         AppLog.moonlightBridge.log("[\(slot)] HDR mode: \(hdrEnabled)")
         // Forward HDR mode to renderer so it can update metadata and request IDR
@@ -195,7 +199,6 @@ enum MoonlightBridge {
         LiInitializeConnectionCallbacks(&cl)
         cl.logMessage = nil  // variadic — can't bridge to Swift
         cl.rumbleTriggers = { _, _, _ in }
-        cl.setMotionEventState = { _, _, _ in }
         cl.setControllerLED = { _, _, _, _ in }
         cl.setAdaptiveTriggers = { _, _, _, _, _, _ in }
 
@@ -218,6 +221,7 @@ enum MoonlightBridge {
             cl.connectionTerminated = { MoonlightBridge.connectionTerminated(0, $0) }
             cl.connectionStatusUpdate = { MoonlightBridge.connectionStatusUpdate(0, $0) }
             cl.rumble = { MoonlightBridge.rumble(0, $0, $1, $2) }
+            cl.setMotionEventState = { MoonlightBridge.setMotionEventState(0, $0, $1, $2) }
             cl.setHdrMode = { MoonlightBridge.setHdrMode(0, $0) }
         case 1:
             dr.setup = { format, w, h, rate, _, _ in MoonlightBridge.videoSetup(1, format, w, h, rate) }
@@ -237,6 +241,7 @@ enum MoonlightBridge {
             cl.connectionTerminated = { MoonlightBridge.connectionTerminated(1, $0) }
             cl.connectionStatusUpdate = { MoonlightBridge.connectionStatusUpdate(1, $0) }
             cl.rumble = { MoonlightBridge.rumble(1, $0, $1, $2) }
+            cl.setMotionEventState = { MoonlightBridge.setMotionEventState(1, $0, $1, $2) }
             cl.setHdrMode = { MoonlightBridge.setHdrMode(1, $0) }
         case 2:
             dr.setup = { format, w, h, rate, _, _ in MoonlightBridge.videoSetup(2, format, w, h, rate) }
@@ -256,6 +261,7 @@ enum MoonlightBridge {
             cl.connectionTerminated = { MoonlightBridge.connectionTerminated(2, $0) }
             cl.connectionStatusUpdate = { MoonlightBridge.connectionStatusUpdate(2, $0) }
             cl.rumble = { MoonlightBridge.rumble(2, $0, $1, $2) }
+            cl.setMotionEventState = { MoonlightBridge.setMotionEventState(2, $0, $1, $2) }
             cl.setHdrMode = { MoonlightBridge.setHdrMode(2, $0) }
         default:
             preconditionFailure("MoonlightLibrary.count is \(MoonlightLibrary.count); no callbacks for slot \(slot)")

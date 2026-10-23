@@ -13,6 +13,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import GameController
 import RAVEInput
 import RAVEPanel
 import SwiftUI
@@ -79,6 +80,9 @@ struct FoveatedImmersiveView: View {
                                bridge: manager.controllerBridge)
             }
             .onEnded { _ in webPanels.endDrag(bridge: manager.controllerBridge) })
+        // The view half of claiming the pad (the roster does the rest): without it the
+        // system keeps a gamepad for itself and the bridge's polled sticks freeze.
+        .handlesGameControllerEvents(matching: .gamepad)
         .onDisappear {
             wristDriver.hide(bridge: manager.controllerBridge)
             webPanels.tearDown(bridge: manager.controllerBridge)

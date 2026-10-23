@@ -51,6 +51,8 @@ Longwave/
 │       ├── PCVRShellSession.swift      — Scene-owned session, CompositorLayer content and configuration
 │       ├── PCVRFakeRemote.swift        — DEBUG: test room rendered at a past pose with delay/frame rate, no host needed
 │       └── PCVRShellDevView.swift      — DEBUG: window that opens the space, tunes it and shows the stats
+├── Gamepad/
+│   └── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)
@@ -60,7 +62,7 @@ Longwave/
 │   ├── MoonlightStreamBridge.swift     — C callback → Swift marshalling, one callback set per copy
 │   ├── MoonlightVideoRenderer.swift    — AVSampleBufferDisplayLayer H.264/HEVC/AV1 + HDR
 │   ├── MoonlightAudioRenderer.swift    — Opus multistream → AVAudioEngine
-│   ├── MoonlightGamepadManager.swift   — GameController framework → LiSendMultiControllerEvent
+│   ├── MoonlightGamepadManager.swift   — GamepadRoster snapshots → LiSendMultiControllerEvent, plus gyro/accel on host request
 │   ├── MoonlightKeyCodes.swift         — UIKeyboardHIDUsage → Windows VK code mapping
 │   ├── MoonlightModels.swift           — ServerInfo, MoonlightApp, StreamConfig, StreamStats
 │   ├── NvHTTPClient.swift              — GameStream HTTP API (NWConnection, XML parsing)

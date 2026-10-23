@@ -90,6 +90,8 @@ int ${prefix}LiSendMultiControllerEvent(short controllerNumber, short activeGame
     short leftStickX, short leftStickY, short rightStickX, short rightStickY) ML_ENTRY(LiSendMultiControllerEvent);
 int ${prefix}LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
     uint32_t supportedButtonFlags, uint16_t capabilities) ML_ENTRY(LiSendControllerArrivalEvent);
+int ${prefix}LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
+    float x, float y, float z) ML_ENTRY(LiSendControllerMotionEvent);
 
 #undef ML_ENTRY
 #endif

@@ -3,10 +3,13 @@ import DebugTrace
 import Foundation
 import GameController
 import CoreHaptics
+import RAVEInput
 @preconcurrency import MoonlightCommonC
 
-/// Bridges Apple's GameController framework to Moonlight's controller input APIs.
-/// Manages up to 4 controllers, mapping GCController inputs to moonlight-common-c events.
+/// Bridges the app's gamepads to one Moonlight session.
+/// Pads come from `GamepadRoster`, which claims them for every reader at once; this
+/// maps their snapshots to moonlight-common-c controller events (`MoonlightGamepadMapping`)
+/// and passes motion through when the host asks for it.
 @Observable
 class MoonlightGamepadManager: @unchecked Sendable {
 
@@ -22,16 +25,23 @@ class MoonlightGamepadManager: @unchecked Sendable {
     /// held at the moment of the switch is not left down on that host.
     private var focusObserver: NSObjectProtocol?
 
-    /// Currently connected controllers, indexed by playerIndex (0-3).
-    private var controllers: [Int: GCController] = [:]
-
-    /// Bitmask of active gamepads for LiSendMultiControllerEvent.
     @ObservationIgnored
-    private var activeGamepadMask: UInt16 = 0
+    private var subscription: GamepadRoster.Subscription?
 
-    /// Observers for connect/disconnect notifications.
-    private var connectObserver: NSObjectProtocol?
-    private var disconnectObserver: NSObjectProtocol?
+    /// Motion reports the host asked for, per pad and sensor. Polled on a timer at the
+    /// host's rate, as moonlight-ios does, rather than on every sensor callback: the
+    /// host names the rate it can use, and a pad's IMU reports far faster.
+    @ObservationIgnored
+    private var motionTimers: [MotionKey: Timer] = [:]
+    @ObservationIgnored
+    private var lastMotionSample: [MotionKey: SIMD3<Float>] = [:]
+
+    private struct MotionKey: Hashable {
+        let slot: Int
+        let type: UInt8
+    }
+
+    private var roster: GamepadRoster { .shared }
 
     init(library: MoonlightLibrary, swapABXY: Bool = false) {
         self.library = library
@@ -43,24 +53,6 @@ class MoonlightGamepadManager: @unchecked Sendable {
     func startListening() {
         AppLog.gamepadManager.log("Starting controller listening")
 
-        connectObserver = NotificationCenter.default.addObserver(
-            forName: .GCControllerDidConnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let controller = notification.object as? GCController else { return }
-            self?.controllerConnected(controller)
-        }
-
-        disconnectObserver = NotificationCenter.default.addObserver(
-            forName: .GCControllerDidDisconnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let controller = notification.object as? GCController else { return }
-            self?.controllerDisconnected(controller)
-        }
-
         focusObserver = NotificationCenter.default.addObserver(
             forName: MoonlightInputFocus.didChange,
             object: nil,
@@ -70,190 +62,149 @@ class MoonlightGamepadManager: @unchecked Sendable {
             self.releaseAllControllers()
         }
 
-        // Pick up any controllers already connected
-        for controller in GCController.controllers() {
-            controllerConnected(controller)
-        }
+        subscription = roster.subscribe(
+            connected: { [weak self] slot, controller in self?.controllerConnected(controller, slot: slot) },
+            disconnected: { [weak self] slot, controller in self?.controllerDisconnected(controller, slot: slot) },
+            changed: { [weak self] slot, snapshot in self?.sendControllerState(snapshot, controllerNumber: slot) }
+        )
     }
 
     /// Neutral state for every attached pad — the focus just moved to another
     /// session, and whatever was pressed here must not stay pressed.
     private func releaseAllControllers() {
-        for index in controllers.keys {
-            library.sendMultiController(
-                controllerNumber: Int16(index), activeGamepadMask: Int16(bitPattern: activeGamepadMask),
-                buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
-                leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
-            )
+        for slot in roster.controllers.keys {
+            sendNeutral(controllerNumber: slot, activeGamepadMask: roster.activeMask)
         }
     }
 
     func stopListening() {
         AppLog.gamepadManager.log("Stopping controller listening")
 
-        if let obs = connectObserver {
-            NotificationCenter.default.removeObserver(obs)
-            connectObserver = nil
-        }
-        if let obs = disconnectObserver {
-            NotificationCenter.default.removeObserver(obs)
-            disconnectObserver = nil
-        }
         if let obs = focusObserver {
             NotificationCenter.default.removeObserver(obs)
             focusObserver = nil
         }
+        stopAllMotion()
 
-        // Re-enable system gestures and send zero-state for all connected controllers
-        for (index, controller) in controllers {
-            for element in controller.physicalInputProfile.allElements {
-                element.preferredSystemGestureState = .enabled
-            }
-            let mask = activeGamepadMask & ~(1 << index)
-            activeGamepadMask = mask
-            library.sendMultiController(
-                controllerNumber: Int16(index), activeGamepadMask: Int16(bitPattern: mask),
-                buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
-                leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
-            )
+        // Zero state for every pad, removing each from the mask in turn, so the host
+        // ends with no controllers attached.
+        var mask = roster.activeMask
+        for slot in roster.controllers.keys.sorted() {
+            mask &= ~UInt16(1 << slot)
+            sendNeutral(controllerNumber: slot, activeGamepadMask: mask)
         }
-        controllers.removeAll()
-        activeGamepadMask = 0
+        if let subscription {
+            roster.unsubscribe(subscription)
+            self.subscription = nil
+        }
     }
 
     // MARK: - Controller Connect/Disconnect
 
-    private func controllerConnected(_ controller: GCController) {
-        guard controller.extendedGamepad != nil else {
-            AppLog.gamepadManager.log("Ignoring non-extended gamepad: \(controller.vendorName ?? "unknown")")
-            return
-        }
-
-        // Assign player index (0-3)
-        let playerIndex = nextAvailableIndex()
-        guard playerIndex < 4 else {
-            AppLog.gamepadManager.log("Maximum 4 controllers reached, ignoring")
-            return
-        }
-
-        controller.playerIndex = GCControllerPlayerIndex(rawValue: playerIndex) ?? .indexUnset
-        controllers[playerIndex] = controller
-        activeGamepadMask |= UInt16(1 << playerIndex)
-
+    private func controllerConnected(_ controller: GCController, slot: Int) {
         let controllerType = detectControllerType(controller)
         let capabilities = detectCapabilities(controller)
         let supportedButtons = buildSupportedButtonFlags()
 
-        AppLog.gamepadManager.log("Controller \(playerIndex) connected: \(controller.vendorName ?? "unknown"), type=\(controllerType), caps=0x\(String(capabilities, radix: 16), privacy: .public)")
+        AppLog.gamepadManager.log("Controller \(slot) connected: \(controller.vendorName ?? "unknown"), type=\(controllerType), caps=0x\(String(capabilities, radix: 16), privacy: .public)")
 
         // Notify host of controller arrival
         library.sendControllerArrival(
-            controllerNumber: UInt8(playerIndex),
-            activeGamepadMask: activeGamepadMask,
+            controllerNumber: UInt8(slot),
+            activeGamepadMask: roster.activeMask,
             type: controllerType,
             supportedButtonFlags: supportedButtons,
             capabilities: capabilities
         )
-
-        // Set up input handler
-        setupInputHandler(for: controller, at: playerIndex)
     }
 
-    private func controllerDisconnected(_ controller: GCController) {
-        guard let playerIndex = controllers.first(where: { $0.value === controller })?.key else { return }
+    private func controllerDisconnected(_ controller: GCController, slot: Int) {
+        AppLog.gamepadManager.log("Controller \(slot) disconnected: \(controller.vendorName ?? "unknown")")
+        for key in motionTimers.keys where key.slot == slot { stopMotion(key) }
+        // Zero-state removal event; the roster's mask no longer has this slot.
+        sendNeutral(controllerNumber: slot, activeGamepadMask: roster.activeMask)
+    }
 
-        AppLog.gamepadManager.log("Controller \(playerIndex) disconnected: \(controller.vendorName ?? "unknown")")
+    // MARK: - Input Handling
 
-        // Re-enable system gestures on disconnect
-        for element in controller.physicalInputProfile.allElements {
-            element.preferredSystemGestureState = .enabled
-        }
-
-        controllers.removeValue(forKey: playerIndex)
-        activeGamepadMask &= ~UInt16(1 << playerIndex)
-
-        // Send zero-state removal event
+    private func sendControllerState(_ snapshot: RAVEGamepadSnapshot, controllerNumber: Int) {
+        // Another session is the one being played; this pad's state is its business.
+        guard MoonlightInputFocus.owns(library.slot) else { return }
+        let state = MoonlightGamepadMapping.state(snapshot, swapABXY: swapABXY)
         library.sendMultiController(
-            controllerNumber: Int16(playerIndex), activeGamepadMask: Int16(bitPattern: activeGamepadMask),
+            controllerNumber: Int16(controllerNumber),
+            activeGamepadMask: Int16(bitPattern: roster.activeMask),
+            buttonFlags: state.buttonFlags,
+            leftTrigger: state.leftTrigger,
+            rightTrigger: state.rightTrigger,
+            leftStickX: state.leftStickX,
+            leftStickY: state.leftStickY,
+            rightStickX: state.rightStickX,
+            rightStickY: state.rightStickY
+        )
+    }
+
+    private func sendNeutral(controllerNumber: Int, activeGamepadMask: UInt16) {
+        library.sendMultiController(
+            controllerNumber: Int16(controllerNumber), activeGamepadMask: Int16(bitPattern: activeGamepadMask),
             buttonFlags: 0, leftTrigger: 0, rightTrigger: 0,
             leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0
         )
     }
 
-    // MARK: - Input Handling
+    // MARK: - Motion
 
-    private func setupInputHandler(for controller: GCController, at playerIndex: Int) {
-        guard let gamepad = controller.extendedGamepad else { return }
-
-        // Disable system gestures on all controller elements so visionOS doesn't
-        // intercept button presses for system actions (e.g. converting shoulder
-        // buttons into look-and-pinch events).
-        for element in controller.physicalInputProfile.allElements {
-            element.preferredSystemGestureState = .disabled
-        }
-
-        gamepad.valueChangedHandler = { [weak self] gamepad, _ in
-            guard let self else { return }
-            self.sendControllerState(gamepad, controllerNumber: playerIndex)
+    /// The host's `setMotionEventState` callback (off main thread): start reporting one
+    /// sensor of one pad at `reportRateHz`, or stop when the rate is 0. Sunshine asks
+    /// when the controller it emulates has motion (a DualShock 4 with `motion_as_ds4`)
+    /// and the arrival event said the pad has the sensor.
+    nonisolated func setMotionEventState(controllerNumber: UInt16, motionType: UInt8, reportRateHz: UInt16) {
+        Task { @MainActor [weak self] in
+            self?.updateMotion(slot: Int(controllerNumber), type: motionType, rate: reportRateHz)
         }
     }
 
-    private nonisolated func sendControllerState(_ gamepad: GCExtendedGamepad, controllerNumber: Int) {
-        // Another session is the one being played; this pad's state is its business.
-        guard MoonlightInputFocus.owns(library.slot) else { return }
-        var buttonFlags: Int32 = 0
-
-        // Face buttons
-        if gamepad.buttonA.isPressed { buttonFlags |= Int32(A_FLAG) }
-        if gamepad.buttonB.isPressed { buttonFlags |= Int32(B_FLAG) }
-        if gamepad.buttonX.isPressed { buttonFlags |= Int32(X_FLAG) }
-        if gamepad.buttonY.isPressed { buttonFlags |= Int32(Y_FLAG) }
-
-        // Apply A/B X/Y swap if enabled
-        if swapABXY {
-            buttonFlags = swapFaceButtons(buttonFlags)
+    private func updateMotion(slot: Int, type: UInt8, rate: UInt16) {
+        let key = MotionKey(slot: slot, type: type)
+        stopMotion(key)
+        guard rate > 0, let subscription, let motion = roster.controllers[slot]?.motion else { return }
+        switch Int32(type) {
+        case LI_MOTION_TYPE_GYRO where motion.hasRotationRate: break
+        case LI_MOTION_TYPE_ACCEL where motion.hasGravityAndUserAcceleration: break
+        default: return
         }
+        roster.setMotionWanted(true, slot: slot, by: subscription)
+        motionTimers[key] = Timer.scheduledTimer(withTimeInterval: 1 / Double(rate), repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.sendMotion(key) }
+        }
+        AppLog.gamepadManager.log("Controller \(slot) motion type \(type, privacy: .public) on at \(rate, privacy: .public) Hz")
+    }
 
-        // D-pad
-        if gamepad.dpad.up.isPressed    { buttonFlags |= Int32(UP_FLAG) }
-        if gamepad.dpad.down.isPressed  { buttonFlags |= Int32(DOWN_FLAG) }
-        if gamepad.dpad.left.isPressed  { buttonFlags |= Int32(LEFT_FLAG) }
-        if gamepad.dpad.right.isPressed { buttonFlags |= Int32(RIGHT_FLAG) }
+    private func sendMotion(_ key: MotionKey) {
+        guard MoonlightInputFocus.owns(library.slot), let snapshot = roster.snapshot(slot: key.slot) else { return }
+        let sample: SIMD3<Float>?
+        switch Int32(key.type) {
+        case LI_MOTION_TYPE_GYRO: sample = snapshot.rotationRate.map(MoonlightGamepadMapping.gyro)
+        case LI_MOTION_TYPE_ACCEL: sample = snapshot.acceleration.map(MoonlightGamepadMapping.acceleration)
+        default: sample = nil
+        }
+        // An unchanged reading is a sensor that has not updated since the last tick.
+        guard let sample, sample != lastMotionSample[key] else { return }
+        lastMotionSample[key] = sample
+        library.sendControllerMotion(controllerNumber: UInt8(key.slot), motionType: key.type,
+                                     x: sample.x, y: sample.y, z: sample.z)
+    }
 
-        // Shoulders
-        if gamepad.leftShoulder.isPressed  { buttonFlags |= Int32(LB_FLAG) }
-        if gamepad.rightShoulder.isPressed { buttonFlags |= Int32(RB_FLAG) }
+    private func stopMotion(_ key: MotionKey) {
+        motionTimers.removeValue(forKey: key)?.invalidate()
+        lastMotionSample[key] = nil
+        guard let subscription, !motionTimers.keys.contains(where: { $0.slot == key.slot }) else { return }
+        roster.setMotionWanted(false, slot: key.slot, by: subscription)
+    }
 
-        // Thumbstick clicks
-        if gamepad.leftThumbstickButton?.isPressed == true  { buttonFlags |= Int32(LS_CLK_FLAG) }
-        if gamepad.rightThumbstickButton?.isPressed == true { buttonFlags |= Int32(RS_CLK_FLAG) }
-
-        // Menu buttons
-        if gamepad.buttonMenu.isPressed { buttonFlags |= Int32(PLAY_FLAG) }
-        if gamepad.buttonOptions?.isPressed == true { buttonFlags |= Int32(BACK_FLAG) }
-        if gamepad.buttonHome?.isPressed == true { buttonFlags |= Int32(SPECIAL_FLAG) }
-
-        // Analog sticks: Float (-1.0...1.0) → Int16
-        let leftStickX  = Int16(clamping: Int32(gamepad.leftThumbstick.xAxis.value * 0x7FFE))
-        let leftStickY  = Int16(clamping: Int32(gamepad.leftThumbstick.yAxis.value * 0x7FFE))
-        let rightStickX = Int16(clamping: Int32(gamepad.rightThumbstick.xAxis.value * 0x7FFE))
-        let rightStickY = Int16(clamping: Int32(gamepad.rightThumbstick.yAxis.value * 0x7FFE))
-
-        // Triggers: Float (0.0...1.0) → UInt8
-        let leftTrigger  = UInt8(clamping: Int32(gamepad.leftTrigger.value * 0xFF))
-        let rightTrigger = UInt8(clamping: Int32(gamepad.rightTrigger.value * 0xFF))
-
-        library.sendMultiController(
-            controllerNumber: Int16(controllerNumber),
-            activeGamepadMask: Int16(bitPattern: activeGamepadMask),
-            buttonFlags: buttonFlags,
-            leftTrigger: leftTrigger,
-            rightTrigger: rightTrigger,
-            leftStickX: leftStickX,
-            leftStickY: leftStickY,
-            rightStickX: rightStickX,
-            rightStickY: rightStickY
-        )
+    private func stopAllMotion() {
+        for key in Array(motionTimers.keys) { stopMotion(key) }
     }
 
     // MARK: - Rumble
@@ -261,8 +212,8 @@ class MoonlightGamepadManager: @unchecked Sendable {
     /// Called from the bridge rumble callback (off main thread).
     nonisolated func handleRumble(controllerNumber: UInt16, lowFreqMotor: UInt16, highFreqMotor: UInt16) {
         let index = Int(controllerNumber)
-        Task { @MainActor [weak self] in
-            guard let controller = self?.controllers[index],
+        Task { @MainActor in
+            guard let controller = GamepadRoster.shared.controllers[index],
                   let haptics = controller.haptics else { return }
 
             let lowIntensity = Float(lowFreqMotor) / Float(UInt16.max)
@@ -294,13 +245,6 @@ class MoonlightGamepadManager: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func nextAvailableIndex() -> Int {
-        for i in 0..<4 {
-            if controllers[i] == nil { return i }
-        }
-        return 4
-    }
-
     private func detectControllerType(_ controller: GCController) -> UInt8 {
         if let _ = controller.physicalInputProfile as? GCXboxGamepad {
             return UInt8(LI_CTYPE_XBOX)
@@ -325,6 +269,12 @@ class MoonlightGamepadManager: @unchecked Sendable {
             caps |= UInt16(LI_CCAP_RUMBLE)
         }
 
+        // Motion sensors, reported through setMotionEventState once the host asks.
+        if let motion = controller.motion {
+            if motion.hasRotationRate { caps |= UInt16(LI_CCAP_GYRO) }
+            if motion.hasGravityAndUserAcceleration { caps |= UInt16(LI_CCAP_ACCEL) }
+        }
+
         return caps
     }
 
@@ -336,19 +286,68 @@ class MoonlightGamepadManager: @unchecked Sendable {
                UInt32(LS_CLK_FLAG) | UInt32(RS_CLK_FLAG) |
                UInt32(PLAY_FLAG) | UInt32(BACK_FLAG) | UInt32(SPECIAL_FLAG)
     }
+}
 
-    /// Swap A↔B and X↔Y flags for Nintendo-style controllers.
-    private nonisolated func swapFaceButtons(_ flags: Int32) -> Int32 {
-        var result = flags & ~(Int32(A_FLAG) | Int32(B_FLAG) | Int32(X_FLAG) | Int32(Y_FLAG))
+/// A gamepad snapshot in moonlight-common-c's terms. Pure, so the mapping is pinned by
+/// tests rather than by a host on the other end.
+enum MoonlightGamepadMapping {
 
-        // A ↔ B
-        if flags & Int32(A_FLAG) != 0 { result |= Int32(B_FLAG) }
-        if flags & Int32(B_FLAG) != 0 { result |= Int32(A_FLAG) }
-        // X ↔ Y
-        if flags & Int32(X_FLAG) != 0 { result |= Int32(Y_FLAG) }
-        if flags & Int32(Y_FLAG) != 0 { result |= Int32(X_FLAG) }
+    struct State: Equatable {
+        var buttonFlags: Int32
+        var leftTrigger: UInt8
+        var rightTrigger: UInt8
+        var leftStickX: Int16
+        var leftStickY: Int16
+        var rightStickX: Int16
+        var rightStickY: Int16
+    }
 
-        return result
+    nonisolated static func state(_ pad: RAVEGamepadSnapshot, swapABXY: Bool) -> State {
+        var buttonFlags: Int32 = 0
+        func flag(_ button: RAVEGamepadSnapshot.Buttons, _ value: Int32) {
+            if pad.buttons.contains(button) { buttonFlags |= value }
+        }
+
+        // Face buttons, swapped A↔B and X↔Y for a Nintendo layout.
+        flag(swapABXY ? .b : .a, Int32(A_FLAG))
+        flag(swapABXY ? .a : .b, Int32(B_FLAG))
+        flag(swapABXY ? .y : .x, Int32(X_FLAG))
+        flag(swapABXY ? .x : .y, Int32(Y_FLAG))
+
+        flag(.dpadUp, Int32(UP_FLAG))
+        flag(.dpadDown, Int32(DOWN_FLAG))
+        flag(.dpadLeft, Int32(LEFT_FLAG))
+        flag(.dpadRight, Int32(RIGHT_FLAG))
+        flag(.leftShoulder, Int32(LB_FLAG))
+        flag(.rightShoulder, Int32(RB_FLAG))
+        flag(.leftStick, Int32(LS_CLK_FLAG))
+        flag(.rightStick, Int32(RS_CLK_FLAG))
+        flag(.menu, Int32(PLAY_FLAG))
+        flag(.options, Int32(BACK_FLAG))
+        flag(.home, Int32(SPECIAL_FLAG))
+
+        // Sticks: −1…1 → Int16; triggers: 0…1 → UInt8.
+        func axis(_ value: Float) -> Int16 { Int16(clamping: Int32(value * 0x7FFE)) }
+        func trigger(_ value: Float) -> UInt8 { UInt8(clamping: Int32(value * 0xFF)) }
+        return State(buttonFlags: buttonFlags,
+                     leftTrigger: trigger(pad.leftTrigger), rightTrigger: trigger(pad.rightTrigger),
+                     leftStickX: axis(pad.leftStick.x), leftStickY: axis(pad.leftStick.y),
+                     rightStickX: axis(pad.rightStick.x), rightStickY: axis(pad.rightStick.y))
+    }
+
+    /// GameController rotation rate (rad/s) → the deg/s and axes `LiSendControllerMotionEvent`
+    /// expects. The axis order is moonlight-ios's (`ControllerSupport.m`), the reference
+    /// client against Sunshine.
+    nonisolated static func gyro(_ radiansPerSecond: SIMD3<Float>) -> SIMD3<Float> {
+        let degrees: Float = 57.2957795
+        return SIMD3(radiansPerSecond.x * degrees,
+                     radiansPerSecond.z * degrees,
+                     radiansPerSecond.y * -degrees)
+    }
+
+    /// GameController total acceleration (g) → m/s², sign-flipped as moonlight-ios does.
+    nonisolated static func acceleration(_ g: SIMD3<Float>) -> SIMD3<Float> {
+        g * -9.80665
     }
 }
 #endif

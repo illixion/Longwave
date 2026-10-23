@@ -73,6 +73,7 @@ final class MoonlightLibrary: @unchecked Sendable {
         let sendHighResHScroll: @Sendable (Int16) -> Int32
         let sendMultiController: @Sendable (Int16, Int16, Int32, UInt8, UInt8, Int16, Int16, Int16, Int16) -> Int32
         let sendControllerArrival: @Sendable (UInt8, UInt16, UInt8, UInt32, UInt16) -> Int32
+        let sendControllerMotion: @Sendable (UInt8, UInt8, Float, Float, Float) -> Int32
     }
 
     // MARK: - Typed conveniences
@@ -145,6 +146,12 @@ final class MoonlightLibrary: @unchecked Sendable {
         supportedButtonFlags: UInt32, capabilities: UInt16
     ) {
         _ = functions.sendControllerArrival(controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities)
+    }
+
+    /// One motion sample: gyro in deg/s or acceleration in m/s², in the axes
+    /// `LiSendControllerMotionEvent` documents. Only after the host asked for it.
+    nonisolated func sendControllerMotion(controllerNumber: UInt8, motionType: UInt8, x: Float, y: Float, z: Float) {
+        _ = functions.sendControllerMotion(controllerNumber, motionType, x, y, z)
     }
 }
 

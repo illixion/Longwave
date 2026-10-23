@@ -25,7 +25,8 @@ extension MoonlightLibrary.Functions {
         sendHighResScroll: { ml1_LiSendHighResScrollEvent($0) },
         sendHighResHScroll: { ml1_LiSendHighResHScrollEvent($0) },
         sendMultiController: { ml1_LiSendMultiControllerEvent($0, $1, $2, $3, $4, $5, $6, $7, $8) },
-        sendControllerArrival: { ml1_LiSendControllerArrivalEvent($0, $1, $2, $3, $4) }
+        sendControllerArrival: { ml1_LiSendControllerArrivalEvent($0, $1, $2, $3, $4) },
+        sendControllerMotion: { ml1_LiSendControllerMotionEvent($0, $1, $2, $3, $4) }
     )
 }
 #endif

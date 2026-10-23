@@ -139,12 +139,13 @@ final class ControllerBridgeSender {
     // framework happens to return, so a non-gamepad (a remote, a keyboard-ish device)
     // sitting ahead of the pad silently produced no input at all and nothing said why;
     // and there was no connect notification, so nothing could react to a controller
-    // arriving or leaving. MoonlightGamepadManager has done this properly since it was
-    // written — this is the same pattern.
+    // arriving or leaving. Pads now come from `GamepadRoster`, which also claims them
+    // (player index, change handler, system gestures off) — the bridge used to claim
+    // nothing, so on visionOS its polled sticks could freeze once released.
 
     /// The controller we are reading, and its motion sensor if it has one.
     private(set) var controller: GCController?
-    private var controllerObservers: [NSObjectProtocol] = []
+    private var padSubscription: GamepadRoster.Subscription?
 
     /// Spatial controllers (PSVR2 Sense etc.) — their own discovery, their own
     /// ARKit provider, per-hand rather than adopted-singular. See the class doc.
@@ -608,40 +609,20 @@ final class ControllerBridgeSender {
 
     // MARK: Physical controller lifecycle
 
-    /// Adopt whatever is already connected and follow connect/disconnect from there.
+    /// Adopt whatever pad is already held and follow arrivals and departures from there.
+    /// The roster only ever offers extended gamepads, never spatial controllers (the
+    /// tracker owns those), so every candidate can drive us.
     private func startControllerWatch() {
-        let center = NotificationCenter.default
-        controllerObservers = [
-            center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) {
-                [weak self] note in
-                guard let controller = note.object as? GCController else { return }
-                Task { @MainActor in self?.adopt(controller) }
-            },
-            center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) {
-                [weak self] note in
-                guard let controller = note.object as? GCController else { return }
-                Task { @MainActor in self?.forget(controller) }
-            },
-        ]
-        // Pick the best already-connected candidate. `extendedGamepad != nil` is the real
-        // requirement — everything this sender reads lives on that profile — so filter on
-        // it rather than trusting array order.
-        if let existing = GCController.controllers().first(where: { $0.extendedGamepad != nil }) {
-            adopt(existing)
-        }
+        padSubscription = GamepadRoster.shared.subscribe(
+            connected: { [weak self] _, controller in self?.adopt(controller) },
+            disconnected: { [weak self] _, controller in self?.forget(controller) })
     }
 
     private func adopt(_ candidate: GCController) {
-        // Spatial controllers are per-hand devices with their own lifecycle; the
-        // tracker owns them (they carry no extended gamepad profile anyway).
-        guard candidate.productCategory != GCProductCategorySpatialController else { return }
-        guard candidate.extendedGamepad != nil else {
-            log.notice("Ignoring a controller with no extended gamepad profile.")
-            return
-        }
-        // Prefer the one the system considers current, but never drop a working pad for a
-        // device that cannot drive us.
-        if let held = controller, held !== candidate, GCController.current === held { return }
+        guard candidate !== controller else { return }
+        // Prefer the one the system considers current.
+        if let held = controller, GCController.current === held { return }
+        if let held = controller { setMotionWanted(false, for: held) }
         controller = candidate
         handDetector.reset()
 
@@ -650,7 +631,7 @@ final class ControllerBridgeSender {
            continuously left no way to tell an absent sensor from a present one. Now the
            capability is read once and cached, so `motion == nil` is a real answer. */
         if let m = candidate.motion, m.hasRotationRate {
-            m.sensorsActive = true
+            setMotionWanted(true, for: candidate)
             motion = m
             log.notice("""
                 Controller \(candidate.vendorName ?? "unknown") attached \
@@ -667,7 +648,7 @@ final class ControllerBridgeSender {
 
     private func forget(_ leaving: GCController) {
         guard controller === leaving else { return }
-        motion?.sensorsActive = false
+        // The roster has already released the leaving pad's slot and its sensors.
         motion = nil
         controller = nil
         handDetector.reset()
@@ -675,11 +656,16 @@ final class ControllerBridgeSender {
         lastWristRotation.removeAll()
         log.notice("Controller disconnected.")
         // Something else may still be plugged in.
-        if let other = GCController.controllers().first(where: {
-            $0 !== leaving && $0.extendedGamepad != nil
-        }) {
+        let roster = GamepadRoster.shared
+        if let other = roster.controllers.keys.sorted().compactMap({ roster.controllers[$0] }).first {
             adopt(other)
         }
+    }
+
+    private func setMotionWanted(_ wanted: Bool, for pad: GCController) {
+        let roster = GamepadRoster.shared
+        guard let padSubscription, let slot = roster.slot(of: pad) else { return }
+        roster.setMotionWanted(wanted, slot: slot, by: padSubscription)
     }
 
     func stop() {
@@ -697,15 +683,15 @@ final class ControllerBridgeSender {
         hapticEngines.removeAll()
         hapticPlayers.removeAll()
         hapticEngineOwners.removeAll()
-        controllerObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        controllerObservers.removeAll()
+        // Unsubscribing also drops this sender's claim on the pad's IMU: a sender that has
+        // stopped has no use for it, and the sensor costs the controller battery for as
+        // long as it is active.
+        if let padSubscription { GamepadRoster.shared.unsubscribe(padSubscription) }
+        padSubscription = nil
         spatialSource.stop()
         stopQuestSource()
         lastTrackedControllers = nil
         hostAcceptsTrackedControllers = false
-        // Leave the IMU powered down: a sender that has stopped has no use for it, and the
-        // sensor costs the controller battery for as long as it is active.
-        motion?.sensorsActive = false
         motion = nil
         controller = nil
         handDetector.reset()
@@ -1492,13 +1478,12 @@ final class ControllerBridgeSender {
         // masked by it.
         applyGestures(to: &state, flags: &flags)
 
-        if let pad = controller?.extendedGamepad {
+        let pad = controller?.extendedGamepad.map { RAVEGamepadSnapshot($0, motion: motion) }
+        if let pad {
             flags.insert(.controllerPresent)
-            applyGamepad(pad, to: &state)
+            Self.applyGamepad(pad, to: &state)
         }
-        if let motion {
-            let rr = motion.rotationRate
-            let gyro = SIMD3<Float>(Float(rr.x), Float(rr.y), Float(rr.z))
+        if let gyro = pad?.rotationRate {
             /* Decide whose motion this is before shipping it. The detector wants the
                controller's angular SPEED, which is the magnitude of that rate — see
                ControllerHandAssignment for why speed rather than axes. */
@@ -1621,42 +1606,33 @@ final class ControllerBridgeSender {
                                    now: CACurrentMediaTime())
     }
 
-    /// Map a normalized extended gamepad (the Switch Pro is reported in Xbox-
-    /// equivalent positions by GameController) to the Switch Pro button set the
-    /// driver splits left/right.
-    private func applyGamepad(_ pad: GCExtendedGamepad, to state: inout ControllerBridgeInputState) {
+    /// Map a gamepad snapshot (GameController names a Switch Pro's buttons in Xbox-
+    /// equivalent positions) to the Switch Pro button set the driver splits left/right,
+    /// merged over the gestures already in `state`.
+    static func applyGamepad(_ pad: RAVEGamepadSnapshot, to state: inout ControllerBridgeInputState) {
+        let bits: [(RAVEGamepadSnapshot.Buttons, ControllerBridgeProtocol.Buttons)] = [
+            (.a, .a), (.b, .b), (.x, .x), (.y, .y),
+            (.leftShoulder, .l), (.rightShoulder, .r), (.leftTrigger, .zl), (.rightTrigger, .zr),
+            (.dpadUp, .dpadUp), (.dpadDown, .dpadDown), (.dpadLeft, .dpadLeft), (.dpadRight, .dpadRight),
+            (.leftStick, .lstick), (.rightStick, .rstick),
+            (.menu, .plus), (.options, .minus), (.home, .home),
+        ]
         var buttons: ControllerBridgeProtocol.Buttons = []
-        if pad.buttonA.isPressed { buttons.insert(.a) }
-        if pad.buttonB.isPressed { buttons.insert(.b) }
-        if pad.buttonX.isPressed { buttons.insert(.x) }
-        if pad.buttonY.isPressed { buttons.insert(.y) }
-        if pad.leftShoulder.isPressed { buttons.insert(.l) }
-        if pad.rightShoulder.isPressed { buttons.insert(.r) }
-        if pad.leftTrigger.isPressed { buttons.insert(.zl) }
-        if pad.rightTrigger.isPressed { buttons.insert(.zr) }
-        if pad.dpad.up.isPressed { buttons.insert(.dpadUp) }
-        if pad.dpad.down.isPressed { buttons.insert(.dpadDown) }
-        if pad.dpad.left.isPressed { buttons.insert(.dpadLeft) }
-        if pad.dpad.right.isPressed { buttons.insert(.dpadRight) }
-        if pad.leftThumbstickButton?.isPressed == true { buttons.insert(.lstick) }
-        if pad.rightThumbstickButton?.isPressed == true { buttons.insert(.rstick) }
-        if pad.buttonMenu.isPressed { buttons.insert(.plus) }
-        if pad.buttonOptions?.isPressed == true { buttons.insert(.minus) }
-        if pad.buttonHome?.isPressed == true { buttons.insert(.home) }
+        for (padButton, wireButton) in bits where pad.buttons.contains(padButton) {
+            buttons.insert(wireButton)
+        }
 
         // Merge with any gesture-driven input rather than overwriting it.
         state.buttons.formUnion(buttons)
         // The pad's left stick takes over locomotion only when actually deflected;
         // otherwise the gesture joystick (set earlier) stands.
-        let padLeft = SIMD2<Float>(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value)
-        if simd_length(padLeft) > 0.15 { state.leftStick = padLeft }
+        if simd_length(pad.leftStick) > 0.15 { state.leftStick = pad.leftStick }
         // Same rule on the right, so a connected pad resting at centre does not erase a
         // gesture turn — and the pad's stick is only ever the pad's: nothing here can
         // start a turn, it can only overwrite one when actually deflected.
-        let padRight = SIMD2<Float>(pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
-        if simd_length(padRight) > 0.15 || state.rightStick == .zero { state.rightStick = padRight }
-        state.leftTrigger = max(state.leftTrigger, pad.leftTrigger.value)
-        state.rightTrigger = max(state.rightTrigger, pad.rightTrigger.value)
+        if simd_length(pad.rightStick) > 0.15 || state.rightStick == .zero { state.rightStick = pad.rightStick }
+        state.leftTrigger = max(state.leftTrigger, pad.leftTrigger)
+        state.rightTrigger = max(state.rightTrigger, pad.rightTrigger)
     }
 
     /// How long menu / system must be held before they are sent. See `GestureCharge`.

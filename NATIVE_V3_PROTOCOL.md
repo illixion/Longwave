@@ -77,8 +77,8 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
     - 300 frames of 60 fps video with FEC and NACK arrive byte for byte at 2%
       and 10% loss.
     - The client knows the host's clock to under 0.4 ms.
-  - **Not yet:** DPLPMTUD, the Mac host and client wiring, and the hello and
-    hello-ack contents (§4.6).
+  - **Not yet:** DPLPMTUD and the Mac host and client wiring. The hello and
+    hello-ack contents were added later the same day (§4.6).
 - **Rate controller built (2026-10-24),** in `StreamTransport`: GCC's
   delay-based loop with four additions for this product, loss turned into FEC,
   and probing. Design and simulated results are under
@@ -913,6 +913,43 @@ diagnostics overlay), and `bye` with a reason.
     build knows. It then drops any capability whose requirements didn't
     survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` needs
     `pcvr`.
+- **Hello and hello-ack (2026-10-24)** (`StreamWire/Hello.swift`). These are
+  the handshake payloads: v2's JSON `Hello` and `HelloAck`, now binary. Each has
+  a fixed core followed by items (`type u8 | length u16 | value`, as in side
+  data), so a later field is a new item that an older peer skips. Little-endian,
+  like the rest of the wire.
+  - **Hello**, in Noise message 1:
+    `minor u8 (0) | capabilities | platform u8 | maxUDPPayload u16 | intent u8`.
+    Items: 1 = device name, 2 = software version.
+  - **Hello-ack**, in Noise message 2:
+    `minor u8 | capabilities (negotiated) | platform u8 | keyCodeSpace u8 | grants u16 | maxUDPPayload u16`.
+    Items: 1 = host name, 2 = software version.
+  - **Field values:**
+    - `platform`: 0 unspecified, 1 visionOS, 2 iOS, 3 macOS, 4 watchOS,
+      5 Windows, 6 Linux, 7 Android. Open-ended: unknown values decode.
+    - `intent`: bit 0 screen (v2's `wantsScreen`), bit 1 audio, bit 2
+      stills only (v2's `stillsOnly`).
+    - `keyCodeSpace`: 0 macOS virtual key codes, 1 HID usages. Any other value
+      is invalid.
+    - `grants`: bit n is `CompanionGrant` case n (screen, audio, input,
+      projects, sshKey).
+    - Names and versions: valid UTF-8, 1–64 and 1–32 bytes.
+  - **Rules:**
+    - Unknown intent and grant bits are kept. The minor version is
+      informational; capabilities gate behaviour.
+    - The ack's `maxUDPPayload` is the smaller of the two sides' values, and is
+      the ceiling DPLPMTUD probes towards.
+    - The client re-negotiates against what it offered, so a host can't switch
+      on a capability the client never listed.
+    - A host that won't serve a paired device still answers, with no grants
+      (`refused`), so the client can say why instead of timing out.
+    - v2's `decodesHEVC422` is the `hevc422` capability, and `acksFrames` is
+      replaced by FEEDBACK. `identity` isn't needed, because the per-device PSK
+      already proves which device is connecting.
+  - **Size:** the largest possible hello is under 200 bytes, against the
+    1,137 the initiation allows. It is sealed under the PSK but, like all of
+    Noise message 1, has no forward secrecy, so it carries nothing more
+    sensitive than the device name.
 - Message and frame types are append-only; a receiver skips unknown frame types
   by their length.
 - **v2 coexistence.** Hosts serve TCP 4857 (v2) and UDP 4857 (v3) at once,

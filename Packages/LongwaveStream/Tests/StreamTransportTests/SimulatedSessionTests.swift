@@ -40,6 +40,45 @@ final class SimulatedSessionTests: XCTestCase {
         XCTAssertGreaterThan(harness.client!.statistics.pingsAnswered, 5)
     }
 
+    /// The real hello and hello-ack (section 4.6) through the handshake: the
+    /// host answers from the device's own hello, and the client keeps only
+    /// what it offered.
+    func testHelloNegotiatesCapabilitiesAndDatagramSize() throws {
+        let harness = Harness()
+        let hello = ClientHello(capabilities: CapabilitySet([.h264, .hevc422, .nack, .gamepad, .pcvr, .sideData]),
+                                platform: .visionOS, maxUDPPayload: 1_452, deviceName: "Vision Pro")
+        harness.connector = ClientConnector(psk: harness.psk, hello: try hello.encoded())
+        var seen: (device: String, hello: ClientHello)?
+        harness.answer = { device, bytes in
+            guard let hello = try? ClientHello(decoding: bytes) else { return nil }
+            seen = (device, hello)
+            return try? HostHelloAck(answering: hello, hostCapabilities: CapabilitySet([.h264, .nack, .gamepad, .clipboard]),
+                                     platform: .windows, keyCodeSpace: .hidUsage, grants: [.screen, .input],
+                                     maxUDPPayload: 1_472, hostName: "gaming-pc").encoded()
+        }
+        harness.run(for: 50 * ms)
+        XCTAssertEqual(seen?.device, "device-1")
+        XCTAssertEqual(seen?.hello, hello)
+        let ack = try HostHelloAck(decoding: try XCTUnwrap(harness.helloAck))
+        XCTAssertEqual(hello.sessionCapabilities(from: ack), CapabilitySet([.h264, .nack, .gamepad]))
+        XCTAssertEqual(ack.keyCodeSpace, .hidUsage)
+        XCTAssertEqual(ack.maxUDPPayload, 1_452)
+        XCTAssertEqual(ack.hostName, "gaming-pc")
+    }
+
+    func testTheLargestHelloFitsTheHandshake() throws {
+        let name = String(repeating: "é", count: 32) // 64 bytes
+        let hello = ClientHello(capabilities: CapabilitySet((0...255).map { Capability(rawValue: UInt8($0)) }),
+                                platform: .visionOS, maxUDPPayload: 65_507, intent: SessionIntent(rawValue: 0xFF),
+                                deviceName: name, software: String(repeating: "v", count: 32))
+        let ack = HostHelloAck(capabilities: hello.capabilities, platform: .macOS, keyCodeSpace: .macVirtual,
+                               grants: SessionGrants(rawValue: 0xFFFF), maxUDPPayload: 65_507,
+                               hostName: name, software: String(repeating: "v", count: 32))
+        XCTAssertLessThanOrEqual(try hello.encoded().count, StreamHandshake.maxInitiationPayload)
+        XCTAssertLessThanOrEqual(try ack.encoded().count, StreamHandshake.maxResponsePayload)
+        XCTAssertLessThan(try hello.encoded().count, 200)
+    }
+
     func testHandshakeSurvivesHeavyLoss() throws {
         // 25% loss each way: an attempt gets through about half the time, and
         // seven attempts fit the 5 s budget.

@@ -35,7 +35,8 @@ final class FuzzTests: XCTestCase {
                                     accessUnit: [0, 0, 0, 3, 0x26, 1, 0xAF]) + [0, 0, 0],
         ]
         entries += [TransportFrameTests.chunkBytes, TransportFrameTests.ackBytes, TransportFrameTests.feedbackBytes,
-                    TransportFrameTests.nackBytes, try Pong(id: 1, pingSendTime: 2, receiveTime: 3, sendTime: 4).encoded()]
+                    TransportFrameTests.nackBytes, try Pong(id: 1, pingSendTime: 2, receiveTime: 3, sendTime: 4).encoded(),
+                    HelloTests.helloBytes, HelloTests.ackBytes]
         entries += InputEventTests.vectors.map(\.1)
         entries.append(InputEventTests.vectors.flatMap(\.1)) // a whole input stream
         // A datagram body: control bytes, a video shard, padding.
@@ -99,6 +100,10 @@ final class FuzzTests: XCTestCase {
                            encode: { (v) in try v.encoded() }))
         note("pong", check(input, "pong", decode: { (b) in try Pong(decoding: b) },
                            encode: { (v) in try v.encoded() }))
+        note("hello", check(input, "hello", decode: { (b) in try ClientHello(decoding: b) },
+                            encode: { (v) in try v.encoded() }))
+        note("helloAck", check(input, "helloAck", decode: { (b) in try HostHelloAck(decoding: b) },
+                               encode: { (v) in try v.encoded() }))
         note("state", check(input, "state", decode: { (b) in try StateSnapshot(frameBody: b) },
                             encode: { (v) in try v.encoded() }))
         note("sideData", check(input, "sideData", decode: { (b) throws -> SideData? in
@@ -180,7 +185,7 @@ final class FuzzTests: XCTestCase {
                      "chunk", "ack", "feedback", "nack", "pong"] {
             XCTAssertGreaterThan(acceptedCounts[name, default: 0], 0, "no mutated input ever decoded as \(name)")
         }
-        print("fuzz: \(total) inputs x 14 decoders, seed \(seed); accepted per decoder: \(acceptedCounts.sorted { $0.key < $1.key })")
+        print("fuzz: \(total) inputs x 16 decoders, seed \(seed); accepted per decoder: \(acceptedCounts.sorted { $0.key < $1.key })")
     }
 
     func testRandomBytesNeverTrap() {

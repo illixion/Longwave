@@ -314,7 +314,7 @@ final class AudioStreamManager {
             try uplink.start()
         } catch {
             microphoneMessage = error.localizedDescription
-            AppLog.audioStream.log("Microphone to Mac failed to start: \(error.localizedDescription)")
+            AppLog.audioStream.log("Microphone to Mac failed to start: \(error.localizedDescription, privacy: .public)")
             return
         }
         microphone = uplink

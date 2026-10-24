@@ -215,6 +215,9 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
     nonisolated func cleanup() {
         requestSoundStage(false)
+        #if canImport(UIKit)
+        AudioSessionCoordinator.shared.leave(self)
+        #endif
         playerNode?.stop()
         audioEngine?.stop()
 
@@ -233,12 +236,15 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     }
 
     #if canImport(UIKit)
-    /// Mixable playback session so a game stream coexists with other audio;
-    /// spatial experience follows `spatialAudioEnabled`.
+    /// Mixable session so a game stream coexists with other audio; spatial
+    /// experience follows `spatialAudioEnabled`. The category is the
+    /// coordinator's to set: a direct `setCategory(.playback)` here dropped the
+    /// input from under a running microphone uplink and made the next one
+    /// fail to start (`AUIOClient_StartIO` 'what').
     private nonisolated func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
+        AudioSessionCoordinator.shared.join(self, mode: .speaker, spatialAudioMode: .auto)
         do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             // visionOS-only API (marked unavailable on iOS even though iOS has
             // spatial audio — see the Spatial Audio note in CLAUDE.md).
             #if os(visionOS)

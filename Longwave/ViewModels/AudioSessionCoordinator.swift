@@ -81,9 +81,16 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
         applied = resolved
         lock.unlock()
 
-        if changed, !apply(resolved) { return false }
+        // `applied` is only what this coordinator last asked for; code outside
+        // it (or the system) can have moved the session since, and a session
+        // that is not `.playAndRecord` fails the input engine's start. So
+        // compare with the session itself, not just the cache.
+        let session = AVAudioSession.sharedInstance()
+        let drifted = session.category != resolved.category
+            || session.categoryOptions.contains(.mixWithOthers) != resolved.options.contains(.mixWithOthers)
+        if changed || drifted, !apply(resolved) { return false }
         do {
-            try AVAudioSession.sharedInstance().setActive(true)
+            try session.setActive(true)
         } catch {
             log.log("Failed to activate the audio session for recording: \(error)")
             return false

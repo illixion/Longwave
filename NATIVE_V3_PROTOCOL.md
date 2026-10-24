@@ -84,6 +84,29 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   delay-based loop with four additions for this product, loss turned into FEC,
   and probing. Design and simulated results are under
   [Implementation](#implementation-2026-10-24) in §6.2.
+- **First Mac host and client wiring (2026-10-24), behind two settings.**
+  - **Companion:** with its Native v3 setting on, it serves the desktop
+    stream on UDP 4857 beside v2 (`MacNativeV3Server`).
+  - **Clients:** with theirs on, they try v3 first, falling back to v2 after 2 s
+    or a refused port (`MacNativeV3Link`, inside `MacNativeStreamClient`).
+  - **What v3 carries:** the desktop, remote input (as input events and pointer
+    STATE), the display choice and remote-control status. Window streams,
+    stills and audio stay on v2.
+  - **Shared parts:** the package gained `StreamHost.VideoStreamSender` (one
+    viewer's frames, FEC, pacing and NACK resends, gated on its rate
+    controller) and `StreamPlayout.VideoStreamReceiver` (decodable frames
+    only, NACKs, recovery requests).
+  - **Encoder:** it runs at the lower of v2's rate and the slowest v3
+    viewer's budget.
+  - **Recovery:** it is IDR, at most one per 250 ms. VideoToolbox can't
+    invalidate a reference, and LTR is untested.
+  - **Simulated end to end on a 20 Mbit/s link:** every decoded frame was byte
+    for byte at 0, 2 and 10% loss. The rate climbed to 15–16 Mbit/s at 0–2%
+    loss and held 6.4 Mbit/s at 10%. A 300 ms outage recovered with one key
+    frame.
+  - **Credentials:** only per-device credentials get a v3 key. The shared
+    token has no device ID for the host to look up.
+  - **Not yet:** the `ns=3` TXT record and a clean device-test pass.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -908,6 +931,15 @@ Reliable channel 0, binary-framed messages with a type byte. The v2 JSON bodies
 message: they are small, rare and already have Codable models on both ends —
 swift-foundation's `JSONEncoder` exists on Linux and Windows. Hot-path messages
 (input, feedback, shard headers) are fixed binary.
+
+*Type numbers (2026-10-24, `StreamWire/Messages.swift`):* `formatDescription`
+0x20; `recoveryRequest` 0x21 (`streamID u32 | firstLostFrame u32`, client to
+host, the first damaged frame of §6.3); `bye` 0x22 (a UTF-8 reason, possibly
+empty); the JSON bodies `displayList` 0x23, `selectDisplay` 0x24 (the display
+id as UTF-8), `virtualDisplayChange` 0x25 and `windowInventory` 0x26. A
+`formatDescription` applies from its `firstFrameNumber`. Each viewer's frames
+are numbered from its own first key frame, so a client holds frames that
+arrive before their format and applies the format at that number.
 
 New in v3: `clipboard` (text, UTF-8, and PNG images up to 8 MB on bulk channel
 2, chunked like VVAS artwork), `streamConfig` (client asks for resolution/FPS

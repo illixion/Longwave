@@ -52,8 +52,10 @@ Longwave/
 │       ├── PCVRFakeRemote.swift        — DEBUG: test room rendered at a past pose with delay/frame rate, no host needed
 │       └── PCVRShellDevView.swift      — DEBUG: window that opens the space, tunes it and shows the stats
 ├── Gamepad/
-│   ├── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge; virtual pads for the harness
-│   └── GamepadDebugEndpoints.swift     — Debug-server endpoints (registered only when the server runs): `gamepads` status, `gamepadVirtualAdd/Set/Remove` (far end: CompanionWindows/scripts/pad-probe.py)
+│   ├── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge; virtual pads and a delivery log for the harness
+│   ├── GamepadActivity.swift           — When a pad's input and motion last changed, and a short gyro trace (pure, tested)
+│   ├── GamepadVisualizer.swift         — Live Canvas drawing of what the roster reads, in the Moonlight window corner and a PCVR panel; shown only via the debug server
+│   └── GamepadDebugEndpoints.swift     — Debug-server endpoints (registered only when the server runs): `gamepads` status, `gamepadVirtualAdd/Set/Remove`, `gamepadMotion`, `gamepadVisualizer`, `gamepadDeliveries` (far end: CompanionWindows/scripts/pad-probe.py)
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)
@@ -193,6 +195,7 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
 ├── AgentScheduleTests.swift            — Schedule cadence (DST, weekdays), overlap/daily cap, runtime cap, no prompt/token in argv
 ├── GamepadMappingTests.swift           — Golden Moonlight flags / 0x03 bits from a gamepad snapshot, roster virtual-pad round trip
+├── GamepadActivityTests.swift          — Change counting and ages for the gamepad visualizer
 └── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)
 
 

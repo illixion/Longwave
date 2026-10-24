@@ -172,6 +172,12 @@ struct MoonlightStreamView: View {
                     .padding(.top, 8)
             }
         }
+        // Debug-server only (`gamepadVisualizer`): what this stream is reading from the pad.
+        .overlay(alignment: .topLeading) {
+            if GamepadVisualizer.shared.isShown {
+                GamepadVisualizerView(place: "moonlight").padding(24)
+            }
+        }
         .handlesGameControllerEvents(matching: .gamepad)
         .onChange(of: scenePhase) { _, newPhase in
             // Headset donned / window refocused: retry a dropped stream

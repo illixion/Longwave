@@ -60,6 +60,7 @@ struct FoveatedImmersiveView: View {
             buildBanner(content: content)
             buildWebPanels(content: content)
             buildJoystickVisualization(content: content)
+            buildGamepadVisualizer(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -308,6 +309,36 @@ struct FoveatedImmersiveView: View {
                                 deltaTime: deltaTime,
                                 showing: showing,
                                 bridge: manager.controllerBridge)
+        })
+        content.add(panel.root)
+    }
+
+    // MARK: Gamepad visualizer
+
+    /// Debug-server only (`gamepadVisualizer`): the pad as the bridge reads it, ahead of
+    /// the viewer and below the game's centre of view, where it can be read while both
+    /// hands hold the pad. Head-follow like the banner, but closer and lower.
+    private func buildGamepadVisualizer(content: RealityViewContent) {
+        let panel = RAVEPanel(name: "GamepadVisualizer", size: [0.3, 0.2]) {
+            GamepadVisualizerView(place: "pcvr")
+        }
+        // 440 pt ≈ 0.32 m at scale 1.
+        panel.contentScale = 0.9
+        panel.opacity = 0
+        var follow = RAVEPanelHeadFollow(distance: 0.9, drop: 0.35, smoothing: 1 / 0.85)
+        panel.root.components.set(ClosureComponent { [weak panel] deltaTime in
+            guard let panel else { return }
+            panel.tick(viewer: nil)
+            guard GamepadVisualizer.shared.isShown else {
+                if panel.opacity != 0 { panel.opacity = 0 }
+                follow.reset()
+                return
+            }
+            let viewer = manager.controllerBridge?.headWorldPose
+                .map { RAVEPanelViewer(position: $0.position, forward: $0.forward) }
+            guard let pose = follow.update(viewer: viewer, deltaTime: deltaTime) else { return }
+            panel.follow(pose)
+            panel.opacity = 1
         })
         content.add(panel.root)
     }

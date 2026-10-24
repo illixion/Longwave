@@ -230,6 +230,7 @@ final class GamepadRoster {
     }
 
     private func changed(_ pad: GCExtendedGamepad, slot: Int) {
+        if recordsDeliveries { recordDelivery(slot: slot) }
         // Built only when someone listens for changes; the bridge polls instead.
         var snapshot: RAVEGamepadSnapshot?
         for subscription in subscriptions.values {
@@ -237,6 +238,30 @@ final class GamepadRoster {
             if snapshot == nil { snapshot = RAVEGamepadSnapshot(pad) }
             changed(slot, snapshot!)
         }
+    }
+
+    // MARK: Delivery log (development builds)
+    //
+    // When each input change GameController delivered, per slot: the answer to "is the
+    // pad's input reaching us at all", independent of anyone drawing or polling. visionOS
+    // routes a pad's events to the app holding keyboard focus, so delivery can stop while
+    // the app is active and the pad connected. Only `GamepadDebugEndpoints` turns it on.
+
+    /// Deliveries kept per slot.
+    static let deliveryLogLength = 4000
+
+    var recordsDeliveries = false {
+        didSet { if !recordsDeliveries { deliveries = [:] } }
+    }
+
+    /// Wall-clock times (to line up with the system log), oldest first.
+    private(set) var deliveries: [Int: [Date]] = [:]
+
+    private func recordDelivery(slot: Int) {
+        var log = deliveries[slot] ?? []
+        log.append(Date())
+        if log.count > Self.deliveryLogLength { log.removeFirst(log.count - Self.deliveryLogLength) }
+        deliveries[slot] = log
     }
 
     // MARK: Virtual pads (development builds)

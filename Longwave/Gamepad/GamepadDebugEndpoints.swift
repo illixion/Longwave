@@ -28,6 +28,9 @@ import UIKit
 enum GamepadDebugEndpoints {
 
     static func register() {
+        // Restores a visualizer left on, and with it the delivery log, from launch rather
+        // than from whenever a stream view first draws.
+        _ = GamepadVisualizer.shared
         DebugSurface.shared.register([
             .query("gamepads",
                    "Pads GamepadRoster holds (slot = player index = Moonlight controller number), their sensors and live state, and which Moonlight sessions are reading them") { _ in
@@ -137,6 +140,29 @@ enum GamepadDebugEndpoints {
                 }
                 return status()
             },
+            .command("gamepadVisualizer",
+                     "Show (on) or hide (off) the live gamepad drawing: in the Moonlight stream window's corner and on a panel in the PCVR immersive space. It only reads what the roster holds; gamepads then reports the change ages it measured (visualizer)",
+                     parameters: [
+                        .boolean("on", "true to show it, false to hide it", required: true),
+                     ]) { args in
+                let on = try args.requireBool("on")
+                GamepadVisualizer.shared.isShown = on
+                GamepadRoster.shared.recordsDeliveries = on
+                return status()
+            },
+            .query("gamepadDeliveries",
+                   "When GameController delivered each pad input change, as counts per second over the last `seconds`, newest last, with the UTC second each bucket starts. Recorded only since gamepadDeliveries record=true (or while the visualizer is shown). Line it up with the system log's `_GCControllerManagerAppClient … env: keyboardFocus` policy changes to see where input went",
+                   parameters: [
+                    .integer("seconds", "how far back", default: 60, range: 1...600),
+                   ]) { args in
+                deliveries(seconds: args.int("seconds") ?? 60)
+            },
+            .command("gamepadDeliveriesRecord",
+                     "Start (on) or stop and clear (off) recording when GameController delivers each pad input change",
+                     parameters: [.boolean("on", "true to record, false to stop and clear", required: true)]) { args in
+                GamepadRoster.shared.recordsDeliveries = try args.requireBool("on")
+                return deliveries(seconds: 10)
+            },
             .command("gamepadVirtualRemove",
                      "Disconnect a virtual pad, as if unplugged (Moonlight sends its removal)",
                      parameters: [
@@ -202,6 +228,40 @@ enum GamepadDebugEndpoints {
             hint: "GET gamepads lists the slots (virtual: true marks the ones you can drive); add one with gamepadVirtualAdd")
     }
 
+    // MARK: Deliveries
+
+    struct Deliveries: Encodable {
+        var recording: Bool
+        var slots: [SlotDeliveries]
+    }
+
+    struct SlotDeliveries: Encodable {
+        var slot: Int
+        var total: Int
+        /// UTC second each `perSecond` bucket starts at, oldest first.
+        var since: String
+        var perSecond: [Int]
+        var last: String?
+    }
+
+    private static func deliveries(seconds: Int) -> Deliveries {
+        let roster = GamepadRoster.shared
+        let now = Date()
+        let start = Date(timeIntervalSince1970: (now.timeIntervalSince1970 - Double(seconds - 1)).rounded(.down))
+        let format = ISO8601DateFormatter()
+        let slots = roster.deliveries.keys.sorted().map { slot -> SlotDeliveries in
+            let log = roster.deliveries[slot] ?? []
+            var buckets = [Int](repeating: 0, count: seconds)
+            for time in log where time >= start {
+                let index = Int(time.timeIntervalSince(start))
+                if index < seconds { buckets[index] += 1 }
+            }
+            return SlotDeliveries(slot: slot, total: log.count, since: format.string(from: start),
+                                  perSecond: buckets, last: log.last.map(format.string))
+        }
+        return Deliveries(recording: roster.recordsDeliveries, slots: slots)
+    }
+
     // MARK: Status
 
     struct Status: Encodable {
@@ -211,6 +271,7 @@ enum GamepadDebugEndpoints {
         /// Where GameController routes input depends on which app and scene is in
         /// front, so the readings above are only meaningful next to this.
         var foreground: Foreground
+        var visualizer: VisualizerStatus
     }
 
     struct Foreground: Encodable {
@@ -247,6 +308,8 @@ enum GamepadDebugEndpoints {
         var secondsSinceMotionCallback: Double?
         /// `GCController.current`: the pad the system last saw used.
         var isCurrent: Bool
+        /// Measured by the visualizer while it is drawn; absent when it never drew this pad.
+        var visualizer: PadActivity?
         var buttons: [String]
         var leftStick: [Float]
         var rightStick: [Float]
@@ -254,6 +317,21 @@ enum GamepadDebugEndpoints {
         var rightTrigger: Float
         var rotationRateRadPerS: [Float]?
         var accelerationG: [Float]?
+    }
+
+    struct PadActivity: Encodable {
+        var inputChanges: Int
+        var motionChanges: Int
+        var secondsSinceInputChange: Double?
+        var secondsSinceMotionChange: Double?
+        /// How long this controller object has been drawn in its slot (a reconnect resets it).
+        var trackedSeconds: Double
+    }
+
+    struct VisualizerStatus: Encodable {
+        var shown: Bool
+        /// Seconds since each place last drew it ("moonlight", "pcvr").
+        var secondsSinceDrawn: [String: Double]
     }
 
     struct MoonlightSession: Encodable {
@@ -286,6 +364,14 @@ enum GamepadDebugEndpoints {
                 motionCallbacks: motionCallbacks[slot]?.count,
                 secondsSinceMotionCallback: motionCallbacks[slot]?.last.map { -$0.timeIntervalSinceNow },
                 isCurrent: GCController.current === controller,
+                visualizer: GamepadVisualizer.shared.activity(slot: slot).map { tracked in
+                    let now = GamepadVisualizer.now
+                    return PadActivity(inputChanges: tracked.activity.inputChanges,
+                                       motionChanges: tracked.activity.motionChanges,
+                                       secondsSinceInputChange: tracked.activity.secondsSinceInputChange(now: now),
+                                       secondsSinceMotionChange: tracked.activity.secondsSinceMotionChange(now: now),
+                                       trackedSeconds: now - tracked.trackedSince)
+                },
                 buttons: buttonNames.filter { snapshot.buttons.contains($0.button) }.map(\.name),
                 leftStick: [snapshot.leftStick.x, snapshot.leftStick.y],
                 rightStick: [snapshot.rightStick.x, snapshot.rightStick.y],
@@ -294,7 +380,10 @@ enum GamepadDebugEndpoints {
                 accelerationG: snapshot.acceleration.map { [$0.x, $0.y, $0.z] })
         }
         return Status(subscriberCount: roster.subscriberCount, pads: pads,
-                      moonlightSessions: moonlightSessions(), foreground: foreground())
+                      moonlightSessions: moonlightSessions(), foreground: foreground(),
+                      visualizer: VisualizerStatus(
+                        shown: GamepadVisualizer.shared.isShown,
+                        secondsSinceDrawn: GamepadVisualizer.shared.drawnAt.mapValues { GamepadVisualizer.now - $0 }))
     }
 
     private static func foreground() -> Foreground {

@@ -7,9 +7,22 @@ public struct MessageType: RawRepresentable, Hashable, Sendable, CustomStringCon
     public let rawValue: UInt8
     public init(rawValue: UInt8) { self.rawValue = rawValue }
 
-    // Control, channel 0 (0x20...0x3F). Others (streamConfig, stats, bye,
-    // audioAnchor, the JSON inventory messages) are defined with the transport.
+    // Control, channel 0 (0x20...0x3F). Others (streamConfig, stats,
+    // audioAnchor, clipboard) come with the features that use them.
     public static let formatDescription = MessageType(rawValue: 0x20)
+    /// Client -> host: a stream's reference chain broke (`RecoveryRequest`).
+    public static let recoveryRequest = MessageType(rawValue: 0x21)
+    /// Either way: the session is ending, with a reason (UTF-8, may be empty).
+    public static let bye = MessageType(rawValue: 0x22)
+    // v2's JSON bodies, unchanged inside the message (section 4.5).
+    /// Host -> client: the desktops the host can stream, and the one it streams.
+    public static let displayList = MessageType(rawValue: 0x23)
+    /// Client -> host: stream this display (its id, UTF-8).
+    public static let selectDisplay = MessageType(rawValue: 0x24)
+    /// Client -> host: a virtual display resolution or exclusivity change.
+    public static let virtualDisplayChange = MessageType(rawValue: 0x25)
+    /// Host -> client: the streamable windows (`windowStreams`).
+    public static let windowInventory = MessageType(rawValue: 0x26)
 
     // Input events, client -> host, channel 1 (0x40...0x5F). See `InputEvent`.
     public static let keyDown = MessageType(rawValue: 0x40)

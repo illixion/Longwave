@@ -14,6 +14,9 @@
 //            StreamCryptoTests  AEAD transport records, replay window (section 3)
 //            StreamTransport    reliable channels, RTT, clock sync, pacer, feedback,
 //            StreamTransportTests and the session over StreamCrypto (sections 4.1, 5, 6)
+//            StreamHost         per-viewer video sender: frames -> FEC -> pacer,
+//                               driven by the rate controller (6.3, 6.4); its
+//                               simulations run in StreamTransportTests
 //            StreamSim          deterministic network simulator: links with delay,
 //                               jitter, bottleneck, loss, bursts, Wi-Fi stalls (7.5)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
@@ -38,6 +41,7 @@ var products: [Product] = [
     .library(name: "StreamPlayout", targets: ["StreamPlayout"]),
     .library(name: "StreamCrypto", targets: ["StreamCrypto"]),
     .library(name: "StreamTransport", targets: ["StreamTransport"]),
+    .library(name: "StreamHost", targets: ["StreamHost"]),
     .executable(name: "stream-spike-receiver", targets: ["stream-spike-receiver"]),
 ]
 
@@ -58,7 +62,8 @@ var targets: [Target] = [
     ),
     .target(name: "StreamTransport", dependencies: ["StreamWire", "StreamCrypto"]),
     .testTarget(name: "StreamTransportTests", dependencies: ["StreamTransport", "StreamCrypto", "StreamWire", "StreamSim",
-                                                             "StreamPlayout", "StreamFEC"]),
+                                                             "StreamPlayout", "StreamFEC", "StreamHost"]),
+    .target(name: "StreamHost", dependencies: ["StreamTransport", "StreamFEC", "StreamWire"]),
     // Test support: the deterministic network simulator (section 7.5).
     .target(name: "StreamSim"),
     .target(name: "CFrameSourceCore"),

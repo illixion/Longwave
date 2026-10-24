@@ -1045,6 +1045,9 @@ final class MacNativeStreamingController {
             }
         }
         let v3Server = self.v3Server
+        capture.onBitrateCeiling = { [weak v3Server] bits in
+            v3Server?.setEncoderCeiling(bits)
+        }
         capture.onFormatDescription = { [weak server, weak v3Server] data in
             server?.broadcastFormatDescription(data)
             v3Server?.broadcastFormatDescription(data)

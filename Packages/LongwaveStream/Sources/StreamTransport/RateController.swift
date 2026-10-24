@@ -201,6 +201,20 @@ public struct GCCRateController: SendRateController {
         startupProbe = configuration.start * 3
     }
 
+    /// The highest budget, and the highest probe: the configured maximum, or
+    /// less once the owner says what its encoder can use (`setCeiling`).
+    public var maximum: UInt64 { aimd.maximum }
+
+    /// Caps the estimate at what the sender can ever use, as libwebrtc caps
+    /// it at the encoders' maximum bitrate. Without it, a still desktop's
+    /// application-limited probes double the estimate every few seconds up to
+    /// the configured maximum, and the pacer (1.5 × the budget) stops pacing.
+    /// Bytes per second; nil restores the configured maximum.
+    public mutating func setCeiling(_ bytesPerSecond: UInt64?) {
+        aimd.setMaximum(min(bytesPerSecond ?? configuration.maximum, configuration.maximum))
+        if let limit = lossLimit, limit > aimd.maximum { lossLimit = aimd.maximum }
+    }
+
     /// The delay-based estimate alone.
     public var delayBasedRate: UInt64 { aimd.rate }
     public var smoothedLoss: Double { loss.smoothed }
@@ -305,7 +319,7 @@ public struct GCCRateController: SendRateController {
         } else {
             return nil
         }
-        let cluster = ProbeCluster(id: nextProbeID, rate: min(rate, configuration.maximum), duration: configuration.probeDuration)
+        let cluster = ProbeCluster(id: nextProbeID, rate: min(rate, maximum), duration: configuration.probeDuration)
         nextProbeID &+= 1
         pendingProbe = PendingProbe(cluster: cluster, sentAt: now)
         probeGraceUntil = now + cluster.duration + 250_000_000
@@ -370,7 +384,7 @@ public struct GCCRateController: SendRateController {
         let result = UInt64(estimate)
         // Start-up keeps doubling while the link takes most of each probe.
         if startupProbe != nil {
-            startupProbe = Double(result) > 0.7 * Double(probe.cluster.rate) && probe.cluster.rate < configuration.maximum
+            startupProbe = Double(result) > 0.7 * Double(probe.cluster.rate) && probe.cluster.rate < maximum
                 ? result * 2 : nil
         }
         return result

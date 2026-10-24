@@ -97,6 +97,20 @@ public struct VideoStreamSender: Sendable {
 
     // MARK: Encoder side
 
+    /// The most the encoder will ever produce (bits/s; nil for no limit).
+    /// The budget stops there, with room for the most parity and the shard
+    /// headers, so probes measure no further than the stream could use.
+    public mutating func setEncoderCeiling(_ bitsPerSecond: Int?, udpPayload: Int) {
+        guard let bitsPerSecond, bitsPerSecond > 0 else {
+            controller.setCeiling(nil)
+            return
+        }
+        let shard = Double(DatagramLayout.videoShardDataCapacity(udpPayload: udpPayload))
+        let wirePerByte = (1 + configuration.rateControl.maximumFEC) * Double(udpPayload) / shard
+        // The pacer follows at the next feedback report, a few ms away.
+        controller.setCeiling(UInt64(Double(bitsPerSecond) / 8 * wirePerByte))
+    }
+
     /// The bitrate the encoder should run at for this viewer, bits per second.
     public func encoderBitrate(udpPayload: Int) -> Int {
         Int(clamping: controller.budget.mediaRate(udpPayload: udpPayload) * 8)

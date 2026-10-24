@@ -277,4 +277,34 @@ final class RateControlSimulationTests: XCTestCase {
         XCTAssertGreaterThan(sender.goodput(motion), 0.8 * Double(capacity))
         XCTAssertLessThan(sender.delayPercentile(0.95, motion), 20 * ms)
     }
+
+    /// A link far faster than the encoder can use: without a ceiling, a still
+    /// desktop's probes doubled the estimate to the configured maximum (seen on
+    /// the headset: a 200 Mbit/s budget for 1–3 Mbit/s of desktop). With the
+    /// encoder's ceiling set, budget and probes stop there, and motion still
+    /// gets the full ceiling at once.
+    func testCeilingHoldsAStillDesktopsEstimate() throws {
+        let (harness, index) = try connect(down: bottleneck(propagation: 1 * ms, jitter: 300_000))
+        let sender = ControlledSender(harness: harness, index: index, propagation: 1 * ms)
+        let ceiling: UInt64 = 1_000_000 // 8 Mbit/s, under the 20 Mbit/s link
+        sender.controller.setCeiling(ceiling)
+        sender.encoderLimit = 60_000
+        let start = harness.now
+        harness.run(for: 20_000 * ms)
+        let still = start + 5_000 * ms..<start + 20_000 * ms
+        sender.report("ceiling still", still, capacity: Double(capacity))
+        XCTAssertLessThanOrEqual(sender.controller.budget.total, ceiling)
+        XCTAssertLessThanOrEqual(sender.meanBudget(still), Double(ceiling))
+        XCTAssertGreaterThan(sender.meanBudget(still), 0.6 * Double(ceiling), "probes still keep it near the ceiling")
+        sender.encoderLimit = nil
+        harness.run(for: 3_000 * ms)
+        let motion = start + 20_500 * ms..<start + 23_000 * ms
+        sender.report("ceiling motion", motion, capacity: Double(capacity))
+        XCTAssertGreaterThan(sender.goodput(motion), 0.8 * Double(ceiling))
+        XCTAssertLessThan(sender.delayPercentile(0.95, motion), 5 * ms)
+
+        // Lifted, the estimate is free to find the link again.
+        sender.controller.setCeiling(nil)
+        XCTAssertEqual(sender.controller.maximum, GCCRateController.Configuration().maximum)
+    }
 }

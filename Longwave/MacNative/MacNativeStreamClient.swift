@@ -64,6 +64,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
     private nonisolated(unsafe) var windowRenderers: [UInt32: MacNativeVideoRenderer] = [:]
     /// The v3 session, while this client runs over v3. Only touched on `queue`.
     private nonisolated(unsafe) var v3: MacNativeV3Link?
+    /// The desktop's frame latency over v2. Only touched on `queue`.
+    private nonisolated(unsafe) var latency = MacNativeFrameLatencyMeter(label: "v2 desktop")
 
     init(config: Config, renderer: MacNativeVideoRenderer) {
         self.config = config
@@ -322,6 +324,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
                 renderer.setFormatDescription(frame.payload)
             case MacNativeStreamProtocol.FrameType.videoFrame.rawValue:
                 if let videoFrame = MacNativeStreamProtocol.decodeVideoFrame(frame.payload) {
+                    latency.record(captureTime: videoFrame.timestampNanoseconds, isKeyFrame: videoFrame.isKeyFrame,
+                                   now: DispatchTime.now().uptimeNanoseconds, hostNow: nil)
                     renderer.enqueue(videoFrame)
                 }
             case MacNativeStreamProtocol.FrameType.windowFormatDescription.rawValue:

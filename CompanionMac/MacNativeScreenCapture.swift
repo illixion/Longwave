@@ -26,6 +26,9 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// compression session exists, since "asked for hardware" and "got it" are
     /// different questions.
     nonisolated(unsafe) var onVideoSummary: (@Sendable (String) -> Void)?
+    /// The most the encoder will run at (bits/s): this display's automatic
+    /// rate or the user's fixed one. Native v3 caps its rate estimate there.
+    nonisolated(unsafe) var onBitrateCeiling: (@Sendable (Int) -> Void)?
     /// The captured display's frame in the global (point-space) coordinate
     /// system — the same space `CGEvent` mouse coordinates use — and the
     /// stream's pixels-per-point. Fired once capture starts and again whenever
@@ -198,6 +201,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         currentConfiguration = configuration
         targetBitrate = bitrateCeiling ?? Self.bitrate(for: configuration, frameRate: frameRate)
         currentBitrate = currentBitrate == 0 ? targetBitrate : min(currentBitrate, targetBitrate)
+        onBitrateCeiling?(targetBitrate)
     }
 
     private func applyBitrate() {

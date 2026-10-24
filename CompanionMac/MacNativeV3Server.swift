@@ -110,6 +110,9 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     private nonisolated(unsafe) var lastKeyFrameRequest: UInt64?
     private nonisolated(unsafe) var lastBitrate: Int?
     private nonisolated(unsafe) var lastLinkReport: UInt64 = 0
+    private nonisolated(unsafe) var lastStatsLog: UInt64 = 0
+    /// The encoder's most (bits/s), which each viewer's rate estimate stops at.
+    private nonisolated(unsafe) var encoderCeiling: Int?
     private nonisolated(unsafe) var lastSweep: UInt64 = 0
     private nonisolated(unsafe) var desktopRunning = false
 
@@ -179,6 +182,20 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     }
 
     // MARK: Published state
+
+    nonisolated func setEncoderCeiling(_ bitsPerSecond: Int) {
+        queue.async { [self] in
+            guard bitsPerSecond != encoderCeiling else { return }
+            encoderCeiling = bitsPerSecond
+            for viewer in viewers.values { applyEncoderCeiling(to: viewer) }
+            pump()
+        }
+    }
+
+    private func applyEncoderCeiling(to viewer: Viewer) {
+        guard let udpPayload = endpoint.sessions[viewer.index]?.session.udpPayload else { return }
+        viewer.sender.setEncoderCeiling(encoderCeiling, udpPayload: udpPayload)
+    }
 
     nonisolated func setMouseAvailability(_ status: UInt8) {
         queue.async { [self] in
@@ -400,8 +417,10 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
                 endpoint.remove(index)
                 return
             }
-            viewers[index] = Viewer(index: index, deviceID: deviceID, hello: hello, grants: grants, capabilities: capabilities)
+            let viewer = Viewer(index: index, deviceID: deviceID, hello: hello, grants: grants, capabilities: capabilities)
+            viewers[index] = viewer
             _ = endpoint.withSession(index) { $0.setPathCeiling(DatagramLayout.maxProbedUDPPayload, now: now) }
+            applyEncoderCeiling(to: viewer)
         case .confirmed(let index):
             if let viewer = viewers[index] { confirm(viewer) }
         case .events(let index, let events):
@@ -659,6 +678,27 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             let rtt = desktop.compactMap { endpoint.sessions[$0.index]?.session.rtt.smoothed }.max() ?? 0
             onLinkLatency?(Double(rtt) / 1_000_000)
         }
+        if now - lastStatsLog > 5_000_000_000, !desktop.isEmpty {
+            lastStatsLog = now
+            for viewer in desktop { logStatistics(viewer) }
+        }
+    }
+
+    /// What the rate controller sees and does, every 5 s while a viewer
+    /// watches the desktop, so a weak-link test can be read from the log.
+    private func logStatistics(_ viewer: Viewer) {
+        guard let session = endpoint.sessions[viewer.index]?.session else { return }
+        let rate = viewer.sender.controller
+        let stats = viewer.sender.statistics
+        func mbps(_ bytes: UInt64?) -> String { bytes.map { String(format: "%.1f", Double($0) * 8 / 1e6) } ?? "-" }
+        let line = "budget \(mbps(rate.budget.total)) Mbps (encoder \(mbps(UInt64(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) / 8))), "
+            + "cap \(mbps(rate.maximum))), "
+            + "received \(mbps(rate.receiveRate)), delay-based \(mbps(rate.delayBasedRate)), \(rate.usage), "
+            + "loss \(String(format: "%.1f", rate.smoothedLoss * 100))%, FEC \(Int(rate.budget.fecRatio * 100))%, "
+            + "queue \(rate.queueingDelay / 1_000_000) ms, RTT \(String(format: "%.1f", Double(session.rtt.smoothed) / 1e6)) ms, "
+            + "payload \(session.udpPayload); frames \(stats.framesQueued) queued, \(stats.framesSkipped) skipped; "
+            + "shards \(stats.shardsSent) sent, \(stats.shardsResent) resent, \(stats.parityDropped) parity dropped, \(stats.probes) probes"
+        log.notice("v3 link: \(line, privacy: .public)")
     }
 
     /// A peer with no session and nothing heard for 30 s is a stale path.

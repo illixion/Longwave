@@ -295,7 +295,7 @@ struct AimdRateControl: Sendable {
     static let packetSize = 1_200.0
 
     let minimum: UInt64
-    let maximum: UInt64
+    private(set) var maximum: UInt64
     /// Frames per second the additive step is sized for.
     let frameRate: Double
     /// Bytes per second.
@@ -318,6 +318,12 @@ struct AimdRateControl: Sendable {
         guard let lastChange else { return true }
         let interval = min(max(rtt, 10_000_000), 200_000_000)
         return now - lastChange >= interval || received < rate / 2
+    }
+
+    /// A lower or raised ceiling; the rate comes down to it at once.
+    mutating func setMaximum(_ maximum: UInt64) {
+        self.maximum = max(maximum, minimum)
+        rate = min(rate, self.maximum)
     }
 
     /// Sets the rate outright (a probe's result).

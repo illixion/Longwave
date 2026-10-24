@@ -40,6 +40,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     /// Frames that arrived before any format did.
     private var heldFrames: [AssembledVideoFrame] = []
     private var pointerSequence: UInt32 = 0
+    private var latency = MacNativeFrameLatencyMeter(label: "v3 desktop")
     /// When the receiver next needs a poll (timeouts, NACKs). Not on every
     /// datagram: a key frame is hundreds of them.
     private var receiverDue: UInt64 = 0
@@ -364,6 +365,9 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             if heldFrames.count > 8 { heldFrames.removeFirst() }
             return
         }
+        let now = NativeV3.now()
+        latency.record(captureTime: frame.captureTime, isKeyFrame: frame.flags.contains(.key), now: now,
+                       hostNow: session?.clock.remoteTime(atLocal: now))
         renderer.enqueue(MacNativeStreamProtocol.VideoFrame(
             data: Data(frame.payload.accessUnit), isKeyFrame: frame.flags.contains(.key),
             sequence: UInt64(frame.frameNumber), timestampNanoseconds: frame.captureTime))

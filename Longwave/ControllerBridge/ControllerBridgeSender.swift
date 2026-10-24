@@ -616,6 +616,10 @@ final class ControllerBridgeSender {
         padSubscription = GamepadRoster.shared.subscribe(
             connected: { [weak self] _, controller in self?.adopt(controller) },
             disconnected: { [weak self] _, controller in self?.forget(controller) })
+        // A pad already connected was adopted from inside `subscribe`, before
+        // `padSubscription` existed, so its IMU request went nowhere. Without this the
+        // sensor stays off and the gyro the host receives is a stale constant.
+        if let controller, motion != nil { setMotionWanted(true, for: controller) }
     }
 
     private func adopt(_ candidate: GCController) {

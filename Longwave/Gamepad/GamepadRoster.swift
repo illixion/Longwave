@@ -71,6 +71,10 @@ final class GamepadRoster {
     /// in slot order, then for each new arrival; `disconnected` after a pad has left its
     /// slot. `changed`, when given, gets a snapshot (without motion) on every input
     /// change — for readers that send on change rather than polling.
+    ///
+    /// The calls for pads already held happen before this returns, so the returned
+    /// `Subscription` is not yet in the caller's hands inside them: anything that needs
+    /// it there (asking for motion) has to be repeated once `subscribe` returns.
     func subscribe(connected: @escaping (_ slot: Int, GCController) -> Void,
                    disconnected: @escaping (_ slot: Int, GCController) -> Void,
                    changed: ((_ slot: Int, RAVEGamepadSnapshot) -> Void)? = nil) -> Subscription {
@@ -128,6 +132,10 @@ final class GamepadRoster {
 
     /// How many subscribers want `slot`'s motion sensors on (for the debug status).
     func motionRequests(slot: Int) -> Int { motionDemand[slot]?.count ?? 0 }
+
+    func hasMotionRequest(slot: Int, by subscription: Subscription) -> Bool {
+        motionDemand[slot]?.contains(ObjectIdentifier(subscription)) ?? false
+    }
 
     var subscriberCount: Int { subscriptions.count }
 

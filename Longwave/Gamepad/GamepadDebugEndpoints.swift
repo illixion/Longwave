@@ -74,6 +74,47 @@ enum GamepadDebugEndpoints {
                 }
                 return status()
             },
+            .command("gamepadMotion",
+                     "Ask for (on) or stop asking for (off) a pad's motion sensors, as one more reader would. For diagnosing a sensor that reads still: compare sensorsActive and the rotation rate in gamepads before and after",
+                     parameters: [
+                        .integer("slot", "the pad's slot", required: true, range: 0...(GamepadRoster.slotCount - 1)),
+                        .boolean("on", "true to ask for the sensors, false to drop this request", required: true),
+                        .boolean("reassert", "also switch the IMU off and straight back on (sensorsActive false → true)", default: false),
+                        .boolean("handler", "install (true) or remove (false) an empty GCMotion valueChangedHandler, to test whether visionOS wants a motion consumer"),
+                     ]) { args in
+                let slot = try args.requireInt("slot")
+                let on = try args.requireBool("on")
+                let roster = GamepadRoster.shared
+                guard let controller = roster.controllers[slot] else {
+                    throw DebugError.invalidArgument("slot \(slot) holds no pad",
+                                                     hint: "GET gamepads lists the occupied slots")
+                }
+                if let motion = controller.motion {
+                    if let handler = args.bool("handler") {
+                        motion.valueChangedHandler = handler ? { _ in } : nil
+                        motionHandlerInstalled[slot] = handler
+                    }
+                    if args.bool("reassert") == true {
+                        motion.sensorsActive = false
+                        motion.sensorsActive = true
+                    }
+                }
+                if on {
+                    let subscription = motionSubscription ?? roster.subscribe(connected: { _, _ in },
+                                                                              disconnected: { _, _ in })
+                    motionSubscription = subscription
+                    roster.setMotionWanted(true, slot: slot, by: subscription)
+                } else if let subscription = motionSubscription {
+                    roster.setMotionWanted(false, slot: slot, by: subscription)
+                    // Nothing left asked for: stop being a reader, so the roster can let
+                    // the pads go once the real readers do.
+                    if !(0..<GamepadRoster.slotCount).contains(where: { roster.hasMotionRequest(slot: $0, by: subscription) }) {
+                        roster.unsubscribe(subscription)
+                        motionSubscription = nil
+                    }
+                }
+                return status()
+            },
             .command("gamepadVirtualRemove",
                      "Disconnect a virtual pad, as if unplugged (Moonlight sends its removal)",
                      parameters: [
@@ -86,6 +127,12 @@ enum GamepadDebugEndpoints {
             },
         ])
     }
+
+    /// The debug server's own reader, held only while `gamepadMotion` has asked for a
+    /// pad's sensors.
+    private static var motionSubscription: GamepadRoster.Subscription?
+    /// Slots whose GCMotion got an empty handler from `gamepadMotion handler=true`.
+    private static var motionHandlerInstalled: [Int: Bool] = [:]
 
     // MARK: Arguments
 
@@ -150,6 +197,11 @@ enum GamepadDebugEndpoints {
         var accelerometer: Bool
         /// Subscribers that have the pad's motion sensors switched on.
         var motionRequests: Int
+        /// GameController's own view of a physical pad's IMU (nil for a virtual pad).
+        var sensorsActive: Bool?
+        var sensorsRequireManualActivation: Bool?
+        /// Set by `gamepadMotion handler=…`; absent when never touched.
+        var debugMotionHandler: Bool?
         var buttons: [String]
         var leftStick: [Float]
         var rightStick: [Float]
@@ -183,6 +235,9 @@ enum GamepadDebugEndpoints {
                 productCategory: controller.productCategory,
                 gyro: sensors.gyro, accelerometer: sensors.accelerometer,
                 motionRequests: roster.motionRequests(slot: slot),
+                sensorsActive: controller.motion?.sensorsActive,
+                sensorsRequireManualActivation: controller.motion?.sensorsRequireManualActivation,
+                debugMotionHandler: motionHandlerInstalled[slot],
                 buttons: buttonNames.filter { snapshot.buttons.contains($0.button) }.map(\.name),
                 leftStick: [snapshot.leftStick.x, snapshot.leftStick.y],
                 rightStick: [snapshot.rightStick.x, snapshot.rightStick.y],

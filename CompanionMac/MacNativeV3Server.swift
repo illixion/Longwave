@@ -61,7 +61,9 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         let deviceName: String
         let grants: Set<CompanionGrant>
         let capabilities: CapabilitySet
-        let wantsScreen: Bool
+        /// The hello's screen intent, then the client's `streamStart`/`streamStop`
+        /// for the desktop (its Screen toggle).
+        var wantsScreen: Bool
         var confirmed = false
         var sender: VideoStreamSender
         var lastPointer: UInt32?
@@ -289,7 +291,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return -1 }
             return CMVideoFormatDescriptionCreateFromBigEndianImageDescriptionData(
                 allocator: kCFAllocatorDefault, bigEndianImageDescriptionData: base, size: data.count,
-                stringEncoding: CFStringBuiltInEncodings.UTF8.rawValue, flavor: nil,
+                stringEncoding: CFStringGetSystemEncoding(), flavor: nil,
                 formatDescriptionOut: &description)
         }
         guard status == noErr, let description else { return nil }
@@ -423,15 +425,32 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         // Before the stream starts: the capture reads the viewers' chroma.
         onClientConnected?(viewer.deviceName, viewer.wantsScreen)
         onClientsChanged?(summaries)
-        guard viewer.wantsScreen else { return }
-        if desktopWasRunning {
+        if viewer.wantsScreen { startDesktop(for: viewer, alreadyRunning: desktopWasRunning) }
+    }
+
+    /// A viewer joins the desktop stream: the capture starts if it is the first,
+    /// otherwise it gets the current format and the next frame is a key frame.
+    private func startDesktop(for viewer: Viewer, alreadyRunning: Bool) {
+        log.notice("v3 desktop subscribed (\(alreadyRunning ? "joining the running stream" : "starting the capture", privacy: .public))")
+        if alreadyRunning {
             sendFormat(to: viewer)
             lastKeyFrameRequest = nil
             requestKeyFrame(now: NativeV3.now())
         } else {
             desktopRunning = true
+            // Before the capture starts: it reads `hasVideoViewers` to decide
+            // whether it is for a watch alone.
+            updateGate()
             onDesktopStreamStart?()
         }
+    }
+
+    private func stopDesktopIfUnwatched() {
+        guard desktopRunning, !viewers.values.contains(where: \.wantsDesktop) else { return }
+        log.notice("v3 desktop unsubscribed by its last viewer")
+        desktopRunning = false
+        updateGate()
+        onDesktopStreamStop?()
     }
 
     private var summaries: [MacNativeStreamServer.ClientSummary] {
@@ -505,6 +524,18 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
                   let change = try? JSONDecoder().decode(MacNativeStreamProtocol.VirtualDisplayChange.self,
                                                          from: Data(message.body)) else { return }
             onConfigureVirtualDisplay?(change)
+        case .streamStart:
+            guard viewer.grants.contains(.screen), !viewer.wantsScreen,
+                  let subscription = try? StreamSubscription(decoding: message.body),
+                  subscription.streamID == NativeV3.desktopStreamID else { return }
+            let running = viewers.values.contains(where: \.wantsDesktop)
+            viewer.wantsScreen = true
+            startDesktop(for: viewer, alreadyRunning: running)
+        case .streamStop:
+            guard viewer.wantsScreen, let subscription = try? StreamSubscription(decoding: message.body),
+                  subscription.streamID == NativeV3.desktopStreamID else { return }
+            viewer.wantsScreen = false
+            stopDesktopIfUnwatched()
         case .bye:
             endpoint.remove(viewer.index)
             removeViewer(viewer, reason: "viewer said goodbye")
@@ -543,10 +574,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         guard viewer.confirmed else { return }
         log.notice("v3 viewer \(viewer.deviceName, privacy: .private(mask: .hash)) left: \(reason, privacy: .public)")
         onClientsChanged?(summaries)
-        if desktopRunning, !viewers.values.contains(where: \.wantsDesktop) {
-            desktopRunning = false
-            onDesktopStreamStop?()
-        }
+        stopDesktopIfUnwatched()
         updateGate()
     }
 

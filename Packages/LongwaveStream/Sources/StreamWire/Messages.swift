@@ -23,6 +23,11 @@ public struct MessageType: RawRepresentable, Hashable, Sendable, CustomStringCon
     public static let virtualDisplayChange = MessageType(rawValue: 0x25)
     /// Host -> client: the streamable windows (`windowStreams`).
     public static let windowInventory = MessageType(rawValue: 0x26)
+    /// Client -> host: start or stop receiving a stream (`StreamSubscription`).
+    /// v2's `windowStreamStart`/`windowStreamStop`; the desktop rides the
+    /// client's Screen toggle the same way.
+    public static let streamStart = MessageType(rawValue: 0x27)
+    public static let streamStop = MessageType(rawValue: 0x28)
 
     // Input events, client -> host, channel 1 (0x40...0x5F). See `InputEvent`.
     public static let keyDown = MessageType(rawValue: 0x40)

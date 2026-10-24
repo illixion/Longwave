@@ -176,6 +176,18 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         drive()
     }
 
+    /// The Screen toggle. Stopping drops the format with the picture (the
+    /// manager resets the renderer), so a restart waits for the host's next one.
+    func setDesktopSubscribed(_ on: Bool) {
+        if !on {
+            hasFormat = false
+            pendingFormats.removeAll()
+            heldFrames.removeAll()
+        }
+        guard let body = try? StreamSubscription(streamID: NativeV3.desktopStreamID).encoded() else { return }
+        sendControl(on ? .streamStart : .streamStop, body: body)
+    }
+
     func sendSelectDisplay(id: String) {
         guard let body = try? TextBody.encode(id) else { return }
         sendControl(.selectDisplay, body: body)

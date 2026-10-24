@@ -11,6 +11,13 @@ final class ControlMessageTests: XCTestCase {
         XCTAssertEqual(hexString(message), "21080100000004030201")
     }
 
+    func testStreamSubscriptionGoldenBytes() throws {
+        let subscription = StreamSubscription(streamID: 7)
+        XCTAssertEqual(hexString(try MessageFraming.encode(.streamStart, body: subscription.encoded())), "270407000000")
+        XCTAssertEqual(try StreamSubscription(decoding: hex("07000000")), subscription)
+        XCTAssertThrowsError(try StreamSubscription(decoding: hex("0700")))
+    }
+
     func testTextBodies() throws {
         XCTAssertEqual(try TextBody.decode(try TextBody.encode("Mac sleeping")[...]), "Mac sleeping")
         XCTAssertEqual(try TextBody.decode([][...]), "")

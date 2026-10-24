@@ -378,6 +378,8 @@ final class MacNativeStreamingController {
     private var v3Clients: [MacNativeStreamServer.ClientSummary] = []
     /// Which servers have a desktop viewer: the capture runs while either does.
     private var desktopSubscribers: Set<Int> = []
+    /// The v3 server's last encoder budget, kept for a capture that starts later.
+    private var v3LinkBudget: Int?
     private static let v2Subscriber = 2
     private static let v3Subscriber = 3
     /// The Apple Watch's HTTP lane (`WatchLinkProtocol`), up whenever the
@@ -459,6 +461,7 @@ final class MacNativeStreamingController {
         v2Clients = []
         v3Clients = []
         desktopSubscribers = []
+        v3LinkBudget = nil
         input.releaseHeldKeys()
         watchServer?.stop()
         watchServer = nil
@@ -795,7 +798,10 @@ final class MacNativeStreamingController {
             onMain { $0.capture?.requestKeyFrame() }
         }
         server.onTargetBitrate = { bits in
-            onMain { $0.capture?.setLinkBudget(bits) }
+            onMain { controller in
+                controller.v3LinkBudget = bits
+                controller.capture?.setLinkBudget(bits)
+            }
         }
         server.onLinkLatency = { milliseconds in
             onMain { $0.updateLatencySummary(linkMilliseconds: milliseconds) }
@@ -1085,6 +1091,7 @@ final class MacNativeStreamingController {
         }
         server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
         v3Server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
+        capture.setLinkBudget(v3Server == nil ? nil : v3LinkBudget)
         self.capture = capture
 
         Task {

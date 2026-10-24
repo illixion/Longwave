@@ -28,6 +28,25 @@ public struct RecoveryRequest: WireCodable, Hashable {
     }
 }
 
+/// Client -> host: which stream a `streamStart` or `streamStop` is about.
+///
+/// Body: `streamID u32` (4).
+public struct StreamSubscription: WireCodable, Hashable {
+    public var streamID: UInt32
+
+    public init(streamID: UInt32) {
+        self.streamID = streamID
+    }
+
+    public init(from reader: inout WireReader) throws(WireError) {
+        streamID = try reader.readUInt32()
+    }
+
+    public func encode(to writer: inout WireWriter) throws(WireError) {
+        writer.writeUInt32(streamID)
+    }
+}
+
 /// UTF-8 text bodies (`bye`'s reason, `selectDisplay`'s id), checked strictly.
 public enum TextBody {
     public static let maxBytes = 1024

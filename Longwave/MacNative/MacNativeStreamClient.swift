@@ -223,12 +223,13 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func sendWindowStreamStart(windowID: UInt32) {
-        if usingV3 { return }
+        // v3 carries only the desktop so far; this is its Screen toggle.
+        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(true) } }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStart, windowID: windowID))
     }
 
     func sendWindowStreamStop(windowID: UInt32) {
-        if usingV3 { return }
+        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(false) } }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStop, windowID: windowID))
     }
 

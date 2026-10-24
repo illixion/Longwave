@@ -35,9 +35,13 @@ class MoonlightGamepadManager: @unchecked Sendable {
     private var motionTimers: [MotionKey: Timer] = [:]
     @ObservationIgnored
     private var lastMotionSample: [MotionKey: SIMD3<Float>] = [:]
+    /// The rate the host asked for, per running report (for the debug status).
+    @ObservationIgnored
+    private(set) var motionReportRates: [MotionKey: UInt16] = [:]
 
-    private struct MotionKey: Hashable {
+    struct MotionKey: Hashable {
         let slot: Int
+        /// `LI_MOTION_TYPE_ACCEL` or `LI_MOTION_TYPE_GYRO`.
         let type: UInt8
     }
 
@@ -103,7 +107,7 @@ class MoonlightGamepadManager: @unchecked Sendable {
 
     private func controllerConnected(_ controller: GCController, slot: Int) {
         let controllerType = detectControllerType(controller)
-        let capabilities = detectCapabilities(controller)
+        let capabilities = detectCapabilities(controller, slot: slot)
         let supportedButtons = buildSupportedButtonFlags()
 
         AppLog.gamepadManager.log("Controller \(slot) connected: \(controller.vendorName ?? "unknown"), type=\(controllerType), caps=0x\(String(capabilities, radix: 16), privacy: .public)")
@@ -167,13 +171,15 @@ class MoonlightGamepadManager: @unchecked Sendable {
     private func updateMotion(slot: Int, type: UInt8, rate: UInt16) {
         let key = MotionKey(slot: slot, type: type)
         stopMotion(key)
-        guard rate > 0, let subscription, let motion = roster.controllers[slot]?.motion else { return }
+        guard rate > 0, let subscription else { return }
+        let sensors = roster.motionSensors(slot: slot)
         switch Int32(type) {
-        case LI_MOTION_TYPE_GYRO where motion.hasRotationRate: break
-        case LI_MOTION_TYPE_ACCEL where motion.hasGravityAndUserAcceleration: break
+        case LI_MOTION_TYPE_GYRO where sensors.gyro: break
+        case LI_MOTION_TYPE_ACCEL where sensors.accelerometer: break
         default: return
         }
         roster.setMotionWanted(true, slot: slot, by: subscription)
+        motionReportRates[key] = rate
         motionTimers[key] = Timer.scheduledTimer(withTimeInterval: 1 / Double(rate), repeats: true) {
             [weak self] _ in
             MainActor.assumeIsolated { self?.sendMotion(key) }
@@ -199,6 +205,7 @@ class MoonlightGamepadManager: @unchecked Sendable {
     private func stopMotion(_ key: MotionKey) {
         motionTimers.removeValue(forKey: key)?.invalidate()
         lastMotionSample[key] = nil
+        motionReportRates[key] = nil
         guard let subscription, !motionTimers.keys.contains(where: { $0.slot == key.slot }) else { return }
         roster.setMotionWanted(false, slot: key.slot, by: subscription)
     }
@@ -258,7 +265,7 @@ class MoonlightGamepadManager: @unchecked Sendable {
         }
     }
 
-    private func detectCapabilities(_ controller: GCController) -> UInt16 {
+    private func detectCapabilities(_ controller: GCController, slot: Int) -> UInt16 {
         var caps: UInt16 = 0
 
         // All extended gamepads have analog triggers
@@ -270,10 +277,9 @@ class MoonlightGamepadManager: @unchecked Sendable {
         }
 
         // Motion sensors, reported through setMotionEventState once the host asks.
-        if let motion = controller.motion {
-            if motion.hasRotationRate { caps |= UInt16(LI_CCAP_GYRO) }
-            if motion.hasGravityAndUserAcceleration { caps |= UInt16(LI_CCAP_ACCEL) }
-        }
+        let sensors = roster.motionSensors(slot: slot)
+        if sensors.gyro { caps |= UInt16(LI_CCAP_GYRO) }
+        if sensors.accelerometer { caps |= UInt16(LI_CCAP_ACCEL) }
 
         return caps
     }

@@ -106,8 +106,34 @@ final class GamepadRoster {
     /// The pad in `slot` read now, motion included where its sensors are on.
     func snapshot(slot: Int) -> RAVEGamepadSnapshot? {
         guard let controller = controllers[slot], let pad = controller.extendedGamepad else { return nil }
-        return RAVEGamepadSnapshot(pad, motion: controller.motion)
+        var snapshot = RAVEGamepadSnapshot(pad, motion: controller.motion)
+        #if DEBUG
+        if let virtual = virtualPads[ObjectIdentifier(controller)] {
+            snapshot.rotationRate = virtual.gyro ? virtual.rotationRate : nil
+            snapshot.acceleration = virtual.accelerometer ? virtual.acceleration : nil
+        }
+        #endif
+        return snapshot
     }
+
+    /// Which motion sensors the pad in `slot` has. Readers ask here rather than reading
+    /// `GCMotion` themselves, so a debug virtual pad can declare sensors it has no
+    /// `GCMotion` for.
+    func motionSensors(slot: Int) -> (gyro: Bool, accelerometer: Bool) {
+        guard let controller = controllers[slot] else { return (false, false) }
+        #if DEBUG
+        if let virtual = virtualPads[ObjectIdentifier(controller)] {
+            return (virtual.gyro, virtual.accelerometer)
+        }
+        #endif
+        guard let motion = controller.motion else { return (false, false) }
+        return (motion.hasRotationRate, motion.hasGravityAndUserAcceleration)
+    }
+
+    /// How many subscribers want `slot`'s motion sensors on (for the debug status).
+    func motionRequests(slot: Int) -> Int { motionDemand[slot]?.count ?? 0 }
+
+    var subscriberCount: Int { subscriptions.count }
 
     /// Ask for (or stop asking for) the motion sensors of the pad in `slot`. They run
     /// while at least one subscriber wants them: powering a pad's IMU costs its battery,
@@ -185,6 +211,9 @@ final class GamepadRoster {
     private func release(_ controller: GCController, departing: Bool) {
         guard let slot = slot(of: controller) else { return }
         controllers.removeValue(forKey: slot)
+        #if DEBUG
+        virtualPads.removeValue(forKey: ObjectIdentifier(controller))
+        #endif
         if motionDemand.removeValue(forKey: slot) != nil { controller.motion?.sensorsActive = false }
         controller.extendedGamepad?.valueChangedHandler = nil
         controller.playerIndex = .indexUnset
@@ -205,4 +234,90 @@ final class GamepadRoster {
             changed(slot, snapshot!)
         }
     }
+
+    // MARK: Virtual pads (debug)
+    //
+    // A pad an agent drives through the debug server, so a stream can be tested end to
+    // end without anyone holding a controller: `GCController.withExtendedGamepad()` is a
+    // real controller object whose elements take values from code. It is claimed and
+    // fanned out like a physical pad, and reports as GameController's generic extended
+    // gamepad — which Moonlight announces as a Nintendo pad, the same as a Switch Pro.
+    // It has no `GCMotion`, so its sensors are declared here and their readings set
+    // directly. See `GamepadDebugEndpoints`.
+
+    #if DEBUG
+    struct VirtualPad {
+        var gyro: Bool
+        var accelerometer: Bool
+        var rotationRate: SIMD3<Float> = .zero
+        /// At rest, flat: gravity straight down in GameController's axes.
+        var acceleration: SIMD3<Float> = SIMD3(0, 0, -1)
+    }
+
+    private var virtualPads: [ObjectIdentifier: VirtualPad] = [:]
+
+    func isVirtual(slot: Int) -> Bool {
+        controllers[slot].map { virtualPads[ObjectIdentifier($0)] != nil } ?? false
+    }
+
+    /// Adds a virtual pad and returns its slot: nil while nobody is subscribed (there is
+    /// no stream to drive) or every slot is taken.
+    func addVirtualPad(gyro: Bool, accelerometer: Bool) -> Int? {
+        guard !subscriptions.isEmpty else { return nil }
+        let controller = GCController.withExtendedGamepad()
+        virtualPads[ObjectIdentifier(controller)] = VirtualPad(gyro: gyro, accelerometer: accelerometer)
+        claim(controller)
+        guard let slot = slot(of: controller) else {
+            virtualPads.removeValue(forKey: ObjectIdentifier(controller))
+            return nil
+        }
+        return slot
+    }
+
+    /// Sets the whole state of the virtual pad in `slot` and delivers it as one change.
+    /// Returns false when `slot` holds no virtual pad.
+    func setVirtualPad(slot: Int, to state: RAVEGamepadSnapshot) -> Bool {
+        guard let controller = controllers[slot], let pad = controller.extendedGamepad,
+              var virtual = virtualPads[ObjectIdentifier(controller)] else { return false }
+        func set(_ element: GCControllerButtonInput?, _ button: RAVEGamepadSnapshot.Buttons) {
+            element?.setValue(state.buttons.contains(button) ? 1 : 0)
+        }
+        set(pad.buttonA, .a)
+        set(pad.buttonB, .b)
+        set(pad.buttonX, .x)
+        set(pad.buttonY, .y)
+        set(pad.leftShoulder, .leftShoulder)
+        set(pad.rightShoulder, .rightShoulder)
+        set(pad.leftThumbstickButton, .leftStick)
+        set(pad.rightThumbstickButton, .rightStick)
+        set(pad.buttonMenu, .menu)
+        set(pad.buttonOptions, .options)
+        set(pad.buttonHome, .home)
+        func axis(_ positive: RAVEGamepadSnapshot.Buttons, _ negative: RAVEGamepadSnapshot.Buttons) -> Float {
+            (state.buttons.contains(positive) ? 1 : 0) - (state.buttons.contains(negative) ? 1 : 0)
+        }
+        pad.dpad.setValueForXAxis(axis(.dpadRight, .dpadLeft), yAxis: axis(.dpadUp, .dpadDown))
+        pad.leftThumbstick.setValueForXAxis(state.leftStick.x, yAxis: state.leftStick.y)
+        pad.rightThumbstick.setValueForXAxis(state.rightStick.x, yAxis: state.rightStick.y)
+        // A trigger's press follows its value, at GameController's own threshold, as on
+        // a real pad; the snapshot's trigger bits are not set separately.
+        pad.leftTrigger.setValue(state.leftTrigger)
+        pad.rightTrigger.setValue(state.rightTrigger)
+        virtual.rotationRate = state.rotationRate ?? .zero
+        virtual.acceleration = state.acceleration ?? SIMD3(0, 0, -1)
+        virtualPads[ObjectIdentifier(controller)] = virtual
+        // Setting values may or may not fire the change handler for a controller nobody
+        // physically holds; deliver the finished state once either way.
+        changed(pad, slot: slot)
+        return true
+    }
+
+    /// Disconnects the virtual pad in `slot`, as if it were unplugged. Returns false when
+    /// `slot` holds no virtual pad.
+    func removeVirtualPad(slot: Int) -> Bool {
+        guard isVirtual(slot: slot), let controller = controllers[slot] else { return false }
+        release(controller, departing: true)
+        return true
+    }
+    #endif
 }

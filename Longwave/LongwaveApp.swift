@@ -42,6 +42,9 @@ struct LongwaveApp: App {
     init() {
         AppLog.configureDebugTrace()
         DebugTraceServer.startIfRequested()
+        #if DEBUG
+        GamepadDebugEndpoints.register()
+        #endif
     }
 
     var body: some Scene {

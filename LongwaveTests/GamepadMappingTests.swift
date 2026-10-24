@@ -123,3 +123,55 @@ final class MoonlightGamepadMappingTests: XCTestCase {
     }
 }
 #endif
+
+#if DEBUG
+/// The roster's claim and fan-out, driven through a virtual pad — the same path the
+/// debug endpoints use, so a green run here means the harness drives what real pads do.
+@MainActor
+final class GamepadRosterVirtualPadTests: XCTestCase {
+
+    func testVirtualPadIsClaimedFannedOutAndReleased() throws {
+        let roster = GamepadRoster.shared
+        var connected: [Int] = []
+        var disconnected: [Int] = []
+        var changes: [(Int, RAVEGamepadSnapshot)] = []
+        XCTAssertNil(roster.addVirtualPad(gyro: true, accelerometer: false),
+                     "with nobody subscribed there is nothing to drive")
+
+        let subscription = roster.subscribe(
+            connected: { slot, _ in connected.append(slot) },
+            disconnected: { slot, _ in disconnected.append(slot) },
+            changed: { slot, snapshot in changes.append((slot, snapshot)) })
+        defer { roster.unsubscribe(subscription) }
+
+        let slot = try XCTUnwrap(roster.addVirtualPad(gyro: true, accelerometer: false))
+        XCTAssertEqual(connected, [slot])
+        XCTAssertTrue(roster.isVirtual(slot: slot))
+        XCTAssertEqual(roster.controllers[slot]?.playerIndex.rawValue, slot)
+        XCTAssertNotEqual(roster.activeMask & UInt16(1 << slot), 0)
+        XCTAssertTrue(roster.motionSensors(slot: slot) == (true, false))
+
+        let state = RAVEGamepadSnapshot(buttons: [.a, .dpadUp], leftStick: SIMD2(0.5, 0),
+                                        rightTrigger: 1, rotationRate: SIMD3(1, 2, 3))
+        XCTAssertTrue(roster.setVirtualPad(slot: slot, to: state))
+        let delivered = try XCTUnwrap(changes.last)
+        XCTAssertEqual(delivered.0, slot)
+        XCTAssertEqual(delivered.1.buttons, [.a, .dpadUp, .rightTrigger], "a full trigger reads as pressed")
+        XCTAssertEqual(delivered.1.leftStick, SIMD2(0.5, 0))
+        XCTAssertNil(delivered.1.rotationRate, "change events carry no motion; readers poll it")
+
+        let polled = try XCTUnwrap(roster.snapshot(slot: slot))
+        XCTAssertEqual(polled.rotationRate, SIMD3(1, 2, 3))
+        XCTAssertNil(polled.acceleration, "an undeclared sensor reads as absent")
+
+        roster.setMotionWanted(true, slot: slot, by: subscription)
+        XCTAssertEqual(roster.motionRequests(slot: slot), 1)
+
+        XCTAssertTrue(roster.removeVirtualPad(slot: slot))
+        XCTAssertEqual(disconnected, [slot])
+        XCTAssertNil(roster.controllers[slot])
+        XCTAssertEqual(roster.motionRequests(slot: slot), 0)
+        XCTAssertFalse(roster.setVirtualPad(slot: slot, to: state))
+    }
+}
+#endif

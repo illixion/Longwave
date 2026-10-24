@@ -52,7 +52,8 @@ Longwave/
 │       ├── PCVRFakeRemote.swift        — DEBUG: test room rendered at a past pose with delay/frame rate, no host needed
 │       └── PCVRShellDevView.swift      — DEBUG: window that opens the space, tunes it and shows the stats
 ├── Gamepad/
-│   └── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge
+│   ├── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge; DEBUG virtual pads
+│   └── GamepadDebugEndpoints.swift     — DEBUG debug-server endpoints: `gamepads` status, `gamepadVirtualAdd/Set/Remove` (far end: CompanionWindows/scripts/pad-probe.py)
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)
@@ -180,6 +181,7 @@ CompanionWindows/                       — Longwave Companion (PoC; separate No
 ├── backend/                            — .NET 8 worker: Hotspot AP+NAT and native window/desktop streaming, via an ACL'd named-pipe JSON-RPC server (the Foveated/CloudXR host is a separate process — see Longwave-PCVR-Host/)
 ├── app/                                — Electron UI: Hotspot status / "Join from Vision Pro", plus PCVR and Game library panels that download the closed-source host on demand
 ├── spike/                              — Step-1 capability spike + SPIKE-FINDINGS.md (decision record)
+├── scripts/pad-probe.py                — Dev: reads the virtual pads games see (XInput, ViGEm DS4 incl. decoded gyro/accel) as JSON over SSH
 └── README.md                           — build/run/architecture/protocol
 
 LongwaveTests/                         — app-hosted XCTest target (run locally, no CI)
@@ -190,6 +192,7 @@ LongwaveTests/                         — app-hosted XCTest target (run locally
 ├── MacNativeStreamProtocolTests.swift  — Native hello/video framing and partial-frame draining
 ├── LocalNetworkTests.swift             — Windows-ICS subnet inference for host auto-prefill
 ├── AgentScheduleTests.swift            — Schedule cadence (DST, weekdays), overlap/daily cap, runtime cap, no prompt/token in argv
+├── GamepadMappingTests.swift           — Golden Moonlight flags / 0x03 bits from a gamepad snapshot, roster virtual-pad round trip
 └── PCVRSessionLimiterTests.swift       — Trial clock edges (needs FOVEATED_ENABLED to compile)
 
 

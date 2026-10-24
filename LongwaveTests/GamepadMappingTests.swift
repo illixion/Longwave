@@ -172,4 +172,33 @@ final class GamepadRosterVirtualPadTests: XCTestCase {
         XCTAssertEqual(roster.motionRequests(slot: slot), 0)
         XCTAssertFalse(roster.setVirtualPad(slot: slot, to: state))
     }
+
+    /// The bug the roster exists for: each Moonlight session used to install its own
+    /// `valueChangedHandler`, so a second session replaced the first's, and once it
+    /// ended the first was left with a dead handler and no input.
+    func testOneReaderLeavingDoesNotDeafenAnother() throws {
+        let roster = GamepadRoster.shared
+        var firstChanges = 0
+        var secondChanges = 0
+        let first = roster.subscribe(connected: { _, _ in }, disconnected: { _, _ in },
+                                     changed: { _, _ in firstChanges += 1 })
+        defer { roster.unsubscribe(first) }
+        let second = roster.subscribe(connected: { _, _ in }, disconnected: { _, _ in },
+                                      changed: { _, _ in secondChanges += 1 })
+        let slot = try XCTUnwrap(roster.addVirtualPad(gyro: false, accelerometer: false))
+        defer { _ = roster.removeVirtualPad(slot: slot) }
+
+        XCTAssertTrue(roster.setVirtualPad(slot: slot, to: RAVEGamepadSnapshot(buttons: [.a])))
+        XCTAssertGreaterThan(firstChanges, 0)
+        XCTAssertGreaterThan(secondChanges, 0)
+
+        roster.unsubscribe(second)
+        let before = firstChanges
+        XCTAssertNotNil(roster.controllers[slot], "the pad stays claimed while anyone reads it")
+        XCTAssertTrue(roster.setVirtualPad(slot: slot, to: RAVEGamepadSnapshot(buttons: [.b])))
+        XCTAssertGreaterThan(firstChanges, before, "the remaining reader still hears the pad")
+        XCTAssertEqual(roster.controllers[slot]?.physicalInputProfile.allElements
+                        .allSatisfy { $0.preferredSystemGestureState == .disabled }, true,
+                       "system gestures stay off for the remaining reader")
+    }
 }

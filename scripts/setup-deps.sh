@@ -58,15 +58,26 @@ else
     )
 fi
 
+# The prefixed copies are generated, so they go stale whenever their generator
+# or rename list changes — a new entry point the app calls (a LiSend… added to
+# make-instances.sh's header) then fails to compile in every existing checkout.
+# instance1/ records which inputs it was generated from; a mismatch regenerates.
+instances_inputs_sha() {
+    cat ci/deps/moonlight-common-c/make-instances.sh ci/deps/moonlight-common-c/ml_redefine_symbols.h \
+        | shasum -a 256 | cut -d' ' -f1
+}
+INSTANCES_STAMP=repos/moonlight-common-c/instance1/.generated-from
+
 if [[ -d repos/moonlight-common-c ]]; then
     echo "==> repos/moonlight-common-c exists — skipping (use --force to redo)"
-    # Migration: an older checkout predates the extra, symbol-prefixed copies
-    # of the library (instance1/, instance2/ — see make-instances.sh). Lay them
-    # out and refresh the manifest, since the app now links all three products.
-    if [[ ! -d repos/moonlight-common-c/instance1 ]]; then
-        echo "==> Adding the prefixed moonlight-common-c copies to the existing checkout"
+    # Lays out the extra, symbol-prefixed copies of the library (instance1/,
+    # instance2/ — see make-instances.sh) when they are missing, as in a
+    # checkout that predates them, or out of date.
+    if [[ "$(cat "$INSTANCES_STAMP" 2>/dev/null)" != "$(instances_inputs_sha)" ]]; then
+        echo "==> Regenerating the prefixed moonlight-common-c copies (missing or stale)"
         ci/deps/moonlight-common-c/make-instances.sh repos/moonlight-common-c
         cp ci/deps/moonlight-common-c/Package.swift repos/moonlight-common-c/
+        instances_inputs_sha > "$INSTANCES_STAMP"
     fi
 else
     echo "==> Cloning and patching moonlight-common-c ($MOONLIGHT_COMMON_C_REF)"
@@ -101,6 +112,7 @@ else
         # patches: the shims #include the patched sources.
         ../../ci/deps/moonlight-common-c/make-instances.sh .
     )
+    instances_inputs_sha > "$INSTANCES_STAMP"
 fi
 
 if [[ -d repos/opus ]]; then

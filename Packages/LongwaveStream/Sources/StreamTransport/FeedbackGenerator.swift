@@ -137,6 +137,10 @@ public struct SentPacketLog: Sendable {
         public var sendTime: UInt64
         public var size: Int
         public var isMedia: Bool
+        /// The probe burst this padding belonged to.
+        public var probeCluster: UInt32? = nil
+        /// An earlier report said it was lost; this result is its late arrival.
+        public var reportedLost = false
     }
 
     public struct Result: Sendable, Equatable {
@@ -157,8 +161,10 @@ public struct SentPacketLog: Sendable {
 
     public var count: Int { entries.count }
 
-    public mutating func record(packetNumber: UInt64, sendTime: UInt64, size: Int, isMedia: Bool) {
-        entries[packetNumber] = Entry(packetNumber: packetNumber, sendTime: sendTime, size: size, isMedia: isMedia)
+    public mutating func record(packetNumber: UInt64, sendTime: UInt64, size: Int, isMedia: Bool,
+                                probeCluster: UInt32? = nil) {
+        entries[packetNumber] = Entry(packetNumber: packetNumber, sendTime: sendTime, size: size, isMedia: isMedia,
+                                      probeCluster: probeCluster)
         order.append(packetNumber)
         while entries.count > capacity, orderStart < order.count {
             entries[order[orderStart]] = nil
@@ -178,7 +184,11 @@ public struct SentPacketLog: Sendable {
         for packet in feedback.packets {
             guard let entry = entries[packet.packetNumber] else { continue }
             results.append(Result(packet: entry, arrival: packet.arrival, ecn: packet.ecn))
-            if packet.arrival != nil { entries[packet.packetNumber] = nil }
+            if packet.arrival != nil {
+                entries[packet.packetNumber] = nil
+            } else {
+                entries[packet.packetNumber]?.reportedLost = true
+            }
         }
         return results
     }

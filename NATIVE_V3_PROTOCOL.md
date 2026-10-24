@@ -77,8 +77,12 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
     - 300 frames of 60 fps video with FEC and NACK arrive byte for byte at 2%
       and 10% loss.
     - The client knows the host's clock to under 0.4 ms.
-  - **Not yet:** the rate controller (§6.2), DPLPMTUD, the Mac host and client
-    wiring, and the hello and hello-ack contents (§4.6).
+  - **Not yet:** DPLPMTUD, the Mac host and client wiring, and the hello and
+    hello-ack contents (§4.6).
+- **Rate controller built (2026-10-24),** in `StreamTransport`: GCC's
+  delay-based loop with four additions for this product, loss turned into FEC,
+  and probing. Design and simulated results are under
+  [Implementation](#implementation-2026-10-24) in §6.2.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -1194,6 +1198,83 @@ On the host, per viewer, a controller modelled on Google Congestion Control:
   recent delay, creeping up slowly), so Tailscale's 6–15 ms idle isn't mistaken
   for queueing — the bug the current `linkLatency` comment records.
 
+#### Implementation (2026-10-24)
+
+`GCCRateController` (`StreamTransport/RateController.swift`, behind the
+`SendRateController` protocol) takes each report's `SentPacketLog` results and
+gives a `SendBudget`: the total in bytes/s, the FEC ratio, `pacingRate`
+(1.5×), and `mediaRate(audio:)`. The last is the encoder's bitstream rate once
+audio, parity and each shard's datagram overhead are taken out. The
+delay-based parts (`DelayBasedEstimator.swift`) follow libwebrtc's current
+code and constants:
+- 5 ms send groups, with its burst rule.
+- A trendline over 20 groups, scaled by 4 × the delta count (capped at 60).
+- An adaptive threshold starting at 12.5 ms, clamped to 6–600.
+- AIMD: grow 8 %/s far from the last overuse rate and about a packet per
+  RTT + 100 ms near it, cut to 0.85 × the 250 ms receive rate, and never grow
+  past 1.5 × what gets through.
+
+The simulator found four places where GCC alone falls short, and each now has
+an addition:
+- **Wi-Fi stalls.** A stall holds packets and releases them together, which
+  GCC reads as a 100 ms jump in delay and then a draining queue, and it cuts
+  the rate. With stalls every 2–4 s that held the rate at 42% of the link.
+  `StallFilter` now drops the pair of deltas a held-and-released burst
+  produces: a jump in one group that no queue could build without sending at
+  7× the link, followed by a released burst. A jump with no release after it is
+  a real collapse and goes through.
+- **Slow overshoot.** Near the link, additive growth overshoots by 1–2 %. That
+  slope sits below the threshold floor, so the queue grew by 8 ms every 500 ms
+  without limit. The relearned baseline is now `QueueDelayEstimator`: the
+  lowest one-way delay over the last 10 s, in 1 s buckets. A smoothed queue
+  above `queueDelayCeiling` (20 ms) counts as overuse.
+- **Slow drain.** When the link halved, the 0.85 × cut drained the 140 ms
+  queue built during detection at about 0.13 MB/s, which took 2 s. A *drain
+  allowance* now holds the budget under the estimate in proportion to the
+  queue above half the ceiling, aiming to clear it in 250 ms, and shrinks as
+  the queue empties. The estimate itself isn't cut further, because GCC
+  regrows only additively near the link.
+- **Probe self-overuse.** A probe at 2–3× the link builds its own 16–38 ms
+  queue. GCC then cut on a 250 ms receive rate that still covered the slow
+  start, and fell back to 1.3 MB/s. Overuse in the 250 ms after a probe is now
+  ignored unless the queue is past twice the ceiling.
+
+Loss and probing:
+- **Loss:** measured over 100 ms windows, with a late arrival taking its
+  reported loss back (`SentPacketLog.Entry.reportedLost`). It sets the FEC
+  ratio, 2 × loss + 5%, clamped to 5–50%.
+- **Cuts above 10% loss:** these follow libwebrtc's loss-based v1, by half the
+  loss fraction every 300 ms + RTT, but stop at half the delay-based estimate.
+  libwebrtc's version compounds to the minimum while loss lasts, which random
+  Wi-Fi loss always triggers.
+- **Probes** are padding datagrams (`sealPadding`, tagged with their cluster
+  in the sent log). Start-up probes at 3 × the start rate, then 2 × each result
+  while the link takes more than 70% of it. A sender under half the estimate
+  for 1 s probes at 2× every 5 s. Results follow libwebrtc's
+  `ProbeBitrateEstimator`, but count every packet the link carried during the
+  burst, since interleaved media shared it.
+
+Simulated results, all at a 20 Mbit/s bottleneck from a 4 Mbit/s start
+(`RateControlSimulationTests`):
+
+| case | budget / goodput (% of link) | queue p95 |
+|---|---|---|
+| LAN, seconds 1–3 | 85 / 89 | 7.3 ms |
+| LAN, steady state | 93 / 96 | 13 ms |
+| Tailscale-like (10 ms base, 3 ms jitter) | 92 / 94 | 10 ms |
+| link halves at 15 s | 90 / 95 of the new rate, drained 0.5 s after | 8.7 ms |
+| stalls every 2–4 s | 92 / 94 | 8.9 ms |
+| 5% random loss | 90 / 89, FEC 0.15 | 7.8 ms |
+| 15% random loss | 53 / 48, FEC 0.32 | 3.1 ms |
+| still desktop then motion | estimate held at 95% by probes; motion 85 / 89 | 7.3 ms |
+
+Most of the steady queue (5–9 ms) is each frame's own burst at the 1.5×
+pacing rate, not standing queue. Not done yet:
+- The encoder side of §6.3: frame rate and resolution steps.
+- The pacer's stale-parity drop.
+- ECN.
+- A recorded-trace comparison against SCReAMv2.
+
 SCReAMv2 (draft-ietf-ccwg-rfc8298bis, 2026, obsoleting RFC 8298) is the
 alternative to evaluate in the simulator: more rate-based than the original,
 L4S-aware, with a 60 ms–400 ms delay target and AR/VR goggles among its stated
@@ -1900,7 +1981,7 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
   *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
   input, STATE including the head pose, capabilities). *`StreamFEC` and the
   frame assembler (`StreamPlayout`) done 2026-10-24. `StreamCrypto`,
-  `StreamTransport` (without the rate controller) and `StreamSim` done
+  `StreamTransport` with the GCC rate controller, and `StreamSim`, done
   2026-10-24.*
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,

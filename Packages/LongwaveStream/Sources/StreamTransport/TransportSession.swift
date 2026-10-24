@@ -133,11 +133,21 @@ public struct TransportSession: Sendable {
         return try seal(writer.bytes, isMedia: true, now: now)
     }
 
-    private mutating func seal(_ body: [UInt8], isMedia: Bool, now: UInt64) throws(StreamCryptoError) -> [UInt8] {
+    /// A datagram of padding `size` bytes long on the wire (at most the UDP
+    /// payload): a rate probe's burst (section 6.2), tagged with its cluster.
+    public mutating func sealPadding(size: Int, probeCluster: UInt32, now: UInt64) throws -> [UInt8] {
+        let overhead = configuration.udpPayload - bodyCapacity
+        let body = [UInt8](repeating: 0, count: min(max(size - overhead, 1), bodyCapacity))
+        return try seal(body, isMedia: false, probeCluster: probeCluster, now: now)
+    }
+
+    private mutating func seal(_ body: [UInt8], isMedia: Bool, probeCluster: UInt32? = nil,
+                               now: UInt64) throws(StreamCryptoError) -> [UInt8] {
         guard body.count <= bodyCapacity else { throw .malformed("datagram larger than the UDP payload") }
         do {
             let (number, datagram) = try secure.sender.seal(body, now: now)
-            sentLog.record(packetNumber: number, sendTime: now, size: datagram.count, isMedia: isMedia)
+            sentLog.record(packetNumber: number, sendTime: now, size: datagram.count, isMedia: isMedia,
+                           probeCluster: probeCluster)
             statistics.datagramsSent += 1
             statistics.bytesSent += datagram.count
             return datagram

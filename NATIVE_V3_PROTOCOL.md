@@ -59,8 +59,26 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   `CompanionPairing.swift` move to this module waits until the app links the
   package. StreamWire, StreamFEC, StreamPlayout and StreamCrypto pass their
   tests on x64 Windows too (147 tests, Swift 6.2.4, swift-crypto on BoringSSL).
-  *Next:* the transport (reliable channels, ACK/NACK and FEEDBACK
-  encoding, pacing, clock sync), then the simulator.
+- **Transport and simulator built (2026-10-24).**
+  - **Wire:** the transport frame bodies, including a new NACK frame (0x09),
+    are in `StreamWire`, documented under the transport frame bodies of §4.1.
+  - **`StreamTransport`:** the reliable channels (offset ACKs, timeout and
+    reordering loss detection), RTT, clock sync, the pacer, and FEEDBACK
+    generation with the sender's packet log. `TransportSession` ties them to
+    `StreamCrypto`. A client connector retries with backoff, and a host
+    endpoint accepts, routes, follows roaming clients, and supersedes a
+    device's session only after key confirmation.
+  - **`StreamSim`:** links with delay, jitter, a bottleneck queue, random and
+    Gilbert–Elliott loss, and the headset's Wi-Fi stalls.
+  - **Simulated tests:**
+    - The handshake completes at 25% loss each way.
+    - 2,000 input events cross 10% loss, jitter and stalls exactly once and in
+      order.
+    - 300 frames of 60 fps video with FEC and NACK arrive byte for byte at 2%
+      and 10% loss.
+    - The client knows the host's clock to under 0.4 ms.
+  - **Not yet:** the rate controller (§6.2), DPLPMTUD, the Mac host and client
+    wiring, and the hello and hello-ack contents (§4.6).
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -667,6 +685,15 @@ against the simulator.
 treating a shard as missing. moonlight-common-c learned the same lesson: once it
 sees out-of-order packets it stops speculative recovery requests for five
 minutes [M2].
+
+*Measured from what, decided 2026-10-24:* the window runs from the arrival of a
+shard **sent after** the gap, never from the frame's first shard. Shards leave
+in order (frame, block, index), and a paced frame takes several ms to leave
+the host, 12 ms for 40 KB at 4 MB/s. So counting from the first shard NACKed
+shards that hadn't been sent yet. In the simulator that resent 6,236 shards
+at 2% loss instead of 131. A frame that has been quiet for three reorder windows
+(6 ms) counts as fully sent, so loss at its tail is reported without waiting
+for the next frame.
 
 **Frame side data.** Some streams need per-frame facts that the receiver must
 apply to exactly that picture: the pose a PCVR frame was rendered from, or a
@@ -1322,7 +1349,8 @@ Packages/LongwaveStream/
     StreamFEC/             Reed–Solomon (see below)
     StreamTransport/       session state machine, reliable channels, ACK/NACK,
                            pacer, congestion estimator, clock sync; I/O and time
-                           via protocols (DatagramSocket, MonotonicClock, Timer)
+                           sans-I/O: datagrams and a ns `now` in, datagrams and
+                           a wake time out (as built 2026-10-24, §7.5)
     StreamPlayout/         PlayoutController (lateness, held target, drift),
                            frame assembler (shards → decodable frames), recovery logic
     StreamHost/            viewer set, subscriptions, fan-out, rate allocator,
@@ -1752,6 +1780,12 @@ change to DebugTrace and lands before the core's first non-Apple build.
   measured headset behaviour (60–180 ms holds in 20–40 s stretches). Seeds make
   failures reproducible. Media is synthetic (frames with realistic size
   distributions from recorded traces). Assertions are the §1 metrics.
+  *As built (2026-10-24):* the transport is **sans-I/O** rather than behind
+  socket and clock protocols. Each piece is a state machine that takes
+  datagrams and a nanosecond `now`, and returns datagrams and a next wake
+  time. The owner runs the socket and the timer. On the app side that is a
+  thin Network.framework driver; in tests it's a loop over `SimNetwork`. That
+  removed the `DatagramSocket`/`MonotonicClock`/`Timer` seam from the package.
 - **Recorded-trace replay.** Phase 0 records packet timing from real sessions
   (Moonlight and v2 on the user's Wi-Fi 7 AP, the Grandstream GWN7665); the
   simulator replays them against candidate estimators and FEC policies.
@@ -1865,7 +1899,8 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
   assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
   *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
   input, STATE including the head pose, capabilities). *`StreamFEC` and the
-  frame assembler (`StreamPlayout`) done 2026-10-24. `StreamCrypto` done
+  frame assembler (`StreamPlayout`) done 2026-10-24. `StreamCrypto`,
+  `StreamTransport` (without the rate controller) and `StreamSim` done
   2026-10-24.*
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,

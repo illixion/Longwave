@@ -14,6 +14,8 @@
 //            StreamCryptoTests  AEAD transport records, replay window (section 3)
 //            StreamTransport    reliable channels, RTT, clock sync, pacer, feedback,
 //            StreamTransportTests and the session over StreamCrypto (sections 4.1, 5, 6)
+//            StreamSim          deterministic network simulator: links with delay,
+//                               jitter, bottleneck, loss, bursts, Wi-Fi stalls (7.5)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
 //                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
@@ -55,7 +57,10 @@ var targets: [Target] = [
         exclude: ["Reference"]
     ),
     .target(name: "StreamTransport", dependencies: ["StreamWire", "StreamCrypto"]),
-    .testTarget(name: "StreamTransportTests", dependencies: ["StreamTransport", "StreamCrypto", "StreamWire"]),
+    .testTarget(name: "StreamTransportTests", dependencies: ["StreamTransport", "StreamCrypto", "StreamWire", "StreamSim",
+                                                             "StreamPlayout", "StreamFEC"]),
+    // Test support: the deterministic network simulator (section 7.5).
+    .target(name: "StreamSim"),
     .target(name: "CFrameSourceCore"),
     .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),

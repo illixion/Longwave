@@ -110,6 +110,16 @@ public struct VideoStreamReceiver: Sendable {
         return times.min()
     }
 
+    /// The decoder lost its state (a decoder session ended, a bad frame): hold
+    /// everything back until a key frame, and ask for one.
+    public mutating func requestKeyFrame(now: UInt64) -> [Output] {
+        awaitingKeyFrame = true
+        if firstUndecodable == nil { firstUndecodable = assembler.nextFrame ?? 0 }
+        var outputs: [Output] = []
+        requestRecoveryIfDue(now: now, into: &outputs)
+        return outputs
+    }
+
     /// A new format: the stream starts again at its key frame.
     public mutating func reset() {
         assembler.reset()

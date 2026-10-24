@@ -203,7 +203,9 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
     }
 
     private mutating func route(_ datagram: [UInt8], from address: Address, now: UInt64) -> [Event] {
-        guard let header = try? RecordHeader(parsing: datagram), var entry = sessions[header.receiverIndex] else {
+        // Taken out while it changes, so the session's buffers aren't copied.
+        guard let header = try? RecordHeader(parsing: datagram), var entry = sessions.removeValue(forKey: header.receiverIndex)
+        else {
             dropped += 1
             return []
         }
@@ -229,7 +231,6 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
             sessions[index] = entry
             if !events.isEmpty { output.append(.events(index: index, events)) }
         } catch {
-            sessions[index] = nil
             output.append(.closed(index: index, error))
         }
         return output
@@ -240,10 +241,9 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
         var datagrams: [(bytes: [UInt8], to: Address)] = []
         var closed: [(UInt32, SessionClosure)] = []
         for index in Array(sessions.keys) {
-            guard var entry = sessions[index] else { continue }
+            guard var entry = sessions.removeValue(forKey: index) else { continue }
             for datagram in entry.session.poll(now: now) { datagrams.append((datagram, entry.address)) }
             if let closure = entry.session.closure {
-                sessions[index] = nil
                 closed.append((index, closure))
             } else {
                 sessions[index] = entry
@@ -257,9 +257,15 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
     }
 
     /// Runs `body` on one session (to queue messages, seal media).
+    /// In place: the dictionary's modify accessor, not a copy written back.
     public mutating func withSession<T>(_ index: UInt32, _ body: (inout TransportSession) throws -> T) rethrows -> T? {
-        guard var entry = sessions[index] else { return nil }
-        defer { sessions[index] = entry }
-        return try body(&entry.session)
+        guard sessions[index] != nil else { return nil }
+        return try body(&sessions[index]!.session)
+    }
+
+    /// Ends a session now (the host refused or dropped the viewer). Queue a
+    /// `bye` and let `poll` send it first, if the client should know why.
+    public mutating func remove(_ index: UInt32) {
+        sessions[index] = nil
     }
 }

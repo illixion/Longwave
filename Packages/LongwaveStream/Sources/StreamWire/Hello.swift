@@ -68,8 +68,8 @@ public enum HelloLimits {
     public static let minUDPPayload = 1_200
     /// The IPv4 UDP maximum.
     public static let maxUDPPayload = 65_507
-    static let maxNameBytes = 64
-    static let maxSoftwareBytes = 32
+    public static let maxNameBytes = 64
+    public static let maxSoftwareBytes = 32
 
     static func validateUDPPayload(_ value: Int, _ field: String) throws(WireError) {
         guard (minUDPPayload...maxUDPPayload).contains(value) else { throw .invalid(field) }

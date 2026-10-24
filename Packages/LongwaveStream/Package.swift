@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // LongwaveStream - the portable v3 stream core (NATIVE_V3_PROTOCOL.md section 7.1).
 //
 // Today this holds the first Phase 1 module and the Phase 2 go/no-go spike
@@ -124,7 +124,7 @@ targets += [
 
 let package = Package(
     name: "LongwaveStream",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v26), .visionOS(.v26)],
     products: products,
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0" ..< "5.0.0"),

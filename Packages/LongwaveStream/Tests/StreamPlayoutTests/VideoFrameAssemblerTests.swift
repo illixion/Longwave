@@ -245,7 +245,9 @@ final class VideoFrameAssemblerTests: XCTestCase {
         XCTAssertTrue(feed(&assembler, items, now: 0).isEmpty)
         XCTAssertEqual(assembler.statistics.shardsDroppedForMemory, k)
         XCTAssertEqual(assembler.bufferedBytes, 0)
-        XCTAssertEqual(assembler.missingShards(now: 5 * ms), [MissingShards(frameNumber: 0, scope: .wholeBlock(0))])
+        // Nothing later arrived, so only the tail window says the block is missing.
+        XCTAssertEqual(assembler.missingShards(now: 5 * ms), [])
+        XCTAssertEqual(assembler.missingShards(now: 6 * ms), [MissingShards(frameNumber: 0, scope: .wholeBlock(0))])
         guard case .lost(0, 1, .timedOut)? = assembler.poll(now: 200 * ms).first else { return XCTFail() }
     }
 

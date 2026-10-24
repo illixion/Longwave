@@ -92,9 +92,16 @@ public struct VideoAssemblyStatistics: Sendable, Equatable {
 /// Not thread-safe: one owner (the stream's receive loop) calls it.
 public struct VideoFrameAssembler: Sendable {
     public struct Configuration: Sendable, Equatable {
-        /// How long a frame may lack shards before they count as missing rather
-        /// than reordered (section 4.2: max(2 ms, a quarter frame interval)).
+        /// How long after a later-sent shard arrived a missing one counts as
+        /// lost rather than reordered (section 4.2: max(2 ms, a quarter frame
+        /// interval)). Shards leave in order (frame, block, index), and a paced
+        /// frame takes several ms to leave, so the window runs from the arrival
+        /// of something sent after the gap, never from the frame's first shard.
         public var reorderWindow: UInt64
+        /// A frame that has had no shard for this long while incomplete counts
+        /// as fully sent, so loss at its tail is reported without waiting for
+        /// the next frame.
+        public var tailWindow: UInt64
         /// How long after its first shard (or, for a frame that never showed,
         /// after a later frame's first shard) a frame is given up.
         public var giveUpAfter: UInt64
@@ -107,9 +114,10 @@ public struct VideoFrameAssembler: Sendable {
         /// kept apart, so they outlive this window.
         public var referenceHistory: Int
 
-        public init(reorderWindow: UInt64 = 2_000_000, giveUpAfter: UInt64 = 100_000_000,
+        public init(reorderWindow: UInt64 = 2_000_000, tailWindow: UInt64 = 6_000_000, giveUpAfter: UInt64 = 100_000_000,
                     maxFramesAhead: UInt32 = 600, maxBufferedBytes: Int = 64 << 20, referenceHistory: Int = 1024) {
             self.reorderWindow = reorderWindow
+            self.tailWindow = tailWindow
             self.giveUpAfter = giveUpAfter
             self.maxFramesAhead = maxFramesAhead
             self.maxBufferedBytes = maxBufferedBytes
@@ -198,17 +206,19 @@ public struct VideoFrameAssembler: Sendable {
 
     // MARK: Missing shards
 
-    /// What is still missing from frames older than the reorder window and not
-    /// yet given up, oldest first. Gaps (frame numbers with no shard at all)
-    /// between the next frame and the newest one seen are included.
+    /// Shards known to be missing, oldest frame first: those with a later-sent
+    /// shard that arrived at least `reorderWindow` ago, and everything still
+    /// missing from a frame quiet for `tailWindow`. Gaps (frame numbers with no
+    /// shard at all) between the next frame and the newest one seen are included.
     public func missingShards(now: UInt64) -> [MissingShards] {
         guard let next = nextFrame, let newest = newestPendingFrame else { return [] }
         var result: [MissingShards] = []
         var number = next
         while true {
             if let frame = pending[number] {
-                if frame.isComplete == false, now &- frame.firstArrival >= configuration.reorderWindow {
-                    result += frame.missing(frameNumber: number)
+                if !frame.isComplete {
+                    result += frame.missing(frameNumber: number, now: now, laterFrameArrival: firstArrivalAfter(number),
+                                            reorderWindow: configuration.reorderWindow, tailWindow: configuration.tailWindow)
                 }
             } else if let known = firstArrivalAfter(number), now &- known >= configuration.reorderWindow {
                 result.append(MissingShards(frameNumber: number, scope: .wholeFrame))
@@ -304,6 +314,7 @@ private struct PendingFrame: Sendable {
     let flags: VideoShardFlags
     let referenceDistance: UInt16
     let firstArrival: UInt64
+    private(set) var lastArrival: UInt64
     /// Every shard of a frame is the same size; the first accepted one fixes it.
     private(set) var shardSize: Int?
     var blocks: [PendingBlock?]
@@ -316,6 +327,7 @@ private struct PendingFrame: Sendable {
         flags = header.flags.subtracting(.lastBlock)
         referenceDistance = header.referenceDistance
         self.firstArrival = firstArrival
+        lastArrival = firstArrival
         blocks = Array(repeating: nil, count: Int(header.blockCount))
     }
 
@@ -352,7 +364,8 @@ private struct PendingFrame: Sendable {
         if block.isComplete { return .duplicate }
         let parityBytes = header.isParity ? data.count : 0
         guard added + parityBytes <= budget else { return .overBudget }
-        guard block.store(shardIndex: Int(header.shardIndex), data: data) else { return .duplicate }
+        guard block.store(shardIndex: Int(header.shardIndex), data: data, now: now) else { return .duplicate }
+        lastArrival = max(lastArrival, now)
         added += parityBytes
         shardSize = data.count
 
@@ -376,14 +389,36 @@ private struct PendingFrame: Sendable {
         return data
     }
 
-    func missing(frameNumber: UInt32) -> [MissingShards] {
-        blocks.enumerated().compactMap { index, block in
-            guard let block else { return MissingShards(frameNumber: frameNumber, scope: .wholeBlock(UInt8(index))) }
-            guard !block.isComplete else { return nil }
-            let dataIndices = (0..<block.dataShards).filter { !block.present[$0] }.map { UInt8($0) }
-            return MissingShards(frameNumber: frameNumber,
-                                 scope: .shards(block: UInt8(index), needed: block.needed, dataIndices: dataIndices))
+    /// What is known to be missing: see `VideoFrameAssembler.missingShards`.
+    /// Walks positions from the last back, keeping the earliest arrival of
+    /// anything sent later (`laterFrameArrival` covers frames after this one).
+    func missing(frameNumber: UInt32, now: UInt64, laterFrameArrival: UInt64?, reorderWindow: UInt64,
+                 tailWindow: UInt64) -> [MissingShards] {
+        let quiet = now &- lastArrival >= tailWindow
+        var later = laterFrameArrival
+        func known() -> Bool { quiet || later.map { now &- $0 >= reorderWindow } ?? false }
+        var result: [MissingShards] = []
+        for index in blocks.indices.reversed() {
+            guard let block = blocks[index] else {
+                if known() { result.append(MissingShards(frameNumber: frameNumber, scope: .wholeBlock(UInt8(index)))) }
+                continue
+            }
+            var knownMissing: [Int] = []
+            for position in (0..<block.arrivals.count).reversed() {
+                if let arrival = block.arrivals[position] {
+                    later = min(later ?? arrival, arrival)
+                } else if !block.isComplete, known() {
+                    knownMissing.append(position)
+                }
+            }
+            guard !knownMissing.isEmpty else { continue }
+            let dataIndices = knownMissing.filter { $0 < block.dataShards && !block.present[$0] }.sorted().map { UInt8($0) }
+            let needed = min(block.needed, knownMissing.count)
+            guard needed > 0 else { continue }
+            result.append(MissingShards(frameNumber: frameNumber,
+                                        scope: .shards(block: UInt8(index), needed: needed, dataIndices: dataIndices)))
         }
+        return result.reversed()
     }
 }
 
@@ -395,6 +430,8 @@ private struct PendingBlock: Sendable {
     let shardSize: Int
     var data: [UInt8]
     var present: [Bool]
+    /// When each position (data then parity) arrived; nil if it hasn't.
+    var arrivals: [UInt64?]
     var presentData = 0
     var parity: [(index: Int, shard: ArraySlice<UInt8>)] = []
     var isComplete = false
@@ -405,6 +442,7 @@ private struct PendingBlock: Sendable {
         self.shardSize = shardSize
         data = [UInt8](repeating: 0, count: dataShards * shardSize)
         present = [Bool](repeating: false, count: dataShards)
+        arrivals = [UInt64?](repeating: nil, count: dataShards + parityShards)
     }
 
     var canComplete: Bool { presentData + parity.count >= dataShards }
@@ -412,7 +450,8 @@ private struct PendingBlock: Sendable {
     var parityBytes: Int { parity.count * shardSize }
 
     /// Stores one shard; false if it was already here.
-    mutating func store(shardIndex: Int, data shard: ArraySlice<UInt8>) -> Bool {
+    mutating func store(shardIndex: Int, data shard: ArraySlice<UInt8>, now: UInt64) -> Bool {
+        defer { if arrivals[shardIndex] == nil { arrivals[shardIndex] = now } }
         if shardIndex < dataShards {
             guard !present[shardIndex] else { return false }
             data.replaceSubrange(shardIndex * shardSize..<(shardIndex + 1) * shardSize, with: shard)

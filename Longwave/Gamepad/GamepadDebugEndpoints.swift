@@ -2,6 +2,11 @@ import DebugTrace
 import Foundation
 import GameController
 import RAVEInput
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 #if MOONLIGHT_ENABLED
 @preconcurrency import MoonlightCommonC
 #endif
@@ -80,18 +85,38 @@ enum GamepadDebugEndpoints {
                         .integer("slot", "the pad's slot", required: true, range: 0...(GamepadRoster.slotCount - 1)),
                         .boolean("on", "true to ask for the sensors, false to drop this request", required: true),
                         .boolean("reassert", "also switch the IMU off and straight back on (sensorsActive false → true)", default: false),
-                        .boolean("handler", "install (true) or remove (false) an empty GCMotion valueChangedHandler, to test whether visionOS wants a motion consumer"),
+                        .boolean("handler", "install (true) or remove (false) a GCMotion valueChangedHandler that counts samples (gamepads: motionCallbacks, secondsSinceMotionCallback), which also tests whether visionOS wants a motion consumer"),
+                        .boolean("monitorBackground", "set GCController.shouldMonitorBackgroundEvents (the header documents it as ignored on iOS and tvOS only)"),
                      ]) { args in
                 let slot = try args.requireInt("slot")
                 let on = try args.requireBool("on")
                 let roster = GamepadRoster.shared
+                // The roster claims pads only while someone reads them, so with no stream
+                // running there is nothing in any slot until this reader subscribes.
+                if on, motionSubscription == nil {
+                    motionSubscription = roster.subscribe(connected: { _, _ in }, disconnected: { _, _ in })
+                }
                 guard let controller = roster.controllers[slot] else {
+                    if let subscription = motionSubscription,
+                       !(0..<GamepadRoster.slotCount).contains(where: { roster.hasMotionRequest(slot: $0, by: subscription) }) {
+                        roster.unsubscribe(subscription)
+                        motionSubscription = nil
+                    }
                     throw DebugError.invalidArgument("slot \(slot) holds no pad",
                                                      hint: "GET gamepads lists the occupied slots")
                 }
+                if let monitor = args.bool("monitorBackground") {
+                    GCController.shouldMonitorBackgroundEvents = monitor
+                }
                 if let motion = controller.motion {
                     if let handler = args.bool("handler") {
-                        motion.valueChangedHandler = handler ? { _ in } : nil
+                        motionCallbacks[slot] = handler ? MotionCallbacks() : nil
+                        motion.valueChangedHandler = handler ? { _ in
+                            MainActor.assumeIsolated {
+                                motionCallbacks[slot]?.count += 1
+                                motionCallbacks[slot]?.last = Date()
+                            }
+                        } : nil
                         motionHandlerInstalled[slot] = handler
                     }
                     if args.bool("reassert") == true {
@@ -99,10 +124,7 @@ enum GamepadDebugEndpoints {
                         motion.sensorsActive = true
                     }
                 }
-                if on {
-                    let subscription = motionSubscription ?? roster.subscribe(connected: { _, _ in },
-                                                                              disconnected: { _, _ in })
-                    motionSubscription = subscription
+                if on, let subscription = motionSubscription {
                     roster.setMotionWanted(true, slot: slot, by: subscription)
                 } else if let subscription = motionSubscription {
                     roster.setMotionWanted(false, slot: slot, by: subscription)
@@ -133,6 +155,10 @@ enum GamepadDebugEndpoints {
     private static var motionSubscription: GamepadRoster.Subscription?
     /// Slots whose GCMotion got an empty handler from `gamepadMotion handler=true`.
     private static var motionHandlerInstalled: [Int: Bool] = [:]
+    /// Samples the counting handler has seen per slot, since it was installed: the
+    /// direct answer to "is the IMU streaming", where a reading alone can be stale.
+    private struct MotionCallbacks { var count = 0; var last: Date? }
+    private static var motionCallbacks: [Int: MotionCallbacks] = [:]
 
     // MARK: Arguments
 
@@ -182,6 +208,20 @@ enum GamepadDebugEndpoints {
         var subscriberCount: Int
         var pads: [Pad]
         var moonlightSessions: [MoonlightSession]
+        /// Where GameController routes input depends on which app and scene is in
+        /// front, so the readings above are only meaningful next to this.
+        var foreground: Foreground
+    }
+
+    struct Foreground: Encodable {
+        var applicationState: String
+        var shouldMonitorBackgroundEvents: Bool
+        var scenes: [Scene]
+    }
+
+    struct Scene: Encodable {
+        var role: String
+        var activationState: String
     }
 
     struct AddReply: Encodable {
@@ -202,6 +242,11 @@ enum GamepadDebugEndpoints {
         var sensorsRequireManualActivation: Bool?
         /// Set by `gamepadMotion handler=…`; absent when never touched.
         var debugMotionHandler: Bool?
+        /// Samples the counting handler has seen, and how long ago the last one came.
+        var motionCallbacks: Int?
+        var secondsSinceMotionCallback: Double?
+        /// `GCController.current`: the pad the system last saw used.
+        var isCurrent: Bool
         var buttons: [String]
         var leftStick: [Float]
         var rightStick: [Float]
@@ -238,6 +283,9 @@ enum GamepadDebugEndpoints {
                 sensorsActive: controller.motion?.sensorsActive,
                 sensorsRequireManualActivation: controller.motion?.sensorsRequireManualActivation,
                 debugMotionHandler: motionHandlerInstalled[slot],
+                motionCallbacks: motionCallbacks[slot]?.count,
+                secondsSinceMotionCallback: motionCallbacks[slot]?.last.map { -$0.timeIntervalSinceNow },
+                isCurrent: GCController.current === controller,
                 buttons: buttonNames.filter { snapshot.buttons.contains($0.button) }.map(\.name),
                 leftStick: [snapshot.leftStick.x, snapshot.leftStick.y],
                 rightStick: [snapshot.rightStick.x, snapshot.rightStick.y],
@@ -246,7 +294,35 @@ enum GamepadDebugEndpoints {
                 accelerationG: snapshot.acceleration.map { [$0.x, $0.y, $0.z] })
         }
         return Status(subscriberCount: roster.subscriberCount, pads: pads,
-                      moonlightSessions: moonlightSessions())
+                      moonlightSessions: moonlightSessions(), foreground: foreground())
+    }
+
+    private static func foreground() -> Foreground {
+        #if os(macOS)
+        return Foreground(applicationState: NSApp.isActive ? "active" : "inactive",
+                          shouldMonitorBackgroundEvents: GCController.shouldMonitorBackgroundEvents,
+                          scenes: [])
+        #else
+        let state = switch UIApplication.shared.applicationState {
+        case .active: "active"
+        case .inactive: "inactive"
+        case .background: "background"
+        @unknown default: "unknown"
+        }
+        let scenes = UIApplication.shared.connectedScenes.map { scene in
+            let activation = switch scene.activationState {
+            case .foregroundActive: "foregroundActive"
+            case .foregroundInactive: "foregroundInactive"
+            case .background: "background"
+            case .unattached: "unattached"
+            @unknown default: "unknown"
+            }
+            return Scene(role: scene.session.role.rawValue, activationState: activation)
+        }
+        return Foreground(applicationState: state,
+                          shouldMonitorBackgroundEvents: GCController.shouldMonitorBackgroundEvents,
+                          scenes: scenes.sorted { ($0.role, $0.activationState) < ($1.role, $1.activationState) })
+        #endif
     }
 
     private static func moonlightSessions() -> [MoonlightSession] {

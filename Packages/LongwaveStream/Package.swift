@@ -8,6 +8,8 @@
 //                               Foundation-free, builds on every platform
 //            StreamFEC          Reed-Solomon over the vendored cm256 (CCM256), the
 //            StreamFECTests     block layout and the frame sharder (section 4.2)
+//            StreamPlayout      receive side: the frame assembler (shards -> frames
+//            StreamPlayoutTests in decode order, FEC recovery, NACK candidates)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
 //                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
@@ -27,6 +29,7 @@ import PackageDescription
 var products: [Product] = [
     .library(name: "StreamWire", targets: ["StreamWire"]),
     .library(name: "StreamFEC", targets: ["StreamFEC"]),
+    .library(name: "StreamPlayout", targets: ["StreamPlayout"]),
     .executable(name: "stream-spike-receiver", targets: ["stream-spike-receiver"]),
 ]
 
@@ -37,6 +40,8 @@ var targets: [Target] = [
     .target(name: "CCM256", exclude: ["README.md", "LICENSE"]),
     .target(name: "StreamFEC", dependencies: ["StreamWire", "CCM256"]),
     .testTarget(name: "StreamFECTests", dependencies: ["StreamFEC", "StreamWire"]),
+    .target(name: "StreamPlayout", dependencies: ["StreamWire", "StreamFEC"]),
+    .testTarget(name: "StreamPlayoutTests", dependencies: ["StreamPlayout", "StreamFEC", "StreamWire"]),
     .target(name: "CFrameSourceCore"),
     .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),

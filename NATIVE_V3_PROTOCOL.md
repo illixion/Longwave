@@ -38,8 +38,19 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   (`Sources/CCM256`, two portability patches listed in its README), the §4.2
   block layout, and the sharder that turns a frame payload into shards
   with parity. Tested on arm64 and on x86-64 under Rosetta, with a golden
-  parity vector. First of the Phase 1 core modules. The frame assembler is
-  next.
+  parity vector. First of the Phase 1 core modules.
+- **Frame assembler built (2026-10-24),** in `StreamPlayout`. It collects shards
+  per block, rebuilds with FEC as soon as any k arrive, and delivers frames
+  strictly in frame-number order. A finished frame waits behind an earlier
+  incomplete one until that one completes or times out. Each frame is marked
+  with whether its `referenceDistance` chain is intact, with long-term
+  references kept beyond the history window. After the reorder window it lists
+  NACK candidates (the missing data shard indices, a whole block, or a whole
+  frame). It gives up a frame after a timeout, and a run of lost frames, or a
+  jump far ahead, as a single event. Buffered bytes are capped. Tested with a
+  soak at 15% loss with reordering and resends.
+  *Next:* the Noise handshake and AEAD records (`StreamCrypto`), then the
+  transport (reliable channels, ACK/NACK, pacing), then the simulator.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -1744,9 +1755,8 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
 - Frame side data and auxiliary streams (§4.2) in `StreamWire` and the frame
   assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
   *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
-  input, STATE including the head pose, capabilities). *`StreamFEC` done
-  2026-10-24* (codec, block layout, sharder). The frame assembler is still
-  to do.
+  input, STATE including the head pose, capabilities). *`StreamFEC` and the
+  frame assembler (`StreamPlayout`) done 2026-10-24.*
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,
   so loss and recovery are tuned against the hardest stream from day one.

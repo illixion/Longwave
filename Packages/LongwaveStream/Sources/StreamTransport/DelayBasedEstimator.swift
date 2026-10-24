@@ -144,10 +144,21 @@ struct QueueDelayEstimator: Sendable {
     /// ns, smoothed over groups.
     private(set) var smoothed = 0.0
     private var minima: [(start: UInt64, minimum: Int64)] = []
+    private var latest: Int64?
 
     var baseline: Int64? { minima.map(\.minimum).min() }
 
+    /// Takes the latest one-way delay as the baseline at once, for a path
+    /// whose own delay rose (the controller's call: a queue that didn't drain
+    /// when the rate was cut). Lower delays later still lower it.
+    mutating func rebase() {
+        guard let latest, let last = minima.last else { return }
+        minima = [(last.start, latest)]
+        smoothed = 0
+    }
+
     mutating func add(oneWay: Int64, arrival: UInt64) {
+        latest = oneWay
         if let last = minima.last, arrival < last.start + Self.bucket {
             minima[minima.count - 1].minimum = min(last.minimum, oneWay)
         } else {

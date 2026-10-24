@@ -88,6 +88,10 @@ public struct VideoStreamSender: Sendable {
     /// The frame number of the last frame queued, which the next predicts from.
     private var lastQueued: UInt32?
     private var probe: (cluster: ProbeCluster, next: UInt64, remaining: Int, interval: UInt64)?
+    /// Frames per second the encoder hands over, smoothed: sizes the parity
+    /// floor in `encoderBitrate`.
+    private var frameRate: Double?
+    private var lastSubmit: UInt64?
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -111,9 +115,32 @@ public struct VideoStreamSender: Sendable {
         controller.setCeiling(UInt64(Double(bitsPerSecond) / 8 * wirePerByte))
     }
 
-    /// The bitrate the encoder should run at for this viewer, bits per second.
+    /// The bitrate the encoder should run at for this viewer, bits per second:
+    /// what fits the budget once each frame's shards and parity are counted.
+    /// Every frame carries `minimumParity` shards whatever the FEC ratio, and
+    /// its last shard is padded, so small frames cost more than the ratio
+    /// says: at 3 Mbit/s and 60 fps (5 data shards, 2 parity) the ratio alone
+    /// had the stream send half again its budget, which a cut barely lowers.
     public func encoderBitrate(udpPayload: Int) -> Int {
-        Int(clamping: controller.budget.mediaRate(udpPayload: udpPayload) * 8)
+        let budget = controller.budget
+        let plain = Double(budget.mediaRate(udpPayload: udpPayload))
+        guard let frameRate, plain > 0 else { return Int(clamping: UInt64(plain) * 8) }
+        let shard = Double(DatagramLayout.videoShardDataCapacity(udpPayload: udpPayload))
+        let policy = fecPolicy
+        var media = plain
+        // The cost per byte only grows as frames shrink, so this settles from above.
+        for _ in 0..<4 {
+            let shards = max(Int((media / frameRate / shard).rounded(.up)), 1)
+            let wire = Double(shards + policy.parityShards(forDataShards: shards)) * Double(udpPayload) * frameRate
+            media = min(media, media * Double(budget.total) / wire)
+        }
+        // Under the floor nothing fits; send small frames rather than none.
+        return Int(clamping: UInt64(max(media, plain / 2)) * 8)
+    }
+
+    private var fecPolicy: FECPolicy {
+        FECPolicy(ratioPermille: Int((controller.budget.fecRatio * 1_000).rounded()),
+                  minimumParity: configuration.minimumParity)
     }
 
     /// Frames waiting in the queue, counting a partly sent one.
@@ -137,6 +164,12 @@ public struct VideoStreamSender: Sendable {
     /// `udpPayload` is the session's confirmed datagram size.
     public mutating func submit(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, captureTime: UInt64,
                                 udpPayload: Int, now: UInt64) throws -> Submission {
+        if let last = lastSubmit, now > last {
+            // A still desktop's second-long gaps count as one frame a second.
+            let rate = 1e9 / Double(min(now - last, 1_000_000_000))
+            frameRate = frameRate.map { 0.9 * $0 + 0.1 * rate } ?? rate
+        }
+        lastSubmit = now
         if awaitingKeyFrame, !isKeyFrame {
             statistics.framesSkipped += 1
             return .awaitingKeyFrame
@@ -156,11 +189,9 @@ public struct VideoStreamSender: Sendable {
             flags: isKeyFrame ? .key : [],
             referenceDistance: isKeyFrame ? 0 : UInt16(truncatingIfNeeded: number &- (lastQueued ?? number &- 1)))
         let payload = try FramePayload.encode(sideData: SideData(), accessUnit: accessUnit)
-        let policy = FECPolicy(ratioPermille: Int((controller.budget.fecRatio * 1_000).rounded()),
-                               minimumParity: configuration.minimumParity)
         let frame = try ShardedVideoFrame(payload: payload, info: info,
                                           shardSize: DatagramLayout.videoShardDataCapacity(udpPayload: udpPayload),
-                                          policy: policy)
+                                          policy: fecPolicy)
         frames[number] = SentFrame(frame: frame, submittedAt: now)
         for index in 0..<frame.count {
             queue.append(QueuedShard(frameNumber: number, index: index,

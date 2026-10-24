@@ -16,6 +16,12 @@ private final class ControlledSender {
     var controller: GCCRateController
     /// Caps the encoder below the budget (a still desktop), bytes/s.
     var encoderLimit: UInt64?
+    /// The share of its target the encoder actually produces: VideoToolbox
+    /// undershoots on a calm desktop (1.4 of 2.1 Mbit/s on the headset).
+    /// Modelled as frames it doesn't send, since small frames round up to
+    /// whole shards and would hide a smaller frame size.
+    var encoderFill = 1.0
+    private var fillCredit = 0.0
 
     private var pacer: Pacer
     private var queue: [(frame: UInt32, size: Int)] = []
@@ -66,7 +72,13 @@ private final class ControlledSender {
             let data = max(Int(rate / 60), 1_000)
             let shards = (data + Self.shardData - 1) / Self.shardData
             let parity = Int((Double(shards) * budget.fecRatio).rounded(.up))
-            queue += Array(repeating: (frameNumber, Self.shardData + 56), count: shards + parity)
+            fillCredit += encoderFill
+            if fillCredit >= 1 {
+                fillCredit -= 1
+                // The last data shard carries only what's left.
+                queue += Array(repeating: (frameNumber, Self.shardData + 56), count: shards - 1 + parity)
+                queue.append((frameNumber, data - (shards - 1) * Self.shardData + 56))
+            }
             if let oldest = queue.first?.frame, frameNumber - oldest >= 3 {
                 queue.removeAll { $0.frame == oldest }
                 framesDropped += 1
@@ -142,6 +154,11 @@ private final class ControlledSender {
         return Double(inWindow.reduce(0) { $0 + $1.budget.total }) / Double(inWindow.count)
     }
 
+    func minimumBudget(_ window: Range<UInt64>) -> UInt64 {
+        let epoch = harness.hostEpoch
+        return budgets.filter { window.contains($0.time - epoch) }.map(\.budget.total).min() ?? 0
+    }
+
     /// Per 500 ms: budget, goodput and worst queueing delay, for tuning.
     func dumpSeries(_ label: String, from start: UInt64, to end: UInt64) {
         var t = start
@@ -157,7 +174,7 @@ private final class ControlledSender {
         print("rate \(label): budget \(Int(meanBudget(window) / capacity * 100))% of capacity, "
               + "goodput \(Int(goodput(window) / capacity * 100))%, queue p50 \(delayPercentile(0.5, window) / 1_000) µs "
               + "p95 \(delayPercentile(0.95, window) / 1_000) µs, fec \(controller.budget.fecRatio), "
-              + "loss \(controller.smoothedLoss), stalls ignored \(controller.stallsIgnored), dropped \(framesDropped) frames, probes \(probesSent)")
+              + "loss \(controller.smoothedLoss), stalls ignored \(controller.stallsIgnored), rebases \(controller.baselineRebases), dropped \(framesDropped) frames, probes \(probesSent)")
     }
 }
 
@@ -306,5 +323,53 @@ final class RateControlSimulationTests: XCTestCase {
         // Lifted, the estimate is free to find the link again.
         sender.controller.setCeiling(nil)
         XCTAssertEqual(sender.controller.maximum, GCCRateController.Configuration().maximum)
+    }
+
+    /// Replays the shaped run of 2026-10-24 (scripts/shape-native-v3.sh): the
+    /// link drops to 3 Mbit/s and its one-way delay rises at the same
+    /// moment, then both come back. On the headset the budget fell to the
+    /// 0.4 Mbit/s floor (a 20 ms higher base delay read as a standing queue,
+    /// cut again every RTT for the 10 s the baseline takes to relearn) and,
+    /// once the link was back, sat at 2–3 Mbit/s for 45 s: the encoder
+    /// undershot its target, so the 1.5 × received growth cap held the budget
+    /// just high enough that it never counted as application-limited, and
+    /// nothing probed. Also with an encoder that fills its budget, which
+    /// GCC alone would bring back only at 8 %/s.
+    func testDelayStepAndRecovery() throws {
+        for fill in [0.67, 1.0] {
+            try replayDelayStep(fill: fill)
+        }
+    }
+
+    private func replayDelayStep(fill: Double) throws {
+        let link = bottleneck(propagation: 1 * ms, jitter: 300_000)
+        let (harness, index) = try connect(down: link)
+        let sender = ControlledSender(harness: harness, index: index, propagation: 1 * ms)
+        sender.encoderFill = fill
+        let start = harness.now
+        harness.run(for: 10_000 * ms)
+        let narrow: UInt64 = 375_000 // 3 Mbit/s
+        var shaped = link
+        shaped.rate = narrow
+        // +30 ms: past the 20 ms queue ceiling by a margin, as the run's +20 ms
+        // was once its own queue (key frames at the floor rate) was added.
+        shaped.propagationDelay = 31 * ms
+        shaped.queueLimit = 150_000 // dummynet's 100 slots
+        harness.network.setModel(shaped, from: .host, to: .client)
+        harness.run(for: 30_000 * ms)
+        harness.network.setModel(link, from: .host, to: .client)
+        harness.run(for: 20_000 * ms)
+
+        let step = start + 12_000 * ms..<start + 40_000 * ms
+        sender.report("delay step, fill \(fill)", step, capacity: Double(narrow))
+        // The first second drains the 400 ms queue the old rate built; after
+        // it, no cut spiral.
+        let settled = start + 13_000 * ms..<start + 40_000 * ms
+        XCTAssertGreaterThan(sender.minimumBudget(settled), narrow / 3, "fill \(fill): no collapse to the floor")
+        XCTAssertGreaterThan(sender.meanBudget(step), 0.6 * Double(narrow), "fill \(fill)")
+        let recovered = start + 48_000 * ms..<start + 60_000 * ms
+        sender.report("recovered, fill \(fill)", recovered, capacity: Double(capacity))
+        XCTAssertGreaterThan(sender.meanBudget(recovered), 0.8 * Double(capacity), "fill \(fill): back within 8 s")
+        XCTAssertLessThan(sender.delayPercentile(0.95, recovered), 20 * ms, "fill \(fill)")
     }
 }

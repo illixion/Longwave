@@ -145,6 +145,20 @@ public struct GCCRateController: SendRateController {
         /// Smoothed queueing delay above the baseline that counts as overuse
         /// even when the delay's slope is under GCC's threshold.
         public var queueDelayCeiling: UInt64 = 20_000_000
+        /// The receive rate under this share of the estimate is the encoder
+        /// leaving room, so probes may measure it. Above 2/3, because growth
+        /// stops at 1.5 × the receive rate: an encoder that undershoots its
+        /// target (VideoToolbox on a calm desktop) holds the estimate at
+        /// exactly 2/3, and a lower threshold then never probes at all.
+        public var applicationLimitedRatio = 0.75
+        /// After the estimate falls under a third of its recent peak, probes toward
+        /// the peak this often, doubling the wait after each the link refuses
+        /// up to `recoveryProbeMaximumInterval`: a Wi-Fi dip that passes is
+        /// found again in a few round trips rather than at GCC's 8 %/s.
+        public var recoveryProbeInterval: UInt64 = 2_000_000_000
+        public var recoveryProbeMaximumInterval: UInt64 = 8_000_000_000
+        /// How long a peak is remembered for recovery.
+        public var recoveryWindow: UInt64 = 60_000_000_000
         /// A queue above half the ceiling is drained over about this long by
         /// holding the budget under the estimate, rather than by cutting the
         /// estimate itself (which GCC regrows only additively near the link).
@@ -187,8 +201,22 @@ public struct GCCRateController: SendRateController {
     private var lastLossUpdate: UInt64?
     private var pendingProbe: PendingProbe?
     private var nextProbeID: UInt32 = 1
-    /// Rate of the next probe in the start-up sequence, nil once it's done.
-    private var startupProbe: UInt64?
+    /// Rate of the next probe in an exponential sequence (start-up, or one an
+    /// application-limited probe began), nil when none is due. libwebrtc's
+    /// further probing: each probe the link takes most of doubles.
+    private var furtherProbe: UInt64?
+    /// Where the queue ceiling is in judging a queue above it (`standingQueue`).
+    private enum CeilingCheck: Sendable {
+        /// Cut at this time, at this receive rate; waiting for the queue to settle.
+        case cut(UInt64, received: UInt64)
+        /// The queue at this time, to compare with one wait later.
+        case measured(UInt64, queue: Double, received: UInt64)
+    }
+    private var ceilingCheck: CeilingCheck?
+    /// The highest estimate of the last `recoveryWindow`, and when it was set.
+    private var peak: (rate: UInt64, time: UInt64)?
+    private var recoveryWait: UInt64
+    private var probeIsRecovery = false
     private var lastProbeAt: UInt64?
     private var underTargetSince: UInt64?
     /// Results sent around a probe, to measure the whole link during it.
@@ -198,7 +226,8 @@ public struct GCCRateController: SendRateController {
         self.configuration = configuration
         aimd = AimdRateControl(start: configuration.start, minimum: configuration.minimum,
                                maximum: configuration.maximum, frameRate: configuration.frameRate)
-        startupProbe = configuration.start * 3
+        furtherProbe = configuration.start * 3
+        recoveryWait = configuration.recoveryProbeInterval
     }
 
     /// The highest budget, and the highest probe: the configured maximum, or
@@ -223,6 +252,8 @@ public struct GCCRateController: SendRateController {
     public var queueingDelay: UInt64 { UInt64(max(queueDelay.smoothed, 0)) }
     /// Held-and-released bursts kept out of the delay signal.
     public var stallsIgnored: Int { stallFilter.stallsDropped }
+    /// Times a queue that didn't drain was taken as the path's own delay.
+    public private(set) var baselineRebases = 0
 
     public var budget: SendBudget {
         let limited = min(aimd.rate, lossLimit ?? .max)
@@ -255,10 +286,13 @@ public struct GCCRateController: SendRateController {
         loss.close(now: now)
         usage = trendline.state
         let ceiling = Double(configuration.queueDelayCeiling)
-        if usage == .normal, queueDelay.smoothed > ceiling { usage = .overusing }
-        if usage == .overusing, let grace = probeGraceUntil, now < grace, queueDelay.smoothed < 2 * ceiling {
-            usage = .normal
+        let probing = probeGraceUntil.map { now < $0 } ?? false
+        if probing, queueDelay.smoothed < 2 * ceiling {
+            if usage == .overusing { usage = .normal }
+        } else if usage == .normal, queueDelay.smoothed > ceiling {
+            usage = standingQueue(now: now, rtt: rtt, received: acknowledged.rate)
         }
+        if queueDelay.smoothed <= ceiling { ceilingCheck = nil }
         let received = acknowledged.rate
         let excess = queueDelay.smoothed - ceiling / 2
         drainAllowance = excess > 0
@@ -276,6 +310,16 @@ public struct GCCRateController: SendRateController {
         }
         updateLossLimit(now: now, rtt: rtt)
         trackApplicationLimit(received: received, now: now)
+        trackPeak(now: now)
+    }
+
+    private mutating func trackPeak(now: UInt64) {
+        if let peak, aimd.rate < peak.rate, now - peak.time < configuration.recoveryWindow {
+            if aimd.rate * 3 >= peak.rate { recoveryWait = configuration.recoveryProbeInterval }
+            return
+        }
+        peak = (aimd.rate, now)
+        recoveryWait = configuration.recoveryProbeInterval
     }
 
     /// Above the cut threshold, loss lowers the rate by half its fraction once
@@ -299,9 +343,51 @@ public struct GCCRateController: SendRateController {
         }
     }
 
+    /// The ceiling's verdict on a queue above it: one cut, then the queue's
+    /// direction once the cut has taken hold.
+    /// - **Shrinking:** a backlog draining under the link; no further cut.
+    /// - **Flat, though the receive rate fell:** the path's own delay rose (a
+    ///   roam, a route change, the +20 ms of the shaped run of 2026-10-24),
+    ///   and becomes the baseline. Cut every RTT instead, each at 0.85 × a
+    ///   receive rate the last cut lowered, the rate fell to the floor before
+    ///   the 10 s window forgot the old delay.
+    /// - **Growing, or flat at the same receive rate:** a standing queue on a
+    ///   full link (the cut didn't lower what is sent, as parity's floor on
+    ///   small frames can), so cut again.
+    /// The direction, not the level at the cut, because the cut comes as the
+    /// smoothed queue crosses the ceiling, while it is still rising.
+    private mutating func standingQueue(now: UInt64, rtt: UInt64, received: UInt64?) -> BandwidthUsage {
+        let wait = 2 * configuration.queueDrainTime + rtt
+        let receivedNow = received ?? 0
+        switch ceilingCheck {
+        case nil:
+            ceilingCheck = .cut(now, received: receivedNow)
+            return .overusing
+        case .cut(let time, let atCut):
+            if now - time >= wait { ceilingCheck = .measured(now, queue: queueDelay.smoothed, received: atCut) }
+            return .normal
+        case .measured(let time, let queue, let atCut):
+            guard now - time >= wait else { return .normal }
+            let change = queueDelay.smoothed - queue
+            if change < -0.1 * queue {
+                ceilingCheck = .measured(now, queue: queueDelay.smoothed, received: atCut)
+                return .normal
+            }
+            if change < 0.1 * queue, Double(receivedNow) < 0.92 * Double(atCut) {
+                ceilingCheck = nil
+                queueDelay.rebase()
+                baselineRebases += 1
+                return .normal
+            }
+            // The cut has had its settling time; this one is judged a wait on.
+            ceilingCheck = .measured(now, queue: queueDelay.smoothed, received: receivedNow)
+            return .overusing
+        }
+    }
+
     private mutating func trackApplicationLimit(received: UInt64?, now: UInt64) {
         guard let received else { return }
-        if received < aimd.rate / 2 {
+        if Double(received) < configuration.applicationLimitedRatio * Double(aimd.rate) {
             underTargetSince = underTargetSince ?? now
         } else {
             underTargetSince = nil
@@ -311,11 +397,14 @@ public struct GCCRateController: SendRateController {
     public mutating func nextProbe(now: UInt64) -> ProbeCluster? {
         guard pendingProbe == nil, usage != .overusing else { return nil }
         let rate: UInt64
-        if let startup = startupProbe {
-            rate = startup
+        if let further = furtherProbe {
+            rate = further
         } else if let since = underTargetSince, now - since >= 1_000_000_000,
                   now - (lastProbeAt ?? 0) >= configuration.applicationLimitedProbeInterval {
             rate = aimd.rate * 2
+        } else if let peak, aimd.rate * 3 < peak.rate, usage == .normal, now - (lastProbeAt ?? 0) >= recoveryWait {
+            rate = min(aimd.rate * 2, peak.rate)
+            probeIsRecovery = true
         } else {
             return nil
         }
@@ -327,10 +416,10 @@ public struct GCCRateController: SendRateController {
         return cluster
     }
 
-    /// The owner couldn't send the last probe: forget it, and end start-up probing.
+    /// The owner couldn't send the last probe: forget it, and the sequence it was in.
     public mutating func abandonProbe() {
         pendingProbe = nil
-        startupProbe = nil
+        furtherProbe = nil
     }
 
     private mutating func recordProbe(_ id: UInt32, _ result: SentPacketLog.Result) {
@@ -367,7 +456,7 @@ public struct GCCRateController: SendRateController {
               let firstArrival = probe.firstArrival, let lastArrival = probe.lastArrival, lastArrival > firstArrival,
               probe.received * 5 >= expected * 4
         else {
-            startupProbe = nil
+            furtherProbe = nil
             return nil
         }
         let sent = recentSends.reduce(0) { (firstSend..<lastSend).contains($1.time) ? $0 + $1.size : $0 }
@@ -376,17 +465,18 @@ public struct GCCRateController: SendRateController {
         let receiveRate = Double(max(arrived, 0)) * 1e9 / Double(lastArrival - firstArrival)
         // A receive rate far above the send rate is a measurement artefact.
         guard receiveRate <= 2 * sendRate else {
-            startupProbe = nil
+            furtherProbe = nil
             return nil
         }
         var estimate = min(sendRate, receiveRate)
         if receiveRate < 0.9 * sendRate { estimate = 0.95 * receiveRate }
         let result = UInt64(estimate)
-        // Start-up keeps doubling while the link takes most of each probe.
-        if startupProbe != nil {
-            startupProbe = Double(result) > 0.7 * Double(probe.cluster.rate) && probe.cluster.rate < maximum
-                ? result * 2 : nil
-        }
+        // Doubling goes on while the link takes most of each probe, so a link
+        // that came back is found in a few round trips, not one probe per 5 s.
+        let taken = Double(result) > 0.7 * Double(probe.cluster.rate)
+        furtherProbe = taken && probe.cluster.rate < maximum ? result * 2 : nil
+        if probeIsRecovery, !taken { recoveryWait = min(recoveryWait * 2, configuration.recoveryProbeMaximumInterval) }
+        probeIsRecovery = false
         return result
     }
 }

@@ -30,6 +30,8 @@ private final class StreamPair {
     /// Encoder sequences in the order they were queued for this viewer.
     var queuedSequences: [UInt32] = []
     var bitrates: [Int] = []
+    /// (host time, bytes) per media datagram sent, and the budget then.
+    var wire: [(time: UInt64, bytes: Int, budget: UInt64)] = []
 
     init(harness: Harness, index: UInt32) {
         self.harness = harness
@@ -93,7 +95,10 @@ private final class StreamPair {
                 case .padding(let size, let cluster): try? session.sealPadding(size: size, probeCluster: cluster, now: h.hostNow)
                 }
             } ?? nil
-            if let datagram { h.network.send(datagram, from: .host, to: .client, now: h.now) }
+            if let datagram {
+                if case .shard = output { wire.append((h.now, datagram.count, sender.controller.budget.total)) }
+                h.network.send(datagram, from: .host, to: .client, now: h.now)
+            }
         }
 
         // The client.
@@ -161,6 +166,29 @@ final class VideoStreamSimulationTests: XCTestCase {
             XCTAssertGreaterThan(meanBitrate, loss < 0.05 ? 12_000_000 : 5_000_000, label)
             XCTAssertLessThanOrEqual(stream.recoveries, loss < 0.05 ? 1 : 10, label)
         }
+    }
+
+    /// A 3 Mbit/s link, as in the shaped run of 2026-10-24: what goes on the
+    /// wire stays inside the budget. At this rate a 60 fps frame is a handful
+    /// of shards, and the two parity shards each frame carries whatever the
+    /// FEC ratio were a third again on top of a budget that counted 5 %.
+    func testWeakLinkStaysInsideItsBudget() throws {
+        var down = LinkModel(propagationDelay: 2 * ms, jitter: 1 * ms, rate: 375_000, loss: 0)
+        down.queueLimit = 150_000
+        let stream = try pair(down: down)
+        stream.harness.run(for: 15_000 * ms)
+        let start = stream.harness.now - 7_000 * ms
+        let window = stream.wire.filter { $0.time >= start }
+        let sent = Double(window.reduce(0) { $0 + $1.bytes }) * 1e9 / Double(7_000 * ms)
+        let budget = Double(window.reduce(0) { $0 + $1.budget }) / Double(max(window.count, 1))
+        let decodedFraction = Double(stream.decoded.count) / Double(stream.queuedSequences.count)
+        print("weak link: sent \(Int(sent / 1_000)) kB/s against a budget of \(Int(budget / 1_000)) kB/s, "
+              + "decoded \(stream.decoded.count) of \(stream.queuedSequences.count), held \(stream.held), "
+              + "recoveries \(stream.recoveries)")
+        XCTAssertLessThan(sent, 1.1 * budget, "parity's floor is in the encoder's bitrate")
+        XCTAssertGreaterThan(sent, 0.6 * 375_000, "and the link is still used")
+        XCTAssertGreaterThan(decodedFraction, 0.95)
+        XCTAssertEqual(stream.corrupted, 0)
     }
 
     /// The link goes dark for 300 ms: the client asks for recovery, the host

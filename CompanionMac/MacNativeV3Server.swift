@@ -695,7 +695,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             + "cap \(mbps(rate.maximum))), "
             + "received \(mbps(rate.receiveRate)), delay-based \(mbps(rate.delayBasedRate)), \(rate.usage), "
             + "loss \(String(format: "%.1f", rate.smoothedLoss * 100))%, FEC \(Int(rate.budget.fecRatio * 100))%, "
-            + "queue \(rate.queueingDelay / 1_000_000) ms, RTT \(String(format: "%.1f", Double(session.rtt.smoothed) / 1e6)) ms, "
+            + "queue \(rate.queueingDelay / 1_000_000) ms (\(rate.baselineRebases) rebased), RTT \(String(format: "%.1f", Double(session.rtt.smoothed) / 1e6)) ms, "
             + "payload \(session.udpPayload); frames \(stats.framesQueued) queued, \(stats.framesSkipped) skipped; "
             + "shards \(stats.shardsSent) sent, \(stats.shardsResent) resent, \(stats.parityDropped) parity dropped, \(stats.probes) probes"
         log.notice("v3 link: \(line, privacy: .public)")

@@ -458,7 +458,8 @@ its golden byte vectors in `StreamWireTests` are the reference):
   minimal. A non-canonical varint is rejected, so every value has exactly one
   encoding.
 - **Frame types:** PADDING 0x00, CTRL 0x01, ACK 0x02, VIDEO 0x03, AUDIO 0x04,
-  STATE 0x05, FEEDBACK 0x06, PING 0x07, PONG 0x08. The design's single MEDIA
+  STATE 0x05, FEEDBACK 0x06, PING 0x07, PONG 0x08, NACK 0x09 (added 2026-10-24).
+  The design's single MEDIA
   type is split in two, so the frame type says which shard header follows.
   PADDING is the one frame without a length: a single 0x00 byte. A run of zero
   bytes is then valid padding of exactly its size, which is what a PMTU probe
@@ -479,6 +480,49 @@ its golden byte vectors in `StreamWireTests` are the reference):
   0x20–0x3F (`formatDescription` = 0x20), input events 0x40–0x5F, host input
   feedback 0x60–0x6F. An unknown message type is skipped. A bad length ends
   the session, because a byte stream can't resynchronise after one.
+
+**Transport frame bodies** (fixed 2026-10-24 with `StreamTransport`; reference:
+`StreamWire/TransportFrames.swift` and the golden vectors in
+`TransportFrameTests`). They are fixed structures, decoded strictly, with no
+trailing bytes. New fields come as new frame types.
+
+- **CTRL:** `channel u8 | offset u64 | data`. Each channel is one byte stream
+  from offset 0 (control 0, input 1, bulk 2), carrying the reliable messages
+  above. A resend repeats the same bytes at the same offset. Data is at least
+  one byte.
+- **ACK:** `channel u8 | ackDelay varint µs | cumulative u64 | count u8 |
+  count × (gap varint, length varint)`. `cumulative` is the next offset the
+  receiver needs. The ranges are the bytes held above it, ascending, each
+  starting `gap` (≥ 1) after the previous end, so they never touch and the
+  encoding is unique. At most 32 ranges. One ACK frame per channel.
+  Acknowledging by stream offset, not by packet number, keeps retransmission
+  independent of which datagram carried the bytes.
+- **PING:** `id u32 | sendTime u64`. **PONG:** `id u32 | pingSendTime u64 |
+  receiveTime u64 | sendTime u64`. Each time is in its sender's own monotonic
+  ns, which together with the PONG's arrival gives the four NTP timestamps
+  of §5. Either side may ping.
+- **FEEDBACK:** `reportSequence u16 | basePacketNumber u64 | referenceTime u64
+  µs | runCount varint | runs | arrival deltas | streamCount u8 | stream
+  status`.
+  - **Runs** cover consecutive packet numbers. Each run is `length << 3 |
+    received << 2 | ECN`, with neighbouring runs different.
+  - **Arrival deltas:** one zigzag varint per received packet, in µs of the
+    receiver's clock, in packet-number order. They're signed, because Wi-Fi
+    reorders. A delta must fit ±1.05 s, so a report spanning a longer silence
+    is split.
+  - **Size:** at most 65,536 packets per report, which bounds what a decoder
+    allocates, since lost runs cost no bytes.
+  - **Stream status:** `streamID u32 | lastDecodableFrame u32 | framesLost
+    u32 | lateness p50/p95/p99 varint µs`.
+- **NACK:** `streamID u32 | frameNumber u32 | scope u8`, then nothing for a
+  whole frame (scope 0), `block u8` for a whole block (scope 1), or `block u8 |
+  needed u8 | count u8 | data shard indices ascending` (scope 2). This is the
+  assembler's `MissingShards`, one frame or block per NACK, gated on the
+  `nack` capability.
+- **Coalescing with media** (open question 20, decided): small frames ride
+  only in non-media datagrams. Media shards keep the full shard size. ACKs,
+  FEEDBACK, PINGs and control data go together in their own datagrams, which on
+  a LAN costs nothing that matters.
 
 ### 4.2 Video
 
@@ -2227,7 +2271,9 @@ mostly shim work. If a Linux gaming box appears, it can swap with Phase 3.
     - **Header overhead** is 56 of 1200 bytes (4.7%), acceptable.
     - The headset's receive cost at 20 k datagrams/s is the number to measure
       first.
-20. **Coalescing with media is unspecified.** §4.1 lets an ACK or FEEDBACK
+20. **Coalescing with media is unspecified.** *Decided (2026-10-24): small
+    frames ride only in non-media datagrams; see the transport frame bodies in
+    §4.1.* §4.1 lets an ACK or FEEDBACK
     ride on any outgoing packet, but a media shard fills its datagram to the
     byte, because FEC needs equal shard sizes. Either the packetizer reserves
     headroom in every media datagram (and the shard size shrinks by it), or

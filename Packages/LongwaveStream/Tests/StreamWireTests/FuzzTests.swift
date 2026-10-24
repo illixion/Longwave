@@ -34,6 +34,8 @@ final class FuzzTests: XCTestCase {
             try FramePayload.encode(sideData: SideData(renderPose: Fixtures.renderPose, foveation: Fixtures.foveation),
                                     accessUnit: [0, 0, 0, 3, 0x26, 1, 0xAF]) + [0, 0, 0],
         ]
+        entries += [TransportFrameTests.chunkBytes, TransportFrameTests.ackBytes, TransportFrameTests.feedbackBytes,
+                    TransportFrameTests.nackBytes, try Pong(id: 1, pingSendTime: 2, receiveTime: 3, sendTime: 4).encoded()]
         entries += InputEventTests.vectors.map(\.1)
         entries.append(InputEventTests.vectors.flatMap(\.1)) // a whole input stream
         // A datagram body: control bytes, a video shard, padding.
@@ -87,6 +89,16 @@ final class FuzzTests: XCTestCase {
                              encode: { (v) in try v.encoded() }))
         note("capabilities", check(input, "capabilities", decode: { (b) in try CapabilitySet(decoding: b) },
                                    encode: { (v) in try v.encoded() }))
+        note("chunk", check(input, "chunk", decode: { (b) in try StreamChunk(decoding: b) },
+                            encode: { (v) in try v.encoded() }))
+        note("ack", check(input, "ack", decode: { (b) in try ChannelAck(decoding: b) },
+                          encode: { (v) in try v.encoded() }))
+        note("feedback", check(input, "feedback", decode: { (b) in try Feedback(decoding: b) },
+                               encode: { (v) in try v.encoded() }))
+        note("nack", check(input, "nack", decode: { (b) in try ShardNack(decoding: b) },
+                           encode: { (v) in try v.encoded() }))
+        note("pong", check(input, "pong", decode: { (b) in try Pong(decoding: b) },
+                           encode: { (v) in try v.encoded() }))
         note("state", check(input, "state", decode: { (b) in try StateSnapshot(frameBody: b) },
                             encode: { (v) in try v.encoded() }))
         note("sideData", check(input, "sideData", decode: { (b) throws -> SideData? in
@@ -164,10 +176,11 @@ final class FuzzTests: XCTestCase {
         }
         // The mutations must reach past the first validation check, or this
         // test would prove nothing about the deeper parsers.
-        for name in ["video", "audio", "format", "state", "sideData", "payload", "frames", "messages", "capabilities"] {
+        for name in ["video", "audio", "format", "state", "sideData", "payload", "frames", "messages", "capabilities",
+                     "chunk", "ack", "feedback", "nack", "pong"] {
             XCTAssertGreaterThan(acceptedCounts[name, default: 0], 0, "no mutated input ever decoded as \(name)")
         }
-        print("fuzz: \(total) inputs x 9 decoders, seed \(seed); accepted per decoder: \(acceptedCounts.sorted { $0.key < $1.key })")
+        print("fuzz: \(total) inputs x 14 decoders, seed \(seed); accepted per decoder: \(acceptedCounts.sorted { $0.key < $1.key })")
     }
 
     func testRandomBytesNeverTrap() {

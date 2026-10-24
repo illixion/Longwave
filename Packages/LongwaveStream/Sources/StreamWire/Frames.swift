@@ -19,6 +19,8 @@ public enum FrameType: UInt8, Sendable, CaseIterable {
     /// Clock sync and liveness (section 5).
     case ping = 0x07
     case pong = 0x08
+    /// Video shards to send again (`ShardNack`; needs the `nack` capability).
+    case nack = 0x09
 
     /// Media frames never share a datagram, so FEC shard boundaries are
     /// packet boundaries.

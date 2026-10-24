@@ -342,6 +342,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
                             windowID: decoded.windowID,
                             sequence: decoded.frame.sequence
                         ))
+                        latency.record(captureTime: decoded.frame.timestampNanoseconds, isKeyFrame: decoded.frame.isKeyFrame,
+                                       now: DispatchTime.now().uptimeNanoseconds, hostNow: nil)
                     }
                     renderer(for: decoded.windowID)?.enqueue(decoded.frame)
                 }

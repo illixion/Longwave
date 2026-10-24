@@ -83,7 +83,8 @@ final class MacNativeStreamingController {
     /// for a display the Mac renders just for the headset (the Mac Virtual
     /// Display model), or a physical display's UUID. Changeable from this
     /// pane and from the headset (`selectDisplay`). A physical display that
-    /// is not connected falls back to the main one.
+    /// is not connected falls back to the main one, and one that mirrors
+    /// another streams the display it mirrors (`effectiveDisplayID`).
     var selectedDisplayID: String {
         get {
             access(keyPath: \.selectedDisplayID)
@@ -107,6 +108,22 @@ final class MacNativeStreamingController {
 
     var virtualDisplayEnabled: Bool {
         selectedDisplayID == MacNativeStreamProtocol.virtualDisplayID
+    }
+
+    /// What `selectedDisplayID` streams right now, for the pickers: the choice
+    /// itself while it is listed, the primary of its mirror set while it
+    /// mirrors another display, else the main display. The stored choice is
+    /// kept, so the monitor comes back once it is connected (or unmirrored).
+    var effectiveDisplayID: String {
+        let selected = selectedDisplayID
+        if selected == MacNativeStreamProtocol.virtualDisplayID
+            || physicalDisplays.contains(where: { $0.id == selected }) {
+            return selected
+        }
+        return MacNativeDisplayCatalog.capturableDisplayID(forUUID: selected)
+            .flatMap(MacNativeDisplayCatalog.uuidString(for:))
+            ?? MacNativeDisplayCatalog.mainDisplayUUID()
+            ?? selected
     }
 
     /// The Mac's physical displays, for the picker here and on the headset.
@@ -133,14 +150,9 @@ final class MacNativeStreamingController {
             width: size.width,
             height: size.height
         )
-        let selected = selectedDisplayID
-        let effective = selected == MacNativeStreamProtocol.virtualDisplayID
-            || physicalDisplays.contains(where: { $0.id == selected })
-            ? selected
-            : MacNativeDisplayCatalog.mainDisplayUUID()
         return .init(
             displays: [virtual] + physicalDisplays,
-            selectedID: effective,
+            selectedID: effectiveDisplayID,
             virtualDisplay: .init(
                 resolution: virtualDisplayPreset.rawValue,
                 resolutions: MacNativeVirtualDisplayPreset.allCases.map { .init(id: $0.rawValue, title: $0.title) },
@@ -840,9 +852,14 @@ final class MacNativeStreamingController {
             virtualDisplaySummary = "Skipped — \(skippedReason)"
         }
 
+        // A physical choice that is disconnected streams the main display
+        // rather than waiting on one ScreenCaptureKit will never list.
         let physicalTarget = virtualDisplayEnabled
             ? nil
-            : MacNativeDisplayCatalog.displayID(forUUID: selectedDisplayID)
+            : MacNativeDisplayCatalog.capturableDisplayID(forUUID: selectedDisplayID)
+        if !virtualDisplayEnabled, physicalTarget == nil {
+            log.notice("Selected display is not connected; capturing the main display")
+        }
         let capture = MacNativeScreenCapture(
             chroma: chroma,
             displayID: virtualDisplay?.displayID ?? physicalTarget,

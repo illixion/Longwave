@@ -82,7 +82,10 @@ struct NativePane: View {
 
             if controller.macNativeStreaming.enabled {
                 Section {
-                    Picker("Desktop", selection: $controller.macNativeStreaming.selectedDisplayID) {
+                    Picker("Desktop", selection: Binding(
+                        get: { controller.macNativeStreaming.effectiveDisplayID },
+                        set: { controller.macNativeStreaming.selectedDisplayID = $0 }
+                    )) {
                         Text("Virtual Display").tag(MacNativeStreamProtocol.virtualDisplayID)
                         ForEach(controller.macNativeStreaming.physicalDisplays) { display in
                             Text(display.name).tag(display.id)

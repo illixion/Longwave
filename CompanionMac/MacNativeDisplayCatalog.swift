@@ -48,6 +48,16 @@ enum MacNativeDisplayCatalog {
         return id == 0 ? nil : id
     }
 
+    /// The display to capture for a stored UUID right now, or nil when it is
+    /// not connected. A display in a mirror set resolves to the set's
+    /// primary: ScreenCaptureKit lists only that one, so a laptop panel
+    /// mirroring an external monitor would otherwise never become capturable
+    /// even though the same desktop is on screen.
+    static func capturableDisplayID(forUUID uuidString: String) -> CGDirectDisplayID? {
+        guard let id = displayID(forUUID: uuidString), CGDisplayIsOnline(id) != 0 else { return nil }
+        return CGDisplayPrimaryDisplay(id)
+    }
+
     static func uuidString(for displayID: CGDirectDisplayID) -> String? {
         guard let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else { return nil }
         return CFUUIDCreateString(nil, uuid) as String?

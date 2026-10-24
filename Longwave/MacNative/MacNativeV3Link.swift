@@ -147,8 +147,11 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     func sendMouseMove(x: UInt16, y: UInt16) {
         guard session != nil else { return }
         pointerSequence &+= 1
-        session?.send(StateSnapshot(sequence: pointerSequence, hostTime: hostTime(),
-                                    payload: .pointerAbsolute(PointerPosition(streamID: NativeV3.desktopStreamID, x: x, y: y))))
+        // Built first: hostTime() reads `session`, which the optional-chained
+        // mutating send already holds for writing (a runtime exclusivity trap).
+        let snapshot = StateSnapshot(sequence: pointerSequence, hostTime: hostTime(),
+                                     payload: .pointerAbsolute(PointerPosition(streamID: NativeV3.desktopStreamID, x: x, y: y)))
+        session?.send(snapshot)
         flush(now: NativeV3.now())
     }
 

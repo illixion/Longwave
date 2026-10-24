@@ -126,8 +126,10 @@ final class GamepadRoster {
         if let virtual = virtualPads[ObjectIdentifier(controller)] {
             return (virtual.gyro, virtual.accelerometer)
         }
+        // Any GCMotion reports total acceleration; hasGravityAndUserAcceleration is
+        // whether it can also split gravity out, which no gamepad does.
         guard let motion = controller.motion else { return (false, false) }
-        return (motion.hasRotationRate, motion.hasGravityAndUserAcceleration)
+        return (motion.hasRotationRate, true)
     }
 
     /// How many subscribers want `slot`'s motion sensors on (for the debug status).

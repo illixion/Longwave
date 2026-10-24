@@ -52,8 +52,8 @@ Longwave/
 │       ├── PCVRFakeRemote.swift        — DEBUG: test room rendered at a past pose with delay/frame rate, no host needed
 │       └── PCVRShellDevView.swift      — DEBUG: window that opens the space, tunes it and shows the stats
 ├── Gamepad/
-│   ├── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge; DEBUG virtual pads
-│   └── GamepadDebugEndpoints.swift     — DEBUG debug-server endpoints: `gamepads` status, `gamepadVirtualAdd/Set/Remove` (far end: CompanionWindows/scripts/pad-probe.py)
+│   ├── GamepadRoster.swift             — Claims every extended gamepad once (slots, change fan-out, system gestures, motion demand) for Moonlight and the PCVR bridge; virtual pads for the harness
+│   └── GamepadDebugEndpoints.swift     — Debug-server endpoints (registered only when the server runs): `gamepads` status, `gamepadVirtualAdd/Set/Remove` (far end: CompanionWindows/scripts/pad-probe.py)
 ├── MacNative/
 │   ├── MacNativeStreamClient.swift     — TLS-PSK framed native stream receiver (all clients)
 │   └── MacNativeVideoRenderer.swift    — hvc1 (±alpha) format reconstruction and display (all clients)

@@ -124,7 +124,6 @@ final class MoonlightGamepadMappingTests: XCTestCase {
 }
 #endif
 
-#if DEBUG
 /// The roster's claim and fan-out, driven through a virtual pad — the same path the
 /// debug endpoints use, so a green run here means the harness drives what real pads do.
 @MainActor
@@ -174,4 +173,3 @@ final class GamepadRosterVirtualPadTests: XCTestCase {
         XCTAssertFalse(roster.setVirtualPad(slot: slot, to: state))
     }
 }
-#endif

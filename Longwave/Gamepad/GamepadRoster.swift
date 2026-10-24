@@ -107,12 +107,10 @@ final class GamepadRoster {
     func snapshot(slot: Int) -> RAVEGamepadSnapshot? {
         guard let controller = controllers[slot], let pad = controller.extendedGamepad else { return nil }
         var snapshot = RAVEGamepadSnapshot(pad, motion: controller.motion)
-        #if DEBUG
         if let virtual = virtualPads[ObjectIdentifier(controller)] {
             snapshot.rotationRate = virtual.gyro ? virtual.rotationRate : nil
             snapshot.acceleration = virtual.accelerometer ? virtual.acceleration : nil
         }
-        #endif
         return snapshot
     }
 
@@ -121,11 +119,9 @@ final class GamepadRoster {
     /// `GCMotion` for.
     func motionSensors(slot: Int) -> (gyro: Bool, accelerometer: Bool) {
         guard let controller = controllers[slot] else { return (false, false) }
-        #if DEBUG
         if let virtual = virtualPads[ObjectIdentifier(controller)] {
             return (virtual.gyro, virtual.accelerometer)
         }
-        #endif
         guard let motion = controller.motion else { return (false, false) }
         return (motion.hasRotationRate, motion.hasGravityAndUserAcceleration)
     }
@@ -211,9 +207,7 @@ final class GamepadRoster {
     private func release(_ controller: GCController, departing: Bool) {
         guard let slot = slot(of: controller) else { return }
         controllers.removeValue(forKey: slot)
-        #if DEBUG
         virtualPads.removeValue(forKey: ObjectIdentifier(controller))
-        #endif
         if motionDemand.removeValue(forKey: slot) != nil { controller.motion?.sensorsActive = false }
         controller.extendedGamepad?.valueChangedHandler = nil
         controller.playerIndex = .indexUnset
@@ -235,7 +229,7 @@ final class GamepadRoster {
         }
     }
 
-    // MARK: Virtual pads (debug)
+    // MARK: Virtual pads (development builds)
     //
     // A pad an agent drives through the debug server, so a stream can be tested end to
     // end without anyone holding a controller: `GCController.withExtendedGamepad()` is a
@@ -243,9 +237,9 @@ final class GamepadRoster {
     // fanned out like a physical pad, and reports as GameController's generic extended
     // gamepad — which Moonlight announces as a Nintendo pad, the same as a Switch Pro.
     // It has no `GCMotion`, so its sensors are declared here and their readings set
-    // directly. See `GamepadDebugEndpoints`.
+    // directly. Only `GamepadDebugEndpoints` adds them, and it is registered only in a
+    // development build with the debug server running.
 
-    #if DEBUG
     struct VirtualPad {
         var gyro: Bool
         var accelerometer: Bool
@@ -319,5 +313,4 @@ final class GamepadRoster {
         release(controller, departing: true)
         return true
     }
-    #endif
 }

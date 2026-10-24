@@ -1,4 +1,3 @@
-#if DEBUG
 import DebugTrace
 import Foundation
 import GameController
@@ -16,8 +15,10 @@ import RAVEInput
 /// GameController itself: claiming a real pad, a real IMU's axes, the visionOS stick
 /// freeze. Those still need a pad in hand, and `gamepads` shows what one is reporting.
 ///
-/// Debug builds only: driving a remote PC's input from the network is not something a
-/// release build may do, debug server or not.
+/// Registered only when the debug server runs (`DebugTraceServer.requestedAtLaunch`): a
+/// development build build-and-sign signed, never App Store or TestFlight. Driving a
+/// remote PC's input from the network is not something a shipped build may offer.
+/// A compile-time `#if DEBUG` would be the wrong gate: device builds are Release.
 @MainActor
 enum GamepadDebugEndpoints {
 
@@ -213,4 +214,3 @@ enum GamepadDebugEndpoints {
         #endif
     }
 }
-#endif

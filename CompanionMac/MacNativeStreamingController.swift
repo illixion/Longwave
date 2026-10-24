@@ -26,6 +26,24 @@ final class MacNativeStreamingController {
         }
     }
 
+    private static let v3EnabledKey = "macNativeV3Enabled"
+
+    /// Also serve the desktop over Native v3 (UDP, beside v2's TCP on the same
+    /// port number). Experimental and off by default; v2 keeps serving either
+    /// way, and a client only uses v3 when its own setting asks for it.
+    var v3Enabled: Bool {
+        get {
+            access(keyPath: \.v3Enabled)
+            return UserDefaults.standard.bool(forKey: Self.v3EnabledKey)
+        }
+        set {
+            withMutation(keyPath: \.v3Enabled) {
+                UserDefaults.standard.set(newValue, forKey: Self.v3EnabledKey)
+            }
+            if enabled { startServer() }
+        }
+    }
+
     // MARK: Virtual display
 
     /// The pre-picker switch. Read once, as the default for `selectedDisplayID`.
@@ -163,6 +181,7 @@ final class MacNativeStreamingController {
 
     private func publishDisplayList() {
         server?.broadcastDisplayList(displayList)
+        v3Server?.broadcastDisplayList(displayList)
     }
 
     var virtualDisplayPreset: MacNativeVirtualDisplayPreset {
@@ -281,6 +300,8 @@ final class MacNativeStreamingController {
         input.refreshAccessibility()
         server?.setMouseAvailability(input.mouseStatusByte)
         server?.setKeyboardAvailability(input.keyboardStatusByte)
+        v3Server?.setMouseAvailability(input.mouseStatusByte)
+        v3Server?.setKeyboardAvailability(input.keyboardStatusByte)
     }
 
     /// Prompts for Accessibility, then refreshes the live channel's availability.
@@ -350,6 +371,15 @@ final class MacNativeStreamingController {
 
     private var keyring = CompanionKeyring()
     private var server: MacNativeStreamServer?
+    /// The v3 desktop server, while `v3Enabled`.
+    private var v3Server: MacNativeV3Server?
+    /// Each server's viewers; `connectedDeviceNames` is both.
+    private var v2Clients: [MacNativeStreamServer.ClientSummary] = []
+    private var v3Clients: [MacNativeStreamServer.ClientSummary] = []
+    /// Which servers have a desktop viewer: the capture runs while either does.
+    private var desktopSubscribers: Set<Int> = []
+    private static let v2Subscriber = 2
+    private static let v3Subscriber = 3
     /// The Apple Watch's HTTP lane (`WatchLinkProtocol`), up whenever the
     /// Native server is.
     private var watchServer: MacWatchServer?
@@ -396,6 +426,7 @@ final class MacNativeStreamingController {
 
     func reloadCredentials() {
         server?.reloadCredentials()
+        v3Server?.reloadCredentials()
     }
 
     /// Set by the owner: whether the listen gate lets the server listen now.
@@ -423,6 +454,11 @@ final class MacNativeStreamingController {
         let generation = serverGeneration
         let previousServer = server
         server = nil
+        let previousV3Server = v3Server
+        v3Server = nil
+        v2Clients = []
+        v3Clients = []
+        desktopSubscribers = []
         input.releaseHeldKeys()
         watchServer?.stop()
         watchServer = nil
@@ -443,10 +479,17 @@ final class MacNativeStreamingController {
                 self.launchServer(generation: generation)
             }
         }
+        let replaceV3: @Sendable () -> Void = {
+            if let previousV3Server {
+                previousV3Server.stop(completion: startReplacement)
+            } else {
+                startReplacement()
+            }
+        }
         if let previousServer {
-            previousServer.stop(completion: startReplacement)
+            previousServer.stop(completion: replaceV3)
         } else {
-            startReplacement()
+            replaceV3()
         }
     }
 
@@ -473,21 +516,8 @@ final class MacNativeStreamingController {
         server.onClientsChanged = { [weak self] clients in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
-                // A viewer left, maybe mid-press: keys it held must not stay down.
-                if clients.count < self.connectedDeviceNames.count { self.input.releaseHeldKeys() }
-                self.connectedDeviceNames = clients.map(\.deviceName)
-                // Only ever raised by a viewer that has probed its own
-                // hardware decoder — see `MacNativeVideoCapability`.
-                self.viewersDecodeHEVC422 = !clients.isEmpty
-                    && clients.allSatisfy(\.decodesHEVC422)
-                // The inventory runs for as long as at least one v2 viewer is
-                // around to receive it.
-                if clients.contains(where: \.isV2) {
-                    self.startWindowStreams()
-                } else {
-                    self.stopWindowStreams()
-                }
-                self.applyDesktopChromaChange()
+                self.v2Clients = clients
+                self.viewerSetChanged()
             }
         }
         server.onError = { [weak self] message in
@@ -540,12 +570,7 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
-                    if self.capture == nil {
-                        self.startCapture()
-                    } else if self.captureIsWatchOnly, self.server?.hasVideoViewers() == true {
-                        self.stopCapture()
-                        self.startCapture()
-                    }
+                    self.desktopViewerJoined(Self.v2Subscriber)
                 } else {
                     self.windowStreams.startStream(windowID: windowID)
                 }
@@ -555,10 +580,7 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
-                    self.stopCapture()
-                    // A watch still looking keeps a capture going — without
-                    // the virtual display, which belonged to the headset.
-                    if self.watchActive { self.startCapture() }
+                    self.desktopViewersLeft(Self.v2Subscriber)
                 } else {
                     self.windowStreams.stopStream(windowID: windowID)
                 }
@@ -707,7 +729,144 @@ final class MacNativeStreamingController {
         server.start()
         server.setMouseAvailability(input.mouseStatusByte)
         server.setKeyboardAvailability(input.keyboardStatusByte)
+        if v3Enabled { launchV3Server(generation: generation) }
         refreshDisplays()
+    }
+
+    /// The v3 server's callbacks are the v2 server's desktop subset; both feed
+    /// the same input service, capture and viewer set.
+    private func launchV3Server(generation: Int) {
+        let server = MacNativeV3Server(port: port, keyring: keyring)
+        let onMain: @Sendable (@escaping @MainActor @Sendable (MacNativeStreamingController) -> Void) -> Void = {
+            [weak self] body in
+            Task { @MainActor [weak self] in
+                guard let self, self.serverGeneration == generation else { return }
+                body(self)
+            }
+        }
+        server.onDeviceIdentified = { [weak self] deviceID in
+            Task { @MainActor [weak self] in self?.onDeviceIdentified?(deviceID) }
+        }
+        server.onClientConnected = { deviceName, wantsScreen in
+            onMain { _ in
+                if wantsScreen { MacNativeStreamNotifications.shared.connected(deviceName: deviceName) }
+            }
+        }
+        server.onClientsChanged = { clients in
+            onMain { controller in
+                controller.v3Clients = clients
+                controller.viewerSetChanged()
+            }
+        }
+        server.onError = { message in
+            onMain { controller in
+                controller.log.error("Native v3 server: \(message, privacy: .public)")
+                controller.lastError = message
+            }
+        }
+        server.onMouseMove = { x, y in
+            onMain { $0.input.moveMouse(to: $0.globalPoint(x: x, y: y)) }
+        }
+        server.onMouseDown = { button, x, y in
+            onMain { $0.input.mouseDown(button: button, at: $0.globalPoint(x: x, y: y)) }
+        }
+        server.onMouseUp = { button, x, y in
+            onMain { $0.input.mouseUp(button: button, at: $0.globalPoint(x: x, y: y)) }
+        }
+        server.onScroll = { x, y, deltaX, deltaY in
+            onMain { $0.input.scroll(deltaX: Int32(deltaX), deltaY: Int32(deltaY), at: $0.globalPoint(x: x, y: y)) }
+        }
+        server.onKeyDown = { keyCode, modifiers in
+            onMain { $0.input.keyDown(keyCode: keyCode, modifiers: modifiers) }
+        }
+        server.onKeyUp = { keyCode, modifiers in
+            onMain { $0.input.keyUp(keyCode: keyCode, modifiers: modifiers) }
+        }
+        server.onReleaseAll = {
+            onMain { $0.input.releaseHeldKeys() }
+        }
+        server.onDesktopStreamStart = {
+            onMain { $0.desktopViewerJoined(Self.v3Subscriber) }
+        }
+        server.onDesktopStreamStop = {
+            onMain { $0.desktopViewersLeft(Self.v3Subscriber) }
+        }
+        server.onKeyFrameNeeded = {
+            onMain { $0.capture?.requestKeyFrame() }
+        }
+        server.onTargetBitrate = { bits in
+            onMain { $0.capture?.setLinkBudget(bits) }
+        }
+        server.onLinkLatency = { milliseconds in
+            onMain { $0.updateLatencySummary(linkMilliseconds: milliseconds) }
+        }
+        server.onSelectDisplay = { displayID in
+            onMain { controller in
+                guard displayID == MacNativeStreamProtocol.virtualDisplayID
+                        || controller.physicalDisplays.contains(where: { $0.id == displayID }) else { return }
+                controller.selectedDisplayID = displayID
+            }
+        }
+        server.onConfigureVirtualDisplay = { change in
+            onMain { controller in
+                if let id = change.resolution,
+                   let preset = MacNativeVirtualDisplayPreset(rawValue: id),
+                   preset != controller.virtualDisplayPreset {
+                    controller.virtualDisplayPreset = preset
+                }
+                if let off = change.hostDisplaysOff, off != controller.virtualDisplayExclusive {
+                    controller.virtualDisplayExclusive = off
+                }
+            }
+        }
+        v3Server = server
+        server.start()
+        server.setMouseAvailability(input.mouseStatusByte)
+        server.setKeyboardAvailability(input.keyboardStatusByte)
+    }
+
+    /// Both servers' viewers as one set: what the pane lists, what the chroma
+    /// is chosen for, whether window streams run.
+    private func viewerSetChanged() {
+        let clients = v2Clients + v3Clients
+        // A viewer left, maybe mid-press: keys it held must not stay down.
+        if clients.count < connectedDeviceNames.count { input.releaseHeldKeys() }
+        // v3 viewers are marked, so a test session shows which protocol it got.
+        connectedDeviceNames = v2Clients.map(\.deviceName) + v3Clients.map { "\($0.deviceName) (v3)" }
+        // Only ever raised by a viewer that has probed its own hardware
+        // decoder — see `MacNativeVideoCapability`.
+        viewersDecodeHEVC422 = !clients.isEmpty && clients.allSatisfy(\.decodesHEVC422)
+        // The inventory runs for as long as at least one v2 viewer is around
+        // to receive it.
+        if v2Clients.contains(where: \.isV2) {
+            startWindowStreams()
+        } else {
+            stopWindowStreams()
+        }
+        applyDesktopChromaChange()
+    }
+
+    private var hasVideoViewers: Bool {
+        server?.hasVideoViewers() == true || v3Server?.hasVideoViewers() == true
+    }
+
+    private func desktopViewerJoined(_ subscriber: Int) {
+        desktopSubscribers.insert(subscriber)
+        if capture == nil {
+            startCapture()
+        } else if captureIsWatchOnly, hasVideoViewers {
+            stopCapture()
+            startCapture()
+        }
+    }
+
+    private func desktopViewersLeft(_ subscriber: Int) {
+        desktopSubscribers.remove(subscriber)
+        guard desktopSubscribers.isEmpty else { return }
+        stopCapture()
+        // A watch still looking keeps a capture going — without the virtual
+        // display, which belonged to the headset.
+        if watchActive { startCapture() }
     }
 
     private func stopServer() {
@@ -716,6 +875,11 @@ final class MacNativeStreamingController {
         let oldServer = server
         server = nil
         oldServer?.stop()
+        v3Server?.stop()
+        v3Server = nil
+        v2Clients = []
+        v3Clients = []
+        desktopSubscribers = []
         watchServer?.stop()
         watchServer = nil
         watchActive = false
@@ -768,6 +932,7 @@ final class MacNativeStreamingController {
             lastError = missing
             log.error("Desktop capture failed without Screen Recording permission: \(message, privacy: .public)")
             server?.disconnectDesktopViewers(withError: missing)
+            v3Server?.disconnectDesktopViewers(withError: missing)
             stopCapture()
             MacNativeStreamNotifications.shared.permissionMissing(PermissionCenter.Kind.screenRecording.title)
             return
@@ -777,6 +942,7 @@ final class MacNativeStreamingController {
         guard captureRestarts.count < 3, !connectedDeviceNames.isEmpty else {
             log.error("Desktop capture failed for good: \(message, privacy: .public)")
             server?.disconnectDesktopViewers(withError: message)
+            v3Server?.disconnectDesktopViewers(withError: message)
             stopCapture()
             return
         }
@@ -831,7 +997,7 @@ final class MacNativeStreamingController {
         // which is Mac VD's, and the pane says why.
         var virtualDisplay: MacNativeVirtualDisplay?
         var skippedReason: String?
-        let watchOnly = server?.hasVideoViewers() != true
+        let watchOnly = !hasVideoViewers
         captureIsWatchOnly = watchOnly
         refreshVirtualDisplayConflict()
         if !watchOnly, let configuration = virtualDisplayConfiguration {
@@ -843,6 +1009,7 @@ final class MacNativeStreamingController {
                 } catch {
                     lastError = error.localizedDescription
                     server?.disconnectDesktopViewers(withError: error.localizedDescription)
+                    v3Server?.disconnectDesktopViewers(withError: error.localizedDescription)
                     return
                 }
             }
@@ -871,16 +1038,19 @@ final class MacNativeStreamingController {
                 self.desktopVideoSummary = summary
             }
         }
-        capture.onFormatDescription = { [weak server] data in
+        let v3Server = self.v3Server
+        capture.onFormatDescription = { [weak server, weak v3Server] data in
             server?.broadcastFormatDescription(data)
+            v3Server?.broadcastFormatDescription(data)
         }
-        capture.onFrame = { [weak server] data, keyFrame, sequence, timestamp in
+        capture.onFrame = { [weak server, weak v3Server] data, keyFrame, sequence, timestamp in
             server?.broadcastFrame(
                 data,
                 isKeyFrame: keyFrame,
                 sequence: sequence,
                 timestampNanoseconds: timestamp
             )
+            v3Server?.broadcastFrame(data, isKeyFrame: keyFrame, timestampNanoseconds: timestamp)
         }
         capture.onError = { [weak self] message in
             Task { @MainActor [weak self] in
@@ -901,14 +1071,20 @@ final class MacNativeStreamingController {
                 self.displayPixelScale = pixelScale > 0 ? pixelScale : 1
             }
         }
-        capture.canEncode = { [weak server] in server?.desktopCanAcceptFrame() ?? true }
+        capture.canEncode = { [weak server, weak v3Server] in
+            (server?.desktopCanAcceptFrame() ?? true) && (v3Server?.desktopCanAcceptFrame() ?? true)
+        }
         let watchServer = self.watchServer
         capture.onPixelBuffer = { [weak server, weak watchServer] buffer in
             server?.offerStillFrame(buffer)
             watchServer?.offer(buffer)
         }
-        capture.wantsVideo = { [weak server] in server?.hasVideoViewers() ?? true }
+        capture.wantsVideo = { [weak server, weak v3Server] in
+            guard server != nil || v3Server != nil else { return true }
+            return server?.hasVideoViewers() == true || v3Server?.hasVideoViewers() == true
+        }
         server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
+        v3Server?.onDesktopPipeClear = { [weak capture] in capture?.pipeCleared() }
         self.capture = capture
 
         Task {
@@ -935,6 +1111,7 @@ final class MacNativeStreamingController {
                 isCapturing = false
                 lastError = error.localizedDescription
                 server?.disconnectDesktopViewers(withError: error.localizedDescription)
+                v3Server?.disconnectDesktopViewers(withError: error.localizedDescription)
             }
         }
     }

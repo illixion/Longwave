@@ -6,6 +6,8 @@ import Foundation
 enum ConnectionDefaults {
 
     enum Keys {
+        /// Native desktop stream over v3 (UDP) when the Mac serves it.
+        static let nativeV3 = "native_v3_enabled"
         static let vncQuality = "default_vnc_quality"
         static let vncTouchMode = "default_vnc_touch_mode"
         static let vncPort = "default_vnc_port"

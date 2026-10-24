@@ -106,6 +106,11 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     private var targetBitrate = 0
     private var currentBitrate = 0
     private var lastCongestion: ContinuousClock.Instant?
+    /// The Native v3 rate controller's budget for its slowest viewer (bits/s),
+    /// nil without a v3 viewer. The encoder runs at the lower of it and the
+    /// v2 rate above, so one encode suits every viewer.
+    private var linkBudget: Int?
+    private var effectiveBitrate: Int { min(currentBitrate, linkBudget ?? .max) }
 
     nonisolated init(
         chroma: MacHEVCEncoder.Chroma = .yuv420,
@@ -125,6 +130,12 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         guard let configuration = currentConfiguration else { return }
         retarget(for: configuration)
         currentBitrate = targetBitrate
+        applyBitrate()
+    }
+
+    func setLinkBudget(_ bits: Int?) {
+        guard bits != linkBudget else { return }
+        linkBudget = bits
         applyBitrate()
     }
 
@@ -191,7 +202,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
 
     private func applyBitrate() {
         guard let encoder else { return }
-        encoder.setLiveBitrate(currentBitrate)
+        encoder.setLiveBitrate(effectiveBitrate)
         publishSummary(encoder)
     }
 
@@ -210,7 +221,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         retarget(for: configuration)
         // Opaque full display: no alpha layer to spend bits or decode cycles on.
         let encoder = MacHEVCEncoder(
-            bitrate: currentBitrate,
+            bitrate: effectiveBitrate,
             frameRate: frameRate,
             preservesAlpha: false,
             chroma: chroma
@@ -288,7 +299,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         let rateControl = encoder.lowLatencyRateControl ? ", low-latency" : ""
         onVideoSummary?(
             "\(size.width)×\(size.height) HEVC \(encoder.chromaDescription) at \(encoder.expectedFrameRate) fps, "
-                + "\(currentBitrate / 1_000_000) of \(targetBitrate / 1_000_000) Mbps, "
+                + "\(effectiveBitrate / 1_000_000) of \(targetBitrate / 1_000_000) Mbps, "
                 + "\(engine) encode\(rateControl)"
         )
     }
@@ -444,7 +455,7 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
             // The new size makes the encoder open a fresh session; give it the
             // bitrate for the new area rather than the one it was built with.
             retarget(for: configuration)
-            encoder?.setBitrate(currentBitrate)
+            encoder?.setBitrate(effectiveBitrate)
             self.display = refreshed
             self.pixelScale = scale
             onDisplayGeometry?(refreshed.frame, scale)

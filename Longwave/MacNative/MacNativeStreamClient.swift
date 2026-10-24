@@ -12,6 +12,9 @@ final class MacNativeStreamClient: @unchecked Sendable {
         /// for a session that's audio-only from the start. See
         /// `MacNativeStreamProtocol.Hello.wantsScreen`.
         var wantsScreen: Bool = true
+        /// Try Native v3 first (the client's experimental setting), falling
+        /// back to v2 when no v3 host answers. Needs a per-device credential.
+        var prefersV3: Bool = false
     }
 
     enum Event: Sendable {
@@ -59,6 +62,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
     /// The desktop stream (`desktopStreamID`) always routes to `renderer`.
     /// Only touched on `queue`.
     private nonisolated(unsafe) var windowRenderers: [UInt32: MacNativeVideoRenderer] = [:]
+    /// The v3 session, while this client runs over v3. Only touched on `queue`.
+    private nonisolated(unsafe) var v3: MacNativeV3Link?
 
     init(config: Config, renderer: MacNativeVideoRenderer) {
         self.config = config
@@ -77,6 +82,34 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func start() {
+        if config.prefersV3, let link = MacNativeV3Link(
+            host: config.host, port: config.port, credential: config.credential, deviceName: config.deviceName,
+            wantsScreen: config.wantsScreen, queue: queue, renderer: renderer,
+            emit: { [weak self] event in
+                if case .closed(let message) = event {
+                    self?.emitClosed(message)
+                } else {
+                    self?.onEvent?(event)
+                }
+            },
+            noAnswer: { [weak self] in
+                guard let self else { return }
+                usingV3 = false
+                v3 = nil
+                startV2()
+            }
+        ) {
+            usingV3 = true
+            queue.async { [self] in
+                v3 = link
+                link.start()
+            }
+            return
+        }
+        startV2()
+    }
+
+    private func startV2() {
         guard !config.credential.token.isEmpty,
               let port = NWEndpoint.Port(rawValue: config.port) else {
             onEvent?(.closed("This connection isn't paired, or its port is invalid."))
@@ -115,6 +148,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
 
     func close() {
         queue.async { [self] in
+            v3?.close()
+            v3 = nil
             connection?.cancel()
             connection = nil
             renderer.reset()
@@ -124,28 +159,49 @@ final class MacNativeStreamClient: @unchecked Sendable {
     // MARK: - Remote control (mouse/keyboard)
 
     func sendMouseMove(x: UInt16, y: UInt16) {
+        if onV3({ $0.sendMouseMove(x: x, y: y) }) { return }
         send(MacNativeStreamProtocol.encodeMouseMove(x: x, y: y))
     }
 
     func sendMouseDown(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        if onV3({ $0.sendMouseButton(down: true, button: button, x: x, y: y) }) { return }
         send(MacNativeStreamProtocol.encodeMouseButton(.mouseDown, button: button, x: x, y: y))
     }
 
     func sendMouseUp(button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
+        if onV3({ $0.sendMouseButton(down: false, button: button, x: x, y: y) }) { return }
         send(MacNativeStreamProtocol.encodeMouseButton(.mouseUp, button: button, x: x, y: y))
     }
 
     func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        if onV3({ $0.sendScroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY) }) { return }
         send(MacNativeStreamProtocol.encodeScroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY))
     }
 
     func sendKeyDown(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        if onV3({ $0.sendKey(down: true, keyCode: keyCode, modifiers: modifiers) }) { return }
         send(MacNativeStreamProtocol.encodeKeyEvent(.keyDown, keyCode: keyCode, modifiers: modifiers))
     }
 
     func sendKeyUp(keyCode: UInt16, modifiers: MacNativeKeyModifiers) {
+        if onV3({ $0.sendKey(down: false, keyCode: keyCode, modifiers: modifiers) }) { return }
         send(MacNativeStreamProtocol.encodeKeyEvent(.keyUp, keyCode: keyCode, modifiers: modifiers))
     }
+
+    /// Runs `body` on the v3 link if this client went v3; false on v2. Until
+    /// the handshake completes the link drops input, as v2 does before `.ready`.
+    private func onV3(_ body: @escaping @Sendable (MacNativeV3Link) -> Void) -> Bool {
+        guard usingV3 else { return false }
+        queue.async { [self] in
+            if let v3 { body(v3) }
+        }
+        return true
+    }
+
+    /// Whether v3 is the transport: set by `start`, cleared by the fallback to
+    /// v2. Written before either transport starts sending, so reading it off
+    /// the queue is safe.
+    private nonisolated(unsafe) var usingV3 = false
 
     // MARK: - v2 multiplexed streams
 
@@ -167,26 +223,32 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func sendWindowStreamStart(windowID: UInt32) {
+        if usingV3 { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStart, windowID: windowID))
     }
 
     func sendWindowStreamStop(windowID: UInt32) {
+        if usingV3 { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStop, windowID: windowID))
     }
 
     func sendRequestKeyFrame(windowID: UInt32) {
+        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.requestKeyFrame() } }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.requestKeyFrame, windowID: windowID))
     }
 
     func sendSelectDisplay(id: String) {
+        if onV3({ $0.sendSelectDisplay(id: id) }) { return }
         send(MacNativeStreamProtocol.encodeSelectDisplay(id: id))
     }
 
     func sendVirtualDisplayChange(_ change: MacNativeStreamProtocol.VirtualDisplayChange) {
+        if onV3({ $0.sendVirtualDisplayChange(change) }) { return }
         send(MacNativeStreamProtocol.encodeVirtualDisplayChange(change))
     }
 
     func sendFocusWindow(windowID: UInt32) {
+        if usingV3 { return }
         send(MacNativeStreamProtocol.encodeWindowID(.focusWindow, windowID: windowID))
     }
 

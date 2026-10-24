@@ -129,6 +129,13 @@ struct NativePane: View {
                     Text("Higher keeps text sharp while scrolling and dragging windows. Whatever is set, the stream lowers its bitrate when Wi-Fi can't keep up and climbs back once it can, so a high setting costs sharpness rather than lag on a weak link. The status below shows the rate in use.")
                 }
 
+                Section {
+                    Toggle("Native v3 (experimental)", isOn: $controller.macNativeStreaming.v3Enabled)
+                        .help("Also serve the desktop over Native v3: UDP on the same port, with its own rate control, FEC and loss recovery. v2 keeps serving every device that doesn't ask for v3.")
+                } footer: {
+                    Text("Devices use v3 only when their own Native v3 setting is on, and only for the desktop and remote control; window streams and audio stay on v2.")
+                }
+
                 Section("Screen Status") {
                     LabeledContent("Stream", value: controller.macNativeStreaming.statusText)
                     LabeledContent("Port", value: String(controller.macNativeStreaming.port))

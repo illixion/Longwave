@@ -7,6 +7,22 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3E3E00000000000000000011 /* StreamWire in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000010 /* StreamWire */; };
+		3E3E00000000000000000013 /* StreamCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000012 /* StreamCrypto */; };
+		3E3E00000000000000000015 /* StreamTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000014 /* StreamTransport */; };
+		3E3E00000000000000000017 /* StreamPlayout in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000016 /* StreamPlayout */; };
+		3E3E00000000000000000019 /* StreamWire in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000018 /* StreamWire */; };
+		3E3E0000000000000000001B /* StreamCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000001A /* StreamCrypto */; };
+		3E3E0000000000000000001D /* StreamTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000001C /* StreamTransport */; };
+		3E3E0000000000000000001F /* StreamPlayout in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000001E /* StreamPlayout */; };
+		3E3E00000000000000000021 /* StreamWire in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000020 /* StreamWire */; };
+		3E3E00000000000000000023 /* StreamCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000022 /* StreamCrypto */; };
+		3E3E00000000000000000025 /* StreamTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000024 /* StreamTransport */; };
+		3E3E00000000000000000027 /* StreamPlayout in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000026 /* StreamPlayout */; };
+		3E3E00000000000000000029 /* StreamWire in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E00000000000000000028 /* StreamWire */; };
+		3E3E0000000000000000002B /* StreamCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000002A /* StreamCrypto */; };
+		3E3E0000000000000000002D /* StreamTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000002C /* StreamTransport */; };
+		3E3E0000000000000000002F /* StreamHost in Frameworks */ = {isa = PBXBuildFile; productRef = 3E3E0000000000000000002E /* StreamHost */; };
 		113284DC80125D93B7CC0FC3 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = FEC92747F5953D917428BFA0 /* RoyalVNCKit */; };
 		1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 963354E9CC7BD15748B4C6C1 /* DebugTraceUI */; };
 		1D8097B22F7FCBED00C67700 /* MoonlightCommonC in Frameworks */ = {isa = PBXBuildFile; productRef = 1D8097B12F7FCBED00C67700 /* MoonlightCommonC */; };
@@ -310,6 +326,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3E3E00000000000000000011 /* StreamWire in Frameworks */,
+				3E3E00000000000000000013 /* StreamCrypto in Frameworks */,
+				3E3E00000000000000000015 /* StreamTransport in Frameworks */,
+				3E3E00000000000000000017 /* StreamPlayout in Frameworks */,
 				AA0D00000000000000000011 /* DebugTrace in Frameworks */,
 				581A8F997CF803F66C48463E /* DebugTraceServer in Frameworks */,
 				8E25FB7284363F3A2FAA7DE6 /* DebugTraceUI in Frameworks */,
@@ -346,6 +366,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3E3E00000000000000000029 /* StreamWire in Frameworks */,
+				3E3E0000000000000000002B /* StreamCrypto in Frameworks */,
+				3E3E0000000000000000002D /* StreamTransport in Frameworks */,
+				3E3E0000000000000000002F /* StreamHost in Frameworks */,
 				AA0D00000000000000000015 /* DebugTrace in Frameworks */,
 				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,
 				1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */,
@@ -378,6 +402,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3E3E00000000000000000021 /* StreamWire in Frameworks */,
+				3E3E00000000000000000023 /* StreamCrypto in Frameworks */,
+				3E3E00000000000000000025 /* StreamTransport in Frameworks */,
+				3E3E00000000000000000027 /* StreamPlayout in Frameworks */,
 				AA0D00000000000000000019 /* DebugTrace in Frameworks */,
 				F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */,
 				60A371A5FFFD8722C17EBEB3 /* DebugTraceUI in Frameworks */,
@@ -404,6 +432,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3E3E00000000000000000019 /* StreamWire in Frameworks */,
+				3E3E0000000000000000001B /* StreamCrypto in Frameworks */,
+				3E3E0000000000000000001D /* StreamTransport in Frameworks */,
+				3E3E0000000000000000001F /* StreamPlayout in Frameworks */,
 				EE20AD100000000000000020 /* NIOSSH in Frameworks */,
 				EE20AD100000000000000021 /* NIOCore in Frameworks */,
 				EE20AD100000000000000022 /* NIOTransportServices in Frameworks */,
@@ -556,6 +588,10 @@
 			name = Longwave;
 			packageProductDependencies = (
 				AA0D00000000000000000010 /* DebugTrace */,
+				3E3E00000000000000000010 /* StreamWire */,
+				3E3E00000000000000000012 /* StreamCrypto */,
+				3E3E00000000000000000014 /* StreamTransport */,
+				3E3E00000000000000000016 /* StreamPlayout */,
 				49DA0DAB242221098318CF98 /* DebugTraceServer */,
 				A115112080FBEE8A24FD5E66 /* DebugTraceUI */,
 				1DC83C3C2F74587300BF0482 /* RoyalVNCKit */,
@@ -602,6 +638,10 @@
 			name = LongwaveMac;
 			packageProductDependencies = (
 				EE20AD100000000000000010 /* NIOSSH */,
+				3E3E00000000000000000018 /* StreamWire */,
+				3E3E0000000000000000001A /* StreamCrypto */,
+				3E3E0000000000000000001C /* StreamTransport */,
+				3E3E0000000000000000001E /* StreamPlayout */,
 				EE20AD100000000000000011 /* NIOCore */,
 				EE20AD100000000000000012 /* NIOTransportServices */,
 				EE20AD100000000000000013 /* Crypto */,
@@ -667,6 +707,10 @@
 			name = LongwaveCompanion;
 			packageProductDependencies = (
 				AA0D00000000000000000014 /* DebugTrace */,
+				3E3E00000000000000000028 /* StreamWire */,
+				3E3E0000000000000000002A /* StreamCrypto */,
+				3E3E0000000000000000002C /* StreamTransport */,
+				3E3E0000000000000000002E /* StreamHost */,
 				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,
 				963354E9CC7BD15748B4C6C1 /* DebugTraceUI */,
 				AA0E00000000000000000002 /* RAVEConsole */,
@@ -746,6 +790,10 @@
 			name = LongwaveiOS;
 			packageProductDependencies = (
 				AA0D00000000000000000018 /* DebugTrace */,
+				3E3E00000000000000000020 /* StreamWire */,
+				3E3E00000000000000000022 /* StreamCrypto */,
+				3E3E00000000000000000024 /* StreamTransport */,
+				3E3E00000000000000000026 /* StreamPlayout */,
 				2400FFE83ED88B2946B909F6 /* DebugTraceServer */,
 				3DBD8B1498560A799C9CBA40 /* DebugTraceUI */,
 				DD1010000000000000000011 /* RoyalVNCKit */,
@@ -810,6 +858,7 @@
 				AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */,
 				AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */,
 				AA0D00000000000000000001 /* XCLocalSwiftPackageReference "../DebugTrace" */,
+				3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */,
 				5511C0DE0000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				5511C0DE0000000000000002 /* XCLocalSwiftPackageReference "repos/swift-nio-ssh" */,
 				5511C0DE0000000000000003 /* XCRemoteSwiftPackageReference "swift-nio" */,
@@ -1760,6 +1809,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/LongwaveStream;
+		};
 		1D8097B02F7FCBED00C67700 /* XCLocalSwiftPackageReference "repos/moonlight-common-c" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "repos/moonlight-common-c";
@@ -1827,6 +1880,86 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		3E3E00000000000000000010 /* StreamWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamWire;
+		};
+		3E3E00000000000000000012 /* StreamCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamCrypto;
+		};
+		3E3E00000000000000000014 /* StreamTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamTransport;
+		};
+		3E3E00000000000000000016 /* StreamPlayout */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamPlayout;
+		};
+		3E3E00000000000000000018 /* StreamWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamWire;
+		};
+		3E3E0000000000000000001A /* StreamCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamCrypto;
+		};
+		3E3E0000000000000000001C /* StreamTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamTransport;
+		};
+		3E3E0000000000000000001E /* StreamPlayout */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamPlayout;
+		};
+		3E3E00000000000000000020 /* StreamWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamWire;
+		};
+		3E3E00000000000000000022 /* StreamCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamCrypto;
+		};
+		3E3E00000000000000000024 /* StreamTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamTransport;
+		};
+		3E3E00000000000000000026 /* StreamPlayout */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamPlayout;
+		};
+		3E3E00000000000000000028 /* StreamWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamWire;
+		};
+		3E3E0000000000000000002A /* StreamCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamCrypto;
+		};
+		3E3E0000000000000000002C /* StreamTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamTransport;
+		};
+		3E3E0000000000000000002E /* StreamHost */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3E3E00000000000000000001 /* XCLocalSwiftPackageReference "Packages/LongwaveStream" */;
+			productName = StreamHost;
+		};
 		1D8097B12F7FCBED00C67700 /* MoonlightCommonC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MoonlightCommonC;

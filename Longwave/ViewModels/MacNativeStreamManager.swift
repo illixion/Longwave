@@ -217,7 +217,8 @@ final class MacNativeStreamManager {
                 port: MacNativeStreamProtocol.defaultPort,
                 credential: connection.companionCredential ?? CompanionCredential(token: "", deviceID: nil),
                 deviceName: DeviceName.current,
-                wantsScreen: liveEnabled
+                wantsScreen: liveEnabled,
+                prefersV3: UserDefaults.standard.bool(forKey: ConnectionDefaults.Keys.nativeV3)
             ),
             renderer: renderer
         )

@@ -40,6 +40,8 @@ struct SettingsView: View {
     @AppStorage(ConnectionDefaults.Keys.terminalQuickKeys) private var quickKeysRaw = TerminalQuickKey.defaultSelectionStored
     #endif
 
+    @AppStorage(ConnectionDefaults.Keys.nativeV3) private var nativeV3 = false
+
     #if MOONLIGHT_ENABLED
     @AppStorage(ConnectionDefaults.Keys.moonlightPort) private var moonlightPort = ConnectionType.moonlight.defaultPort
     @AppStorage(ConnectionDefaults.Keys.moonlightResolution) private var moonlightResolutionRaw = MoonlightResolution.r1080p.rawValue
@@ -173,6 +175,14 @@ struct SettingsView: View {
                     portField("Port", value: $moonlightPort)
                 }
                 #endif
+
+                Section {
+                    Toggle("Native v3 (experimental)", isOn: $nativeV3)
+                } header: {
+                    Text("Mac Desktop Stream")
+                } footer: {
+                    Text("Streams the Mac desktop over the new UDP protocol, with its own rate control and loss recovery, when Longwave Companion on the Mac has it turned on too. Otherwise, and for window streams, the current protocol is used. Applies from the next connection.")
+                }
 
                 Section("Backup") {
                     Button {

@@ -10,6 +10,10 @@ gyro's axis order and signs get checked without a game.
   py pad-probe.py list                  connected pads
   py pad-probe.py read                  one reading of every pad
   py pad-probe.py watch --seconds 8     per-field min/max and every button seen
+  py pad-probe.py watch --trace         ...plus a timeline: presses, stick pushes past
+                                        half way, and which gyro axis dominates (over
+                                        --gyro-threshold deg/s), so separate rotations
+                                        can be told apart
 
 Two sources, both readable from an SSH session (no desktop needed):
   * XInput slots 0-3 through xinput1_4.dll (ordinal 100 for the Guide button).
@@ -198,13 +202,37 @@ def read_all(ds4, settle=0.15):
     return read_xinput() + ds4.poll()
 
 
-def watch(ds4, seconds, interval):
+def _trace_marks(pad, gyro_threshold):
+    """The discrete things a timeline reports for one reading."""
+    marks = {f"press {name}" for name in pad["buttons"]}
+    for field in ("leftStick", "rightStick"):
+        for axis, value in zip("xy", pad[field]):
+            if abs(value) >= 0.5:
+                marks.add(f"{field}.{axis}{'+' if value > 0 else '-'}")
+    gyro = pad.get("gyroDps")
+    if gyro:
+        axis = max(range(3), key=lambda k: abs(gyro[k]))
+        if abs(gyro[axis]) >= gyro_threshold:
+            marks.add(f"gyro.{'xyz'[axis]}{'+' if gyro[axis] > 0 else '-'}")
+    return marks
+
+
+def watch(ds4, seconds, interval, trace=False, gyro_threshold=90.0):
     summary = {}
-    deadline = time.monotonic() + seconds
+    start = time.monotonic()
+    deadline = start + seconds
     while time.monotonic() < deadline:
         for pad in read_xinput() + ds4.poll():
             key = f"{pad['kind']}:{pad.get('index', pad.get('path'))}"
             s = summary.setdefault(key, {"kind": pad["kind"], "buttonsSeen": [], "ranges": {}})
+            if trace:
+                # Each mark once per stretch it holds: "gyro.x+" at the start of a
+                # rotation, not at every sample of it.
+                marks = _trace_marks(pad, gyro_threshold)
+                held = s.setdefault("_held", set())
+                for mark in sorted(marks - held):
+                    s.setdefault("timeline", []).append([round(time.monotonic() - start, 2), mark])
+                s["_held"] = marks
             for name in pad["buttons"]:
                 if name not in s["buttonsSeen"]:
                     s["buttonsSeen"].append(name)
@@ -216,6 +244,8 @@ def watch(ds4, seconds, interval):
                 r = s["ranges"].setdefault(field, [pad[field], pad[field]])
                 r[0], r[1] = min(r[0], pad[field]), max(r[1], pad[field])
         time.sleep(interval)
+    for s in summary.values():
+        s.pop("_held", None)
     return list(summary.values())
 
 
@@ -224,6 +254,9 @@ def main():
     parser.add_argument("mode", choices=["list", "read", "watch"])
     parser.add_argument("--seconds", type=float, default=8.0, help="watch duration")
     parser.add_argument("--interval", type=float, default=0.01, help="watch poll interval, s")
+    parser.add_argument("--trace", action="store_true", help="watch: also print a timeline")
+    parser.add_argument("--gyro-threshold", type=float, default=90.0,
+                        help="watch --trace: deg/s a gyro axis must exceed to be reported")
     args = parser.parse_args()
     if sys.platform != "win32":
         sys.exit("pad-probe.py reads Windows controllers; run it on the streaming PC")
@@ -236,7 +269,8 @@ def main():
         elif args.mode == "read":
             out = {"pads": read_all(ds4)}
         else:
-            out = {"seconds": args.seconds, "pads": watch(ds4, args.seconds, args.interval)}
+            out = {"seconds": args.seconds,
+                   "pads": watch(ds4, args.seconds, args.interval, args.trace, args.gyro_threshold)}
         if ds4.error:
             out["ds4Error"] = ds4.error
         print(json.dumps(out, indent=1))

@@ -49,8 +49,18 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   frame). It gives up a frame after a timeout, and a run of lost frames, or a
   jump far ahead, as a single event. Buffered bytes are capped. Tested with a
   soak at 15% loss with reordering and resends.
-  *Next:* the Noise handshake and AEAD records (`StreamCrypto`), then the
-  transport (reliable channels, ACK/NACK, pacing), then the simulator.
+- **`StreamCrypto` built (2026-10-24).** The Noise_NNpsk0 handshake, per-device
+  PSKs and key IDs, AEAD transport records with key phases, the 2048-packet
+  replay window, and a filter for replayed initiations. The Noise layer passes
+  every published NN-family vector. The Longwave framing is pinned by golden
+  bytes from an independent Python implementation. The wire details are under
+  [Handshake and record encoding](#handshake-and-record-encoding-2026-10-24),
+  which also corrects AES-GCM's rekey interval to 2^23 packets. The
+  `CompanionPairing.swift` move to this module waits until the app links the
+  package. StreamWire, StreamFEC, StreamPlayout and StreamCrypto pass their
+  tests on x64 Windows too (147 tests, Swift 6.2.4, swift-crypto on BoringSSL).
+  *Next:* the transport (reliable channels, ACK/NACK and FEEDBACK
+  encoding, pacing, clock sync), then the simulator.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -312,6 +322,10 @@ write anyway.
   AES-256-GCM where the hardware accelerates it (Apple silicon, x86 AES-NI —
   the host picks and states it in the ack) and ChaCha20-Poly1305 otherwise,
   with the 64-bit packet number as nonce. Rekey every 2^32 packets or 1 hour.
+  *Corrected 2026-10-24:* AES-256-GCM rekeys every **2^23** packets, its
+  confidentiality limit in RFC 9001 §6.6. At about 10,000 packets/s (PCVR at
+  ~100 Mbit/s) that is every 14 minutes. ChaCha20-Poly1305 keeps 2^32. Both
+  also rekey hourly. Details in "Handshake and record encoding" below.
 - **Later: static keys.** When pairing is revised to exchange long-term X25519
   keys (they would ride inside the already-sealed `PairingGrant`), the pattern
   becomes `Noise_IKpsk2` — WireGuard's — which adds identity hiding and makes a
@@ -346,6 +360,56 @@ write anyway.
   `NWParameters.serviceClass` (`.interactiveVideo` already used by v2),
   Linux via `IP_TOS`/`SO_PRIORITY`, Windows via qWAVE (`QOSAddSocketToFlow`),
   since Windows ignores `IP_TOS` set directly by applications.
+
+### Handshake and record encoding (2026-10-24)
+
+Fixed when `StreamCrypto` was built. The code is the reference, together with
+the golden bytes in `StreamCryptoTests/SecureSessionTests.swift`. Those come
+from `StreamCryptoTests/Reference/ns3_reference.py`, an independent
+implementation on pyca/cryptography that first checks itself against the
+published NNpsk0 vector. The Noise layer passes all five published NN-family
+vectors (cacophony and snow).
+
+- **Packet kinds.** The low four bits of byte 0 give the kind: 1 is the
+  initiation, 2 the response, 3 a transport packet. Bit 4 is the key phase,
+  set only on transport packets. Bits 5 to 7 are reserved and must be zero.
+  Anything else is dropped without a reply.
+- **Initiation:** `0x01 | major u8 (3) | key ID [8] | e [32] | sealed(sender
+  index u32 | cipher offer u8 | hello)`. This is Noise message 1. The
+  protocol major is byte 1, which corrects §4.6's "first byte". The cipher
+  offer is a bitmask: bit 0 is AES-256-GCM, bit 1 ChaCha20-Poly1305.
+- **Response:** `0x02 | receiver index u32 | e [32] | sealed(sender index u32 |
+  cipher u8 | hello-ack)`. This is Noise message 2.
+- **Prologue:** `"Longwave-NS3"` followed by the initiation's first 10 bytes.
+  The major and key ID travel in the clear but are still authenticated.
+- **Connection IDs.** Each side picks its own random index and states it inside
+  its sealed part, so a forged ID can't redirect the session. Transport packets
+  carry the receiver's index.
+- **Size.** Both handshake packets fit 1200 bytes. That leaves 1137 bytes for
+  the hello and 1142 for the hello-ack.
+- **Record keys.** Generation 0 of each direction is `HKDF-SHA256(split key,
+  info: "Longwave-NS3 record " + cipher name)`. The cipher names are
+  `AES-256-GCM` and `ChaCha20-Poly1305`, so a key is bound to its cipher.
+  Generation n+1 is `HKDF-SHA256(key n, info: "Longwave-NS3 rekey")`.
+- **Nonce.** 32 zero bits, then the packet number, little-endian, for both
+  ciphers. Noise itself writes AES-GCM nonces big-endian, but records aren't
+  Noise transport messages. The AAD is the 13-byte header.
+- **Rekeying.** Each direction rekeys on its own: after `packetsPerKey` packets
+  (2^23 for AES-GCM, 2^32 for ChaCha20-Poly1305) or one hour. The sender flips
+  the key phase bit. The receiver keeps the previous key for packets reordered
+  across the switch, and drops it once the replay window has moved past the
+  switch point.
+- **Limits.** A receiver counts forgeries, one per packet however many keys it
+  was tried with. At RFC 9001's integrity limit (2^52 for AES-GCM, 2^36 for
+  ChaCha20-Poly1305) the session ends.
+- **Retries and replays.** A client that gets no response sends a new
+  initiation with a fresh ephemeral key; it never resends the old one. The host
+  remembers recent initiations by their ephemeral key
+  (`InitiationReplayFilter`, 2 minutes). For an exact repeat it resends its
+  cached response and builds no second session. A session made from an
+  initiation runs alongside any existing session for that device. It replaces
+  the old one only when its first transport packet authenticates, which only
+  the real client can send. So a replayed initiation can't end a live session.
 
 ### Discovery and pairing
 
@@ -755,7 +819,8 @@ diagnostics overlay), and `bye` with a reason.
 
 ### 4.6 Versioning, capability negotiation, v2 compatibility
 
-- The handshake's first byte is the protocol major (3). Within v3, features are
+- The handshake's protocol major (3) is the initiation's second byte (section 3,
+  "Handshake and record encoding"). Within v3, features are
   **capabilities**: the client lists what it supports, the host answers with the
   intersection. Initial set: `windowStreams`, `alphaVideo`, `hevc422`,
   `hevc10bitHDR`, `av1`, `h264`, `ltrRecovery`, `rfiRecovery`, `nack`,
@@ -1756,7 +1821,8 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
   assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
   *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
   input, STATE including the head pose, capabilities). *`StreamFEC` and the
-  frame assembler (`StreamPlayout`) done 2026-10-24.*
+  frame assembler (`StreamPlayout`) done 2026-10-24. `StreamCrypto` done
+  2026-10-24.*
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,
   so loss and recovery are tuned against the hardest stream from day one.

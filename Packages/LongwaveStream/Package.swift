@@ -10,6 +10,8 @@
 //            StreamFECTests     block layout and the frame sharder (section 4.2)
 //            StreamPlayout      receive side: the frame assembler (shards -> frames
 //            StreamPlayoutTests in decode order, FEC recovery, NACK candidates)
+//            StreamCrypto       Noise_NNpsk0 handshake, per-device PSKs and key IDs,
+//            StreamCryptoTests  AEAD transport records, replay window (section 3)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
 //                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
@@ -30,6 +32,7 @@ var products: [Product] = [
     .library(name: "StreamWire", targets: ["StreamWire"]),
     .library(name: "StreamFEC", targets: ["StreamFEC"]),
     .library(name: "StreamPlayout", targets: ["StreamPlayout"]),
+    .library(name: "StreamCrypto", targets: ["StreamCrypto"]),
     .executable(name: "stream-spike-receiver", targets: ["stream-spike-receiver"]),
 ]
 
@@ -42,6 +45,12 @@ var targets: [Target] = [
     .testTarget(name: "StreamFECTests", dependencies: ["StreamFEC", "StreamWire"]),
     .target(name: "StreamPlayout", dependencies: ["StreamWire", "StreamFEC"]),
     .testTarget(name: "StreamPlayoutTests", dependencies: ["StreamPlayout", "StreamFEC", "StreamWire"]),
+    .target(name: "StreamCrypto", dependencies: ["StreamWire", .product(name: "Crypto", package: "swift-crypto")]),
+    .testTarget(
+        name: "StreamCryptoTests",
+        dependencies: ["StreamCrypto", "StreamWire", .product(name: "Crypto", package: "swift-crypto")],
+        exclude: ["Reference"]
+    ),
     .target(name: "CFrameSourceCore"),
     .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),

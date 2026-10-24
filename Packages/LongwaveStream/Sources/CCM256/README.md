@@ -38,5 +38,6 @@ copy.
 
 These were checked 2026-10-24: `clang++ -Wall -Wextra` for arm64 macOS, visionOS, x86-64 macOS
 and x86-64 with `-mno-ssse3` (the Windows baseline). The only warning is upstream's unused
-`CpuHasNeon64` on arm64. `StreamFECTests` pass on arm64 and as x86-64 under Rosetta. The
-Windows clang build hasn't been run yet.
+`CpuHasNeon64` on arm64. `StreamFECTests` pass on arm64 and as x86-64 under Rosetta, and on
+x64 Windows (gaming-pc, Swift 6.2.4 with its clang 19, 2026-10-24) with no warnings from these
+files.

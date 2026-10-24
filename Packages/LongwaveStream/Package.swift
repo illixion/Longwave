@@ -6,6 +6,8 @@
 //   core     StreamWire         v3 wire types (frames, shard headers, format,
 //            StreamWireTests    side data, input, STATE, capabilities);
 //                               Foundation-free, builds on every platform
+//            StreamFEC          Reed-Solomon over the vendored cm256 (CCM256), the
+//            StreamFECTests     block layout and the frame sharder (section 4.2)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
 //                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
@@ -24,12 +26,17 @@ import PackageDescription
 
 var products: [Product] = [
     .library(name: "StreamWire", targets: ["StreamWire"]),
+    .library(name: "StreamFEC", targets: ["StreamFEC"]),
     .executable(name: "stream-spike-receiver", targets: ["stream-spike-receiver"]),
 ]
 
 var targets: [Target] = [
     .target(name: "StreamWire"),
     .testTarget(name: "StreamWireTests", dependencies: ["StreamWire"]),
+    // cm256 (BSD-3), vendored with two portability patches: Sources/CCM256/README.md.
+    .target(name: "CCM256", exclude: ["README.md", "LICENSE"]),
+    .target(name: "StreamFEC", dependencies: ["StreamWire", "CCM256"]),
+    .testTarget(name: "StreamFECTests", dependencies: ["StreamFEC", "StreamWire"]),
     .target(name: "CFrameSourceCore"),
     .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),

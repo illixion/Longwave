@@ -34,6 +34,12 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 - **External frame sources: built and measured (2026-10-12).** The
   cross-process handoff that both of those use on Windows added 0.007 ms at
   p99 at 90 Hz (pass mark 1 ms). See §7.2 and open question 18.
+- **`StreamFEC` built (2026-10-24).** Reed–Solomon over the vendored cm256
+  (`Sources/CCM256`, two portability patches listed in its README), the §4.2
+  block layout, and the sharder that turns a frame payload into shards
+  with parity. Tested on arm64 and on x86-64 under Rosetta, with a golden
+  parity vector. First of the Phase 1 core modules. The frame assembler is
+  next.
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
@@ -1738,8 +1744,9 @@ traces committed for the simulator; the LTR and NVENC-invalidation answers.
 - Frame side data and auxiliary streams (§4.2) in `StreamWire` and the frame
   assembler from the start, with the PCVR head-pose STATE snapshot (§4.7).
   *`StreamWire` done 2026-10-12* (frames, shard headers, format, side data,
-  input, STATE including the head pose, capabilities). The frame assembler
-  is still to do.
+  input, STATE including the head pose, capabilities). *`StreamFEC` done
+  2026-10-24* (codec, block layout, sharder). The frame assembler is still
+  to do.
   The simulator gets a 90 Hz stereo profile (a large frame every 11 ms and a
   pose snapshot uplink at the same rate) beside the desktop and game profiles,
   so loss and recovery are tuned against the hardest stream from day one.

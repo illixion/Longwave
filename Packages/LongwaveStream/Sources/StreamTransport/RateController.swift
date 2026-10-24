@@ -220,6 +220,8 @@ public struct GCCRateController: SendRateController {
     public mutating func onFeedback(_ results: [SentPacketLog.Result], now: UInt64, rtt: UInt64) {
         guard !results.isEmpty else { return }
         for result in results {
+            // A lost path MTU probe was too big for the path, not congestion.
+            if result.packet.pathProbe, result.arrival == nil { continue }
             loss.add(result, now: now)
             recentSends.append((result.packet.sendTime, result.packet.size))
             if let id = result.packet.probeCluster { recordProbe(id, result) }

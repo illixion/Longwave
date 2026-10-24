@@ -141,6 +141,8 @@ public struct SentPacketLog: Sendable {
         public var probeCluster: UInt32? = nil
         /// An earlier report said it was lost; this result is its late arrival.
         public var reportedLost = false
+        /// A path MTU probe: its loss says the path is smaller, not congested.
+        public var pathProbe = false
     }
 
     public struct Result: Sendable, Equatable {
@@ -162,9 +164,9 @@ public struct SentPacketLog: Sendable {
     public var count: Int { entries.count }
 
     public mutating func record(packetNumber: UInt64, sendTime: UInt64, size: Int, isMedia: Bool,
-                                probeCluster: UInt32? = nil) {
+                                probeCluster: UInt32? = nil, pathProbe: Bool = false) {
         entries[packetNumber] = Entry(packetNumber: packetNumber, sendTime: sendTime, size: size, isMedia: isMedia,
-                                      probeCluster: probeCluster)
+                                      probeCluster: probeCluster, pathProbe: pathProbe)
         order.append(packetNumber)
         while entries.count > capacity, orderStart < order.count {
             entries[order[orderStart]] = nil

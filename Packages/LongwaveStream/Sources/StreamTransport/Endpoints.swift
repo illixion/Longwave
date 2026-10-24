@@ -213,7 +213,9 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
         do {
             let events = try entry.session.receive(datagram, now: now)
             if entry.session.statistics.datagramsReceived > before {
-                // Authenticated: follow the client to its new address (WireGuard's rule).
+                // Authenticated: follow the client to its new address (WireGuard's
+                // rule). A new path may take a different datagram size.
+                if entry.address != address, entry.confirmed { entry.session.pathChanged(now: now) }
                 entry.address = address
                 if !entry.confirmed {
                     entry.confirmed = true

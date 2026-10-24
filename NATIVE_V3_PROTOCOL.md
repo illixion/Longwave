@@ -77,8 +77,9 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
     - 300 frames of 60 fps video with FEC and NACK arrive byte for byte at 2%
       and 10% loss.
     - The client knows the host's clock to under 0.4 ms.
-  - **Not yet:** DPLPMTUD and the Mac host and client wiring. The hello and
-    hello-ack contents were added later the same day (§4.6).
+  - **Not yet:** the Mac host and client wiring. The hello and hello-ack
+    contents (§4.6) and DPLPMTUD (§3, "Packet size") were added later the same
+    day.
 - **Rate controller built (2026-10-24),** in `StreamTransport`: GCC's
   delay-based loop with four additions for this product, loss turned into FEC,
   and probing. Design and simulated results are under
@@ -374,6 +375,27 @@ write anyway.
   1452 with padded `PING`s (DPLPMTUD, RFC 8899) and uses the largest that gets
   through, re-probing after a path change. For comparison, moonlight-qt uses
   1392-byte video packets on-link and 1024 for remote/VPN paths [M3].
+  *Built 2026-10-24* (`PathMTUSearch`, driven by `TransportSession`):
+  - **Probes and ceiling.** Each side probes its own send direction. A probe
+    is a PING padded to the candidate size, and its PONG is the
+    acknowledgement. The ceiling is the hello-ack's `maxUDPPayload`, set with
+    `setPathCeiling`.
+  - **Search.** It tries the ceiling first, then bisects to within 16 bytes.
+    Each size gets RFC 8899's three probes, 1 s apart. On the LAN that settles
+    in one round trip; on a 1252-byte Tailscale path it takes about 9 s, while
+    media runs at 1200 meanwhile.
+  - **Black holes and growth.** The confirmed size is re-probed every 10 s.
+    Three losses in a row mean a black hole: media drops back to 1200 and the
+    search restarts. A search that stopped under the ceiling looks upward
+    again after 10 minutes (PMTU_RAISE_TIMER).
+  - **Roaming.** The host restarts its search when a confirmed client roams.
+  - **What uses the probed size.** Only media (`sealVideo`/`sealAudio`, and
+    shards sized from `udpPayload`). Reliable data, ACKs and FEEDBACK always
+    use 1200 bytes, so a black hole can't stall control. Media seals up to the
+    ceiling, so a frame sharded just before a black hole is found still goes
+    out, though it may not arrive.
+  - **Lost probes aren't congestion.** They are marked in the sent log, and
+    the rate controller doesn't count them as loss.
 - **Encryption is always on.** Sunshine leaves media unencrypted on LAN by
   default and moonlight-qt opts in only with CPU AES acceleration [M1][M3];
   every host and client here has AES hardware, and the Companion's token-gated

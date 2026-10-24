@@ -48,6 +48,9 @@ public struct LinkModel: Sendable, Equatable {
     /// The headset's Wi-Fi stalls (section 7.5): delivery holds, then releases
     /// everything held at once.
     public var stalls: Stalls?
+    /// Largest UDP payload the path carries; bigger datagrams vanish, as on a
+    /// path that drops rather than fragments (Tailscale: 1252 over IPv4).
+    public var maxDatagram: Int?
 
     public struct BurstLoss: Sendable, Equatable {
         public var enterBad: Double
@@ -77,7 +80,7 @@ public struct LinkModel: Sendable, Equatable {
     }
 
     public init(propagationDelay: UInt64 = 1_000_000, jitter: UInt64 = 0, rate: UInt64 = 0, queueLimit: Int = 512 * 1024,
-                loss: Double = 0, burst: BurstLoss? = nil, stalls: Stalls? = nil) {
+                loss: Double = 0, burst: BurstLoss? = nil, stalls: Stalls? = nil, maxDatagram: Int? = nil) {
         self.propagationDelay = propagationDelay
         self.jitter = jitter
         self.rate = rate
@@ -85,6 +88,7 @@ public struct LinkModel: Sendable, Equatable {
         self.loss = loss
         self.burst = burst
         self.stalls = stalls
+        self.maxDatagram = maxDatagram
     }
 
     /// A clean LAN: 1 ms each way, a little jitter.
@@ -98,6 +102,7 @@ public struct SimLink: Sendable {
     public private(set) var delivered = 0
     public private(set) var lost = 0
     public private(set) var queueDrops = 0
+    public private(set) var oversizeDrops = 0
 
     private var random: SimRandom
     private var bottleneckFreeAt: UInt64 = 0
@@ -111,6 +116,10 @@ public struct SimLink: Sendable {
 
     /// When a datagram of `size` bytes sent at `now` arrives, or nil if lost.
     public mutating func transmit(size: Int, now: UInt64) -> UInt64? {
+        if let maxDatagram = model.maxDatagram, size > maxDatagram {
+            oversizeDrops += 1
+            return nil
+        }
         if let burst = model.burst {
             if inBadState {
                 if random.unit() < burst.leaveBad { inBadState = false }

@@ -35,6 +35,8 @@ public struct SessionStatistics: Sendable, Equatable {
     /// Authenticated but malformed (section 4.1: dropped whole).
     public var datagramsMalformed = 0
     public var pingsAnswered = 0
+    /// Path MTU probes (section 3, "Packet size").
+    public var pathProbesSent = 0
 }
 
 /// One v3 session after the handshake, without I/O (sections 3 to 6).
@@ -47,6 +49,8 @@ public struct SessionStatistics: Sendable, Equatable {
 /// 20). Not thread-safe: one owner.
 public struct TransportSession: Sendable {
     public struct Configuration: Sendable, Equatable {
+        /// The datagram size every path takes. Everything small is sized to
+        /// it always; media grows to what path MTU discovery confirms.
         public var udpPayload: Int
         public var pingInterval: UInt64
         public var idleTimeout: UInt64
@@ -83,6 +87,9 @@ public struct TransportSession: Sendable {
     private var nextPingID: UInt32 = 0
     private var lastPingAt: UInt64?
     private var lastReceiveAt: UInt64
+    private var pathSearch: PathMTUSearch?
+    /// PING id → the probe size it carried.
+    private var pathProbes: [UInt32: Int] = [:]
 
     public init(secure: SecureSession, configuration: Configuration, now: UInt64) {
         self.secure = secure
@@ -99,6 +106,36 @@ public struct TransportSession: Sendable {
     }
 
     private var bodyCapacity: Int { DatagramLayout.sealedBodyCapacity(udpPayload: configuration.udpPayload) }
+
+    /// The datagram size to shard media for: the largest the path has
+    /// confirmed, or the base before any search.
+    public var udpPayload: Int { pathSearch?.current ?? configuration.udpPayload }
+    public var pathMTU: PathMTUSearch? { pathSearch }
+
+    /// Starts path MTU discovery up to `ceiling`, the hello-ack's agreed
+    /// maximum. Media may be sealed up to the ceiling, so a frame sharded just
+    /// before a black hole is found still seals; it may just not arrive.
+    public mutating func setPathCeiling(_ ceiling: Int, now: UInt64) {
+        guard ceiling > configuration.udpPayload else {
+            pathSearch = nil
+            return
+        }
+        if pathSearch == nil {
+            pathSearch = PathMTUSearch(base: configuration.udpPayload, ceiling: ceiling, now: now)
+        } else {
+            pathSearch!.setCeiling(ceiling, now: now)
+        }
+    }
+
+    /// The path changed (the peer's address, a new interface): media drops to
+    /// the base size until the search confirms a larger one again.
+    public mutating func pathChanged(now: UInt64) {
+        pathSearch?.restart(now: now)
+    }
+
+    private var mediaCapacity: Int {
+        DatagramLayout.sealedBodyCapacity(udpPayload: pathSearch?.ceiling ?? configuration.udpPayload)
+    }
 
     // MARK: Sending
 
@@ -121,14 +158,14 @@ public struct TransportSession: Sendable {
     /// One video shard, sealed alone in a datagram.
     public mutating func sealVideo(_ header: VideoShardHeader, data: some Collection<UInt8>,
                                    now: UInt64) throws -> [UInt8] {
-        var writer = WireWriter(reservingCapacity: configuration.udpPayload)
+        var writer = WireWriter(reservingCapacity: udpPayload)
         try writer.appendVideoShard(header, data: data)
         return try seal(writer.bytes, isMedia: true, now: now)
     }
 
     public mutating func sealAudio(_ header: AudioShardHeader, packet: some Collection<UInt8>,
                                    now: UInt64) throws -> [UInt8] {
-        var writer = WireWriter(reservingCapacity: configuration.udpPayload)
+        var writer = WireWriter(reservingCapacity: udpPayload)
         try writer.appendAudioShard(header, packet: packet)
         return try seal(writer.bytes, isMedia: true, now: now)
     }
@@ -141,13 +178,15 @@ public struct TransportSession: Sendable {
         return try seal(body, isMedia: false, probeCluster: probeCluster, now: now)
     }
 
-    private mutating func seal(_ body: [UInt8], isMedia: Bool, probeCluster: UInt32? = nil,
+    private mutating func seal(_ body: [UInt8], isMedia: Bool, probeCluster: UInt32? = nil, pathProbe: Bool = false,
                                now: UInt64) throws(StreamCryptoError) -> [UInt8] {
-        guard body.count <= bodyCapacity else { throw .malformed("datagram larger than the UDP payload") }
+        guard body.count <= (isMedia || pathProbe ? mediaCapacity : bodyCapacity) else {
+            throw .malformed("datagram larger than the UDP payload")
+        }
         do {
             let (number, datagram) = try secure.sender.seal(body, now: now)
             sentLog.record(packetNumber: number, sendTime: now, size: datagram.count, isMedia: isMedia,
-                           probeCluster: probeCluster)
+                           probeCluster: probeCluster, pathProbe: pathProbe)
             statistics.datagramsSent += 1
             statistics.bytesSent += datagram.count
             return datagram
@@ -174,7 +213,26 @@ public struct TransportSession: Sendable {
             guard let datagram = try? seal(body, isMedia: false, now: now) else { break }
             datagrams.append(datagram)
         }
+        if let probe = nextPathProbe(now: now) { datagrams.append(probe) }
         return datagrams
+    }
+
+    /// A PING padded to exactly the probe size on the wire; its PONG is the
+    /// acknowledgement (RFC 8899's padding probe, section 4.1's PADDING rule).
+    private mutating func nextPathProbe(now: UInt64) -> [UInt8]? {
+        guard let size = pathSearch?.nextProbe(now: now) else { return nil }
+        var writer = WireWriter(reservingCapacity: size)
+        let ping = Ping(id: nextPingID, sendTime: now)
+        guard let body = try? ping.encoded(), (try? writer.appendFrame(.ping, body: body)) != nil else { return nil }
+        writer.appendPadding(DatagramLayout.sealedBodyCapacity(udpPayload: size) - writer.count)
+        guard let datagram = try? seal(writer.bytes, isMedia: false, pathProbe: true, now: now) else { return nil }
+        pathProbes[nextPingID] = size
+        if pathProbes.count > 8, let oldest = pathProbes.keys.min(by: { nextPingID &- $0 > nextPingID &- $1 }) {
+            pathProbes[oldest] = nil
+        }
+        nextPingID &+= 1
+        statistics.pathProbesSent += 1
+        return datagram
     }
 
     /// Whether anything other than piggybacked ACKs is due now.
@@ -259,6 +317,7 @@ public struct TransportSession: Sendable {
             times.append(now)
         }
         if configuration.sendsFeedback, let due = feedback.nextReportTime { times.append(due) }
+        if let probe = pathSearch?.nextWakeTime { times.append(probe) }
         times += receivers.compactMap(\.ackDeadline)
         for sender in senders {
             if sender.hasSendable(now: now, rtt: rtt) { times.append(now) }
@@ -358,6 +417,7 @@ public struct TransportSession: Sendable {
                 pendingPongs.append((ping, now))
                 statistics.pingsAnswered += 1
             case .pong(let pong):
+                if let size = pathProbes.removeValue(forKey: pong.id) { pathSearch?.acknowledged(size, now: now) }
                 let sample = ClockSample(pong: pong, receivedAt: now)
                 clock.add(sample)
                 if let roundTrip = sample.roundTrip { rtt.add(sample: roundTrip) }

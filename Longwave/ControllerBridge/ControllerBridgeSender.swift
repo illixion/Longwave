@@ -88,6 +88,9 @@ final class ControllerBridgeSender {
     /// Most recent tracked wrist poses, written by the ARKit update loop.
     private var leftHand: ControllerBridgeHandPose?
     private var rightHand: ControllerBridgeHandPose?
+    #if LONGWAVE_INTERNAL
+    private var bodyStream: RAVEBodyStreamSource?
+    #endif
 
     /// Most recent full 26-joint skeletons (XR_EXT order), same update loop. These feed
     /// the 0x04 packet so games with real hand-tracking support get per-finger hands.
@@ -583,6 +586,22 @@ final class ControllerBridgeSender {
     func start() {
         guard !isRunning else { return }
         isRunning = true
+        #if LONGWAVE_INTERNAL
+        if UserDefaults.standard.bool(forKey: "pcvrBodyTracking") {
+            var configuration = RAVEBodyStreamSource.Configuration(name: "Longwave PCVR")
+            let address = UserDefaults.standard.string(forKey: "pcvrBodyTrackingHub") ?? ""
+            let parts = address.split(separator: ":")
+            if let host = parts.first {
+                configuration.hub = .address(host: String(host),
+                    port: parts.count > 1 ? UInt16(parts[1]) ?? RAVEBodyStreamProtocol.defaultPort : RAVEBodyStreamProtocol.defaultPort)
+            }
+            let source = RAVEBodyStreamSource(configuration: configuration) { message in
+                DebugLogger(subsystem: "pro.longwave", category: "BodyTracking").log("\(message)")
+            }
+            source.start()
+            bodyStream = source
+        }
+        #endif
         control.onReady = { [weak self] endpoint in
             guard let self else { return }
             self.useDirectEndpoint(endpoint)
@@ -675,6 +694,10 @@ final class ControllerBridgeSender {
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        #if LONGWAVE_INTERNAL
+        bodyStream?.stop()
+        bodyStream = nil
+        #endif
         sendTask?.cancel(); sendTask = nil
         handTask?.cancel(); handTask = nil
         datagram.stop()
@@ -1381,6 +1404,14 @@ final class ControllerBridgeSender {
                         SIMD3(m.columns.1.x, m.columns.1.y, m.columns.1.z),
                         SIMD3(m.columns.2.x, m.columns.2.y, m.columns.2.z)))
                     send(headPacket.encoded())
+                    #if LONGWAVE_INTERNAL
+                    // Raw wrists, not controller grips: the cameras see the
+                    // anatomical wrist, and a held controller adds an offset.
+                    bodyStream?.observe(head: headPacket.position,
+                        leftWrist: gestureEngine.sample(for: .left)?.wrist,
+                        rightWrist: gestureEngine.sample(for: .right)?.wrist,
+                        now: tickNow, headRotation: headPacket.orientation)
+                    #endif
                 }
                 // Skeletons alternate with input packets (~42 Hz per hand) — a full
                 // game frame of finger motion is imperceptible, and it halves the

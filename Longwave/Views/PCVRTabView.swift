@@ -91,6 +91,10 @@ private struct PCVRSessionForm: View {
     // stay where the immersive view reads them from.
     @AppStorage("foveatedWristHUD") private var wristHUD = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
+    #if LONGWAVE_INTERNAL
+    @AppStorage("pcvrBodyTracking") private var bodyTracking = false
+    @AppStorage("pcvrBodyTrackingHub") private var bodyTrackingHub = ""
+    #endif
 
     @State private var showGestureSettings = false
     @State private var showGameInput = false
@@ -559,6 +563,18 @@ private struct PCVRSessionForm: View {
                 }
             }
             .disabled(!manager.isDisconnected)
+
+            #if LONGWAVE_INTERNAL
+            Toggle("Camera body tracking", isOn: $bodyTracking)
+                .disabled(!manager.isDisconnected)
+            if bodyTracking {
+                TextField("Camera hub address (empty finds it automatically)", text: $bodyTrackingHub)
+                    .disabled(!manager.isDisconnected)
+                Text("Wave your hands and step sideways to align the cameras. The headset anchors your head; the cameras supply your body. The PC's body-tracker output must also be enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
 
             Divider()
 

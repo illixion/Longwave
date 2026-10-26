@@ -57,7 +57,7 @@
 	     _controllerbridge._udp (see NSBonjourServices), and without this key the
 	     listener silently hears nothing. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Longwave connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network, and receives controllers from a Meta Quest running Controller Bridge.</string>
+	<string>Longwave connects to remote desktops, native Mac streams, game streaming hosts, and the Companion on your local network, receives controllers from a Meta Quest running Controller Bridge, and connects to camera hubs for body tracking.</string>
 	<!-- Required by the controller bridge: ControllerBridgeSender calls
 	     ARKitSession.requestAuthorization(for: [.handTracking]) to drive emulated VR
 	     controllers from hand tracking. Without this key ARKit does not merely deny the
@@ -76,6 +76,7 @@
 		<!-- Advertised while "Quest controllers" is on, so the Quest's Controller
 		     Bridge app finds this headset by name with nothing typed. -->
 		<string>_controllerbridge._udp</string>
+		<string>_posehub._udp</string>
 	</array>
 	<!-- Internet traffic (Claude and GitHub sign-in) is HTTPS. The one plain-HTTP
 	     request is the PCVR host's status endpoint on the user's own PC, addressed

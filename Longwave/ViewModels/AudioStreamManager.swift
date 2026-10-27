@@ -1179,11 +1179,13 @@ final class AudioStreamReceiver: @unchecked Sendable {
     private nonisolated(unsafe) var depthAverage: Double = 0
     /// True while shedding a backlog (see the ceiling check in `schedule`).
     private nonisolated(unsafe) var trimming = false
-    /// TCP only: playing ~2% fast to shed a post-stall backlog instead of
-    /// skipping it (see `catchUpRatio`).
+    /// Shedding a post-stall backlog through `shedder` instead of skipping
+    /// it (see `catchUpRatio`).
     private nonisolated(unsafe) var catchingUp = false
-    /// Audio shed by catching up this session, in sample frames.
-    private nonisolated(unsafe) var caughtUpFrames = 0
+    /// Removes backlog without touching pitch, and holds the audio it needs
+    /// to look ahead into. Created with the format; its held frames count
+    /// toward the queue depth.
+    private nonisolated(unsafe) var shedder: AudioBacklogShedder?
     private nonisolated(unsafe) var underrunCount = 0
     /// `underrunCount` as of the last health tick, so a clean stretch can be
     /// recognised and the grown target relaxed again.
@@ -2104,21 +2106,24 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// — 298 ms of it in one episode, followed by six underruns.
     private nonisolated var ceilingFrames: Int {
         if !lowLatency {
-            // TCP catches up instead (below); the skip is kept only for a
-            // backlog no sane amount of catching up should be asked to shed.
+            // Catching up (below) handles an ordinary burst; the skip is kept
+            // only for a backlog no sane amount of catching up should be
+            // asked to shed.
             return targetFrames + Int(Self.catchUpCeilingSeconds * wireSampleRate)
         }
         return max(Int(0.500 * wireSampleRate), targetFrames + Int(0.250 * wireSampleRate))
     }
 
-    /// TCP is the steady mode, so it never skips a recovered stall: when the
-    /// burst after one leaves the queue `catchUpStartSeconds` over target, it
-    /// plays `catchUpRatio` fast until it is back within `catchUpStopSeconds`.
-    /// Skipping the excess (what UDP does) is an audible jump of a few
-    /// hundred milliseconds; 2% fast sheds 300 ms in 15 s with nothing lost
-    /// — a pitch rise of about a third of a semitone while it lasts. Latency
-    /// still comes back to target, which keeps lip sync where it was.
-    private static let catchUpRatio = 0.02
+    /// A recovered stall is never skipped: when the burst after one leaves
+    /// the queue `catchUpStartSeconds` over target, `AudioBacklogShedder`
+    /// removes the excess until it is back within `catchUpStopSeconds` —
+    /// quiet stretches outright, audible ones by pitch-synchronous splices
+    /// at `catchUpRatio` of the audio passing through. Skipping the excess
+    /// is an audible jump of a few hundred milliseconds; playing fast, what
+    /// this used to do, raised the pitch by a third of a semitone for the
+    /// whole catch-up, most noticeably on a sound starting out of silence.
+    /// Latency still comes back to target, which keeps lip sync where it was.
+    private static let catchUpRatio = 0.04
     private static let catchUpStartSeconds = 0.060
     private static let catchUpStopSeconds = 0.010
     private static let catchUpCeilingSeconds = 1.5
@@ -2153,6 +2158,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         depthAverage = 0
         trimming = false
         starvedSinceNanos = 0
+        shedder?.reset()
         queueState.withLock { state in
             state.frames = 0
             state.generation &+= 1
@@ -2243,7 +2249,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             holes=\(net.holes) (\(ms(Double(net.holeFrames))) ms) ooo=\(net.late) \
             resumes=\(net.resumes)\(restarts, privacy: .public) · \
             \(transport, privacy: .public)\
-            underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms caughtup=\(ms(Double(caughtUpFrames)))ms drift=\(driftCorrections)
+            underruns=\(underrunCount) trimmed=\(ms(Double(trimmedFrames)))ms caughtup=\(ms(Double(shedder?.splicedFramesShed ?? 0)))ms+\(ms(Double(shedder?.quietFramesShed ?? 0)))ms quiet drift=\(driftCorrections)
             """)
     }
 
@@ -2291,7 +2297,16 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
         lastScheduleNanos = nowNanos
 
-        var depth = queueState.withLock { $0.frames }
+        if shedder?.channels != channels {
+            shedder = AudioBacklogShedder(channels: channels, sampleRate: wireSampleRate, ratio: Self.catchUpRatio)
+        }
+        // Audio the shedder holds back is queued as far as latency goes.
+        let heldFrames = shedder?.pendingFrames ?? 0
+        let queuedFrames = queueState.withLock { $0.frames }
+        let depth = queuedFrames + heldFrames
+        // The node ran dry and is rendering silence, so this buffer starts
+        // out of a gap: fade it in rather than step to full level.
+        let resumesFromStarvation = playing && queuedFrames <= 0
         if playing { minDepthFrames = min(minDepthFrames, depth) }
 
         // Underrun: the node played everything and is rendering silence with
@@ -2311,7 +2326,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // and only then is a real re-prime worth its silence. That still
         // fixes the original fault, where the cushion was lost for good and
         // nothing ever rebuilt it.
-        if playing, depth <= 0 {
+        if resumesFromStarvation {
             if starvedSinceNanos == 0 {
                 starvedSinceNanos = nowNanos
                 underrunCount += 1
@@ -2328,7 +2343,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
                 )
                 rebuildCushion()
             }
-        } else if depth > 0 {
+        } else if queuedFrames > 0 {
             starvedSinceNanos = 0
         }
 
@@ -2345,7 +2360,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
         trimming = false
 
-        if !lowLatency, playing {
+        if playing {
             let excess = depth - targetFrames
             if catchingUp, excess <= Int(Self.catchUpStopSeconds * wireSampleRate) {
                 catchingUp = false
@@ -2369,12 +2384,10 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // *smoothed* depth is what's compared, so ordinary jitter never
         // triggers it.
         var adjust = 0
-        if catchingUp {
-            adjust = -max(1, Int((Double(wireFrames) * Self.catchUpRatio).rounded()))
-            caughtUpFrames -= adjust
+        if playing {
             depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
-        } else if playing {
-            depthAverage += (Double(depth) - depthAverage) * Self.depthSmoothing
+        }
+        if playing, !catchingUp {
             let target = Double(targetFrames)
             let tolerance = max(target * 0.2, 0.005 * wireSampleRate)
             buffersSinceDrift += 1
@@ -2391,51 +2404,36 @@ final class AudioStreamReceiver: @unchecked Sendable {
             }
         }
 
-        let frameCount = AVAudioFrameCount(max(1, wireFrames + adjust))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        buffer.frameLength = frameCount
-
-        // Decode interleaved wire int24 → Float32, deinterleaving into the
-        // engine's per-channel buffers.
-        let outFrames = Int(frameCount)
         let sampleStride = AudioStreamProtocol.bytesPerSample
-        payload.withUnsafeBytes { raw in
-            guard let channelData = buffer.floatChannelData else { return }
-            let bytes = raw.bindMemory(to: UInt8.self)
-            guard adjust != 0 else {
-                for channel in 0..<channels {
-                    let out = channelData[channel]
-                    for frame in 0..<outFrames {
-                        out[frame] = PCM24.sample(bytes, at: (frame * channels + channel) * sampleStride)
-                    }
-                }
-                return
-            }
-            // Applying the drift nudge by *resampling* the buffer, not by
-            // dropping or repeating a sample frame.
-            //
-            // Dropping one sample is a step discontinuity whose height is the
-            // adjacent-sample delta — on music that is a broadband click
-            // around −20 dBFS, and fired once per buffer (~94/s while the
-            // average sits outside the tolerance band) it is a buzz, not the
-            // "inaudible 20 µs" it looks like on paper. Linear interpolation
-            // spreads the same ±1 frame across the whole buffer instead: a
-            // ~0.2% rate change lasting 10 ms. The endpoints still map to the
-            // first and last input frames, so consecutive buffers join with
-            // no discontinuity at the seam.
-            let step = Double(wireFrames - 1) / Double(max(1, outFrames - 1))
-            for channel in 0..<channels {
-                let out = channelData[channel]
-                for frame in 0..<outFrames {
-                    let position = Double(frame) * step
-                    let low = min(Int(position), wireFrames - 1)
-                    let high = min(low + 1, wireFrames - 1)
-                    let fraction = Float(position - Double(low))
-                    let a = PCM24.sample(bytes, at: (low * channels + channel) * sampleStride)
-                    let b = PCM24.sample(bytes, at: (high * channels + channel) * sampleStride)
-                    out[frame] = a + (b - a) * fraction
+        let buffer: AVAudioPCMBuffer?
+        if catchingUp || heldFrames > 0, shedder != nil {
+            // Catching up, or releasing what catching up held back: the
+            // audio goes through the shedder so order is kept. (Mutated
+            // through the optional, in place — a local copy would copy the
+            // held audio on every buffer.)
+            payload.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                shedder?.append(frames: wireFrames) { frame, channel in
+                    PCM24.sample(bytes, at: (frame * channels + channel) * sampleStride)
                 }
             }
+            if catchingUp {
+                let stopFrames = Int(Self.catchUpStopSeconds * wireSampleRate)
+                shedder?.shed(budget: depth + wireFrames - targetFrames - stopFrames)
+            }
+            let releasable = shedder?.releasable(holdingBack: catchingUp) ?? 0
+            let released = shedder?.take(releasable) ?? []
+            buffer = Self.makeBuffer(format: format, channels: released)
+        } else {
+            let frameCount = AVAudioFrameCount(max(1, wireFrames + adjust))
+            buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+            if let buffer {
+                buffer.frameLength = frameCount
+                Self.decode(payload, wireFrames: wireFrames, channels: channels, into: buffer)
+            }
+        }
+        if let buffer, resumesFromStarvation {
+            Self.fadeIn(buffer, frames: Int(Self.starvationFadeSeconds * wireSampleRate))
         }
 
         // Exact-zero payload == a warm-keep silence frame from the sender
@@ -2444,19 +2442,22 @@ final class AudioStreamReceiver: @unchecked Sendable {
         // early-exits, so real audio costs next to nothing.
         let isSilentFrame = !payload.contains { $0 != 0 }
 
-        let scheduledCount = Int(frameCount)
-        let generation = queueState.withLock { state -> Int in
-            state.frames += scheduledCount
-            return state.generation
-        }
-        // `.dataPlayedBack` is what makes the depth real: it fires when the
-        // samples have actually been rendered, not when the node accepted
-        // them. The generation check discards callbacks for buffers a
-        // `resetPlayback` already flushed.
-        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [queueState] _ in
-            queueState.withLock { state in
-                guard state.generation == generation else { return }
-                state.frames -= scheduledCount
+        // Nothing to schedule when the shedder is holding this buffer back.
+        if let buffer, buffer.frameLength > 0 {
+            let scheduledCount = Int(buffer.frameLength)
+            let generation = queueState.withLock { state -> Int in
+                state.frames += scheduledCount
+                return state.generation
+            }
+            // `.dataPlayedBack` is what makes the depth real: it fires when
+            // the samples have actually been rendered, not when the node
+            // accepted them. The generation check discards callbacks for
+            // buffers a `resetPlayback` already flushed.
+            playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [queueState] _ in
+                queueState.withLock { state in
+                    guard state.generation == generation else { return }
+                    state.frames -= scheduledCount
+                }
             }
         }
 
@@ -2488,5 +2489,85 @@ final class AudioStreamReceiver: @unchecked Sendable {
             onEvent?(.bytesReceived(totalBytes))
         }
         logBufferHealth(depth: depth, now: nowNanos)
+    }
+    /// Fade-in applied to the first buffer after the node ran dry. The node
+    /// went silent mid-waveform (nothing can be done about that end without
+    /// holding audio back), but the resume needn't add a second step.
+    private static let starvationFadeSeconds = 0.003
+
+    /// Decodes interleaved wire int24 into `buffer`'s per-channel Float32,
+    /// resampling when `buffer` is a frame longer or shorter than the payload
+    /// (the drift nudge).
+    private nonisolated static func decode(_ payload: Data, wireFrames: Int, channels: Int, into buffer: AVAudioPCMBuffer) {
+        let outFrames = Int(buffer.frameLength)
+        let sampleStride = AudioStreamProtocol.bytesPerSample
+        payload.withUnsafeBytes { raw in
+            guard let channelData = buffer.floatChannelData else { return }
+            let bytes = raw.bindMemory(to: UInt8.self)
+            guard outFrames != wireFrames else {
+                for channel in 0..<channels {
+                    let out = channelData[channel]
+                    for frame in 0..<outFrames {
+                        out[frame] = PCM24.sample(bytes, at: (frame * channels + channel) * sampleStride)
+                    }
+                }
+                return
+            }
+            // Applying the drift nudge by *resampling* the buffer, not by
+            // dropping or repeating a sample frame.
+            //
+            // Dropping one sample is a step discontinuity whose height is the
+            // adjacent-sample delta — on music that is a broadband click
+            // around −20 dBFS, and fired once per buffer (~94/s while the
+            // average sits outside the tolerance band) it is a buzz, not the
+            // "inaudible 20 µs" it looks like on paper. Linear interpolation
+            // spreads the same ±1 frame across the whole buffer instead: a
+            // ~0.2% rate change lasting 10 ms, a few cents of pitch for one
+            // buffer in four at most. The endpoints still map to the first
+            // and last input frames, so consecutive buffers join with no
+            // discontinuity at the seam. Backlogs are not shed this way —
+            // that is `AudioBacklogShedder`'s job, and it keeps pitch.
+            let step = Double(wireFrames - 1) / Double(max(1, outFrames - 1))
+            for channel in 0..<channels {
+                let out = channelData[channel]
+                for frame in 0..<outFrames {
+                    let position = Double(frame) * step
+                    let low = min(Int(position), wireFrames - 1)
+                    let high = min(low + 1, wireFrames - 1)
+                    let fraction = Float(position - Double(low))
+                    let a = PCM24.sample(bytes, at: (low * channels + channel) * sampleStride)
+                    let b = PCM24.sample(bytes, at: (high * channels + channel) * sampleStride)
+                    out[frame] = a + (b - a) * fraction
+                }
+            }
+        }
+    }
+
+    /// A buffer holding what the shedder released, or nil when it released
+    /// nothing.
+    private nonisolated static func makeBuffer(format: AVAudioFormat, channels: [[Float]]) -> AVAudioPCMBuffer? {
+        let frames = channels.first?.count ?? 0
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let channelData = buffer.floatChannelData else { return nil }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for (channel, samples) in channels.enumerated() where channel < Int(format.channelCount) {
+            samples.withUnsafeBufferPointer { source in
+                channelData[channel].update(from: source.baseAddress!, count: frames)
+            }
+        }
+        return buffer
+    }
+
+    private nonisolated static func fadeIn(_ buffer: AVAudioPCMBuffer, frames: Int) {
+        guard let channelData = buffer.floatChannelData else { return }
+        let length = min(frames, Int(buffer.frameLength))
+        guard length > 1 else { return }
+        for channel in 0..<Int(buffer.format.channelCount) {
+            let samples = channelData[channel]
+            for frame in 0..<length {
+                samples[frame] *= Float(frame) / Float(length)
+            }
+        }
     }
 }

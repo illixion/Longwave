@@ -182,6 +182,9 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         audioRenderer?.recenterSoundStage()
     }
 
+    var audioSceneIdentifier: String? {
+        didSet { audioRenderer?.setSceneIdentifier(audioSceneIdentifier) }
+    }
     private var audioRenderer: MoonlightAudioRenderer?
     private var gamepadManager: MoonlightGamepadManager?
     private var mouseManager: MoonlightMouseManager?
@@ -483,6 +486,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 await MainActor.run {
                     self.videoRenderer = video
                     self.audioRenderer = audio
+                    audio.setSceneIdentifier(self.audioSceneIdentifier)
                     audio.onSoundStageChange = { [weak self] active in
                         self?.isSoundStageActive = active
                         self?.isHeadphoneRoute = Self.headphonesAreRouted()

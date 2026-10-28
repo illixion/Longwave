@@ -51,8 +51,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
     @discardableResult
     func join(
         _ participant: AnyObject,
-        mode: AudioMode,
-        spatialAudioMode: SpatialAudioMode
+        mode: AudioMode
     ) -> Bool {
         lock.lock()
         participants[ObjectIdentifier(participant)] = mode
@@ -65,7 +64,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
         if changed {
             configured = apply(resolved)
         }
-        applySessionTraits(spatialAudioMode: spatialAudioMode, options: resolved.options)
+        applySessionTraits(options: resolved.options)
         return configured
     }
 
@@ -112,7 +111,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
 
         if changed {
             apply(resolved)
-            applySessionTraits(spatialAudioMode: nil, options: resolved.options)
+            applySessionTraits(options: resolved.options)
         }
     }
 
@@ -163,7 +162,7 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
         }
         guard changed else { return }
         apply(resolved)
-        applySessionTraits(spatialAudioMode: nil, options: resolved.options)
+        applySessionTraits(options: resolved.options)
     }
 
     /// The system wiped the session out from under us (media services reset).
@@ -191,26 +190,11 @@ nonisolated final class AudioSessionCoordinator: @unchecked Sendable {
         )
     }
 
-    /// The two visionOS-only session traits that ride along with the category.
-    /// Both are process-wide, so like the category they describe the resolved
-    /// set rather than any one participant.
-    private func applySessionTraits(
-        spatialAudioMode: SpatialAudioMode?,
-        options: AVAudioSession.CategoryOptions
-    ) {
-        // Both calls are visionOS-only, and neither has an iOS counterpart
-        // that is needed: iOS does not route AVAudioEngine output through
-        // AutomaticSpatialAudio, so there is no intended experience to
-        // declare, and Now Playing candidacy is a visionOS notion about
-        // windows the wearer has looked away from. iOS ducking follows the
-        // category alone.
+    /// Now Playing candidacy describes the resolved process-wide session.
+    /// Spatial experience is configured separately on each engine output.
+    private func applySessionTraits(options: AVAudioSession.CategoryOptions) {
         #if os(visionOS)
         let session = AVAudioSession.sharedInstance()
-        // `.auto` states no opinion at all, so the call is skipped rather
-        // than passed a "default" the API doesn't have.
-        if let experience = spatialAudioMode?.avSpatialExperience {
-            try? session.setIntendedSpatialExperience(experience)
-        }
         // A mixable session keeps running (un-ducked) when the user looks at
         // other windows only if it says it wants to. An exclusive Music
         // session is a real Now Playing app via `MPNowPlayingInfoCenter` and

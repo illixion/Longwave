@@ -23,8 +23,8 @@ enum AudioMode: String, Sendable, CaseIterable {
     case speaker, music
 }
 
-/// How the stream's session declares its spatial experience.
-/// - `.auto`: never calls `setIntendedSpatialExperience` — the session is left
+/// How each stream's output declares its spatial experience.
+/// - `.auto`: uses the owning window when known, otherwise leaves the output
 ///   at whatever the system's own default resolves to for this app/route.
 /// - `.on`: explicit head-tracked spatial rendering.
 /// - `.off`: explicit flat bypass (stereo/multichannel passthrough).
@@ -38,24 +38,6 @@ enum SpatialAudioMode: String, Sendable, CaseIterable {
         case .off: return "Off"
         }
     }
-
-    // visionOS, not canImport(UIKit): `AVAudioSessionSpatialExperience` and
-    // `setIntendedSpatialExperience` are visionOS-only API. iOS imports UIKit
-    // and has neither, so the wider guard didn't compile there.
-    #if os(visionOS)
-    /// `nil` for `.auto` — the caller should skip the `setIntendedSpatialExperience`
-    /// call entirely rather than pass this through, since there's no "system
-    /// default" case in that API.
-    /// `nonisolated`: a pure mapping, read from the receiver's own queue and
-    /// from `AudioSessionCoordinator`, neither of which is the main actor.
-    nonisolated var avSpatialExperience: (any AVAudioSessionSpatialExperience)? {
-        switch self {
-        case .auto: return nil
-        case .on: return .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic)
-        case .off: return .bypassed
-        }
-    }
-    #endif
 }
 
 /// Receives an uncompressed PCM audio stream from the Longwave Companion
@@ -523,6 +505,7 @@ final class AudioStreamManager {
         rememberTarget(hostname: hostname, port: port, credential: credential, title: title, lowLatency: lowLatency)
 
         let receiver = AudioStreamReceiver(hostname: hostname, port: port, credential: credential, lowLatency: lowLatency, volume: Float(volume), mode: effectiveAudioMode, eq: eqSettings, spatialAudioMode: spatialAudioMode)
+        receiver.setSceneIdentifier(audioSceneIdentifier)
         receiver.onEvent = { [weak self] event in
             Task { @MainActor in
                 self?.handle(event)
@@ -658,10 +641,22 @@ final class AudioStreamManager {
     /// two places — a Native window's mini player and its popped-out window —
     /// and closing one of them must not stop audio the other still shows.
     private var presenters: Set<String> = []
+    private var presenterScenes: [String: String] = [:]
+    var audioSceneIdentifier: String? {
+        if presenters.contains("audio-window"), let scene = presenterScenes["audio-window"] { return scene }
+        if presenters.contains("native-stream") { return presenterScenes["native-stream"] }
+        return nil
+    }
+
+    func setPresenterScene(_ identifier: String?, presenter: String) {
+        presenterScenes[presenter] = identifier
+        receiver?.setSceneIdentifier(audioSceneIdentifier)
+    }
 
     /// Called from a view's onAppear, alongside `ensureConnected()`.
     func presenterAppeared(_ presenter: String) {
         presenters.insert(presenter)
+        receiver?.setSceneIdentifier(audioSceneIdentifier)
     }
 
     /// Called from the window's onDisappear. visionOS also fires this on
@@ -669,7 +664,10 @@ final class AudioStreamManager {
     /// grace period — `ensureConnected()` cancels it if the window returns —
     /// and only if no other view is still showing the player by then.
     func windowDisappeared(presenter: String? = nil) {
-        if let presenter { presenters.remove(presenter) }
+        if let presenter {
+            presenters.remove(presenter)
+            receiver?.setSceneIdentifier(audioSceneIdentifier)
+        }
         pendingCloseTask?.cancel()
         pendingCloseTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -1055,6 +1053,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
     /// Speaker (mixable, auto-recover) vs Music (exclusive, pause-on-interrupt).
     private let mode: AudioMode
     private let queue = DispatchQueue(label: "pro.longwave.audio-stream", qos: .userInteractive)
+    private let windowRouting = AudioWindowRouting()
+
+    nonisolated func setSceneIdentifier(_ identifier: String?) {
+        windowRouting.setSceneIdentifier(identifier)
+    }
 
     private nonisolated(unsafe) var connection: NWConnection?
     /// Low-latency PCM path. The receiver *listens* on an ephemeral UDP port
@@ -1287,23 +1290,11 @@ final class AudioStreamReceiver: @unchecked Sendable {
         }
     }
 
-    /// Switches the session between head-tracked spatial rendering, flat
-    /// bypass, and the system default live — `setIntendedSpatialExperience`
-    /// takes effect on an already-active session, so no engine/session
-    /// rebuild is needed. `.auto` is a no-op here: there's no API to revert
-    /// an already-explicit choice back to "system default" mid-session, so
-    /// switching into `.auto` only has effect on the *next* fresh connect.
+    /// Updates only this receiver's output; Auto restores its scene anchor.
     nonisolated func setSpatialAudioMode(_ newMode: SpatialAudioMode) {
         queue.async { [self] in
             spatialAudioMode = newMode
-            #if os(visionOS)
-            guard let experience = newMode.avSpatialExperience else { return }
-            do {
-                try AVAudioSession.sharedInstance().setIntendedSpatialExperience(experience)
-            } catch {
-                AppLog.audioStream.log("Failed to update spatial audio experience: \(error)")
-            }
-            #endif
+            windowRouting.setSpatialization(newMode == .auto ? nil : newMode == .on)
         }
     }
 
@@ -1423,24 +1414,9 @@ final class AudioStreamReceiver: @unchecked Sendable {
             let outNames = outs.map(\.portName).joined(separator: ",")
             AppLog.audioStream.log("Route change (\(reason.map(String.init(describing:)) ?? "?", privacy: .public)) → outputs=[\(outTypes, privacy: .public)] names=[\(outNames)] silenceHint=\(session.secondaryAudioShouldBeSilencedHint)")
             guard let self, reason == .categoryChange else { return }
-            // A category change we didn't cause — the broadcast pipeline's
-            // mic capture (`BroadcastMicCapture`) shares this process's one
-            // AVAudioSession and reasserts .playAndRecord to record, which
-            // resets the intended spatial experience to that category's own
-            // default (observed as forced head-tracked rendering: starting a
-            // broadcast while streaming audio silently re-spatialized it).
-            // Re-declaring our own spatial experience doesn't touch category
-            // or activation, so it can't fight Broadcast for the session —
-            // it only reclaims the one setting that got stomped.
-            #if os(visionOS)
-            if let experience = self.spatialAudioMode.avSpatialExperience {
-                do {
-                    try session.setIntendedSpatialExperience(experience)
-                } catch {
-                    AppLog.audioStream.log("Failed to reclaim spatial audio experience after category change: \(error)")
-                }
-            }
-            #endif
+            // Capture can change the shared session's default spatial policy.
+            // Reapply this output's own choice without changing other windows.
+            self.windowRouting.setSpatialization(self.spatialAudioMode == .auto ? nil : self.spatialAudioMode == .on)
         })
         // visionOS doesn't always notify us via interruption/route-change
         // when Safari WebRTC takes the People channel — sometimes it just
@@ -1895,8 +1871,7 @@ final class AudioStreamReceiver: @unchecked Sendable {
             sessionConfigured = true
             AudioSessionCoordinator.shared.join(
                 self,
-                mode: mode,
-                spatialAudioMode: spatialAudioMode
+                mode: mode
             )
         }
 
@@ -1938,6 +1913,8 @@ final class AudioStreamReceiver: @unchecked Sendable {
         ) else { return false }
 
         let engine = AVAudioEngine()
+        windowRouting.setSpatialization(spatialAudioMode == .auto ? nil : spatialAudioMode == .on)
+        windowRouting.bind(engine.outputNode)
         let player = AVAudioPlayerNode()
         player.volume = volume
         // EQ sits between the player and the mixer. Always in the graph

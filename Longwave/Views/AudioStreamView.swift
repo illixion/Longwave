@@ -43,6 +43,14 @@ struct AudioStreamView: View {
             .platformGlassBackground()
         }
         .frame(width: Self.playerWidth)
+        #if os(visionOS)
+        .background {
+            WindowSceneReader { scene in
+                audioManager.setPresenterScene(scene?.session.persistentIdentifier, presenter: Self.presenterID)
+            }
+            .frame(width: 1, height: 1)
+        }
+        #endif
         .onAppear {
             // Resumes the last stream when visionOS restores this window
             // after an app relaunch (snapped-window space restoration).

@@ -154,6 +154,14 @@ struct MoonlightStreamView: View {
                     .environment(manager)
             }
         }
+        #if os(visionOS)
+        .background {
+            WindowSceneReader { scene in
+                manager.audioSceneIdentifier = scene?.session.persistentIdentifier
+            }
+            .frame(width: 1, height: 1)
+        }
+        #endif
         .overlay(alignment: .top) {
             if dragLocked {
                 Label("Dragging — tap to drop", systemImage: "hand.draw")

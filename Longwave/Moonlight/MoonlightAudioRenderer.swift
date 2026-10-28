@@ -94,6 +94,12 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// flippable live afterward via `setSpatialAudioEnabled`.
     nonisolated(unsafe) var spatialAudioEnabled: Bool = false
 
+    private let windowRouting = AudioWindowRouting()
+
+    nonisolated func setSceneIdentifier(_ identifier: String?) {
+        windowRouting.setSceneIdentifier(identifier)
+    }
+
     nonisolated init() {}
 
     nonisolated func setup(audioConfig: Int32, opusConfig: UnsafeMutablePointer<OPUS_MULTISTREAM_CONFIGURATION>) -> Int32 {
@@ -136,6 +142,8 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
         // Set up AVAudioEngine
         let engine = AVAudioEngine()
+        windowRouting.setSpatialization(spatialAudioEnabled)
+        windowRouting.bind(engine.outputNode)
         let player = AVAudioPlayerNode()
 
         guard let format = Self.makeFormat(sampleRate: sampleRate, channelCount: channelCount) else {
@@ -243,15 +251,9 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     /// fail to start (`AUIOClient_StartIO` 'what').
     private nonisolated func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        AudioSessionCoordinator.shared.join(self, mode: .speaker, spatialAudioMode: .auto)
+        AudioSessionCoordinator.shared.join(self, mode: .speaker)
         do {
-            // visionOS-only API (marked unavailable on iOS even though iOS has
-            // spatial audio — see the Spatial Audio note in CLAUDE.md).
-            #if os(visionOS)
-            try session.setIntendedSpatialExperience(
-                spatialAudioEnabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
-            )
-            #endif
+            windowRouting.setSpatialization(spatialAudioEnabled)
             try session.setActive(true)
         } catch {
             AppLog.moonlightAudio.log("Failed to configure audio session: \(error)")
@@ -259,7 +261,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
     }
     #endif
 
-    /// Switches the session between head-tracked spatial rendering and flat
+    /// Switches this output between head-tracked spatial rendering and flat
     /// bypass live — safe to call whether or not the engine is currently
     /// running (e.g. while muted, before any session has been configured).
     nonisolated func setSpatialAudioEnabled(_ enabled: Bool) {
@@ -270,15 +272,7 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         let running = active
         lifecycleLock.unlock()
         if running { requestSoundStage(enabled) }
-        #if os(visionOS)
-        do {
-            try AVAudioSession.sharedInstance().setIntendedSpatialExperience(
-                enabled ? .headTracked(soundStageSize: .automatic, anchoringStrategy: .automatic) : .bypassed
-            )
-        } catch {
-            AppLog.moonlightAudio.log("Failed to update spatial audio experience: \(error)")
-        }
-        #endif
+        windowRouting.setSpatialization(enabled)
     }
 
     // MARK: - Sound stage

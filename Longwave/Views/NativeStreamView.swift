@@ -145,6 +145,12 @@ struct NativeStreamView: View {
                 emptyContent
             }
         }
+        .background {
+            WindowSceneReader { scene in
+                audioManager.setPresenterScene(scene?.session.persistentIdentifier, presenter: Self.audioPresenterID)
+            }
+            .frame(width: 1, height: 1)
+        }
         // Below the window, not straddling its bottom edge: half the bar
         // covered the bottom of the desktop, the Dock or the Start menu.
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {

@@ -108,12 +108,13 @@ struct VirtualKeyboardView: View {
         case .locked:
             Button { activate(cap) } label: { label }
                 .buttonStyle(.borderedProminent)
+                .tint(Self.lockedTint)
                 .frame(width: width(cap), height: Metrics.height)
                 .disabled(!sink.supports(cap.action))
         case .oneShot:
             Button { activate(cap) } label: { label }
                 .buttonStyle(.bordered)
-                .tint(.accentColor)
+                .tint(Self.armedTint)
                 .frame(width: width(cap), height: Metrics.height)
                 .disabled(!sink.supports(cap.action))
         case .off:
@@ -123,6 +124,13 @@ struct VirtualKeyboardView: View {
                 .disabled(!sink.supports(cap.action))
         }
     }
+
+    /// Explicit blues rather than `.accentColor`: the app has no accent of its own, so
+    /// the system default barely differs from an idle cap and a latched modifier
+    /// looked identical to an unlatched one. Armed is a lighter blue, locked (held
+    /// down on the remote) a deeper, filled one.
+    private static let armedTint = Color(red: 0.36, green: 0.62, blue: 1.0)
+    private static let lockedTint = Color(red: 0.04, green: 0.36, blue: 0.95)
 
     /// A cap spans its own units *and* the gaps between them, so every row comes
     /// out exactly `mainRowUnits` wide however it's divided up.

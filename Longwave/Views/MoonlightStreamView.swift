@@ -180,9 +180,9 @@ struct MoonlightStreamView: View {
                     .padding(.top, 8)
             }
         }
-        // Debug-server only (`gamepadVisualizer`): what this stream is reading from the pad.
+        // Keep the live gamepad readout with the stream's Stats display.
         .overlay(alignment: .topLeading) {
-            if GamepadVisualizer.shared.isShown {
+            if showStats {
                 GamepadVisualizerView(place: "moonlight").padding(24)
             }
         }

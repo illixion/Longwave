@@ -16,8 +16,21 @@ public static class Grant
 {
     public const string Screen = "screen";
     public const string Input = "input";
+    /// <summary>Stream Quest controllers (Controller Bridge) to this PC: the
+    /// sealed stream on <see cref="ControllerPort"/>, keyed by this device's
+    /// token. Asked for by the Quest app, never ticked for a headset by default.</summary>
+    public const string Controllers = "controllers";
 
-    public static readonly string[] Offered = { Screen, Input };
+    /// <summary>Where the sealed controller stream arrives (UDP), sent to the
+    /// device in its grant (QCB_SEALED_DEFAULT_PORT in Controller Bridge's
+    /// protocol header).</summary>
+    public const int ControllerPort = 9522;
+
+    public static readonly string[] Offered = { Screen, Input, Controllers };
+
+    /// <summary>What the dialog ticks for a device that names nothing (an older
+    /// headset): what pairing meant before controllers existed.</summary>
+    public static readonly string[] Defaults = { Screen, Input };
 
     /// <summary>The token this PC used to show for typing in, kept working
     /// during the transition with what it always unlocked.</summary>
@@ -27,6 +40,7 @@ public static class Grant
     {
         Screen => "See the screen",
         Input => "Control this PC (pointer, keys, typing)",
+        Controllers => "Stream Quest controllers to this PC",
         _ => grant,
     };
 }

@@ -224,7 +224,7 @@ public sealed class PairingService : IDisposable
             deviceName = Truncate(commit["headsetName"]?.GetValue<string>() ?? "A device", 80);
             var commitment = Convert.FromBase64String(commit["commitment"]?.GetValue<string>() ?? "");
             var requested = (commit["requested"] as JsonArray)?.Select(n => n?.GetValue<string>() ?? "").ToArray()
-                ?? Grant.Offered;
+                ?? Grant.Defaults;
             if (headsetId.Length is 0 or > 64 || commitment.Length != 32) throw new InvalidDataException("bad commit");
 
             await WriteAsync(stream, new JsonObject
@@ -273,6 +273,9 @@ public sealed class PairingService : IDisposable
                 ["addresses"] = new JsonArray(HostAddresses.Lan().Select(a => (JsonNode)a).ToArray()),
                 ["grants"] = new JsonArray(grants.Where(g => Grant.Offered.Contains(g)).Distinct().Select(g => (JsonNode)g).ToArray()),
             };
+            // Extra keys are ignored by Swift's Codable PairingGrant; a Quest
+            // reads this to know where the sealed controller stream goes.
+            if (grants.Contains(Grant.Controllers)) grant["controllerPort"] = Grant.ControllerPort;
             var sealedGrant = PairingExchange.Seal(Encoding.UTF8.GetBytes(grant.ToJsonString()), agreement.Key);
             await WriteAsync(stream, new JsonObject
             {

@@ -507,7 +507,7 @@ function renderNativeStream(s) {
 
 // ── Paired devices ─────────────────────────────────────────────────────────
 
-const GRANT_TITLES = { screen: 'Screen', input: 'Control' };
+const GRANT_TITLES = { screen: 'Screen', input: 'Control', controllers: 'Controllers' };
 
 function renderDevices(d) {
   if (!d) return;
@@ -525,7 +525,7 @@ function renderDevices(d) {
       : 'Not connected yet';
     text.append(name, seen);
     row.append(text);
-    for (const grant of ['screen', 'input']) {
+    for (const grant of Object.keys(GRANT_TITLES)) {
       const label = document.createElement('label');
       label.className = 'device-grant';
       const box = document.createElement('input');

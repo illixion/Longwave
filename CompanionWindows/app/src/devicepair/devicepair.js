@@ -3,6 +3,7 @@
 const titles = {
   screen: 'See the screen',
   input: 'Control this PC (pointer, keys, typing)',
+  controllers: 'Stream Quest controllers to this PC',
 };
 
 const title = document.getElementById('title');

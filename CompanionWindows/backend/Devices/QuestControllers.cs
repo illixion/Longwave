@@ -20,7 +20,10 @@ public sealed record QuestControllerStatus(
     [property: JsonPropertyName("rightTracked")] bool RightTracked,
     [property: JsonPropertyName("batteryLeft")] int? BatteryLeft,
     [property: JsonPropertyName("batteryRight")] int? BatteryRight,
-    [property: JsonPropertyName("lastSeen")] DateTimeOffset? LastSeen);
+    [property: JsonPropertyName("lastSeen")] DateTimeOffset? LastSeen,
+    // The Quest app runs but the headset gave input to something else (a system
+    // dialog or menu): why nothing is tracked. False from apps before 2.2.
+    [property: JsonPropertyName("unfocused")] bool Unfocused = false);
 
 /// <summary>
 /// Quest controllers paired with this PC (the "controllers" grant): the sealed
@@ -87,7 +90,7 @@ public sealed class QuestControllers : IDisposable
         public int WindowPackets;
         public long WindowStart;
         public int Rate;
-        public bool LeftTracked, RightTracked;
+        public bool LeftTracked, RightTracked, Unfocused;
         public int? BatteryLeft, BatteryRight;
         public bool WasConnected;
     }
@@ -153,7 +156,7 @@ public sealed class QuestControllers : IDisposable
                 return new QuestControllerStatus(d.Credential.Id, ShortId(d.Credential.Id), d.Credential.Name,
                     connected, connected ? Display(d.EndPoint!) : null, connected ? d.Rate : 0,
                     connected && d.LeftTracked, connected && d.RightTracked, d.BatteryLeft, d.BatteryRight,
-                    d.LastPacket == default ? null : d.LastPacket);
+                    d.LastPacket == default ? null : d.LastPacket, connected && d.Unfocused);
             }).OrderBy(s => s.Name).ToList();
         }
     }
@@ -243,6 +246,7 @@ public sealed class QuestControllers : IDisposable
                 var flags = BinaryPrimitives.ReadUInt16LittleEndian(inner.AsSpan(2));
                 device.LeftTracked = (flags & 1) != 0;
                 device.RightTracked = (flags & 2) != 0;
+                device.Unfocused = (flags & 0x10) != 0;   // QCB_FLAG_UNFOCUSED
                 if ((flags & 4) != 0)
                 {
                     device.BatteryLeft = inner[96] <= 100 ? inner[96] : null;

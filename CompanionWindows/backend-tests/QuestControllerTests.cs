@@ -119,11 +119,20 @@ public sealed class QuestControllerTests
         Assert.Equal(77, status.BatteryLeft);
         Assert.True(status.LeftTracked);
         Assert.False(status.RightTracked);
+        Assert.False(status.Unfocused);
+
+        // A system prompt took the headset's input: the next packet says so.
+        BinaryPrimitives.WriteUInt16LittleEndian(state.AsSpan(2), 0x10);   // QCB_FLAG_UNFOCUSED
+        await quest.SendAsync(QuestSeal.Seal(questKey, keyId, questSession, QuestSeal.FromSender, 2, state), target);
+        await ReceiveAsync(broker);
+        status = Assert.Single(receiver.Status());
+        Assert.True(status.Unfocused);
+        Assert.False(status.LeftTracked);
 
         // Revoked (or the grant taken away): its packets stop opening at once.
         credentials.Clear();
         receiver.Reload();
-        await quest.SendAsync(QuestSeal.Seal(questKey, keyId, questSession, QuestSeal.FromSender, 2, state), target);
+        await quest.SendAsync(QuestSeal.Seal(questKey, keyId, questSession, QuestSeal.FromSender, 3, state), target);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ReceiveAsync(broker, 300));
         Assert.Empty(receiver.Status());
     }

@@ -1,7 +1,11 @@
 # Quest controllers: pairing and streaming to several hosts
 
-Status (2026-10-31): steps 1, 2 and 4 are built, and so is a GUI. Nothing has run on a Quest
-yet.
+Status (2026-10-31): steps 1, 2 and 4 are built, and so is a GUI. A Quest 2 pairs with the
+gaming PC and streams tracked controllers into the broker's hub, unattended on a desk:
+the app starts at boot or on request, keeps the headset awake, and comes back by itself after
+a sleep. The set-up steps are in the QuestControllerBridge README ("Leaving the Quest on a
+desk"). A packet flag (`QCB_FLAG_UNFOCUSED`) reports when a system prompt on the headset has
+the input, and the panel shows it.
 
 - **Quest app** (`~/Projects/QuestControllerBridge`, public): pairs, then streams sealed
   packets to every enabled paired host next to any open host. `protocol/tests/run.sh` tests it

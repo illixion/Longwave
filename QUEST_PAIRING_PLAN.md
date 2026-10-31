@@ -1,14 +1,31 @@
 # Quest controllers: pairing and streaming to several hosts
 
-Status (2026-10-31): step 1 done, plus the PC's `controllers` grant. The
-Quest app (`~/Projects/QuestControllerBridge`, public) pairs with a Longwave PC
-and streams sealed packets to every paired host it has turned on, next to any
-open host. Its crypto and its link are tested on a desktop
-(`protocol/tests/run.sh`: CryptoKit vectors and a loopback fake host), and the
-APK builds. Neither has been tried on a Quest yet. On the PC, the Companion
-offers and grants `controllers` and tells the Quest its port. No
-receiver exists yet, so a paired Quest pairs, connects to nothing, and keeps
-retrying.
+Status (2026-10-31): steps 1, 2 and 4 are built, and so is a GUI. Nothing has run on a Quest
+yet.
+
+- **Quest app** (`~/Projects/QuestControllerBridge`, public): pairs, then streams sealed
+  packets to every enabled paired host next to any open host. `protocol/tests/run.sh` tests it
+  on a desktop, and the APK builds.
+- **Windows Companion:**
+  - It grants `controllers`.
+  - `QuestControllers` takes the sealed stream on UDP 9522 and opens it with each device's
+    token.
+  - It forwards the plain packets to the broker on 127.0.0.1:9523. Heartbeats and haptics go
+    back sealed through the Quest's own socket.
+  - `QuestStatus` reports who is streaming.
+  - Tests: `backend-tests` covers the shared vectors and a loopback run with a fake Quest and a
+    fake hub, on macOS and on Windows.
+- **Broker:**
+  - `quest_source` makes each Quest two hub devices, aligned like the Lighthouse wands.
+  - `test_tracker_hub` covers it over loopback.
+  - Built on the gaming PC.
+- **GUI:** the PCVR page's **Controllers and trackers** drawer.
+  - It shows paired Quests and the Lighthouse source, gives every device a role picker,
+    alignment and OSC output, and edits through the PCVR host's `TrackersState` and
+    `TrackersCommand`.
+  - Checked in a browser with mock data.
+  - The host's RPCs were driven over its pipe on the PC.
+  - Not yet run in the Companion itself.
 
 ## Goal
 
@@ -79,7 +96,7 @@ the host's replies go to a second port on the Quest.
      follows a host restart.
    - Auto-connect also starts with paired hosts only, once discovery settles.
    - The typed address of a paired PC is never also treated as an open host.
-2. **PC receiver. Next.** Something on the PC has to own UDP 9522, open sealed
+2. **PC receiver: built, in the Companion backend.** Something on the PC has to own UDP 9522, open sealed
    packets with the device's token, send heartbeats every 2 s and route
    haptics. I recommend the **Companion backend**, because it already holds the
    tokens (DPAPI, `DeviceRegistry`), the grants, the firewall rule and the
@@ -102,7 +119,10 @@ the host's replies go to a second port on the Quest.
    RAVESDK, so this is a port of the exchange, not a reuse of `Shared/`. Until
    then, Vision Pro apps stay open hosts, which the Quest streams to at the
    same time.
-4. **Hub priority: direct before forwarded.** With the Vision Pro forwarding a
+4. **Hub priority: direct before forwarded. Built by the table's default order.** Assigned
+   devices come first and `headset` last, so a directly paired Quest on a hand wins, and the
+   forwarded copy only fills in. `assign` now also puts the device into a custom priority
+   list. With the Vision Pro forwarding a
    Quest it also receives, the PC would see the same controllers twice:
    directly, and as the headset's 0x10. Put the direct Quest source above the
    headset candidate in each hand's list. The forwarded copy then only fills

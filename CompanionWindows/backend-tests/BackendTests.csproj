@@ -19,6 +19,9 @@
     <Compile Include="../backend/Devices/DeviceRegistry.cs" Link="Devices/DeviceRegistry.cs" />
     <Compile Include="../backend/Devices/Pairing.cs" Link="Devices/Pairing.cs" />
     <Compile Include="../backend/NativeStream/NativeStreamCrypto.cs" Link="NativeStream/NativeStreamCrypto.cs" />
+    <!-- Quest controllers: Controller Bridge's sealed datagrams, against that repo's vectors. -->
+    <Compile Include="../backend/Devices/QuestSeal.cs" Link="Devices/QuestSeal.cs" />
+    <Compile Include="../backend/Devices/QuestControllers.cs" Link="Devices/QuestControllers.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />

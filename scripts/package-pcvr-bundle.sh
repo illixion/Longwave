@@ -340,7 +340,9 @@ echo "    stripped $(find "$STAGE/host" -name '*.pdb' | wc -l | tr -d ' ') remai
 # NMake Makefiles is a single-config generator, so build outputs land straight in build/ —
 # no Release/ subfolder, unlike the multi-config VS generator this script used before.
 echo "==> collecting artifacts from $HOST"
-for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll; do
+# longwave-trackers.exe edits the tracker table the broker reads; the Companion's PCVR
+# page runs it (through the PCVR host) for its tracker panel.
+for f in LongwaveSessionBroker.exe LibOVRRT64_1.dll longwave-trackers.exe; do
   scp -q "$HOST:$BRIDGE_FS/SessionBroker/build/$f" "$STAGE/bridge/$f"
 done
 # Internal-only extras: the file list and the extra-service descriptor both live with the
@@ -414,7 +416,7 @@ mkdir -p "$UI_OUT"
 # branch in a public build away together with its strings.
 if [[ "$INTERNAL" == 1 ]]; then UI_DEFINE=true; else UI_DEFINE=false; fi
 (cd "$REPO_ROOT/CompanionWindows/app" && npx --no-install esbuild \
-  "$UI_SRC/pcvr.js" "$UI_SRC/shared.js" \
+  "$UI_SRC/pcvr.js" "$UI_SRC/shared.js" "$UI_SRC/trackers.js" \
   --minify --outdir="$UI_OUT" --charset=utf8 --define:LONGWAVE_INTERNAL=$UI_DEFINE)
 for f in pcvr.html styles.css; do
   # esbuild's --loader=copy would also do this, but keeping HTML/CSS a plain cp is one fewer

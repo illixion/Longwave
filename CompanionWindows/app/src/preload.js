@@ -55,6 +55,12 @@ contextBridge.exposeInMainWorld('hotspot', {
   nativeStreamStatus: () => ipcRenderer.invoke('rpc', 'NativeStreamStatus'),
   nativeStreamSetEnabled: (enabled) => ipcRenderer.invoke('rpc', 'NativeStreamSetEnabled', { enabled }),
   nativeStreamSetInput: (params) => ipcRenderer.invoke('rpc', 'NativeStreamSetInput', params),
+  // Quest controllers paired with this PC (the "controllers" grant): who is streaming now.
+  questStatus: () => ipcRenderer.invoke('rpc', 'QuestStatus'),
+  // Tracked devices and what each is attached to — answered by the PCVR host, so only
+  // there when PCVR is installed. trackersCommand takes the tool's own arguments.
+  trackersState: () => ipcRenderer.invoke('rpc', 'TrackersState'),
+  trackersCommand: (args) => ipcRenderer.invoke('rpc', 'TrackersCommand', { args }),
   // Devices paired with this PC, each with its own key and grants.
   devicesStatus: () => ipcRenderer.invoke('rpc', 'DevicesStatus'),
   deviceSetGrants: (id, grants) => ipcRenderer.invoke('rpc', 'DeviceSetGrants', { id, grants }),

@@ -124,7 +124,9 @@ const pcvrClient = new HotspotClient(PCVR_PIPE_PATH);
 // screen streaming, the Library* game library, Ping) is the public backend. Method names are unique across both pipes
 // by construction, so a prefix check is unambiguous.
 function routeClientFor(method) {
-  return method.startsWith('Foveated') || method.startsWith('Games') ? pcvrClient : client;
+  return method.startsWith('Foveated') || method.startsWith('Games') || method.startsWith('Trackers')
+    ? pcvrClient
+    : client;
 }
 // How many leading argv entries are the program itself: the exe when packaged, `electron .` in a
 // checkout. Everything after is ours to read — gameRequestFromArgv skips switches regardless.

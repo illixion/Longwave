@@ -81,6 +81,7 @@ public sealed class PipeServer : BackgroundService
         _controller.StatusChanged += OnStatusChanged;
         _nativeStream.StatusChanged += OnNativeStreamChanged;
         _devices.Changed += OnDevicesChanged;
+        _devices.QuestsChanged += () => _ = BroadcastAsync(RpcEvent.Of("quests", _devices.Quests.Status()));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -265,6 +266,8 @@ public sealed class PipeServer : BackgroundService
                 "DeviceSetGrants" => SetDeviceGrants(ParseParams<DeviceGrantsParams>(req)),
                 "DeviceRevoke" => RevokeDevice(ParseParams<DeviceGrantsParams>(req)),
                 "DevicesStopLegacyToken" => StopLegacyToken(),
+                // ---- Quest controllers (Controller Bridge, the "controllers" grant) ----
+                "QuestStatus" => _devices.Quests.Status(),
                 // ---- Game library (public; the PCVR host relays the headset's requests here) ----
                 "LibraryList" => ListLibrary(ParseParams<LibraryListParams>(req)),
                 "LibraryListExposed" => _games.ListExposedTitles(),

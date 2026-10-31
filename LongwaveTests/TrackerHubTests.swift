@@ -15,7 +15,7 @@ final class TrackerWireTests: XCTestCase {
     /// 0x11: seq 7, ack 200 OK, AUTO_ALIGN|HUB_ACTIVE|HEAD_VALID, COLLECTING on device 1 with the
     /// right hand, 14 pairs, 0.18 of 0.25 m; a placed wand and an unplaced Touch controller.
     static let trackersGolden =
-        "1103070207c8010201010e00ec51383e000000000000803e6c69676874686f75"
+        "110307020fc8010201010e00ec51383e000000000000803e6c69676874686f75"
         + "73653a4c48522d31000000000000000000000000000000000000c03f0000a03f"
         + "000000bf00000000f404353f00000000f404353f0000403f0f0101570000000071"
         + "756573743a616263642d6c65667400000000000000000000000000000000000000"
@@ -44,7 +44,7 @@ final class TrackerWireTests: XCTestCase {
         XCTAssertEqual(t.sequence, 7)
         XCTAssertEqual(t.ackSequence, 200)
         XCTAssertEqual(t.ackResult, .ok)
-        XCTAssertEqual(t.flags, [.autoAlign, .hubActive, .headValid])
+        XCTAssertEqual(t.flags, [.autoAlign, .hubActive, .headValid, .autoAlignOn])
         XCTAssertEqual(t.alignPhase, .collecting)
         XCTAssertEqual(t.alignDevice, 1)
         XCTAssertEqual(t.alignHand, 1)

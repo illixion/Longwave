@@ -175,9 +175,8 @@ final class TrackerHubModel {
     /// When a device last went from unaligned to aligned, for the overlay's auto-show.
     private(set) var lastAlignedAt: CFTimeInterval = 0
 
-    /// What the person set; the host does not report its own (see the contract note in the
-    /// tracker UI hand-off), so this is the only copy. Persisted, and only pushed when the
-    /// person changes it.
+    /// The host's auto-align setting, as its 0x11 reports it. The person's tap shows at once
+    /// and the host's word replaces it once no change is waiting to be acknowledged.
     private(set) var autoAlign: Bool = (UserDefaults.standard.object(forKey: TrackerHubModel.autoAlignKey) as? Bool) ?? true
     /// Draw the devices even with the panel closed.
     var showAlways: Bool = UserDefaults.standard.bool(forKey: TrackerHubModel.showAlwaysKey) {
@@ -221,6 +220,13 @@ final class TrackerHubModel {
         let before = latest
         latest = packet
         receivedAt = now
+        if queue.isIdle {
+            let hostValue = packet.flags.contains(.autoAlignOn)
+            if hostValue != autoAlign {
+                autoAlign = hostValue
+                UserDefaults.standard.set(hostValue, forKey: Self.autoAlignKey)
+            }
+        }
         if trackers == nil || now - publishedAt >= 0.1 || Self.differsVisibly(before, packet) {
             trackers = packet
             publishedAt = now

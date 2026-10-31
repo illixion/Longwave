@@ -652,6 +652,8 @@ struct ControllerBridgeTrackers: Equatable {
         static let hubActive = Flags(rawValue: 1 << 1)
         /// The broker has the headset's hands to pair with.
         static let headValid = Flags(rawValue: 1 << 2)
+        /// The host's own auto-align setting (what the headset's toggle shows).
+        static let autoAlignOn = Flags(rawValue: 1 << 3)
     }
     enum AlignPhase: UInt8 {
         case idle = 0, waiting = 1, collecting = 2, done = 3

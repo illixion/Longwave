@@ -113,6 +113,12 @@ struct FoveatedControlsView: View {
                 }
             }
 
+            // Aligning and assigning the PC's tracked devices. Its own view, so the tracker
+            // feed's updates rebuild the card and not this whole window.
+            if let hub = manager.trackerHub {
+                PCVRTrackersGate(hub: hub)
+            }
+
             HStack(spacing: 28) {
                 Button {
                     Task { isPaused ? await manager.resume() : await manager.pause() }

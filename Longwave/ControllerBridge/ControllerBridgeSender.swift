@@ -414,6 +414,11 @@ final class ControllerBridgeSender {
     private(set) var bandwidth: ControllerBridgeBandwidth?
     private(set) var bandwidthReceivedAt: CFTimeInterval = 0
 
+    /// The PC's tracker hub as this headset sees it (0x11), and the commands it sends back
+    /// (0x12). A fresh connection means a fresh sender, so it never carries a previous
+    /// host's devices forward.
+    let trackerHub = TrackerHubModel()
+
     /// Alignment tuning pushed to the host, resent periodically so a host restart or a
     /// transport swap re-adopts it without the user touching anything. Not persisted:
     /// it is a live diagnostic, not a per-title setting (see `ControllerBridgeDebugTune`).
@@ -789,6 +794,8 @@ final class ControllerBridgeSender {
             ingest(telemetry)
         } else if let perf = ControllerBridgePerf(payload) {
             ingest(perf)
+        } else if let trackers = ControllerBridgeTrackers(payload) {
+            trackerHub.ingest(trackers)
         } else if let bw = ControllerBridgeBandwidth(payload) {
             bandwidth = bw
             bandwidthReceivedAt = CACurrentMediaTime()
@@ -1428,6 +1435,7 @@ final class ControllerBridgeSender {
                 }
                 sendDebugTuneIfNeeded()
                 sendBandwidthControlIfNeeded()
+                sendTrackerCommandIfNeeded()
                 deadline += period
                 let now = clock.now
                 // Fell more than a period behind (a long main-actor stall): re-anchor
@@ -1479,6 +1487,15 @@ final class ControllerBridgeSender {
         pendingBandwidthReset = false
         bandwidthControlDirty = false
         lastBandwidthControlSend = now
+    }
+
+    /// One tracker command at a time, resent every 200 ms until the host's 0x11 acknowledges
+    /// it. Control link only: the host reads these off that stream, so there is no datagram
+    /// fallback to fall back to, and a command the link did not take stays queued.
+    private func sendTrackerCommandIfNeeded() {
+        let now = CACurrentMediaTime()
+        guard let packet = trackerHub.packetToSend(now: now) else { return }
+        if control.send(packet) { trackerHub.markSent(now: now) }
     }
 
     private func buildPacket(tracked: ControllerBridgeTrackedControllers) -> ControllerBridgeInputState {

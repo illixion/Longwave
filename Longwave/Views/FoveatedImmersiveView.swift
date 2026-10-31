@@ -48,6 +48,7 @@ struct FoveatedImmersiveView: View {
     private let bannerDriver = ImmersiveBannerDriver()
     private let webPanels = PCVRWebPanelsDriver()
     private let joystickEntity = Entity()
+    private let trackerOverlay = TrackerOverlayDriver()
 
     var body: some View {
         RealityView { content in
@@ -61,6 +62,7 @@ struct FoveatedImmersiveView: View {
             buildWebPanels(content: content)
             buildJoystickVisualization(content: content)
             buildGamepadVisualizer(content: content)
+            buildTrackerOverlay(content: content)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -311,6 +313,25 @@ struct FoveatedImmersiveView: View {
                                 bridge: manager.controllerBridge)
         })
         content.add(panel.root)
+    }
+
+    // MARK: Tracked devices
+
+    /// A wireframe on each device the PC's tracker hub (and this headset's own controller
+    /// source) is tracking, for judging an alignment by eye. See `TrackerOverlayDriver`.
+    private func buildTrackerOverlay(content: RealityViewContent) {
+        // The component sits on its own, always-enabled entity: the overlay hides its own
+        // root when nothing is wanted, and a disabled entity is not updated, so a driver
+        // living on that root could never switch itself back on.
+        let host = Entity()
+        host.components.set(ClosureComponent { deltaTime in
+            trackerOverlay.update(deltaTime: deltaTime,
+                                  hub: manager.trackerHub,
+                                  local: manager.controllerBridge?.lastTrackedControllers,
+                                  head: manager.controllerBridge?.headWorldPose?.position)
+        })
+        host.addChild(trackerOverlay.root)
+        content.add(host)
     }
 
     // MARK: Gamepad visualizer

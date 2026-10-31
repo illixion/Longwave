@@ -92,6 +92,7 @@ struct FoveatedHUDView: View {
             switchProSection
             batteryRow
             questSection
+            trackersLine
             Divider()
             trialRow
             bandwidthRow
@@ -558,6 +559,27 @@ struct FoveatedHUDView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(bridge.questControllersEnabled ? .accentColor : nil)
+            }
+        }
+    }
+
+    // MARK: Tracker alignment
+
+    /// One line, only while an alignment is running or has just finished: a person waving a
+    /// wand cannot see a window, but can raise a palm. The Trackers panel in the control
+    /// window has everything else.
+    @ViewBuilder
+    private var trackersLine: some View {
+        if let hub = bridge?.trackerHub, hub.isLive(),
+           hub.phase == .collecting || hub.phase == .done,
+           let status = hub.alignment {
+            HStack(spacing: 10) {
+                Image(systemName: hub.phase == .done ? "checkmark.circle.fill" : "scope")
+                    .foregroundStyle(hub.phase == .done ? .green : .secondary)
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

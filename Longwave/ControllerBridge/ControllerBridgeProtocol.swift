@@ -45,6 +45,10 @@ enum ControllerBridgeProtocol {
     static let packetBandwidth: UInt8 = 0x0E        // host → headset, monthly usage + thresholds
     static let packetBandwidthControl: UInt8 = 0x0F // headset → host, threshold edits + reset
     static let packetTrackedControllers: UInt8 = 0x10 // headset → host, v3, Sense / Quest Touch
+    static let packetTrackers: UInt8 = 0x11           // host → headset, v3, the tracker hub's state
+    static let packetTrackerCommand: UInt8 = 0x12     // headset → host, v3, one-shot per sequence
+    static let trackersMaxDevices = 12   // CB_TRACKERS_MAX_DEVICES
+    static let trackerKeyBytes = 32      // CB_TRACKER_KEY_BYTES
     static let perfFrameSlots = 32   // cb_perf_t.frame_us capacity
     static let handJointCount = 26   // XR_EXT_hand_tracking joint order
 
@@ -592,6 +596,235 @@ struct ControllerBridgeBandwidthControl: Equatable {
         assert(d.count == 12, "cb_bandwidth_control_t must serialize to 12 bytes, got \(d.count)")
         return d
     }
+}
+
+// MARK: - Trackers (0x11 host → headset, 0x12 headset → host)
+
+/// What the PC's tracker hub is for the person wearing the devices: every device, placed in
+/// ARKit world (this headset's own world, so it can be drawn exactly where it is), and the
+/// state of the alignment that puts it there. `cb_trackers_header_t` (24 bytes) followed by
+/// `device_count` × `cb_tracker_device_t` (72 bytes), on the TCP control link, ~30 Hz.
+/// `OpenXRLayer/protocol/controller_bridge_protocol.h` is the contract.
+struct ControllerBridgeTrackerDevice: Equatable, Identifiable {
+    struct Flags: OptionSet, Equatable {
+        let rawValue: UInt8
+        /// A fresh pose arrived within the last ~100 ms.
+        static let tracked = Flags(rawValue: 1 << 0)
+        /// `position` / `orientation` are valid in ARKit world.
+        static let placed  = Flags(rawValue: 1 << 1)
+        /// Its tracking space is aligned to ARKit world.
+        static let aligned = Flags(rawValue: 1 << 2)
+        static let held    = Flags(rawValue: 1 << 3)
+        static let moving  = Flags(rawValue: 1 << 4)
+        /// Aligned from last time, not yet confirmed this run.
+        static let warm    = Flags(rawValue: 1 << 5)
+    }
+    /// Which outline is drawn. Never a trust decision.
+    enum Kind: UInt8 {
+        case other = 0, wand = 1, touch = 2, tracker = 3
+    }
+    static let batteryUnknown: UInt8 = 0xFF
+
+    var key: String = ""
+    var position: SIMD3<Float> = .zero
+    var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    var speed: Float = 0
+    var flags: Flags = []
+    /// The table's role for it, `TrackerRole.rawValue`.
+    var role: UInt8 = 0
+    var kind: Kind = .other
+    var battery: UInt8 = ControllerBridgeTrackerDevice.batteryUnknown
+    /// 0 / 1 = this device is presenting that hand, -1 = neither.
+    var ownsHand: Int8 = -1
+
+    var id: String { key }
+    var isPlaced: Bool { flags.contains(.placed) }
+    var isTracked: Bool { flags.contains(.tracked) }
+    var isAligned: Bool { flags.contains(.aligned) }
+}
+
+struct ControllerBridgeTrackers: Equatable {
+    struct Flags: OptionSet, Equatable {
+        let rawValue: UInt8
+        /// The hub is waiting for, or running, an alignment.
+        static let autoAlign = Flags(rawValue: 1 << 0)
+        /// A source is running or a table is loaded.
+        static let hubActive = Flags(rawValue: 1 << 1)
+        /// The broker has the headset's hands to pair with.
+        static let headValid = Flags(rawValue: 1 << 2)
+    }
+    enum AlignPhase: UInt8 {
+        case idle = 0, waiting = 1, collecting = 2, done = 3
+    }
+    /// `CB_TRK_RESULT_*`.
+    enum Result: UInt8 {
+        case none = 0, ok = 1, refused = 2, unknown = 3
+    }
+
+    var sequence: UInt8 = 0
+    var flags: Flags = []
+    var ackSequence: UInt8 = 0
+    var ackResult: Result = .none
+    var alignPhase: AlignPhase = .idle
+    /// Index into `devices`, nil when no device is being aligned.
+    var alignDevice: Int?
+    /// 0 left, 1 right, nil until a hand is matched.
+    var alignHand: Int?
+    var alignSamples: Int = 0
+    var alignSpreadMeters: Float = 0
+    var alignResidualMm: Float = 0
+    var alignSpreadTargetMeters: Float = 0.25
+    var devices: [ControllerBridgeTrackerDevice] = []
+
+    static let headerSize = 24
+    static let deviceSize = 72
+
+    init() {}
+
+    init?(_ data: Data) {
+        guard data.count >= Self.headerSize,
+              data[data.startIndex] == ControllerBridgeProtocol.packetTrackers else { return nil }
+        let b = [UInt8](data)
+        guard b[1] == ControllerBridgeProtocol.version3 else { return nil }
+        let count = Int(b[3])
+        guard count <= ControllerBridgeProtocol.trackersMaxDevices,
+              b.count >= Self.headerSize + Self.deviceSize * count else { return nil }
+        func u32(_ o: Int) -> UInt32 {
+            UInt32(b[o]) | (UInt32(b[o + 1]) << 8) | (UInt32(b[o + 2]) << 16) | (UInt32(b[o + 3]) << 24)
+        }
+        func f(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
+        sequence = b[2]
+        flags = Flags(rawValue: b[4])
+        ackSequence = b[5]
+        ackResult = Result(rawValue: b[6]) ?? .none
+        alignPhase = AlignPhase(rawValue: b[7]) ?? .idle
+        let device = Int(Int8(bitPattern: b[8]))
+        alignDevice = device >= 0 && device < count ? device : nil
+        let hand = Int(Int8(bitPattern: b[9]))
+        alignHand = hand == 0 || hand == 1 ? hand : nil
+        alignSamples = Int(b[10]) | (Int(b[11]) << 8)
+        alignSpreadMeters = f(12)
+        alignResidualMm = f(16)
+        alignSpreadTargetMeters = f(20)
+        devices.reserveCapacity(count)
+        for i in 0..<count {
+            let o = Self.headerSize + Self.deviceSize * i
+            var d = ControllerBridgeTrackerDevice()
+            let name = b[o..<(o + ControllerBridgeProtocol.trackerKeyBytes)].prefix { $0 != 0 }
+            d.key = String(decoding: name, as: UTF8.self)
+            d.position = SIMD3(f(o + 32), f(o + 36), f(o + 40))
+            d.orientation = simd_quatf(ix: f(o + 44), iy: f(o + 48), iz: f(o + 52), r: f(o + 56))
+            d.speed = f(o + 60)
+            d.flags = .init(rawValue: b[o + 64])
+            d.role = b[o + 65]
+            d.kind = .init(rawValue: b[o + 66]) ?? .other
+            d.battery = b[o + 67]
+            d.ownsHand = Int8(bitPattern: b[o + 68])
+            devices.append(d)
+        }
+    }
+
+    /// Host-direction encoder. The headset never sends this; it exists for the tests
+    /// (which pin the bytes against the host's) and the demo feed.
+    func encoded() -> Data {
+        var d = Data(capacity: Self.headerSize + Self.deviceSize * devices.count)
+        d.append(ControllerBridgeProtocol.packetTrackers)                    // off 0
+        d.append(ControllerBridgeProtocol.version3)                          // off 1
+        d.append(sequence)                                                   // off 2
+        d.append(UInt8(devices.count))                                       // off 3
+        d.append(flags.rawValue)                                             // off 4
+        d.append(ackSequence)                                                // off 5
+        d.append(ackResult.rawValue)                                         // off 6
+        d.append(alignPhase.rawValue)                                        // off 7
+        d.append(UInt8(bitPattern: Int8(alignDevice ?? -1)))                 // off 8
+        d.append(UInt8(bitPattern: Int8(alignHand ?? -1)))                   // off 9
+        d.cb_appendUInt8(UInt8(alignSamples & 0xFF))                         // off 10
+        d.cb_appendUInt8(UInt8((alignSamples >> 8) & 0xFF))
+        d.cb_appendFloat(alignSpreadMeters)                                  // off 12
+        d.cb_appendFloat(alignResidualMm)                                    // off 16
+        d.cb_appendFloat(alignSpreadTargetMeters)                            // off 20
+        for device in devices {
+            var key = Array(device.key.utf8.prefix(ControllerBridgeProtocol.trackerKeyBytes - 1))
+            key += [UInt8](repeating: 0, count: ControllerBridgeProtocol.trackerKeyBytes - key.count)
+            d.append(contentsOf: key)                                        // off 0
+            d.cb_appendFloat(device.position.x); d.cb_appendFloat(device.position.y)
+            d.cb_appendFloat(device.position.z)                              // off 32
+            d.cb_appendFloat(device.orientation.imag.x); d.cb_appendFloat(device.orientation.imag.y)
+            d.cb_appendFloat(device.orientation.imag.z); d.cb_appendFloat(device.orientation.real) // off 44
+            d.cb_appendFloat(device.speed)                                   // off 60
+            d.append(device.flags.rawValue)                                  // off 64
+            d.append(device.role)                                            // off 65
+            d.append(device.kind.rawValue)                                   // off 66
+            d.append(device.battery)                                         // off 67
+            d.append(UInt8(bitPattern: device.ownsHand))                     // off 68
+            d.append(contentsOf: [0, 0, 0])                                  // off 69
+        }
+        return d
+    }
+}
+
+/// The 0x12 tracker command (`cb_tracker_command_t`, 40 bytes). One-shot per `sequence`:
+/// the host runs it once per new value, and `TrackerCommandQueue` resends it until the
+/// host's 0x11 acknowledges that sequence.
+struct ControllerBridgeTrackerCommand: Equatable {
+    enum Op: UInt8 {
+        case alignStart = 1, alignStop = 2, reset = 3, assign = 4, unassign = 5, setAutoAlign = 6
+    }
+    /// `CB_TRKCMD_HAND_AUTO`: align with whichever hand the device moves with.
+    static let handAuto: UInt8 = 0xFF
+
+    var op: Op
+    var arg: UInt8 = 0
+    var key: String = ""
+
+    func encoded(sequence: UInt8) -> Data {
+        var d = Data(capacity: 40)
+        d.append(ControllerBridgeProtocol.packetTrackerCommand)   // off 0
+        d.append(ControllerBridgeProtocol.version3)               // off 1
+        d.append(sequence)                                        // off 2
+        d.append(op.rawValue)                                     // off 3
+        d.append(arg)                                             // off 4
+        d.append(contentsOf: [0, 0, 0])                           // off 5
+        var bytes = Array(key.utf8.prefix(ControllerBridgeProtocol.trackerKeyBytes - 1))
+        bytes += [UInt8](repeating: 0, count: ControllerBridgeProtocol.trackerKeyBytes - bytes.count)
+        d.append(contentsOf: bytes)                               // off 8
+        assert(d.count == 40, "cb_tracker_command_t must serialize to 40 bytes, got \(d.count)")
+        return d
+    }
+}
+
+/// The hub's `Role` enum order (`tracker_model.h`); the wire carries the raw value.
+enum TrackerRole: UInt8, CaseIterable, Identifiable {
+    case none = 0, leftHand, rightHand, chest, waist, leftShoulder, rightShoulder,
+         leftElbow, rightElbow, leftWrist, rightWrist, leftKnee, rightKnee,
+         leftAnkle, rightAnkle, leftFoot, rightFoot
+
+    var id: UInt8 { rawValue }
+
+    var label: String {
+        switch self {
+        case .none: "Not used"
+        case .leftHand: "Left hand"
+        case .rightHand: "Right hand"
+        case .chest: "Chest"
+        case .waist: "Waist"
+        case .leftShoulder: "Left shoulder"
+        case .rightShoulder: "Right shoulder"
+        case .leftElbow: "Left elbow"
+        case .rightElbow: "Right elbow"
+        case .leftWrist: "Left wrist"
+        case .rightWrist: "Right wrist"
+        case .leftKnee: "Left knee"
+        case .rightKnee: "Right knee"
+        case .leftAnkle: "Left ankle"
+        case .rightAnkle: "Right ankle"
+        case .leftFoot: "Left foot"
+        case .rightFoot: "Right foot"
+        }
+    }
+
+    /// Roles a controller takes; the rest are body roles (one device each).
+    var isHand: Bool { self == .leftHand || self == .rightHand }
 }
 
 /// Decoded haptic pulse (`cb_haptic_packet_t`, 14 bytes) received from the driver.

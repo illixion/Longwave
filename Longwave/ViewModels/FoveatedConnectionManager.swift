@@ -105,6 +105,11 @@ final class FoveatedConnectionManager {
     /// non-nil only while a session with the bridge enabled is connected.
     private(set) var controllerBridge: ControllerBridgeSender?
 
+    /// The tracker hub as this session sees it: the connected host's, or, while the debug
+    /// server's demo feed runs, the demo's — which is what lets the Trackers panel and the
+    /// wireframes be looked at without a PC.
+    var trackerHub: TrackerHubModel? { controllerBridge?.trackerHub ?? TrackerHubModel.demo }
+
     /// The PC's curated game library, served over the bridge's data channel.
     /// Long-lived (a view can hold it across reconnects) but only populated while
     /// a bridge is attached — see `FoveatedGameLibrary.attach(to:)`.

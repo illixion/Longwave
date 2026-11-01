@@ -14,8 +14,9 @@ import SwiftUI
 /// The session owns one run per opened space: a frame mailbox the stream feeds,
 /// a head-pose producer whose snapshots go up the uplink, and the render loop.
 /// Each run gets its own, so a run that is still winding down can never take
-/// frames meant for the next one. Until the v3 client exists, DEBUG builds
-/// feed it from `PCVRFakeRemote`.
+/// frames meant for the next one. The frame source is the v3 client
+/// (`PCVRV3Remote`) when `v3Target` is set when the space opens, else, in
+/// DEBUG builds, `PCVRFakeRemote`.
 @Observable
 final class PCVRShellSession {
     static let immersiveSpaceID = "pcvr-shell"
@@ -29,6 +30,12 @@ final class PCVRShellSession {
             renderer?.options.withLock { $0 = options }
         }
     }
+
+    /// The PC to stream from when the space next opens; nil uses the fake
+    /// remote (DEBUG) or nothing.
+    var v3Target: PCVRV3Target?
+    private(set) var v3Status: PCVRV3Status?
+    @ObservationIgnored private var v3Remote: PCVRV3Remote?
 
     #if DEBUG
     var remoteSettings = PCVRFakeRemoteSettings() {
@@ -79,15 +86,30 @@ final class PCVRShellSession {
         renderer.onInvalidated = { [self] in
             Task { @MainActor in rendererDidInvalidate(identity) }
         }
+        if let v3Target {
+            do {
+                if let remote = try PCVRV3Remote(device: layerRenderer.device, mailbox: mailbox, target: v3Target) {
+                    poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
+                    remote.start()
+                    v3Remote = remote
+                } else {
+                    log.error("The v3 source has no per-device credential for this PC; pair the headset with its Companion")
+                }
+            } catch {
+                log.error("The v3 source could not start: \(error, privacy: .public)")
+            }
+        }
         #if DEBUG
-        do {
-            let remote = try PCVRFakeRemote(device: layerRenderer.device, mailbox: mailbox)
-            remote.settings.withLock { [remoteSettings] in $0 = remoteSettings }
-            poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
-            remote.start()
-            fakeRemote = remote
-        } catch {
-            log.error("Fake remote could not start: \(error, privacy: .public)")
+        if v3Remote == nil {
+            do {
+                let remote = try PCVRFakeRemote(device: layerRenderer.device, mailbox: mailbox)
+                remote.settings.withLock { [remoteSettings] in $0 = remoteSettings }
+                poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
+                remote.start()
+                fakeRemote = remote
+            } catch {
+                log.error("Fake remote could not start: \(error, privacy: .public)")
+            }
         }
         #endif
         self.renderer = renderer
@@ -105,6 +127,9 @@ final class PCVRShellSession {
     func stop() {
         statsTask?.cancel()
         statsTask = nil
+        v3Remote?.stop()
+        v3Remote = nil
+        v3Status = nil
         #if DEBUG
         fakeRemote?.stop()
         fakeRemote = nil
@@ -123,6 +148,7 @@ final class PCVRShellSession {
     private func pollStats() {
         guard let renderer else { return }
         stats = renderer.stats.withLock { $0 }
+        v3Status = v3Remote?.status.withLock { $0 }
         #if DEBUG
         if let fakeRemote { remoteCounts = fakeRemote.counts }
         #endif

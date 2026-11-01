@@ -411,14 +411,17 @@ struct LongwaveApp: App {
 
         #if DEBUG
         // Shell A: the PCVR receiver in a CompositorServices space of its own,
-        // fed by a fake remote until the Native v3 client exists. DEBUG-only
-        // while it has no real source; the receiver and presenter types compile
-        // into every FOVEATED_ENABLED build. See `PCVRShellSession`.
+        // fed by the PC over Native v3 (`PCVRV3Remote`) or a fake remote. The
+        // window stays DEBUG-only until the v3 path is proven on the device; the
+        // receiver, presenter and v3 source compile into every FOVEATED_ENABLED
+        // build. See `PCVRShellSession`.
         WindowGroup("PCVR Shell A", id: PCVRShellDevView.windowID) {
             PCVRShellDevView()
                 .environment(pcvrShell)
                 .environment(foveatedManager)
         }
+        // The v3 source reads paired Companions and the PCVR tab's address.
+        .modelContainer(for: SavedConnection.self)
         .defaultSize(width: 480, height: 760)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)

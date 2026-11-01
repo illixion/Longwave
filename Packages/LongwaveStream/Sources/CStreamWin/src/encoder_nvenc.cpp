@@ -192,8 +192,23 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     rc.vbvInitialDelay = rc.vbvBufferSize;
     rc.multiPass = NV_ENC_MULTI_PASS_DISABLED;
 
+    // Say BT.709 limited range in the VUI. NVENC converts BGRA input to YUV with
+    // the matrix the VUI names; with none it picks its own, and the client (which
+    // reads the stream's colour from the format description) would decode with
+    // another matrix and shift the colours.
+    auto describe_colour = [](NV_ENC_CONFIG_H264_VUI_PARAMETERS &vui) {
+        vui.videoSignalTypePresentFlag = 1;
+        vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+        vui.videoFullRangeFlag = 0;
+        vui.colourDescriptionPresentFlag = 1;
+        vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+        vui.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+        vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    };
+
     if (p.codec == LW_CODEC_H264) {
         auto &h264 = config.encodeCodecConfig.h264Config;
+        describe_colour(h264.h264VUIParameters);
         h264.idrPeriod = NVENC_INFINITE_GOPLENGTH;
         h264.repeatSPSPPS = 1;
         h264.chromaFormatIDC = 1;
@@ -209,6 +224,7 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     } else {
         auto &hevc = config.encodeCodecConfig.hevcConfig;
         config.profileGUID = NV_ENC_HEVC_PROFILE_MAIN_GUID;
+        describe_colour(hevc.hevcVUIParameters);
         hevc.idrPeriod = NVENC_INFINITE_GOPLENGTH;
         hevc.repeatSPSPPS = 1; // VPS/SPS/PPS before every IDR: a client can join at any key frame
         hevc.chromaFormatIDC = 1;

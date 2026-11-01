@@ -161,9 +161,10 @@ public struct VideoStreamSender: Sendable {
     public var upcomingFrameNumber: UInt32 { nextFrameNumber }
 
     /// Queues one encoded frame (an access unit as the decoder takes it).
-    /// `udpPayload` is the session's confirmed datagram size.
+    /// `udpPayload` is the session's confirmed datagram size. `sideData` rides
+    /// in the frame's payload (a PCVR frame's render pose, section 4.7).
     public mutating func submit(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, captureTime: UInt64,
-                                udpPayload: Int, now: UInt64) throws -> Submission {
+                                sideData: SideData = .none, udpPayload: Int, now: UInt64) throws -> Submission {
         if let last = lastSubmit, now > last {
             // A still desktop's second-long gaps count as one frame a second.
             let rate = 1e9 / Double(min(now - last, 1_000_000_000))
@@ -188,7 +189,7 @@ public struct VideoStreamSender: Sendable {
             streamID: configuration.streamID, frameNumber: number, captureTime: captureTime,
             flags: isKeyFrame ? .key : [],
             referenceDistance: isKeyFrame ? 0 : UInt16(truncatingIfNeeded: number &- (lastQueued ?? number &- 1)))
-        let payload = try FramePayload.encode(sideData: SideData(), accessUnit: accessUnit)
+        let payload = try FramePayload.encode(sideData: sideData, accessUnit: accessUnit)
         let frame = try ShardedVideoFrame(payload: payload, info: info,
                                           shardSize: DatagramLayout.videoShardDataCapacity(udpPayload: udpPayload),
                                           policy: fecPolicy)

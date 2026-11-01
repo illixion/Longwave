@@ -79,6 +79,7 @@ var targets: [Target] = [
 #if os(Windows)
 products.append(.executable(name: "longwave-host-spike", targets: ["longwave-host-spike"]))
 products.append(.executable(name: "frame-source-spike", targets: ["frame-source-spike"]))
+products.append(.executable(name: "longwave-pcvr-host", targets: ["longwave-pcvr-host"]))
 targets += [
     .target(
         name: "CStreamWin",
@@ -110,6 +111,12 @@ targets += [
     .target(name: "StreamHostWindows", dependencies: ["CStreamWin"]),
     .executableTarget(name: "frame-source-spike", dependencies: ["CStreamWin"]),
     .testTarget(name: "StreamHostWindowsTests", dependencies: ["StreamHostWindows", "CStreamWin"]),
+    // The v3 PCVR host: the session broker's frames -> NVENC -> v3 (section 4.7).
+    .executableTarget(
+        name: "longwave-pcvr-host",
+        dependencies: ["StreamHostWindows", "StreamHost", "StreamTransport", "StreamWire", "StreamCrypto"],
+        linkerSettings: [.linkedLibrary("ws2_32"), .linkedLibrary("crypt32"), .linkedLibrary("advapi32")]
+    ),
     .executableTarget(
         name: "longwave-host-spike",
         dependencies: [

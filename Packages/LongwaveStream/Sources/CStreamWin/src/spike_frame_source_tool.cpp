@@ -8,6 +8,7 @@
 //                                [--slots N] [--aux] [--warp] [--crash-after N] [--wait S]
 //   frame-source-spike consume   [--channel C] [--seconds S] [--fps F] [--mbps M] [--csv FILE]
 //                                [--verify] [--stall-at N --stall-ms MS] [--no-encode]
+//                                [--out FILE.h265] [--pose]
 //   frame-source-spike inprocess [--seconds S] [--fps F] [--width W] [--height H] [--mbps M] [--csv FILE]
 //   frame-source-spike gpu-load  [--percent P] [--seconds S]
 //
@@ -24,7 +25,12 @@
 // frame number, aux value and side data (proves the fence actually orders the
 // handoff; adds readback stalls, so not for latency runs). --stall-at holds
 // every delivered frame for MS milliseconds from frame N (a stalled encoder),
-// to show the producer starving and recovering.
+// to show the producer starving and recovering. --out writes the encoded
+// stream (Annex-B HEVC, playable with ffplay) to see what a real producer
+// sent. --pose publishes a headset-shaped host state instead of the bare
+// identity one: a head 1.6 m up, 63 mm IPD, a 112 x 100 degree field of view
+// per eye, turning slowly left and right, so a VR compositor (the session
+// broker's native output) renders from it as it would from a headset.
 //
 // inprocess is the baseline: the same pattern drawn on the host's own device
 // into a same-format texture, a local fence waited on, the same mailbox and
@@ -35,6 +41,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -57,7 +64,7 @@ struct Options {
             std::string a = argv[i];
             if (a.rfind("--", 0) != 0) continue;
             a = a.substr(2);
-            if (a == "aux" || a == "warp" || a == "verify" || a == "no-encode") flags.push_back(a);
+            if (a == "aux" || a == "warp" || a == "verify" || a == "no-encode" || a == "pose") flags.push_back(a);
             else if (i + 1 < argc) values[a] = argv[++i];
         }
     }
@@ -318,6 +325,8 @@ struct Encoding {
     std::vector<Record> records;
     long verify_failures = 0, verified = 0, encode_errors = 0;
     uint32_t last_pose = 0;
+    FILE *out = nullptr; // --out: the Annex-B stream
+    uint64_t out_bytes = 0;
 
     void open(int width, int height) {
         if (verify) {
@@ -376,6 +385,7 @@ struct Encoding {
                 r.submit = packet.submit_qpc;
                 r.done = packet.done_qpc;
                 r.bytes = packet.size;
+                if (out && packet.size) out_bytes += fwrite(packet.data, 1, packet.size, out);
             }
         }
         w.release(); // after the encode: the GPU is done with the texture
@@ -507,6 +517,11 @@ int consume(const Options &o) {
     enc.mbps = o.num("mbps", 50);
     enc.verify = o.has("verify");
     enc.encode = !o.has("no-encode");
+    const bool headset_pose = o.has("pose");
+    if (o.values.count("out")) {
+        enc.out = fopen(o.values.at("out").c_str(), "wb");
+        if (!enc.out) die("--out: can't open the file", LW_E_OS);
+    }
     lw_status st = lw_device_create(nullptr, &enc.device);
     if (st != LW_OK) die("lw_device_create", st);
     lw_device_info info{};
@@ -540,6 +555,21 @@ int consume(const Options &o) {
         hs.pose_sequence = ++pose;
         hs.pose_valid = 1;
         hs.head.orientation[3] = 1;
+        if (headset_pose) {
+            // A head turning +-30 degrees over 8 s, displayed two frames from now.
+            const double t = static_cast<double>(lw_qpc_now()) / lw_qpc_frequency();
+            const double yaw = 0.5236 * sin(t * 2.0 * 3.14159265 / 8.0);
+            hs.head.orientation[1] = static_cast<float>(sin(yaw / 2));
+            hs.head.orientation[3] = static_cast<float>(cos(yaw / 2));
+            hs.head.position[1] = 1.6f;
+            for (int eye = 0; eye < 2; ++eye) {
+                hs.eye_offset[eye].orientation[3] = 1;
+                hs.eye_offset[eye].position[0] = eye == 0 ? -0.0315f : 0.0315f;
+                hs.eye_fov[eye] = {-0.977f, 0.977f, 0.873f, -0.873f};
+            }
+            hs.space_epoch = 1;
+            hs.pose_display_qpc = next + 2 * interval;
+        }
         hs.refresh_millihz = static_cast<uint32_t>(fps * 1000);
         hs.next_frame_start_qpc = next + interval;
         hs.written_qpc = lw_qpc_now();
@@ -585,6 +615,11 @@ int consume(const Options &o) {
            static_cast<unsigned long long>(stats.dropped), static_cast<unsigned long long>(stats.superseded),
            static_cast<unsigned long long>(stats.starved));
     enc.report(o.values.count("csv") ? o.values.at("csv").c_str() : nullptr);
+    if (enc.out) {
+        fclose(enc.out);
+        printf("wrote %llu bytes of HEVC to %s\n", static_cast<unsigned long long>(enc.out_bytes),
+               o.values.at("out").c_str());
+    }
     if (enc.encoder) lw_encoder_release(enc.encoder);
     if (enc.verifier) lw_spike_pattern_release(enc.verifier);
     lw_device_release(enc.device);

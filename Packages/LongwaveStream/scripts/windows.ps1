@@ -39,7 +39,13 @@ if (-not $env:SDKROOT) {
 if (-not $env:SDKROOT -or -not (Test-Path $env:SDKROOT)) { throw 'Install the Swift Windows SDK first.' }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-$vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+# VS 2022 (17.x) first: Swift 6.2.4's clang is 19, and VS 2026's STL (MSVC 14.51)
+# refuses anything older than clang 20 (STL1000). On a machine with both, -latest
+# alone picks 2026 and every C++ target fails. Fall back to whatever is newest.
+$vs = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vs) {
+    $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+}
 if (-not $vs) { throw 'No Visual Studio installation with the x64 C++ toolchain was found.' }
 Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
 Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null

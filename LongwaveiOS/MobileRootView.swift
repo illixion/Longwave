@@ -1,3 +1,4 @@
+import RAVECompanion
 import SwiftUI
 
 /// The tab shell. Stands in for both the visionOS `MainView` ornament tab bar and

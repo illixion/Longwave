@@ -1,5 +1,6 @@
 import RAVEUI
 import SwiftUI
+import RAVECompanion
 
 /// Root of the main window: Connections / Settings / Console tabs,
 /// switched by a bottom ornament tab bar (matches the app's ornament idiom;

@@ -1,6 +1,7 @@
 import DebugTrace
 import Foundation
 import Network
+import RAVECompanion
 
 /// Client for the companion text-injection channel. Connects to the macOS
 /// companion over TLS-1.2-PSK (`CompanionInjectCrypto`) and sends only literal

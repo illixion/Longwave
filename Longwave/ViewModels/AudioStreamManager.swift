@@ -11,6 +11,7 @@ import UIKit
 import AppKit
 #endif
 import MediaPlayer
+import RAVECompanion
 
 /// How the receiver coexists with the rest of the system.
 /// - `.speaker` (default): a **mixable** session (`.mixWithOthers`) that plays

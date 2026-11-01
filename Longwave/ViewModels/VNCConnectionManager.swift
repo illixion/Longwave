@@ -3,6 +3,7 @@ import Foundation
 import QuartzCore
 #if canImport(UIKit)
 import UIKit
+import RAVECompanion
 #endif
 
 /// Connection state for the app UI

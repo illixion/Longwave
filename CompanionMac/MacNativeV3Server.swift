@@ -6,6 +6,7 @@ import StreamCrypto
 import StreamHost
 import StreamTransport
 import StreamWire
+import RAVECompanion
 
 /// The desktop stream over Native v3 (NATIVE_V3_PROTOCOL.md), on UDP 4857
 /// beside v2's TCP 4857. It is the Network.framework half of the package's

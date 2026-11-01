@@ -40,7 +40,8 @@ struct CompanionApp: App {
         scheduler.start()
         PermissionCenter.shared.attach(presence: controller.presence, sandbox: sandbox)
 
-        DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion"]
+        // com.illixion.rave: RAVECompanion (pairing, presence, port listeners).
+        DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier, "pro.longwave.companion", "com.illixion.rave"]
             .compactMap { $0 }
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }))
         DebugTraceServer.startIfRequested()

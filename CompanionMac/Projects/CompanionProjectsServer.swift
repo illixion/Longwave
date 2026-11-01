@@ -1,6 +1,7 @@
 import DebugTrace
 import Foundation
 import Network
+import RAVECompanion
 
 /// Remote sandbox access is a grant on a paired device (`CompanionGrant.projects`),
 /// chosen in the pairing dialog or the Devices tab. The listener holds only the

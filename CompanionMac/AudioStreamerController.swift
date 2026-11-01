@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Network
 import os
+import RAVECompanion
 
 /// Orchestrates the system audio tap and the TCP stream server.
 @Observable

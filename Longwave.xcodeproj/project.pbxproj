@@ -56,8 +56,10 @@
 		AA03000000000000000000E3 /* RAVEPanel in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000E2 /* RAVEPanel */; };
 		AA07000000000000000000D3 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D2 /* RAVEUI */; };
 		AA07000000000000000000D5 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D4 /* RAVEConsole */; };
+		AC0C00000000000000000001 /* RAVECompanion in Frameworks */ = {isa = PBXBuildFile; productRef = AC0C00000000000000000002 /* RAVECompanion */; };
 		AA07000000000000000000D7 /* RAVEUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D6 /* RAVEUI */; };
 		AA07000000000000000000D9 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000D8 /* RAVEConsole */; };
+		AC0C00000000000000000003 /* RAVECompanion in Frameworks */ = {isa = PBXBuildFile; productRef = AC0C00000000000000000004 /* RAVECompanion */; };
 		AA07000000000000000000DB /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DA /* RAVEMedia */; };
 		AA07000000000000000000DD /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DC /* RAVEMedia */; };
 		AA07000000000000000000DF /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = AA07000000000000000000DE /* RAVECamera */; };
@@ -71,6 +73,7 @@
 		AA0D00000000000000000017 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000016 /* DebugTrace */; };
 		AA0D00000000000000000019 /* DebugTrace in Frameworks */ = {isa = PBXBuildFile; productRef = AA0D00000000000000000018 /* DebugTrace */; };
 		AA0E00000000000000000001 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = AA0E00000000000000000002 /* RAVEConsole */; };
+		AC0C00000000000000000005 /* RAVECompanion in Frameworks */ = {isa = PBXBuildFile; productRef = AC0C00000000000000000006 /* RAVECompanion */; };
 		CCBB0000000000000000000E /* LongwaveBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CCBB00000000000000000001 /* LongwaveBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		CCBB00000000000000000031 /* RAVECamera in Frameworks */ = {isa = PBXBuildFile; productRef = CCBB00000000000000000030 /* RAVECamera */; };
 		DD1010000000000000000021 /* RoyalVNCKit in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000011 /* RoyalVNCKit */; };
@@ -80,6 +83,7 @@
 		DD1010000000000000000025 /* NIOTransportServices in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000015 /* NIOTransportServices */; };
 		DD1010000000000000000026 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000016 /* Crypto */; };
 		DD1010000000000000000027 /* RAVEConsole in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000017 /* RAVEConsole */; };
+		AC0C00000000000000000007 /* RAVECompanion in Frameworks */ = {isa = PBXBuildFile; productRef = AC0C00000000000000000008 /* RAVECompanion */; };
 		DD1010000000000000000028 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000018 /* RAVEInput */; };
 		DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = DD1010000000000000000019 /* RAVEDiagnostics */; };
 		DD101000000000000000002B /* RAVEMedia in Frameworks */ = {isa = PBXBuildFile; productRef = DD101000000000000000002A /* RAVEMedia */; };
@@ -349,6 +353,7 @@
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
+				AC0C00000000000000000001 /* RAVECompanion in Frameworks */,
 				AA07000000000000000000DB /* RAVEMedia in Frameworks */,
 				AA07000000000000000000F1 /* RAVESpatialAudio in Frameworks */,
 				AA07000000000000000000DF /* RAVECamera in Frameworks */,
@@ -374,6 +379,7 @@
 				FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */,
 				1292577D5F868C0A9001C035 /* DebugTraceUI in Frameworks */,
 				AA0E00000000000000000001 /* RAVEConsole in Frameworks */,
+				AC0C00000000000000000005 /* RAVECompanion in Frameworks */,
 				EE30AD100000000000000020 /* NIOSSH in Frameworks */,
 				EE30AD100000000000000021 /* NIOCore in Frameworks */,
 				EE30AD100000000000000022 /* NIOTransportServices in Frameworks */,
@@ -420,6 +426,7 @@
 				DD1010000000000000000025 /* NIOTransportServices in Frameworks */,
 				DD1010000000000000000026 /* Crypto in Frameworks */,
 				DD1010000000000000000027 /* RAVEConsole in Frameworks */,
+				AC0C00000000000000000007 /* RAVECompanion in Frameworks */,
 				DD1010000000000000000028 /* RAVEInput in Frameworks */,
 				DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */,
 				DD101000000000000000002B /* RAVEMedia in Frameworks */,
@@ -453,6 +460,7 @@
 				AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
 				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
+				AC0C00000000000000000003 /* RAVECompanion in Frameworks */,
 				AA07000000000000000000DD /* RAVEMedia in Frameworks */,
 				AA07000000000000000000F3 /* RAVESpatialAudio in Frameworks */,
 			);
@@ -610,6 +618,7 @@
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
 				AA07000000000000000000D2 /* RAVEUI */,
 				AA07000000000000000000D4 /* RAVEConsole */,
+				AC0C00000000000000000002 /* RAVECompanion */,
 				AA07000000000000000000DA /* RAVEMedia */,
 				AA07000000000000000000F0 /* RAVESpatialAudio */,
 				AA07000000000000000000DE /* RAVECamera */,
@@ -657,6 +666,7 @@
 				AA03000000000000000000B4 /* RAVEDiagnostics */,
 				AA07000000000000000000D6 /* RAVEUI */,
 				AA07000000000000000000D8 /* RAVEConsole */,
+				AC0C00000000000000000004 /* RAVECompanion */,
 				AA07000000000000000000DC /* RAVEMedia */,
 				AA07000000000000000000F2 /* RAVESpatialAudio */,
 			);
@@ -714,6 +724,7 @@
 				5AA06485057FFDC64EA7AB06 /* DebugTraceServer */,
 				963354E9CC7BD15748B4C6C1 /* DebugTraceUI */,
 				AA0E00000000000000000002 /* RAVEConsole */,
+				AC0C00000000000000000006 /* RAVECompanion */,
 				EE30AD100000000000000010 /* NIOSSH */,
 				EE30AD100000000000000011 /* NIOCore */,
 				EE30AD100000000000000012 /* NIOTransportServices */,
@@ -807,6 +818,7 @@
 				DD1010000000000000000015 /* NIOTransportServices */,
 				DD1010000000000000000016 /* Crypto */,
 				DD1010000000000000000017 /* RAVEConsole */,
+				AC0C00000000000000000008 /* RAVECompanion */,
 				DD101000000000000000002C /* RAVEUI */,
 				DD1010000000000000000018 /* RAVEInput */,
 				DD1010000000000000000019 /* RAVEDiagnostics */,
@@ -2108,6 +2120,11 @@
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEConsole;
 		};
+		AC0C00000000000000000002 /* RAVECompanion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECompanion;
+		};
 		AA07000000000000000000D6 /* RAVEUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
@@ -2117,6 +2134,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEConsole;
+		};
+		AC0C00000000000000000004 /* RAVECompanion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECompanion;
 		};
 		AA07000000000000000000DA /* RAVEMedia */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2183,6 +2205,11 @@
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEConsole;
 		};
+		AC0C00000000000000000006 /* RAVECompanion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECompanion;
+		};
 		BCF95F097C7D2DFE3EF72400 /* Opus */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Opus;
@@ -2226,6 +2253,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
 			productName = RAVEConsole;
+		};
+		AC0C00000000000000000008 /* RAVECompanion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVECompanion;
 		};
 		DD1010000000000000000018 /* RAVEInput */ = {
 			isa = XCSwiftPackageProductDependency;

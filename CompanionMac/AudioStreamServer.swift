@@ -1,6 +1,7 @@
 import DebugTrace
 import Foundation
 import Network
+import RAVECompanion
 
 /// TCP server that streams interleaved signed int24 PCM to the connected
 /// Longwave client. Sends the AudioStreamHeader on accept, then

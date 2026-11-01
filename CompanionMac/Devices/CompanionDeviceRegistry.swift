@@ -1,5 +1,6 @@
 import DebugTrace
 import Foundation
+import RAVECompanion
 
 /// A device paired with this Mac: who it is and what the user allowed it in
 /// the pairing dialog. Its token lives in this Mac's keychain, never here.

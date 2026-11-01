@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import RAVECompanion
 
 struct ConnectionListView: View {
     @Environment(\.modelContext) private var modelContext

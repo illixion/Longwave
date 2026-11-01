@@ -4,6 +4,7 @@ import CoreGraphics
 import Foundation
 import Network
 import UserNotifications
+import RAVECompanion
 
 /// Every macOS grant the Companion's features depend on, read in one place so
 /// the setup assistant can ask for them up front instead of letting each one

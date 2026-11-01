@@ -1,9 +1,13 @@
-import CryptoKit
 import Foundation
+#if canImport(RAVECompanion)
 import Network
-import Security
+import RAVECompanion
+#endif
 
-// Per-device Companion access (COMPANION_ENROLLMENT_PLAN.md).
+// Per-device Companion access (COMPANION_ENROLLMENT_PLAN.md). The mechanism
+// (credentials, identify proofs, keyring, TLS-PSK channels, the address link)
+// is RAVESDK's `RAVECompanion` since 2026-11-01; Longwave keeps its grants
+// and its names for the rest here.
 //
 // Every pairing mints a token for that one device, and the host keeps which
 // features ("grants") the user allowed it in the one-time pairing dialog. Each
@@ -39,41 +43,15 @@ nonisolated enum CompanionGrant: String, Codable, CaseIterable, Sendable, Identi
     static let legacy: Set<CompanionGrant> = [.screen, .audio, .input]
 }
 
+#if canImport(RAVECompanion)
 /// The secret a client presents to a Companion. `deviceID` is nil for the
 /// deprecated shared token, which uses the old fixed PSK identities.
-nonisolated struct CompanionCredential: Sendable, Equatable, Hashable {
-    let token: String
-    let deviceID: String?
-
-    init(token: String, deviceID: String?) {
-        self.token = token
-        self.deviceID = deviceID
-    }
-
-    var isLegacy: Bool { deviceID == nil }
-
-    /// `<base>` for the shared token, `<base>/<device id>` for a device token.
-    func pskIdentity(base: String) -> Data {
-        Data((deviceID.map { "\(base)/\($0)" } ?? base).utf8)
-    }
-
-    /// 256-bit URL-safe token, the same shape the shared token always had.
-    static func generateToken() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return Data(bytes).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-}
+typealias CompanionCredential = RAVECompanionCredential
 
 /// A connection's first message: who it is, bound to this TLS session.
-nonisolated struct CompanionIdentify: Codable, Sendable, Equatable {
-    /// Nil: the deprecated shared token.
-    var deviceID: String?
-    var proof: Data
+typealias CompanionIdentify = RAVECompanionIdentify
 
+extension RAVECompanionIdentify {
     /// Per-feature exporter labels, so a proof made for one channel is useless
     /// on another.
     enum Channel: String, Sendable {
@@ -82,158 +60,53 @@ nonisolated struct CompanionIdentify: Codable, Sendable, Equatable {
         case inject = "EXPORTER-Longwave-Inject-Device-v1"
     }
 
-    static func make(_ credential: CompanionCredential, channel: Channel, connection: NWConnection) -> CompanionIdentify? {
-        guard let binding = binding(connection, channel: channel) else { return nil }
-        return CompanionIdentify(deviceID: credential.deviceID, proof: proof(token: credential.token, binding: binding))
+    nonisolated static func make(_ credential: CompanionCredential, channel: Channel, connection: NWConnection) -> CompanionIdentify? {
+        make(CompanionDiscovery.namespace, credential: credential, exporterLabel: channel.rawValue, connection: connection)
     }
 
-    /// RFC 5705 keying material with an **empty** context — what
-    /// `sec_protocol_metadata_create_secret` exports, and what a non-Apple
-    /// peer must ask for (BouncyCastle: a zero-length array, not null).
-    static func binding(_ connection: NWConnection, channel: Channel) -> Data? {
-        guard let metadata = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else { return nil }
-        let label = channel.rawValue
-        guard let secret = label.withCString({
-            sec_protocol_metadata_create_secret(metadata.securityProtocolMetadata, label.utf8.count, $0, 32)
-        }) else { return nil }
-        return Data(secret as DispatchData)
+    nonisolated static func binding(_ connection: NWConnection, channel: Channel) -> Data? {
+        binding(connection, exporterLabel: channel.rawValue)
     }
 
-    static func proof(token: String, binding: Data) -> Data {
-        Data(HMAC<SHA256>.authenticationCode(for: binding, using: proofKey(token)))
-    }
-
-    static func validates(_ proof: Data, token: String, binding: Data) -> Bool {
-        HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: binding, using: proofKey(token))
-    }
-
-    private static func proofKey(_ token: String) -> SymmetricKey {
-        HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(token.utf8)),
-                               salt: Data("Longwave-Device-Proof-v1".utf8), info: Data(), outputByteCount: 32)
-    }
-
-    func encoded() -> Data { (try? JSONEncoder().encode(self)) ?? Data() }
-    static func decode(_ data: Data) -> CompanionIdentify? { try? JSONDecoder().decode(Self.self, from: data) }
-}
-
-/// The host's current set of enrolled devices, as its servers read it: from
-/// their own queues, so it's a lock-protected snapshot rather than an actor.
-nonisolated final class CompanionKeyring: @unchecked Sendable {
-    struct Entry: Sendable, Equatable {
-        let credential: CompanionCredential
-        let grants: Set<CompanionGrant>
-    }
-
-    private let lock = NSLock()
-    private var entries: [Entry] = []
-
-    init(_ entries: [Entry] = []) { self.entries = entries }
-
-    func replace(_ entries: [Entry]) {
-        lock.lock(); defer { lock.unlock() }
-        self.entries = entries
-    }
-
-    /// Every credential a listener should accept.
-    var credentials: [CompanionCredential] {
-        lock.lock(); defer { lock.unlock() }
-        return entries.map(\.credential)
-    }
-
-    /// Enrolled devices holding a grant (the watch lane tries each one's key).
-    func entries(with grant: CompanionGrant) -> [Entry] {
-        lock.lock(); defer { lock.unlock() }
-        return entries.filter { $0.grants.contains(grant) }
-    }
-
-    func entry(deviceID: String?) -> Entry? {
-        lock.lock(); defer { lock.unlock() }
-        return entries.first { $0.credential.deviceID == deviceID }
-    }
-
-    /// Checks a connection's identify message. Returns the entry it proves.
-    func verify(_ identify: CompanionIdentify, binding: Data) -> Entry? {
-        guard let entry = entry(deviceID: identify.deviceID),
-              CompanionIdentify.validates(identify.proof, token: entry.credential.token, binding: binding) else { return nil }
-        return entry
-    }
-
-    /// Whether this device (nil: the shared token) is still enrolled with the grant.
-    func allows(_ deviceID: String?, _ grant: CompanionGrant) -> Bool {
-        entry(deviceID: deviceID)?.grants.contains(grant) == true
+    nonisolated static func proof(token: String, binding: Data) -> Data {
+        proof(CompanionDiscovery.namespace, token: token, binding: binding)
     }
 }
 
-/// TLS-PSK options shared by the Companion channels: one PSK per credential,
-/// TLS 1.2 PSK-AES128-GCM-SHA256 as before.
-nonisolated enum CompanionPSK {
-    static let ciphersuite = tls_ciphersuite_t(rawValue: 0x00A8)!
+/// The host's current set of enrolled devices, with Longwave's grants.
+typealias CompanionKeyring = RAVECompanionKeyring<CompanionGrant>
 
-    static func derive(token: String, salt: Data, info: Data) -> DispatchData {
-        let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(token.utf8)),
-                                         salt: salt, info: info, outputByteCount: 32)
-        return key.withUnsafeBytes { DispatchData(bytes: $0) }
-    }
-
-    static func add(_ credentials: [CompanionCredential], to options: sec_protocol_options_t,
-                    identityBase: String, salt: Data, info: Data) {
-        for credential in credentials {
-            let identity = credential.pskIdentity(base: identityBase)
-            sec_protocol_options_add_pre_shared_key(
-                options,
-                derive(token: credential.token, salt: salt, info: info) as __DispatchData,
-                identity.withUnsafeBytes { DispatchData(bytes: $0) } as __DispatchData
-            )
-        }
+extension RAVECompanionKeyring where Grant == CompanionGrant {
+    nonisolated convenience init(_ entries: [Entry] = []) {
+        self.init(CompanionDiscovery.namespace, entries: entries)
     }
 }
 
 /// The address hint the Mac AirDrops (or copies) to a headset that can't see
-/// it over Bonjour: the Mac's id, name and every address it has, and the port
-/// its direct pairing listener uses. **It carries no secret** — anyone could
-/// write one, and it grants nothing. The headset tries each address and runs
-/// the normal six-digit pairing over the first that answers.
+/// it over Bonjour. **It carries no secret** — anyone could write one, and it
+/// grants nothing.
 ///
 ///   longwave://pair?mac=<id>&name=<name>&port=4859&addr=192.168.1.5&addr=100.64.0.3
-nonisolated struct CompanionPairLink: Equatable, Sendable {
-    static let action = "pair"
+typealias CompanionPairLink = RAVECompanionPairLink
+
+extension RAVECompanionPairLink {
     /// The direct pairing listener, between the stream ports and Projects.
-    static let defaultPort: UInt16 = 4859
+    nonisolated static var defaultPort: UInt16 { CompanionDiscovery.namespace.defaultPairPort }
 
-    var macID: String
-    var name: String
-    var port: UInt16 = CompanionPairLink.defaultPort
-    var addresses: [String]
-
-    var url: URL? {
-        var components = URLComponents()
-        components.scheme = "longwave"
-        components.host = Self.action
-        components.queryItems = [
-            URLQueryItem(name: "mac", value: macID),
-            URLQueryItem(name: "name", value: name),
-            URLQueryItem(name: "port", value: String(port)),
-        ] + addresses.map { URLQueryItem(name: "addr", value: $0) }
-        return components.url
+    nonisolated init(macID: String, name: String, port: UInt16 = CompanionPairLink.defaultPort, addresses: [String]) {
+        self.init(CompanionDiscovery.namespace, macID: macID, name: name, port: port, addresses: addresses)
     }
 
-    init(macID: String, name: String, port: UInt16 = CompanionPairLink.defaultPort, addresses: [String]) {
-        self.macID = macID
-        self.name = name
-        self.port = port
-        self.addresses = addresses
-    }
-
-    init?(url: URL) {
-        guard url.scheme?.lowercased() == "longwave", url.host?.lowercased() == Self.action,
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
-              let mac = items.first(where: { $0.name == "mac" })?.value, !mac.isEmpty, mac.count <= 64 else { return nil }
-        let addresses = items.filter { $0.name == "addr" }.compactMap(\.value)
-            .filter { !$0.isEmpty && $0.count < 64 }.prefix(12)
-        guard !addresses.isEmpty else { return nil }
-        self.macID = mac
-        self.name = String((items.first { $0.name == "name" }?.value ?? "Mac").prefix(80))
-        self.port = items.first { $0.name == "port" }?.value.flatMap(UInt16.init) ?? Self.defaultPort
-        self.addresses = Array(addresses)
+    nonisolated init?(url: URL) {
+        self.init(CompanionDiscovery.namespace, url: url)
     }
 }
+#else
+/// The watch (watchOS, which RAVESDK doesn't build for) only carries an
+/// identity inside the native hello (`MacNativeStreamProtocol`): the same
+/// fields and JSON as `RAVECompanionIdentify`, with nothing to make or check one.
+nonisolated struct CompanionIdentify: Codable, Sendable, Equatable {
+    var deviceID: String?
+    var proof: Data
+}
+#endif

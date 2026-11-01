@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import RAVECompanion
 
 final class MacNativeStreamClient: @unchecked Sendable {
     struct Config: Sendable {

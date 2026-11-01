@@ -1,16 +1,13 @@
 import AppKit
-import DebugTrace
 import Foundation
 import Network
-import os
+import RAVECompanion
 
-/// Answers one headset's pairing request: a plain TCP listener, advertised as
-/// `_longwave-pair._tcp` for that headset only, that runs `PairingExchange`,
-/// shows the six-digit code here for the user to compare and approve, and on
-/// approval hands over the Companion's token sealed under the agreed key.
-///
-/// The listener lives only as long as the one exchange, and is gone after two
-/// minutes whatever happens.
+/// Answers one headset's pairing request (RAVESDK's `RAVEPairingServer` since
+/// 2026-11-01): a one-off listener advertised as `_longwave-pair._tcp` for that
+/// headset only, or a connection the direct pairing port accepted. This keeps
+/// Longwave's part: the dialog where the user compares the six-digit code and
+/// ticks what the device may do, and what enrolling it means here.
 @MainActor
 final class PairingServer {
     struct Context {
@@ -25,228 +22,65 @@ final class PairingServer {
         let enroll: @MainActor (_ id: String, _ name: String, _ grants: Set<CompanionGrant>, _ sshPublicKey: String?) -> String?
     }
 
-    enum Outcome {
-        case paired
-        /// The user chose Don't Pair.
-        case declined
-        /// The user chose to stop being asked for a while.
-        case silenced
-        /// Timed out, abandoned or malformed — no answer from the user.
-        case abandoned
-    }
+    typealias Outcome = RAVEPairingServer<CompanionGrant>.Outcome
 
     /// Fired once, when the exchange is over either way, with the name the
     /// headset gave.
-    var onFinish: ((Outcome, String) -> Void)?
+    var onFinish: ((Outcome, String) -> Void)? {
+        didSet { server.onFinish = onFinish }
+    }
 
-    private let context: Context
-    private let log = DebugLogger(subsystem: "pro.longwave.companion", category: "Pairing")
-    private let queue = DispatchQueue(label: "pro.longwave.companion.pairing")
-    private var listener: NWListener?
-    private var connection: NWConnection?
-    private let exchange = PairingExchange()
-    private var commitment: Data?
-    private var headsetID: String?
-    private var headsetName: String
-    private var requested: Set<CompanionGrant> = CompanionGrant.defaults
-    /// The device's SSH public key, when it offered one.
-    private var sshPublicKey: String?
-    private var finished = false
-    private var timeout: Task<Void, Never>?
-    private var alertShowing = false
-    /// Set from the network queue the moment the peer goes away — readable
-    /// while the prompt's modal loop has the main actor tied up.
-    private nonisolated let lost = OSAllocatedUnfairLock(initialState: false)
-    /// Bytes received, filled on the network queue, drained on the main actor.
-    private nonisolated let inbox = OSAllocatedUnfairLock(initialState: Data())
-    private var draining = false
-    private let startedAt = ContinuousClock.now
+    private let server: RAVEPairingServer<CompanionGrant>
 
     init(context: Context) {
-        self.context = context
-        self.headsetID = context.headsetID
-        self.headsetName = context.headsetName
+        server = RAVEPairingServer(context: .init(
+            namespace: CompanionDiscovery.namespace,
+            deviceID: context.headsetID, deviceName: context.headsetName,
+            hostID: context.macID, hostName: context.macName,
+            defaultGrants: CompanionGrant.defaults,
+            addresses: { CompanionPresence.lanAddresses() },
+            acceptsPublicKey: { AuthorizedKeysManager.parse($0) != nil },
+            enroll: context.enroll
+        ))
+        server.approve = { request in Self.approve(request) }
+        server.onApprovalCancelled = { NSApp.abortModal() }
     }
 
     /// Runs the exchange on a connection the direct pairing listener accepted.
     func start(accepting connection: NWConnection) {
-        startTimeout()
-        accept(connection)
+        server.start(accepting: connection)
     }
 
     func start() throws {
-        let headsetID = context.headsetID ?? ""
-        let listener = try NWListener(using: .tcp)
-        var txt = NWTXTRecord()
-        txt[CompanionDiscovery.Key.macID] = context.macID
-        txt[CompanionDiscovery.Key.headsetID] = headsetID
-        listener.service = NWListener.Service(
-            name: "Longwave pairing \(headsetID.prefix(8))",
-            type: CompanionDiscovery.pairServiceType,
-            txtRecord: txt
-        )
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor [weak self] in self?.accept(connection) }
-        }
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .failed(let error) = state {
-                Task { @MainActor [weak self] in
-                    self?.log.error("Pairing listener failed: \(error.localizedDescription)")
-                    self?.finish(.abandoned)
-                }
-            }
-        }
-        listener.start(queue: queue)
-        self.listener = listener
-        startTimeout()
-    }
-
-    private func startTimeout() {
-        timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(120))
-            guard !Task.isCancelled else { return }
-            self?.log.info("Pairing timed out")
-            self?.finish(.abandoned)
-        }
+        try server.start()
     }
 
     func cancel() {
-        finish(.abandoned)
-    }
-
-    private func accept(_ connection: NWConnection) {
-        guard self.connection == nil, !finished else {
-            connection.cancel()
-            return
-        }
-        self.connection = connection
-        // The record has done its job; nobody else should find it.
-        listener?.cancel()
-        listener = nil
-        let lost = self.lost
-        connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .failed, .cancelled:
-                lost.withLock { $0 = true }
-                Task { @MainActor [weak self] in self?.finish(.abandoned) }
-            default:
-                break
-            }
-        }
-        connection.start(queue: queue)
-        receive()
-    }
-
-    private func receive() {
-        guard let connection else { return }
-        Self.receiveLoop(connection, inbox: inbox, lost: lost) { [weak self] in
-            Task { @MainActor [weak self] in await self?.drain() }
-        }
-    }
-
-    /// Keeps reading on the network queue whatever the main actor is doing,
-    /// so a peer that hangs up during the prompt is noticed during the prompt.
-    private nonisolated static func receiveLoop(
-        _ connection: NWConnection,
-        inbox: OSAllocatedUnfairLock<Data>,
-        lost: OSAllocatedUnfairLock<Bool>,
-        onData: @escaping @Sendable () -> Void
-    ) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, isComplete, error in
-            if let data { inbox.withLock { $0.append(data) } }
-            let ended = isComplete || error != nil
-            if ended { lost.withLock { $0 = true } }
-            onData()
-            if !ended { receiveLoop(connection, inbox: inbox, lost: lost, onData: onData) }
-        }
-    }
-
-    private func drain() async {
-        guard !draining, !finished else { return }
-        draining = true
-        defer { draining = false }
-        while !finished {
-            let message: PairingMessage?
-            do {
-                message = try inbox.withLock { try PairingMessage.take(from: &$0) }
-            } catch {
-                log.error("Malformed pairing message")
-                return finish(.abandoned)
-            }
-            guard let message else { break }
-            await handle(message)
-        }
-        if lost.withLock({ $0 }) { finish(.abandoned) }
-    }
-
-    private func handle(_ message: PairingMessage) async {
-        switch message {
-        case .commit(let headsetID, let headsetName, let commitment, let requested, let sshPublicKey):
-            guard self.commitment == nil, !headsetID.isEmpty, headsetID.count <= 64,
-                  context.headsetID == nil || headsetID == context.headsetID else { return finish(.abandoned) }
-            self.headsetID = headsetID
-            if context.headsetID == nil { self.headsetName = String(headsetName.prefix(80)) }
-            if let requested { self.requested = Set(requested) }
-            self.sshPublicKey = sshPublicKey.flatMap { AuthorizedKeysManager.parse($0) == nil ? nil : $0 }
-            self.commitment = commitment
-            send(.macHello(macID: context.macID, macName: context.macName,
-                           publicKey: exchange.publicKey, nonce: exchange.nonce))
-        case .reveal(let publicKey, let nonce):
-            guard let commitment, let agreement = PairingExchange.agree(
-                mine: exchange, theirPublicKey: publicKey, commitment: commitment,
-                headsetPublicKey: publicKey, headsetNonce: nonce,
-                macPublicKey: exchange.publicKey, macNonce: exchange.nonce
-            ) else {
-                log.error("Pairing reveal didn't match its commitment")
-                return finish(.abandoned)
-            }
-            let (answer, grants) = approve(code: agreement.code)
-            guard answer == .paired, let headsetID,
-                  let token = context.enroll(headsetID, headsetName, grants, sshPublicKey) else {
-                log.info("Pairing not approved")
-                send(.deny) { [weak self] in self?.finish(answer == .paired ? .abandoned : answer) }
-                return
-            }
-            let grant = PairingGrant(
-                token: token, macID: context.macID, macName: context.macName,
-                addresses: CompanionPresence.lanAddresses(),
-                grants: grants.map(\.rawValue).sorted()
-            )
-            do {
-                let sealed = try PairingExchange.seal(grant, with: agreement.key)
-                send(.accept(sealedGrant: sealed)) { [weak self] in
-                    self?.log.info("Paired a headset")
-                    self?.finish(.paired)
-                }
-            } catch {
-                finish(.abandoned)
-            }
-        case .macHello, .accept, .deny:
-            finish(.abandoned)
-        }
+        server.cancel()
     }
 
     /// Asks the user. The prompt closes itself (as abandoned) if the
     /// requesting device goes away while it's up, so nothing that merely
     /// started a pairing can leave a dialog behind.
-    private func approve(code: String) -> (Outcome, Set<CompanionGrant>) {
+    private static func approve(_ request: RAVEPairingServer<CompanionGrant>.ApprovalRequest)
+        -> RAVEPairingServer<CompanionGrant>.Decision {
         let alert = NSAlert()
-        alert.messageText = "Pair “\(headsetName)” with this Mac?"
+        alert.messageText = "Pair “\(request.deviceName)” with this Mac?"
         alert.informativeText = """
         Check that the device shows this code:
 
-        \(PairingExchange.display(code))
+        \(PairingExchange.display(request.code))
 
-        Choose what it may do. You won't be asked again when it connects; change this any time under Devices in Longwave Companion.\(sshPublicKey.flatMap(AuthorizedKeysManager.parse).map { "\n\nSSH adds its key (\($0.fingerprint)) to your ~/.ssh/authorized_keys." } ?? "")
+        Choose what it may do. You won't be asked again when it connects; change this any time under Devices in Longwave Companion.\(request.sshPublicKey.flatMap(AuthorizedKeysManager.parse).map { "\n\nSSH adds its key (\($0.fingerprint)) to your ~/.ssh/authorized_keys." } ?? "")
         """
         // One checkbox per grant, ticked as the device asked. A device asks for
         // Screen, Audio and Input unless the user requested more on it, e.g.
         // Projects → Request Access, so Projects is never ticked by default.
         // SSH only when the device sent a key to authorize.
-        let offered = CompanionGrant.allCases.filter { $0 != .sshKey || sshPublicKey != nil }
+        let offered = CompanionGrant.allCases.filter { $0 != .sshKey || request.sshPublicKey != nil }
         let boxes = offered.map { grant in
             let box = NSButton(checkboxWithTitle: grant.title, target: nil, action: nil)
-            box.state = requested.contains(grant) ? .on : .off
+            box.state = request.requested.contains(grant) ? .on : .off
             return box
         }
         let stack = NSStackView(views: boxes)
@@ -259,48 +93,25 @@ final class PairingServer {
         alert.addButton(withTitle: "Don't Pair")
         alert.addButton(withTitle: "Stop Asking for an Hour")
         NSApp.activate(ignoringOtherApps: true)
-        alertShowing = true
         // The modal loop runs only modal-panel run loop work, so this timer is
         // what notices a vanished peer or the overall timeout meanwhile.
-        let lost = self.lost
-        let deadline = startedAt + .seconds(120)
+        let isPeerLost = request.isPeerLost
+        let deadline = request.deadline
         let watchdog = Timer(timeInterval: 0.25, repeats: true) { _ in
-            if lost.withLock({ $0 }) || ContinuousClock.now > deadline {
+            if isPeerLost() || ContinuousClock.now > deadline {
                 NSApp.abortModal()
             }
         }
         RunLoop.main.add(watchdog, forMode: .modalPanel)
-        defer {
-            watchdog.invalidate()
-            alertShowing = false
-        }
+        defer { watchdog.invalidate() }
         let response = alert.runModal()
-        let grants = Set(zip(offered, boxes).filter { $0.1.state == .on }.map(\.0))
         switch response {
-        case .alertFirstButtonReturn: return (lost.withLock({ $0 }) ? .abandoned : .paired, grants)
-        case .alertSecondButtonReturn: return (.declined, [])
-        case .alertThirdButtonReturn: return (.silenced, [])
-        default: return (.abandoned, [])
+        case .alertFirstButtonReturn:
+            if isPeerLost() { return .abandon }
+            return .pair(Set(zip(offered, boxes).filter { $0.1.state == .on }.map(\.0)))
+        case .alertSecondButtonReturn: return .decline
+        case .alertThirdButtonReturn: return .silence
+        default: return .abandon
         }
-    }
-
-    private func send(_ message: PairingMessage, then completion: (@MainActor () -> Void)? = nil) {
-        guard let connection, let frame = try? message.framed() else { return }
-        connection.send(content: frame, completion: .contentProcessed { _ in
-            guard let completion else { return }
-            Task { @MainActor in completion() }
-        })
-    }
-
-    private func finish(_ outcome: Outcome) {
-        guard !finished else { return }
-        finished = true
-        if alertShowing { NSApp.abortModal() }
-        timeout?.cancel()
-        listener?.cancel()
-        listener = nil
-        connection?.cancel()
-        connection = nil
-        onFinish?(outcome, headsetName)
     }
 }

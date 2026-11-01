@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RAVECompanion
 
 /// The Companion window's Devices tab: how headsets find and pair with this
 /// Mac, every paired device with what it may do, and the shared token from

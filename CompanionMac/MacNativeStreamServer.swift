@@ -2,6 +2,7 @@ import DebugTrace
 import Foundation
 import CoreVideo
 import Network
+import RAVECompanion
 
 /// Authenticated multi-viewer server for the native Mac stream. Every client
 /// that completes TLS and sends its hello joins the set of viewers; an

@@ -2,6 +2,7 @@ import Foundation
 import Network
 import StreamCrypto
 import StreamWire
+import RAVECompanion
 
 /// What the v3 host and client drivers share (NATIVE_V3_PROTOCOL.md §7.1:
 /// the package is sans-I/O, the Network.framework half lives in the apps).

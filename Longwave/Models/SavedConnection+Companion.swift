@@ -1,4 +1,5 @@
 import Foundation
+import RAVECompanion
 
 /// A Native connection's credential towards its Companion. Pairing gives this
 /// device a token of its own, kept in the keychain under the connection's id;

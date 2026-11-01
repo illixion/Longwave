@@ -1,6 +1,7 @@
 #if !os(macOS)
 import SwiftData
 import SwiftUI
+import RAVECompanion
 
 /// Both visionOS and iOS use the Companion's project catalog and launch policy.
 /// Access is this device's pairing with the Mac, used only while the Mac allows
@@ -168,14 +169,14 @@ struct CompanionProjectsView: View {
 
     private var isPairing: Bool {
         switch pairing?.state {
-        case .waitingForMac, .confirming: true
+        case .waitingForHost, .confirming: true
         default: false
         }
     }
 
     @ViewBuilder private var pairingStatus: some View {
         switch pairing?.state {
-        case .waitingForMac:
+        case .waitingForHost:
             HStack { ProgressView(); Text("Asking the Mac…") }
         case .confirming(let code):
             VStack(alignment: .leading, spacing: 4) {

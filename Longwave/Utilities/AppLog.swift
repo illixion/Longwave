@@ -35,7 +35,8 @@ nonisolated enum AppLog {
     /// broadcast core), the fixed `pro.longwave` most feature loggers use, and
     /// on macOS the companion code built into the app.
     static var subsystems: [String] {
-        var all = [subsystem, "pro.longwave"]
+        // com.illixion.rave: RAVECompanion (pairing, discovery) and the other RAVE targets.
+        var all = [subsystem, "pro.longwave", "com.illixion.rave"]
         #if os(macOS)
         all.append("pro.longwave.companion")
         #endif

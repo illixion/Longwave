@@ -1,6 +1,7 @@
 import DebugTrace
 import Foundation
 import Network
+import RAVECompanion
 
 /// TLS-1.2-PSK TCP server for the text-injection channel (port 4856 by
 /// default), independent of the audio server — its own queue, single client

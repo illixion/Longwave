@@ -3,6 +3,7 @@ import CryptoKit
 import DebugTrace
 import Foundation
 import Network
+import RAVECompanion
 
 /// The Apple Watch's any-route lane (`WatchLinkProtocol`): a minimal HTTP/1.1
 /// server that long-polls desktop stills. The watch reaches it through

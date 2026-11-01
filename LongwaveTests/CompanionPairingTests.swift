@@ -1,6 +1,10 @@
 import CryptoKit
+import RAVECompanion
 import XCTest
 @testable import Longwave
+
+// The protocol itself is tested in RAVESDK (`RAVECompanionTests`, with vectors
+// from the code that used to live here); these check Longwave's adapters.
 
 final class CompanionPairingTests: XCTestCase {
 
@@ -36,17 +40,17 @@ final class CompanionPairingTests: XCTestCase {
 
         func headsetSide(macPublicKey: Data? = nil) -> PairingExchange.Agreement? {
             PairingExchange.agree(
-                mine: headset, theirPublicKey: macPublicKey ?? mac.publicKey, commitment: commitment,
-                headsetPublicKey: headset.publicKey, headsetNonce: headset.nonce,
-                macPublicKey: macPublicKey ?? mac.publicKey, macNonce: mac.nonce
+                CompanionDiscovery.namespace, mine: headset, theirPublicKey: macPublicKey ?? mac.publicKey,
+                commitment: commitment, devicePublicKey: headset.publicKey, deviceNonce: headset.nonce,
+                hostPublicKey: macPublicKey ?? mac.publicKey, hostNonce: mac.nonce
             )
         }
 
         func macSide(revealedKey: Data? = nil, revealedNonce: Data? = nil) -> PairingExchange.Agreement? {
             PairingExchange.agree(
-                mine: mac, theirPublicKey: revealedKey ?? headset.publicKey, commitment: commitment,
-                headsetPublicKey: revealedKey ?? headset.publicKey, headsetNonce: revealedNonce ?? headset.nonce,
-                macPublicKey: mac.publicKey, macNonce: mac.nonce
+                CompanionDiscovery.namespace, mine: mac, theirPublicKey: revealedKey ?? headset.publicKey,
+                commitment: commitment, devicePublicKey: revealedKey ?? headset.publicKey,
+                deviceNonce: revealedNonce ?? headset.nonce, hostPublicKey: mac.publicKey, hostNonce: mac.nonce
             )
         }
     }
@@ -77,9 +81,9 @@ final class CompanionPairingTests: XCTestCase {
         let fakeHeadset = PairingExchange()
         let fakeCommitment = PairingExchange.commitment(publicKey: fakeHeadset.publicKey, nonce: fakeHeadset.nonce)
         let macCode = try XCTUnwrap(PairingExchange.agree(
-            mine: run.mac, theirPublicKey: fakeHeadset.publicKey, commitment: fakeCommitment,
-            headsetPublicKey: fakeHeadset.publicKey, headsetNonce: fakeHeadset.nonce,
-            macPublicKey: run.mac.publicKey, macNonce: run.mac.nonce
+            CompanionDiscovery.namespace, mine: run.mac, theirPublicKey: fakeHeadset.publicKey,
+            commitment: fakeCommitment, devicePublicKey: fakeHeadset.publicKey, deviceNonce: fakeHeadset.nonce,
+            hostPublicKey: run.mac.publicKey, hostNonce: run.mac.nonce
         )).code
         XCTAssertNotEqual(headsetCode, macCode)
     }
@@ -112,5 +116,20 @@ final class CompanionPairingTests: XCTestCase {
     func testOversizedFrameThrows() {
         var buffer = Data([0xFF, 0xFF, 0x00, 0x00])
         XCTAssertThrowsError(try PairingMessage.take(from: &buffer))
+    }
+
+    // MARK: Adapters
+
+    func testLongwaveNamesKeepTheWireValues() {
+        XCTAssertEqual(CompanionDiscovery.macServiceType, "_longwave-mac._tcp")
+        XCTAssertEqual(CompanionDiscovery.knockServiceType, "_longwave-knock._tcp")
+        XCTAssertEqual(CompanionDiscovery.pairServiceType, "_longwave-pair._tcp")
+        XCTAssertEqual(CompanionDiscovery.Key.macID, "id")
+        XCTAssertEqual(CompanionDiscovery.Key.headsetID, "hs")
+        XCTAssertEqual(CompanionPairLink.defaultPort, 4859)
+        // From the Longwave code before the move (RAVECompanionTests' vectors).
+        XCTAssertEqual(CompanionDiscovery.knockTag(token: "tok-123", macID: "MAC-1", headsetID: "HS-1", minute: 29_000_000),
+                       "h0HTFJVMA_OpRCZA")
+        XCTAssertEqual(CompanionPairLink(url: URL(string: "longwave://pair?mac=M&name=N&addr=192.0.2.1")!)?.port, 4859)
     }
 }

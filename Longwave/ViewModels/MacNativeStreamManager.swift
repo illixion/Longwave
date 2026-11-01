@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreGraphics
+import RAVECompanion
 
 /// One subscribed per-window (Unity-style) stream: its own display layer and
 /// renderer, plus the live metadata its visionOS scene renders from. Only the

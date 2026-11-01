@@ -1,6 +1,7 @@
 import SwiftUI
 import RAVEUI
 import SwiftData
+import RAVECompanion
 
 struct ConnectionFormView: View {
     @Environment(\.modelContext) private var modelContext
@@ -305,7 +306,7 @@ struct ConnectionFormView: View {
 
     private var isPairing: Bool {
         switch pairing?.state {
-        case .waitingForMac, .confirming: true
+        case .waitingForHost, .confirming: true
         default: false
         }
     }
@@ -313,7 +314,7 @@ struct ConnectionFormView: View {
     @ViewBuilder
     private var pairingStatus: some View {
         switch pairing?.state {
-        case .waitingForMac:
+        case .waitingForHost:
             HStack {
                 ProgressView()
                 Text("Asking the Mac…")

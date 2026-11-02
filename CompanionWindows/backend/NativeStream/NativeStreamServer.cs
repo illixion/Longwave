@@ -36,12 +36,15 @@ public sealed class NativeStreamServer : IDisposable
     public event Action<string?>? DeviceIdentified;
 
     private const int MaxPendingBytes = 12 * 1024 * 1024;
+    private const int MaxPendingHandshakes = 16;
+    private const int HandshakeTimeoutMilliseconds = 5_000;
 
     private readonly ILogger _log;
     private readonly Devices.DeviceRegistry _devices;
     private readonly ushort _port;
     private TcpListener? _listener;
     private CancellationTokenSource? _cancel;
+    private int _pendingHandshakes;
     /// Viewers past their handshake, in join order. Guarded by <c>_gate</c>,
     /// which also guards every client's <c>Subscriptions</c>.
     private readonly List<Client> _clients = new();
@@ -243,11 +246,23 @@ public sealed class NativeStreamServer : IDisposable
                 continue;
             }
             tcp.NoDelay = true;
+            if (Interlocked.Increment(ref _pendingHandshakes) > MaxPendingHandshakes)
+            {
+                Interlocked.Decrement(ref _pendingHandshakes);
+                tcp.Close();
+                continue;
+            }
             // Handshake + receive on a dedicated thread — BC's TLS layer and
-            // the framed protocol are synchronous, and the viewer count is a
-            // handful plus the occasional prober.
+            // the framed protocol are synchronous. Pending handshakes are
+            // bounded and sockets have a deadline before credentials validate.
             var thread = new Thread(() => ServeClient(tcp, ct)) { IsBackground = true };
-            thread.Start();
+            try { thread.Start(); }
+            catch
+            {
+                Interlocked.Decrement(ref _pendingHandshakes);
+                tcp.Close();
+                _log.LogWarning("Could not start a native stream handshake worker");
+            }
         }
     }
 
@@ -256,7 +271,13 @@ public sealed class NativeStreamServer : IDisposable
         NativeStreamCrypto.Session session;
         try
         {
-            session = NativeStreamCrypto.Accept(tcp.GetStream(), id => _devices.Lookup(id)?.Token);
+            using (var handshakeDeadline = new Timer(_ =>
+            {
+                try { tcp.Close(); } catch { }
+            }, null, HandshakeTimeoutMilliseconds, Timeout.Infinite))
+            {
+                session = NativeStreamCrypto.Accept(tcp.GetStream(), id => _devices.Lookup(id)?.Token);
+            }
         }
         catch (Exception ex)
         {
@@ -264,6 +285,13 @@ public sealed class NativeStreamServer : IDisposable
             try { tcp.Close(); } catch { }
             return;
         }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingHandshakes);
+        }
+
+        tcp.ReceiveTimeout = 0;
+        tcp.SendTimeout = 0;
 
         var tls = session.Protocol;
         var client = new Client { Tcp = tcp, Tls = tls, Session = session };

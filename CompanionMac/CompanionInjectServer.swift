@@ -40,7 +40,9 @@ final class CompanionInjectServer: @unchecked Sendable {
             portListener.onUnavailable = { [weak self] message in self?.onListenerUnavailable?(message) }
             portListener.start { [weak self] in
                 guard let self else { throw CancellationError() }
-                let parameters = CompanionInjectCrypto.tlsTCPParameters(credentials: keyring.credentials)
+                let parameters = CompanionInjectCrypto.tlsTCPParameters(
+                    credentials: keyring.entries(with: .input).map(\.credential)
+                )
                 parameters.allowLocalEndpointReuse = true
                 let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
                 listener.newConnectionHandler = { [weak self] connection in
@@ -80,27 +82,27 @@ final class CompanionInjectServer: @unchecked Sendable {
             connection.cancel()
             return
         }
-        client?.cancel()
-        inbound.removeAll()
-        identified = false
-        client = connection
-
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
-                // Answered once its hello says which device it is.
-                self.log.info("Inject client connected; waiting for its hello")
+                // NWListener's TLS parameters make ready the point where the
+                // PSK handshake succeeded. Keep the current client until then.
+                self.client?.cancel()
+                self.inbound.removeAll()
+                self.identified = false
+                self.client = connection
+                self.log.info("Inject client TLS ready; waiting for its hello")
+                self.receiveLoop(connection)
             case .failed(let error):
                 self.log.error("Inject client failed: \(String(describing: error))")
-                self.remove(connection)
+                connection.cancel()
             case .cancelled:
                 self.remove(connection)
             default:
                 break
             }
         }
-        receiveLoop(connection)
         connection.start(queue: queue)
     }
 

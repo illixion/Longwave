@@ -86,8 +86,12 @@ nonisolated enum WatchLinkProtocol {
         key: SymmetricKey,
         now: Date = Date()
     ) -> Bool {
-        let skew = Int64(now.timeIntervalSince1970 * 1000) - authorization.milliseconds
-        guard abs(skew) <= maxClockSkewMilliseconds else { return false }
+        // Compare in Double so attacker-controlled Int64.min cannot trap in
+        // subtraction or abs() before the MAC is checked.
+        let nowMilliseconds = now.timeIntervalSince1970 * 1000
+        guard nowMilliseconds.isFinite,
+              abs(Double(authorization.milliseconds) - nowMilliseconds)
+                <= Double(maxClockSkewMilliseconds) else { return false }
         return HMAC<SHA256>.isValidAuthenticationCode(
             authorization.mac,
             authenticating: macInput(

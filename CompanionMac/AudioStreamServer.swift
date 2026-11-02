@@ -108,7 +108,9 @@ final class AudioStreamServer: @unchecked Sendable {
     }
 
     private nonisolated func makeListener() throws -> NWListener {
-        let parameters = AudioCrypto.tlsTCPParameters(credentials: keyring.credentials)
+        let parameters = AudioCrypto.tlsTCPParameters(
+            credentials: keyring.entries(with: .audio).map(\.credential)
+        )
         parameters.allowLocalEndpointReuse = true
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] connection in
@@ -343,14 +345,6 @@ final class AudioStreamServer: @unchecked Sendable {
     // MARK: - Connection lifecycle (all on `queue`)
 
     private nonisolated func accept(_ connection: NWConnection) {
-        // Newest wins: displace any existing client so only one is ever
-        // connected. Cancelling fires their .cancelled handlers, but the
-        // dict is already cleared so remove() is a no-op for them.
-        for old in clients.values {
-            old.connection.cancel()
-        }
-        clients.removeAll()
-
         let client = Client(connection: connection)
         clients[ObjectIdentifier(connection)] = client
 
@@ -487,6 +481,12 @@ final class AudioStreamServer: @unchecked Sendable {
                     log.error("Client failed to identify as a device allowed audio")
                     remove(client.connection)
                     return
+                }
+                // A valid TLS-PSK session alone is insufficient: replace the
+                // active client only after its channel-bound identity proves
+                // an enrolled device with the audio grant.
+                for old in clients.values.filter({ $0 !== client && $0.ready }) {
+                    remove(old.connection)
                 }
                 client.credential = entry.credential
                 markReady(client)

@@ -27,6 +27,7 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
 
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var requestHeadTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     /// The newest captured frame and its number. A request whose `after` is
     /// older is answered at once; otherwise it waits for the next frame.
     private var latest: CVPixelBuffer?
@@ -39,6 +40,8 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
 
     private static let idleSeconds: TimeInterval = 15
     private static let maxRequestBytes = 16 * 1024
+    private static let maxConnections = 32
+    private static let requestHeadTimeout: TimeInterval = 5
 
     private struct PendingStill {
         let connection: NWConnection
@@ -76,6 +79,8 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
             listener = nil
             for connection in connections.values { connection.cancel() }
             connections = [:]
+            requestHeadTimeouts.values.forEach { $0.cancel() }
+            requestHeadTimeouts = [:]
             waiting = []
             latest = nil
             setActive(false)
@@ -99,13 +104,25 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
     // MARK: - Connections
 
     private func accept(_ connection: NWConnection) {
+        guard connections.count < Self.maxConnections else {
+            connection.cancel()
+            return
+        }
         let id = ObjectIdentifier(connection)
         connections[id] = connection
+        let timeout = DispatchWorkItem { [weak self, weak connection] in
+            guard let self, let connection, self.connections[id] === connection else { return }
+            self.log.error("Watch client did not send a complete request head before timeout")
+            connection.cancel()
+        }
+        requestHeadTimeouts[id] = timeout
+        queue.asyncAfter(deadline: .now() + Self.requestHeadTimeout, execute: timeout)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed, .cancelled:
                 self?.queue.async {
                     self?.connections[id] = nil
+                    self?.requestHeadTimeouts.removeValue(forKey: id)?.cancel()
                     self?.waiting.removeAll { $0.connection === connection }
                 }
             default:
@@ -122,11 +139,11 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
             var buffer = buffer
             if let data { buffer.append(data) }
             if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
+                self.requestHeadTimeouts.removeValue(forKey: ObjectIdentifier(connection))?.cancel()
                 let head = buffer[..<end.lowerBound]
-                let rest = Data(buffer[end.upperBound...])
                 self.handle(head: head, on: connection)
-                // GETs carry no body, so whatever follows is the next request.
-                if !isComplete, error == nil { self.readRequest(on: connection, buffer: rest) }
+                // One request per connection keeps unauthenticated keep-alive
+                // sockets from occupying the bounded connection pool forever.
             } else if buffer.count > Self.maxRequestBytes || isComplete || error != nil {
                 connection.cancel()
             } else {
@@ -209,10 +226,10 @@ nonisolated final class MacWatchServer: @unchecked Sendable {
                       404: "Not Found", 500: "Internal Server Error"][status] ?? "Error"
         var head = "HTTP/1.1 \(status) \(reason)\r\nContent-Length: \(body.count)\r\n"
         if !body.isEmpty { head += "Content-Type: application/octet-stream\r\n" }
-        head += "Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n"
+        head += "Cache-Control: no-store\r\nConnection: close\r\n\r\n"
         var response = Data(head.utf8)
         response.append(body)
-        connection.send(content: response, completion: .contentProcessed { _ in })
+        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
     }
 
     // MARK: - Housekeeping

@@ -78,7 +78,9 @@ public sealed class QuestControllers : IDisposable
         public byte[]? SenderSession;
         // Sessions this Quest has moved on from: a recording of one must not pull the
         // stream back to it (its packets still authenticate).
-        public readonly Queue<string> Retired = new();
+        // A captured packet from any retired session remains valid under its
+        // token-derived key, so never evict IDs while this credential lives.
+        public readonly HashSet<string> Retired = new(StringComparer.Ordinal);
         public byte[]? ReceiveKey;
         public byte[]? SendKey;
         public ulong LastCounter;
@@ -228,8 +230,7 @@ public sealed class QuestControllers : IDisposable
                 newSession = true;
                 if (device.SenderSession is not null)
                 {
-                    device.Retired.Enqueue(Convert.ToHexString(device.SenderSession));
-                    while (device.Retired.Count > 16) device.Retired.Dequeue();
+                    device.Retired.Add(Convert.ToHexString(device.SenderSession));
                 }
                 device.SenderSession = header.Session;
                 device.ReceiveKey = key;

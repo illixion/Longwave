@@ -153,7 +153,7 @@ alias for the same iOS build sent to the iPad. Two things bite: the iOS and
 macOS targets bake `MOONLIGHT_ENABLED` (and the moonlight-common-c + Opus links)
 into their own build settings, so it is the visionOS scheme alone that takes the
 flag on the command line — and `FOVEATED_ENABLED`/`XROS_DEPLOYMENT_TARGET` mean
-nothing to the iOS target — so both the repo conf and `~/Projects/appstore`'s
+nothing to the iOS target — so both the repo conf and `~/Projects/Apparition/store`'s (the Apparition Store)
 `config.json` scope their build settings per platform. Consequently there is no
 MIT edition of the iOS or macOS client: both link GPLv3 moonlight-common-c.
 

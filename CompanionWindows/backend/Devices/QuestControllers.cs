@@ -47,8 +47,11 @@ public sealed class QuestControllers : IDisposable
     private const byte EnvelopeMagic = 0x51;
     private const byte EnvelopeVersion = 1;
     private const byte PacketState = 0x01, PacketHaptic = 0x02, PacketStatus = 0xF1;
+    private const byte PacketSessionChallenge = 0xF2, PacketSessionConfirm = 0xF3, PacketSessionAccept = 0xF4;
     private static readonly TimeSpan HeartbeatEvery = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ConnectedFor = TimeSpan.FromSeconds(3);
+    private const long PendingSessionLifetimeMs = 5_000;
+    private const long ChallengeResendIntervalMs = 500;
 
     /// <summary>A Quest that may stream here: its pairing id, name and token.</summary>
     public sealed record Credential(string Id, string Name, string Token);
@@ -58,7 +61,6 @@ public sealed class QuestControllers : IDisposable
     private readonly int _port;
     private readonly IPEndPoint _broker;
     private readonly object _gate = new();
-    private readonly byte[] _hostSession = RandomNumberGenerator.GetBytes(8);
     private Dictionary<string, Device> _byKeyId = new();
     private Socket? _remote;
     private Socket? _loopback;
@@ -76,11 +78,7 @@ public sealed class QuestControllers : IDisposable
         public required byte[] KeyId;
         // The Quest's current session.
         public byte[]? SenderSession;
-        // Sessions this Quest has moved on from: a recording of one must not pull the
-        // stream back to it (its packets still authenticate).
-        // A captured packet from any retired session remains valid under its
-        // token-derived key, so never evict IDs while this credential lives.
-        public readonly HashSet<string> Retired = new(StringComparer.Ordinal);
+        public byte[]? HostSession;
         public byte[]? ReceiveKey;
         public byte[]? SendKey;
         public ulong LastCounter;
@@ -95,6 +93,24 @@ public sealed class QuestControllers : IDisposable
         public bool LeftTracked, RightTracked, Unfocused;
         public int? BatteryLeft, BatteryRight;
         public bool WasConnected;
+        public PendingSession? Pending;
+        public byte[]? LastAcceptedChallenge;
+        public byte[]? LastAcceptPacket;
+    }
+
+    private sealed class PendingSession
+    {
+        public required byte[] SenderSession;
+        public required byte[] HostSession;
+        public required byte[] ReceiveKey;
+        public required byte[] Challenge;
+        public required byte[] ChallengePacket;
+        public required IPEndPoint EndPoint;
+        public required ulong HighestSenderCounter;
+        public required ulong HostChallengeCounter;
+        public required bool IsEndpointMigration;
+        public required long CreatedAt;
+        public long LastChallengeSentAt;
     }
 
     public QuestControllers(ILogger log, Func<IReadOnlyList<Credential>> credentials,
@@ -208,64 +224,221 @@ public sealed class QuestControllers : IDisposable
     {
         if (!QuestSeal.TryPeek(packet, out var header) || header.Direction != QuestSeal.FromSender) return;
         Device? device;
-        byte[] inner;
-        bool newSession = false, becameConnected;
-        string id;
+        byte[]? inner = null;
+        byte[]? challengePacket = null;
+        byte[]? acceptPacket = null;
+        IPEndPoint? acceptEndpoint = null;
+        bool becameConnected = false;
+        string? id = null;
+        bool acceptedSession = false;
         lock (_gate)
         {
             if (!_byKeyId.TryGetValue(Convert.ToHexString(header.KeyId), out device)) return;
             var sameSession = device.SenderSession is not null && device.SenderSession.AsSpan().SequenceEqual(header.Session);
             if (sameSession && header.Counter <= device.LastCounter) return;   // replayed or reordered
-            if (!sameSession && device.Retired.Contains(Convert.ToHexString(header.Session))) return;
-            var key = sameSession
-                ? device.ReceiveKey!
-                : QuestSeal.SessionKey(device.Credential.Token, header.Session, default, QuestSeal.FromSender);
+            var key = sameSession ? device.ReceiveKey! : QuestSeal.SessionKey(
+                device.Credential.Token, header.Session, default, QuestSeal.FromSender);
             var opened = QuestSeal.Open(key, packet);
             if (opened is null) return;
-            inner = opened;
-            if (!sameSession)
+            var now = Environment.TickCount64;
+            if (device.Pending is { } pending && now - pending.CreatedAt >= PendingSessionLifetimeMs)
+                device.Pending = null;
+
+            if (sameSession && device.EndPoint is not null && !device.EndPoint.Equals(from))
             {
-                // A new stream from this Quest (it restarted, or a second one took over):
-                // its keys replace the old ones, and replies start a fresh counter.
-                newSession = true;
-                if (device.SenderSession is not null)
+                // An authenticated packet can still be a captured datagram
+                // replayed from another source. Do not retarget haptics or
+                // accept input at the new address until it answers a challenge.
+                var candidate = device.Pending;
+                if (candidate is not null && candidate.IsEndpointMigration &&
+                    candidate.SenderSession.AsSpan().SequenceEqual(header.Session) && candidate.EndPoint.Equals(from))
                 {
-                    device.Retired.Add(Convert.ToHexString(device.SenderSession));
+                    if (IsConfirmation(opened, candidate) &&
+                        header.Counter > Math.Max(candidate.HighestSenderCounter, device.LastCounter) &&
+                        device.SendCounter < ulong.MaxValue)
+                    {
+                        device.LastCounter = header.Counter;
+                        device.EndPoint = from;
+                        device.Pending = null;
+                        acceptPacket = MakeSessionAccept(device, candidate);
+                        CacheSessionAccept(device, candidate, acceptPacket);
+                        acceptEndpoint = from;
+                        acceptedSession = true;
+                    }
+                    else if (now - candidate.LastChallengeSentAt >= ChallengeResendIntervalMs)
+                    {
+                        candidate.HighestSenderCounter = Math.Max(candidate.HighestSenderCounter, header.Counter);
+                        candidate.LastChallengeSentAt = now;
+                        challengePacket = candidate.ChallengePacket;
+                    }
+                    else candidate.HighestSenderCounter = Math.Max(candidate.HighestSenderCounter, header.Counter);
                 }
-                device.SenderSession = header.Session;
-                device.ReceiveKey = key;
-                device.SendKey = QuestSeal.SessionKey(device.Credential.Token, header.Session, _hostSession, QuestSeal.FromHost);
-                device.SendCounter = 0;
+                else if (candidate is null && opened.Length == 100 && opened[0] == PacketState)
+                    challengePacket = BeginPendingSession(device, header.Session, key, from,
+                        header.Counter, now, endpointMigration: true);
             }
-            device.LastCounter = header.Counter;
-            device.EndPoint = from;
-            device.LastPacket = DateTimeOffset.UtcNow;
-            device.Packets++;
-            CountRate(device);
-            if (inner.Length >= 100 && inner[0] == PacketState)
+            else if (sameSession)
             {
-                var flags = BinaryPrimitives.ReadUInt16LittleEndian(inner.AsSpan(2));
-                device.LeftTracked = (flags & 1) != 0;
-                device.RightTracked = (flags & 2) != 0;
-                device.Unfocused = (flags & 0x10) != 0;   // QCB_FLAG_UNFOCUSED
-                if ((flags & 4) != 0)
+                device.LastCounter = header.Counter;
+                inner = opened;
+                device.EndPoint = from;
+                if (IsConfirmation(inner, device.LastAcceptedChallenge) && device.LastAcceptPacket is not null)
                 {
-                    device.BatteryLeft = inner[96] <= 100 ? inner[96] : null;
-                    device.BatteryRight = inner[97] <= 100 ? inner[97] : null;
+                    // The previous accept may have been lost. Re-send the same
+                    // ciphertext (same key, nonce and plaintext), never reseal
+                    // a different packet under a reused nonce.
+                    acceptPacket = device.LastAcceptPacket;
+                    acceptEndpoint = from;
+                }
+                else if (inner.Length == 100 && inner[0] == PacketState)
+                {
+                    UpdateState(device, inner);
+                    becameConnected = !device.WasConnected;
+                    device.WasConnected = true;
+                    id = device.Credential.Id;
                 }
             }
-            becameConnected = !device.WasConnected;
-            device.WasConnected = true;
-            id = device.Credential.Id;
+            else
+            {
+                var candidate = device.Pending;
+                if (candidate is not null &&
+                    !candidate.IsEndpointMigration && candidate.SenderSession.AsSpan().SequenceEqual(header.Session) &&
+                    candidate.EndPoint.Equals(from))
+                {
+                    if (IsConfirmation(opened, candidate) && header.Counter > candidate.HighestSenderCounter &&
+                        device.SendCounter < ulong.MaxValue)
+                    {
+                        device.SenderSession = header.Session;
+                        device.ReceiveKey = candidate.ReceiveKey;
+                        device.SendKey = QuestSeal.SessionKey(
+                            device.Credential.Token, header.Session, candidate.HostSession, QuestSeal.FromHost);
+                        device.HostSession = candidate.HostSession;
+                        device.LastCounter = header.Counter;
+                        device.SendCounter = candidate.HostChallengeCounter;
+                        device.EndPoint = from;
+                        device.Pending = null;
+                        acceptPacket = MakeSessionAccept(device, candidate);
+                        CacheSessionAccept(device, candidate, acceptPacket);
+                        acceptEndpoint = from;
+                        acceptedSession = true;
+                    }
+                    else if (now - candidate.LastChallengeSentAt >= ChallengeResendIntervalMs)
+                    {
+                        candidate.HighestSenderCounter = Math.Max(candidate.HighestSenderCounter, header.Counter);
+                        candidate.LastChallengeSentAt = now;
+                        challengePacket = candidate.ChallengePacket;
+                    }
+                    else candidate.HighestSenderCounter = Math.Max(candidate.HighestSenderCounter, header.Counter);
+                }
+                else if (candidate is null && opened.Length == 100 && opened[0] == PacketState)
+                {
+                    challengePacket = BeginPendingSession(device, header.Session, key, from,
+                        header.Counter, now, endpointMigration: false);
+                }
+            }
         }
 
-        if (inner.Length >= 100 && inner[0] == PacketState) Forward(id, inner);
-        if (newSession) SendHeartbeat(device);
-        if (becameConnected)
+        if (challengePacket is not null) TrySend(challengePacket, from);
+        if (acceptPacket is not null && acceptEndpoint is not null)
+        {
+            TrySend(acceptPacket, acceptEndpoint);
+            SendHeartbeat(device!);
+        }
+        if (inner is { Length: 100 } && inner[0] == PacketState && id is not null) Forward(id, inner);
+        if (becameConnected && id is not null && device is not null)
         {
             _log.LogInformation("Quest controllers: {Name} connected", device.Credential.Name);
             Seen?.Invoke(id);
             Changed?.Invoke();
+        }
+        if (acceptedSession && device is not null)
+            _log.LogInformation("Quest controllers: {Name} authenticated a fresh stream session", device.Credential.Name);
+    }
+
+    private static bool IsConfirmation(byte[] inner, PendingSession pending) =>
+        IsConfirmation(inner, pending.Challenge);
+
+    private static bool IsConfirmation(byte[] inner, byte[]? challenge) =>
+        challenge is not null &&
+        inner.Length == 1 + QuestSeal.ChallengeSize && inner[0] == PacketSessionConfirm &&
+        CryptographicOperations.FixedTimeEquals(inner.AsSpan(1), challenge);
+
+    private byte[]? BeginPendingSession(Device device, byte[] senderSession, byte[] receiveKey,
+                                       IPEndPoint from, ulong firstCounter, long now,
+                                       bool endpointMigration)
+    {
+        var challenge = RandomNumberGenerator.GetBytes(QuestSeal.ChallengeSize);
+        var payload = new byte[1 + QuestSeal.SessionSize + QuestSeal.ChallengeSize];
+        payload[0] = PacketSessionChallenge;
+        senderSession.CopyTo(payload, 1);
+        challenge.CopyTo(payload, 1 + QuestSeal.SessionSize);
+
+        byte[] hostKey;
+        byte[] hostSession;
+        ulong hostCounter;
+        if (endpointMigration)
+        {
+            if (device.SendKey is null || device.HostSession is null || device.SendCounter == ulong.MaxValue) return null;
+            hostKey = device.SendKey;
+            hostSession = device.HostSession;
+            hostCounter = ++device.SendCounter;
+        }
+        else
+        {
+            // A fresh host session also makes retries after a pending-session
+            // timeout use a new key, so resetting the counter to 1 cannot reuse
+            // an AEAD nonce even when the Quest repeats its sender session.
+            hostSession = RandomNumberGenerator.GetBytes(QuestSeal.SessionSize);
+            hostKey = QuestSeal.SessionKey(device.Credential.Token, senderSession, hostSession, QuestSeal.FromHost);
+            hostCounter = 1;
+        }
+        var sealedChallenge = QuestSeal.Seal(hostKey, device.KeyId, hostSession,
+            QuestSeal.FromHost, hostCounter, payload);
+        device.Pending = new PendingSession
+        {
+            SenderSession = senderSession,
+            HostSession = hostSession,
+            ReceiveKey = receiveKey,
+            Challenge = challenge,
+            ChallengePacket = sealedChallenge,
+            EndPoint = from,
+            HighestSenderCounter = firstCounter,
+            HostChallengeCounter = hostCounter,
+            IsEndpointMigration = endpointMigration,
+            CreatedAt = now,
+            LastChallengeSentAt = now,
+        };
+        return sealedChallenge;
+    }
+
+    private byte[] MakeSessionAccept(Device device, PendingSession pending)
+    {
+        var accept = new byte[1 + QuestSeal.ChallengeSize];
+        accept[0] = PacketSessionAccept;
+        pending.Challenge.CopyTo(accept, 1);
+        return QuestSeal.Seal(device.SendKey!, device.KeyId, pending.HostSession,
+            QuestSeal.FromHost, ++device.SendCounter, accept);
+    }
+
+    private static void CacheSessionAccept(Device device, PendingSession pending, byte[] acceptPacket)
+    {
+        device.LastAcceptedChallenge = pending.Challenge.ToArray();
+        device.LastAcceptPacket = acceptPacket;
+    }
+
+    private static void UpdateState(Device device, byte[] inner)
+    {
+        device.LastPacket = DateTimeOffset.UtcNow;
+        device.Packets++;
+        CountRate(device);
+        var flags = BinaryPrimitives.ReadUInt16LittleEndian(inner.AsSpan(2));
+        device.LeftTracked = (flags & 1) != 0;
+        device.RightTracked = (flags & 2) != 0;
+        device.Unfocused = (flags & 0x10) != 0;
+        if ((flags & 4) != 0)
+        {
+            device.BatteryLeft = inner[96] <= 100 ? inner[96] : null;
+            device.BatteryRight = inner[97] <= 100 ? inner[97] : null;
         }
     }
 
@@ -376,11 +549,16 @@ public sealed class QuestControllers : IDisposable
         lock (_gate)
         {
             var device = _byKeyId.Values.FirstOrDefault(d => d.Credential.Id == deviceId);
-            if (device?.EndPoint is null || device.SendKey is null) return;
-            datagram = QuestSeal.Seal(device.SendKey, device.KeyId, _hostSession, QuestSeal.FromHost,
+            if (device?.EndPoint is null || device.SendKey is null || device.SendCounter == ulong.MaxValue) return;
+            datagram = QuestSeal.Seal(device.SendKey, device.KeyId, device.HostSession!, QuestSeal.FromHost,
                 ++device.SendCounter, inner);
             to = device.EndPoint;
         }
+        TrySend(datagram, to);
+    }
+
+    private void TrySend(byte[] datagram, IPEndPoint to)
+    {
         try { _remote?.SendTo(datagram, to); }
         catch (SocketException) { }
         catch (ObjectDisposedException) { }

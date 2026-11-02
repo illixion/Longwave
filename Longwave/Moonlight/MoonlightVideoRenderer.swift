@@ -90,6 +90,14 @@ class MoonlightVideoRenderer: @unchecked Sendable {
     /// Display layer for hardware-accelerated video decode and display.
     /// Created on the main thread by MoonlightConnectionManager, set before streaming starts.
     nonisolated(unsafe) var displayLayer: AVSampleBufferDisplayLayer?
+    /// Second decoder target used by Longwave's HDMI display scene.
+    nonisolated(unsafe) var mirrorDisplayLayer: AVSampleBufferDisplayLayer?
+
+    nonisolated func setMirrorDisplayLayer(_ layer: AVSampleBufferDisplayLayer?) {
+        mirrorDisplayLayer = layer
+        layer?.videoGravity = .resizeAspect
+        layer?.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+    }
 
     private nonisolated(unsafe) var formatDescription: CMVideoFormatDescription?
     private nonisolated(unsafe) var videoFormat: Int32 = 0
@@ -192,6 +200,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         if wasHDR != enabled {
             formatDescription = nil
             displayLayer?.flush()
+            mirrorDisplayLayer?.flush()
             library.requestIdrFrame()
         }
     }
@@ -284,6 +293,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
                 updateH264HevcFormatDescription()
                 // Flush display layer when format changes
                 displayLayer?.flush()
+                mirrorDisplayLayer?.flush()
             }
         }
 
@@ -349,6 +359,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
                         formatDescription = desc
                         // Flush display layer when format changes
                         displayLayer?.flush()
+                        mirrorDisplayLayer?.flush()
                     }
                 }
             } else if formatDescription == nil {
@@ -402,6 +413,7 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         }
 
         layer.enqueue(sampleBuffer)
+        mirrorDisplayLayer?.enqueue(sampleBuffer)
 
         frameCount += 1
         if frameCount == 1 {

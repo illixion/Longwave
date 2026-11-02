@@ -36,6 +36,21 @@ struct MobileRootView: View {
     /// terminal. Re-entering an existing one goes through the Terminals tab.
     @State private var knownSessions: Set<String> = []
 
+    private var externalDisplayContext: MobileExternalDisplayContext {
+        #if MOONLIGHT_ENABLED
+        MobileExternalDisplayContext(
+            connectionManager: connectionManager,
+            nativeSessions: macNativeSessions,
+            moonlightSessions: moonlightSessions
+        )
+        #else
+        MobileExternalDisplayContext(
+            connectionManager: connectionManager,
+            nativeSessions: macNativeSessions
+        )
+        #endif
+    }
+
     /// Five, deliberately. iOS collapses a sixth tab into a "More" list, and the
     /// visionOS tab bar's Console (an in-app log viewer) is the one that earns
     /// being cut: it exists because a headset cannot be tethered to Xcode, and a
@@ -145,6 +160,10 @@ struct MobileRootView: View {
             knownSessions = Set(sshManager.sessions.map(\.id.raw))
         }
         .background(WatchCredentialSyncView())
+        .background(alignment: .topLeading) {
+            MobileExternalDisplayAccessoryHost(context: externalDisplayContext)
+                .frame(width: 0, height: 0)
+        }
         .onOpenURL { url in
             // A Mac's address link from the Companion (no secret in it).
             // Broadcast setup is not handled here — this target has no

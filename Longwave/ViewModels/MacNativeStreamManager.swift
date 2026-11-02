@@ -174,6 +174,21 @@ final class MacNativeStreamManager {
 
     private var client: MacNativeStreamClient?
     private var renderer: MacNativeVideoRenderer?
+
+    /// A separate hardware display sink for the iOS HDMI scene. Reusing
+    /// `displayLayer` would move its CALayer out of the iPad's controller view.
+    func makeExternalDisplayLayer() -> AVSampleBufferDisplayLayer {
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        renderer?.setMirrorDisplayLayer(layer)
+        return layer
+    }
+
+    func removeExternalDisplayLayer(_ layer: AVSampleBufferDisplayLayer) {
+        renderer?.setMirrorDisplayLayer(nil)
+        layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+    }
     private var activeConnectionID: UUID?
     /// Text-only typing fallback — the same channel/token VNC uses, opened
     /// alongside Screen so plain typing works even with keyboard shortcuts

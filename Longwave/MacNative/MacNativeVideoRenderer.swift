@@ -24,6 +24,12 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
 
     let displayLayer: AVSampleBufferDisplayLayer
 
+    /// Optional second presentation for the iOS external display scene. Both
+    /// renderers receive the same compressed sample, so each display owns an
+    /// independent decoder and neither view reparents the other's layer.
+    private weak var mirrorLayer: AVSampleBufferDisplayLayer?
+    private var mirrorSink: AVSampleBufferVideoRenderer?
+
     private let lock = NSLock()
     private let sink: AVSampleBufferVideoRenderer
     /// When set, frames decode here instead of in the display layer.
@@ -113,6 +119,17 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         if wantsKeyFrame { onKeyFrameNeeded?() }
     }
 
+    func setMirrorDisplayLayer(_ layer: AVSampleBufferDisplayLayer?) {
+        lock.lock()
+        mirrorLayer = layer
+        mirrorSink = layer?.sampleBufferRenderer
+        let wantsKeyFrame = formatDescription != nil
+        let mirrorSink = mirrorSink
+        lock.unlock()
+        mirrorSink?.flush(removingDisplayedImage: true, completionHandler: nil)
+        if wantsKeyFrame { onKeyFrameNeeded?() }
+    }
+
     func setFormatDescription(
         _ data: Data,
         kind: MacNativeStreamProtocol.FormatKind = .coreMediaImageDescription
@@ -139,8 +156,10 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         recovery.reset()
         surfaceDecoder?.invalidate()
         let sink = sink
+        let mirrorSink = mirrorSink
         lock.unlock()
         sink.flush()
+        mirrorSink?.flush(removingDisplayedImage: true, completionHandler: nil)
         let dimensions = CMVideoFormatDescriptionGetDimensions(description)
         onFormat?(CGSize(width: Int(dimensions.width), height: Int(dimensions.height)))
     }
@@ -327,6 +346,7 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
             }
         } else {
             sampleBufferRenderer.enqueue(sampleBuffer)
+            mirrorSink?.enqueue(sampleBuffer)
         }
         if !hasDisplayedFrame {
             hasDisplayedFrame = true
@@ -340,10 +360,12 @@ nonisolated final class MacNativeVideoRenderer: @unchecked Sendable {
         hasDisplayedFrame = false
         recovery.reset()
         let sink = sink
+        let mirrorSink = mirrorSink
         lock.unlock()
         sink.flush(
             removingDisplayedImage: true,
             completionHandler: nil
         )
+        mirrorSink?.flush(removingDisplayedImage: true, completionHandler: nil)
     }
 }

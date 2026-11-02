@@ -7,6 +7,16 @@ import SwiftUI
 /// only because a visionOS pop-out window can be left behind in another room.
 /// There is one window here, so there is nothing to summon.
 final class MobileAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     configurationForConnecting session: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "External Display", sessionRole: session.role)
+        if #unavailable(iOS 27.0), session.role == .windowExternalDisplayNonInteractive {
+            configuration.delegateClass = MobileExternalDisplaySceneDelegate.self
+        }
+        return configuration
+    }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?

@@ -249,6 +249,7 @@ struct MobileMoonlightStreamView: View {
             referenceWidth: Int16(clamping: manager.streamWidth),
             referenceHeight: Int16(clamping: manager.streamHeight)
         )
+        manager.setExternalCursorPosition(x: Int(stream.x), y: Int(stream.y))
     }
 
     private func click(at point: CGPoint, in size: CGSize, button: Int32) {
@@ -276,6 +277,8 @@ struct MobileMoonlightStreamView: View {
             relativeRemainder = CGSize(width: dx - ix, height: dy - iy)
             if ix != 0 || iy != 0 {
                 manager.library.sendMouseMove(dx: Int16(clamping: Int(ix)), dy: Int16(clamping: Int(iy)))
+                let pixelScale = CGFloat(manager.streamWidth) / max(1, size.width)
+                manager.moveExternalCursor(dx: Int(ix * pixelScale), dy: Int(iy * pixelScale))
             }
             return
         }

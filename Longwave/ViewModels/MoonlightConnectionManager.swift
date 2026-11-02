@@ -107,6 +107,17 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     /// Stream resolution for coordinate mapping in absolute mode.
     var streamWidth: Int = 1920
     var streamHeight: Int = 1080
+    private(set) var virtualCursorX: Int = 960
+    private(set) var virtualCursorY: Int = 540
+
+    func setExternalCursorPosition(x: Int, y: Int) {
+        virtualCursorX = min(max(0, x), max(0, streamWidth - 1))
+        virtualCursorY = min(max(0, y), max(0, streamHeight - 1))
+    }
+
+    func moveExternalCursor(dx: Int, dy: Int) {
+        setExternalCursorPosition(x: virtualCursorX + dx, y: virtualCursorY + dy)
+    }
 
     /// Whether a physical (Bluetooth/USB) mouse is currently connected. When
     /// true, the stream view suppresses its touch-gesture clicks so the GCMouse
@@ -119,6 +130,20 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
     var videoRenderer: MoonlightVideoRenderer?
     /// Display layer for hardware-accelerated video decode and display.
     var displayLayer: AVSampleBufferDisplayLayer?
+
+    func makeExternalDisplayLayer() -> AVSampleBufferDisplayLayer {
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        videoRenderer?.setMirrorDisplayLayer(layer)
+        library.requestIdrFrame()
+        return layer
+    }
+
+    func removeExternalDisplayLayer(_ layer: AVSampleBufferDisplayLayer) {
+        videoRenderer?.setMirrorDisplayLayer(nil)
+        layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+    }
     /// Live streaming statistics.
     var streamStats = StreamStats()
     /// Whether HDR is active for the current stream (set by server callback).
@@ -503,6 +528,8 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                     #endif
                     self.streamWidth = effectiveWidth
                     self.streamHeight = effectiveHeight
+                    self.virtualCursorX = effectiveWidth / 2
+                    self.virtualCursorY = effectiveHeight / 2
                     self.streamStats = StreamStats(
                         videoCodec: codecName,
                         resolution: "\(effectiveWidth)x\(effectiveHeight)",

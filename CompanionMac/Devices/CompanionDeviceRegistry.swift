@@ -67,7 +67,10 @@ final class CompanionDeviceRegistry {
     /// Pairing approved: a fresh token for this device (pairing again
     /// replaces the old one), with exactly the grants the user ticked.
     func enroll(id: String, name: String, grants: Set<CompanionGrant>, sshPublicKey: String? = nil) -> String? {
-        let token = CompanionCredential.generateToken()
+        guard let token = try? CompanionCredential.generateToken() else {
+            log.error("Couldn't generate a token for a paired device")
+            return nil
+        }
         guard KeychainStore.set(service: Self.keychainService, account: id, value: token) else {
             log.error("Couldn't store a paired device's token in the keychain")
             return nil

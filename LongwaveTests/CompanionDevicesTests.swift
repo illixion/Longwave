@@ -53,9 +53,9 @@ final class CompanionDevicesTests: XCTestCase {
     /// each, and each connection's identify proof names exactly its device:
     /// replaying it on another connection, or claiming another device, fails.
     func testListenerWithSeveralDeviceKeysIdentifiesEachConnection() async throws {
-        let a = CompanionCredential(token: CompanionCredential.generateToken(), deviceID: "HS-A")
-        let b = CompanionCredential(token: CompanionCredential.generateToken(), deviceID: "HS-B")
-        let legacy = CompanionCredential(token: CompanionCredential.generateToken(), deviceID: nil)
+        let a = CompanionCredential(token: try CompanionCredential.generateToken(), deviceID: "HS-A")
+        let b = CompanionCredential(token: try CompanionCredential.generateToken(), deviceID: "HS-B")
+        let legacy = CompanionCredential(token: try CompanionCredential.generateToken(), deviceID: nil)
         let keyring = CompanionKeyring([
             .init(credential: a, grants: [.screen]),
             .init(credential: b, grants: [.audio]),
@@ -121,8 +121,8 @@ final class CompanionDevicesTests: XCTestCase {
     }
 
     func testDeviceKeyNotOnTheListenerFailsTheHandshake() async throws {
-        let enrolled = CompanionCredential(token: CompanionCredential.generateToken(), deviceID: "HS-A")
-        let revoked = CompanionCredential(token: CompanionCredential.generateToken(), deviceID: "HS-B")
+        let enrolled = CompanionCredential(token: try CompanionCredential.generateToken(), deviceID: "HS-A")
+        let revoked = CompanionCredential(token: try CompanionCredential.generateToken(), deviceID: "HS-B")
         let listener = try NWListener(using: AudioCrypto.tlsTCPParameters(credentials: [enrolled]), on: .any)
         defer { listener.cancel() }
         listener.newConnectionHandler = { $0.start(queue: .main) }

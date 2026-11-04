@@ -15,7 +15,7 @@ Longwave/
 │   └── MoonlightSessionStore.swift     — One Moonlight session per linked library copy; picks the session for a row, mirrors input focus
 ├── Views/
 │   ├── MainView.swift                  — Main window: ornament tab bar (Connections/Settings/Console)
-│   ├── ConnectionListView.swift        — Server list, routes by connection type (pushWindow)
+│   ├── ConnectionListView.swift        — Server list, routes by connection type (session windows pushed via `SessionWindowPush`)
 │   ├── ConnectionFormView.swift        — Add/edit form, seeded from ConnectionDefaults
 │   ├── SettingsView.swift              — New-connection defaults (@AppStorage)
 │   ├── ConsoleView.swift               — Log viewer (tab + "console" pop-out window)
@@ -23,7 +23,8 @@ Longwave/
 │   ├── NativeStreamView.swift          — visionOS desktop scene + manual per-window picker (Mac: LongwaveMac/MacNativeStreamWindowView, iOS: LongwaveiOS/MobileNativeStreamView)
 │   ├── MacNativeUnityControlView.swift — Unity inventory reconciler, scene switcher, desktop/session controls
 │   ├── NativeWindowStreamView.swift    — One chrome-free scene per streamed host window (Unity-style)
-│   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (opens id "main")
+│   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (reveals and opens id "main")
+│   ├── SessionWindowPush.swift         — `@PushSessionWindow`: session windows take the main window's place (RAVEUI push)
 │   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
 │   ├── VirtualKeyboardView.swift       — Our own on-screen key grid + modifier latches
 │   ├── KeyboardInputView.swift         — VNC keyboard window (key grid, route picker, dictation)

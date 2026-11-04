@@ -150,7 +150,7 @@ struct MacNativeUnityControlView: View {
             }
 
             Button {
-                openWindow(id: "main", value: MainWindowID.shared)
+                WindowSessionRegistry.surface("main", using: openWindow)
             } label: {
                 Label("Connections", systemImage: "house")
                     .labelStyle(.iconOnly)

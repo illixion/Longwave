@@ -5,6 +5,8 @@ import SwiftUI
 struct MoonlightPairingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    /// The stream takes the main window's place (see `SessionWindowPush`).
+    @PushSessionWindow private var pushSessionWindow
     @Environment(MoonlightConnectionManager.self) private var manager
 
     let connection: SavedConnection
@@ -148,10 +150,10 @@ struct MoonlightPairingView: View {
                 List(manager.apps) { app in
                     Button {
                         manager.launchApp(app)
-                        // Open as a sibling window; the main window stays open.
+                        // Takes the main window's place (`SessionWindowPush`).
                         // Value-keyed so this session gets its own window even
                         // while another session is streaming.
-                        openWindow(id: "moonlight-stream", value: manager.sessionID)
+                        pushSessionWindow(id: "moonlight-stream", value: manager.sessionID)
                         dismiss()
                     } label: {
                         HStack {

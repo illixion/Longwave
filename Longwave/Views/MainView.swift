@@ -6,6 +6,7 @@ import RAVECompanion
 /// switched by a bottom ornament tab bar (matches the app's ornament idiom;
 /// each tab keeps its own NavigationStack for visionOS navigation titles).
 struct MainView: View {
+    @Environment(\.raveIsPushedAway) private var isPushedAway
 
     enum Tab: String, CaseIterable, RAVETabItem {
         case connections = "Connections"
@@ -84,7 +85,10 @@ struct MainView: View {
                 broadcastManager.importSetup(setup)
             }
         }
-        .ornament(attachmentAnchor: .scene(.bottomFront), contentAlignment: .top) {
+        // Hidden with the window while a session window stands in its place:
+        // an ornament is outside the content RAVEUI's push host fades out.
+        .ornament(visibility: isPushedAway ? .hidden : .automatic,
+                  attachmentAnchor: .scene(.bottomFront), contentAlignment: .top) {
             MainTabBar(selectedTab: $selectedTab)
         }
     }

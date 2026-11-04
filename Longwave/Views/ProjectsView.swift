@@ -8,6 +8,8 @@ import SwiftData
 struct ProjectsView: View {
     @Environment(SSHTerminalManager.self) private var sshManager
     @Environment(\.openWindow) private var openWindow
+    /// Terminals take the main window's place (see `SessionWindowPush`).
+    @PushSessionWindow private var pushSessionWindow
 
     @Query(sort: \SavedConnection.lastConnected, order: .reverse)
     private var connections: [SavedConnection]
@@ -257,7 +259,7 @@ struct ProjectsView: View {
                 ForEach(claudeSessions) { session in
                     Button {
                         #if os(visionOS)
-                        openWindow(id: "ssh-terminal", value: session.id)
+                        pushSessionWindow(id: "ssh-terminal", value: session.id)
                         #else
                         // One window here, so re-entering a session presents it.
                         // Only the already-running ones: a session started from
@@ -434,7 +436,7 @@ struct ProjectsView: View {
                     setup: host.sessionSetup(for: agent, environment: environment)
                 )
                 addRecent(host: host.hostname, folder: folder)
-                openWindow(id: "ssh-terminal", value: id)
+                pushSessionWindow(id: "ssh-terminal", value: id)
             } catch {
                 self.error = "\(error)"
             }

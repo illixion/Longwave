@@ -9,6 +9,8 @@ import RAVECompanion
 struct CompanionProjectsView: View {
     @Environment(SSHTerminalManager.self) private var sshManager
     @Environment(\.openWindow) private var openWindow
+    /// Terminals take the main window's place (see `SessionWindowPush`).
+    @PushSessionWindow private var pushSessionWindow
     @Query(sort: \SavedConnection.lastConnected, order: .reverse) private var connections: [SavedConnection]
     var reenter: (SSHSessionID) -> Void
 
@@ -220,7 +222,7 @@ struct CompanionProjectsView: View {
         }
         let id = sshManager.openProjectsSession(session, access: access, account: account)
         #if os(visionOS)
-        openWindow(id: "ssh-terminal", value: id)
+        pushSessionWindow(id: "ssh-terminal", value: id)
         #else
         if alreadyOpen { reenter(id) }
         #endif

@@ -1,5 +1,8 @@
 import DebugTrace
 import SwiftUI
+#if os(visionOS)
+import RAVEUI
+#endif
 
 /// The main ("Connections") window is value-typed with a single constant
 /// identity. Every request to surface it opens with `MainWindowID.shared`, so
@@ -220,7 +223,14 @@ final class WindowSessionRegistry {
     /// against the focused session before calling `openWindow` itself.
     static func surface(_ id: String, using openWindow: OpenWindowAction) {
         switch id {
-        case "main": openWindow(id: id, value: MainWindowID.shared)
+        case "main":
+            #if os(visionOS)
+            // The main window may be hidden behind the session window it
+            // pushed; reveal it beside that window rather than only bringing
+            // an invisible window forward (`SessionWindowPush`).
+            RAVEWindowPushCoordinator.shared.reveal(sceneID: "main", value: MainWindowID.shared)
+            #endif
+            openWindow(id: id, value: MainWindowID.shared)
         case "foveated-controls": openWindow(id: id, value: PCVRWindowID.shared)
         default: openWindow(id: id)
         }

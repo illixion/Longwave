@@ -5,6 +5,8 @@ import RAVECompanion
 struct ConnectionListView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openWindow) private var openWindow
+    /// Session windows take this window's place (see `SessionWindowPush`).
+    @PushSessionWindow private var pushSessionWindow
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(MacNativeSessionStore.self) private var macNativeSessions
@@ -347,10 +349,10 @@ struct ConnectionListView: View {
         }
         if unity {
             #if os(visionOS)
-            openWindow(id: "mac-native-unity-controls", value: sessionID)
+            pushSessionWindow(id: "mac-native-unity-controls", value: sessionID)
             #endif
         } else if connection.nativeScreenEnabled || connection.nativeAudioEnabled {
-            openWindow(id: "mac-native-stream", value: sessionID)
+            pushSessionWindow(id: "mac-native-stream", value: sessionID)
         }
     }
 
@@ -393,7 +395,7 @@ struct ConnectionListView: View {
                 useTmux: connection.sshUseTmux
             )
             #endif
-            openWindow(id: "ssh-terminal", value: id)
+            pushSessionWindow(id: "ssh-terminal", value: id)
         } catch {
             // Device-key generation failure is rare; the terminal window
             // surfaces connection-level errors itself once opened.
@@ -468,9 +470,9 @@ struct ConnectionListView: View {
             companionInject: companionInject
         )
 
-        // Open as a sibling window — the connection manager (main) stays open
-        // alongside, so surfacing one window never dismisses the other.
-        openWindow(id: "remote-desktop")
+        // Takes this window's place; Home reveals it beside the session, and
+        // closing the session window brings it back (`SessionWindowPush`).
+        pushSessionWindow(id: "remote-desktop")
     }
 
     #if MOONLIGHT_ENABLED

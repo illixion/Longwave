@@ -65,6 +65,8 @@ struct LongwaveApp: App {
                 .environment(moonlightSessions)
                 #endif
                 .trackMainWindow()
+                // Hides behind a session window it opened until that closes.
+                .sessionWindowPushHost(sceneID: "main", value: MainWindowID.shared)
                 .debugApprovalPrompts()
                 #if DEBUG
                 .unityControlsLayoutDemo(macNativeSessions, audioManager)
@@ -179,6 +181,7 @@ struct LongwaveApp: App {
                     .homeOrnament()
                     .environment(sshManager)
                     .trackWindowSession(id: "ssh-terminal")
+                    .sessionWindowPushHost(sceneID: "ssh-terminal", value: sessionID)
             }
         }
         .defaultSize(width: 900, height: 640)
@@ -205,6 +208,7 @@ struct LongwaveApp: App {
                 .environment(connectionManager)
                 .environment(audioManager)
                 .trackWindowSession(id: "remote-desktop")
+                .sessionWindowPushHost(sceneID: "remote-desktop")
         }
         .defaultSize(width: 1280, height: 800)
         .windowResizability(.contentMinSize)
@@ -228,6 +232,7 @@ struct LongwaveApp: App {
                     // one — see `MacNativeSessionStore.audioPlayer(for:)`.
                     .environment(macNativeSessions.audioPlayer(for: sessionID))
                     .trackWindowSession(id: "mac-native-stream", instance: sessionID.registryInstance)
+                    .sessionWindowPushHost(sceneID: "mac-native-stream", value: sessionID)
             }
         }
         .defaultSize(width: 1440, height: 900)
@@ -261,6 +266,7 @@ struct LongwaveApp: App {
                         id: "mac-native-unity-controls",
                         instance: sessionID.registryInstance
                     )
+                    .sessionWindowPushHost(sceneID: "mac-native-unity-controls", value: sessionID)
             }
         }
         // Height is a first-frame hint only — `.contentSize` re-measures, and
@@ -302,6 +308,7 @@ struct LongwaveApp: App {
                     .environment(moonlightSessions.session(for: sessionID))
                     .environment(moonlightSessions)
                     .trackWindowSession(id: "moonlight-stream")
+                    .sessionWindowPushHost(sceneID: "moonlight-stream", value: sessionID)
             }
         }
         .defaultSize(width: 1920, height: 1080)

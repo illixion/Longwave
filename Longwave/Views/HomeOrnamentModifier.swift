@@ -10,7 +10,7 @@ struct HomeOrnament: ViewModifier {
     func body(content: Content) -> some View {
         content.ornament(attachmentAnchor: .scene(.bottomFront)) {
             Button {
-                openWindow(id: "main", value: MainWindowID.shared)
+                WindowSessionRegistry.surface("main", using: openWindow)
             } label: {
                 Label("Connections", systemImage: "house")
                     .labelStyle(.iconOnly)

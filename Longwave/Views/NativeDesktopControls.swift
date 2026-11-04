@@ -22,7 +22,7 @@ struct NativeDesktopControls: View {
     var body: some View {
         HStack(spacing: 12) {
             Button {
-                openWindow(id: "main", value: MainWindowID.shared)
+                WindowSessionRegistry.surface("main", using: openWindow)
             } label: {
                 Label("Connections", systemImage: "house")
             }

@@ -90,7 +90,7 @@ struct AudioStreamView: View {
             .help("Disconnect")
 
             Button {
-                openWindow(id: "main", value: MainWindowID.shared)
+                WindowSessionRegistry.surface("main", using: openWindow)
             } label: {
                 Image(systemName: "house")
             }

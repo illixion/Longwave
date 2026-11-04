@@ -1241,7 +1241,7 @@ struct NativeStreamView: View {
     private var homeOnlyControls: some View {
         HStack(spacing: 10) {
             Button {
-                openWindow(id: "main", value: MainWindowID.shared)
+                WindowSessionRegistry.surface("main", using: openWindow)
             } label: {
                 Label("Connections", systemImage: "house")
                     .labelStyle(.iconOnly)

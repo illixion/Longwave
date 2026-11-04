@@ -270,7 +270,7 @@ struct RemoteDesktopView: View {
                 Label("Ctrl+Alt+Del", systemImage: "power")
             }
 
-            Button(action: { openWindow(id: "main", value: MainWindowID.shared) }) {
+            Button(action: { WindowSessionRegistry.surface("main", using: openWindow) }) {
                 Label("Connections", systemImage: "house")
             }
             .labelStyle(.iconOnly)

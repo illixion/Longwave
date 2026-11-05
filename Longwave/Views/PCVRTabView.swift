@@ -595,6 +595,16 @@ private struct PCVRSessionForm: View {
                 .pickerStyle(.segmented)
             }
 
+            Toggle(isOn: Bindable(manager.appsBeside).keepAppsVisible) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Keep my other apps visible", systemImage: "square.on.square")
+                    Text("Shows your other apps' windows beside the stream instead of hiding them, and they keep running. This relies on how visionOS behaves today, not on a feature Apple documents, so an update may stop it working.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Divider()
 
             HStack(spacing: 14) {

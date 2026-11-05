@@ -16,6 +16,7 @@
 import GameController
 import RAVEInput
 import RAVEPanel
+import RAVEUI
 import SwiftUI
 
 #if !targetEnvironment(simulator)
@@ -86,6 +87,8 @@ struct FoveatedImmersiveView: View {
         // The view half of claiming the pad (the roster does the rest): without it the
         // system keeps a gamepad for itself and the bridge's polled sticks freeze.
         .handlesGameControllerEvents(matching: .gamepad)
+        // Window actions, phase and close for "Keep my other apps visible".
+        .appsBesideSpace(manager.appsBeside)
         .onDisappear {
             wristDriver.hide(bridge: manager.controllerBridge)
             webPanels.tearDown(bridge: manager.controllerBridge)

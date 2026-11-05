@@ -18,6 +18,9 @@
 import DebugTrace
 import SwiftUI
 import Network
+#if os(visionOS)
+import RAVEUI
+#endif
 
 #if !targetEnvironment(simulator)
 import FoveatedStreaming
@@ -30,6 +33,18 @@ final class FoveatedConnectionManager {
     /// The single streaming session. The `ImmersiveSpace(foveatedStreaming:)`
     /// scene binds to this exact instance, so it lives for the app's lifetime.
     let session = FoveatedStreamingSession()
+
+    #if os(visionOS)
+    /// "Keep my other apps visible" (PCVR tab): flashes a window open once the space is
+    /// up, which brings other apps' windows back beside it, still running, so a job in
+    /// one of them carries on during a session. An OS quirk, see RAVEUI's notes.
+    let appsBeside: RAVEAppsBesideSpace = {
+        let beside = RAVEAppsBesideSpace(windowID: "pcvr-apps-beside", defaultsKey: "pcvrAppsBesideKeepVisible")
+        let log = DebugLogger(subsystem: "pro.longwave", category: "Foveated")
+        beside.onEvent = { event in log.notice("Apps beside the PCVR space: \(event, privacy: .public)") }
+        return beside
+    }()
+    #endif
 
     /// Connection the user last asked to open; seeds the connect form on retry
     /// and supplies the controller-bridge host.

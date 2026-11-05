@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import DebugTraceServer
 import DebugTraceUI
+import RAVEUI
 #if FOVEATED_ENABLED && !targetEnvironment(simulator)
 import FoveatedStreaming
 #endif
@@ -422,6 +423,10 @@ struct LongwaveApp: App {
         .immersionStyle(selection: foveatedImmersionBinding, in: .progressive, .mixed)
         .upperLimbVisibility(.hidden)
         #endif
+
+        // Flashed open and shut once the PCVR space is up when "Keep my other apps
+        // visible" is on: a window opened after the space brings other apps back.
+        RAVEAppsBesideTriggerWindow(foveatedManager.appsBeside)
 
         #if DEBUG
         // Shell A: the PCVR receiver in a CompositorServices space of its own,

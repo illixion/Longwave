@@ -106,6 +106,13 @@ struct LongwaveApp: App {
         } defaultValue: {
             .shared
         }
+        // Plain, so the window has no system glass of its own: while a session
+        // window is pushed in its place, the push host can only fade the
+        // content, and a system glass pane would stay behind as an empty,
+        // dead window. MainView draws the glass itself and drops it then.
+        #if os(visionOS)
+        .windowStyle(.plain)
+        #endif
         .modelContainer(for: SavedConnection.self)
 
         // The debug server's access and code-change prompts, in a window of

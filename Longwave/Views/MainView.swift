@@ -73,6 +73,12 @@ struct MainView: View {
             .transition(.opacity)
         }
         .animation(.smooth(duration: 0.25), value: selectedTab)
+        #if os(visionOS)
+        // The main window is `.plain` (see LongwaveApp), so its glass is ours
+        // and goes away with the content while a session window replaces it.
+        .glassBackgroundEffect(in: .rect(cornerRadius: 32),
+                               displayMode: isPushedAway ? .never : .always)
+        #endif
         .onOpenURL { url in
             // A Mac's address link (no secret in it): surface the Connections
             // tab, where a form opens and pairs over it.

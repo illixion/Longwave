@@ -47,6 +47,7 @@ struct LongwaveApp: App {
             GamepadDebugEndpoints.register()
             #if FOVEATED_ENABLED
             TrackerDebugEndpoints.register()
+            FoveatedGazeDebugEndpoints.register()
             #endif
         }
     }

@@ -34,3 +34,6 @@ Configuration/BuildInfo.xcconfig
 
 # Temp files
 /spike/
+
+# Gaze feeds linked in at build time from outside this repo (RAVEFoveatedGaze plug-ins); never committed.
+Longwave/PrivatePlugins/

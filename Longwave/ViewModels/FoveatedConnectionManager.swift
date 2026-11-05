@@ -25,10 +25,19 @@ import RAVEUI
 #if !targetEnvironment(simulator)
 import FoveatedStreaming
 #endif
+#if os(visionOS) && !targetEnvironment(simulator)
+import RAVEFoveatedGaze
+import RAVEInput
+#endif
 
 @MainActor
 @Observable
 final class FoveatedConnectionManager {
+
+    /// The app's one manager, for debug endpoints registered before any view exists.
+    static weak var current: FoveatedConnectionManager?
+
+    init() { Self.current = self }
 
     /// The single streaming session. The `ImmersiveSpace(foveatedStreaming:)`
     /// scene binds to this exact instance, so it lives for the app's lifetime.
@@ -229,6 +238,7 @@ final class FoveatedConnectionManager {
                 // A completed connect earns back the auto-reconnect budget.
                 self.noteConnected()
                 self.startBridgeSupervisor(for: connection)
+                self.startGazeFeed(for: connection)
             } catch is CancellationError {
                 // User cancelled — leave status to the session.
             } catch {
@@ -237,6 +247,7 @@ final class FoveatedConnectionManager {
                 self.bridgeSupervisorTask?.cancel()
                 self.bridgeSupervisorTask = nil
                 self.stopControllerBridge()
+                self.stopGazeFeed()
                 /* And it must not leave a session behind either. A connect that throws can
                    still have left the system's foveated service holding a half-open session,
                    and the next attempt is then refused with "the foveated streaming service
@@ -445,6 +456,7 @@ final class FoveatedConnectionManager {
         bridgeSupervisorTask?.cancel()
         bridgeSupervisorTask = nil
         stopControllerBridge()
+        stopGazeFeed()
         await session.disconnect()
         /* Unsettled, not progressive, and only once the space is actually gone. The tab
            then says the PC decides this at connect time instead of naming a style left
@@ -500,6 +512,37 @@ final class FoveatedConnectionManager {
             return .local(ipAddress: ip, port: port)
         }
     }
+
+    // MARK: Gaze
+
+    #if os(visionOS) && !targetEnvironment(simulator)
+    /// Where the wearer looks during a session, read back through a RAVEFoveatedGaze
+    /// feed: a plug-in feed built into this copy (`RAVEFoveatedGazeFeeds.plugin()`), or
+    /// else RAVE's gaze message channel, for a host that forwards the gaze it receives.
+    /// Nothing serves that channel yet, so in a stock build `gazeSample` stays nil.
+    /// The official provider route (visionOS 27, `RAVEFoveatedProviderFeed`) needs the
+    /// foveated-streaming-provider entitlement and its own extension target; see
+    /// RAVEEngine's Templates/FoveatedGazeProvider.
+    private(set) var gazeFeed: (any RAVEFoveatedGazeFeed)?
+    /// The newest gaze sample, head space; nil when no feed has one.
+    var gazeSample: RAVEGazeSample? { gazeFeed?.gaze.latest }
+
+    private func startGazeFeed(for connection: SavedConnection) {
+        gazeFeed?.detach()
+        let feed = RAVEFoveatedGazeFeeds.plugin() ?? RAVEFoveatedChannelFeed()
+        feed.attach(session, options: ["host": connection.hostname.trimmingCharacters(in: .whitespaces)])
+        gazeFeed = feed
+        log.info("Gaze feed: \(feed.name, privacy: .public)")
+    }
+
+    private func stopGazeFeed() {
+        gazeFeed?.detach()
+        gazeFeed = nil
+    }
+    #else
+    private func startGazeFeed(for connection: SavedConnection) {}
+    private func stopGazeFeed() {}
+    #endif
 
     // MARK: Controller bridge
 

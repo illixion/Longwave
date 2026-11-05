@@ -50,6 +50,7 @@
 		A7C400000000000000000021 /* MacNativeStreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000011 /* MacNativeStreamProtocol.swift */; };
 		A7C400000000000000000022 /* CompanionDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C400000000000000000012 /* CompanionDevices.swift */; };
 		AA03000000000000000000A3 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A2 /* RAVEInput */; };
+		AA03000000000000000000F1 /* RAVEFoveatedGaze in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000F2 /* RAVEFoveatedGaze */; };
 		AA03000000000000000000A5 /* RAVEInput in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000A4 /* RAVEInput */; };
 		AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B2 /* RAVEDiagnostics */; };
 		AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */ = {isa = PBXBuildFile; productRef = AA03000000000000000000B4 /* RAVEDiagnostics */; };
@@ -348,6 +349,7 @@
 				5511C0DE0000000000000024 /* NIOTransportServices in Frameworks */,
 				5511C0DE0000000000000025 /* Crypto in Frameworks */,
 				AA03000000000000000000A3 /* RAVEInput in Frameworks */,
+				AA03000000000000000000F1 /* RAVEFoveatedGaze in Frameworks */,
 				AA03000000000000000000E3 /* RAVEPanel in Frameworks */,
 				AA07000000000000000000E9 /* RAVEBrowser in Frameworks */,
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
@@ -613,6 +615,7 @@
 				5511C0DE0000000000000014 /* NIOTransportServices */,
 				5511C0DE0000000000000015 /* Crypto */,
 				AA03000000000000000000A2 /* RAVEInput */,
+				AA03000000000000000000F2 /* RAVEFoveatedGaze */,
 				AA03000000000000000000E2 /* RAVEPanel */,
 				AA07000000000000000000E8 /* RAVEBrowser */,
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
@@ -2089,6 +2092,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
 			productName = RAVEInput;
+		};
+		AA03000000000000000000F2 /* RAVEFoveatedGaze */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA03000000000000000000A1 /* XCLocalSwiftPackageReference "../RAVEEngine" */;
+			productName = RAVEFoveatedGaze;
 		};
 		AA03000000000000000000A4 /* RAVEInput */ = {
 			isa = XCSwiftPackageProductDependency;

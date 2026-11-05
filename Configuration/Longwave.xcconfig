@@ -6,3 +6,8 @@
 // BuildInfo.xcconfig is gitignored; the optional include means builds
 // work without it (COMMIT_HASH resolves empty → Settings shows version only).
 #include? "BuildInfo.xcconfig"
+
+// FoveatedStreaming exists from visionOS 26.4, above the app's 26.2 floor, and
+// RAVEEngine's RAVEFoveatedGaze links it: weak, so the app still launches on
+// 26.2/26.3. Device SDK only (the simulator has no such framework).
+OTHER_LDFLAGS[sdk=xros*] = $(inherited) -weak_framework FoveatedStreaming

@@ -341,6 +341,13 @@ final class FoveatedConnectionManager {
         if let up = lastConnectedAt, up.duration(to: .now) > Self.budgetForgivenAfter {
             autoReconnectAttempts = 0
         }
+        /* The uptime above belongs to the session that just dropped, so it may forgive the
+           budget once. A retry that never connects does not refresh it, and without this
+           every failed retry read the old session's ever-growing age as "streamed for a
+           while" and was forgiven again: measured 2026-11-05, the receiver process kept
+           dying and the one-retry cap became fifteen retries in five minutes, each raising
+           the system picker. A retry that connects sets it again in `noteConnected`. */
+        lastConnectedAt = nil
         guard autoReconnectAttempts < Self.maxAutoReconnects else {
             log.notice("Auto-reconnect budget spent; leaving this drop to the alert.")
             return false

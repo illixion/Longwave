@@ -161,6 +161,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private let psk: StreamPSK
     private let mailbox: PCVRFrameMailbox
     private let decoder: PCVRHEVCDecoder
+    /// The test scene's stamps, checked on every decoded picture once enabled.
+    let stamps = PCVRStampChecker()
     /// The depth stream, when this receiver asked for it (`wantsDepth`).
     let depthStore: PCVRDepthStore?
     private let depthDecoder: PCVRHEVCDecoder?
@@ -235,6 +237,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         decoder.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestKeyFrame() }
         }
+        decoder.stampChecker = stamps
         depthDecoder?.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestDepthKeyFrame() }
         }
@@ -768,6 +771,8 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
 
     /// A picture failed to decode: the stream needs a key frame.
     var onDecodeError: (@Sendable () -> Void)?
+    /// Reads the test scene's stamp from every colour picture while enabled.
+    var stampChecker: PCVRStampChecker?
 
     private let output: Output
     private let textureCache: CVMetalTextureCache
@@ -891,6 +896,8 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
                 $0.frames += 1
                 $0.decodeSeconds += now - submitted
             }
+            stampChecker?.check(imageBuffer, foveation: foveation, frameNumber: frameNumber,
+                                poseSequence: renderPose.poseSequence)
             let metalTexture = texture.texture
             let frame = PCVRDecodedFrame(streamEpoch: streamEpoch, frameNumber: frameNumber, texture: metalTexture,
                                          renderPose: renderPose, foveation: foveation, arrivalTime: now,

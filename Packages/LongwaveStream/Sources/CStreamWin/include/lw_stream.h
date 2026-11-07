@@ -154,6 +154,25 @@ lw_status lw_spike_pattern_read(lw_spike_pattern *pattern, void *texture, void *
                                 float *out_aux);
 void lw_spike_pattern_release(lw_spike_pattern *pattern);
 
+/* SPIKE ONLY: a world-locked test scene for the PCVR path, ray-cast per eye from
+ * the headset's pose (spike_test_scene.cpp has the scene and the stamp layout).
+ * `image` is the side-by-side BGRA8 target, `depth` (R32_FLOAT, side by side,
+ * any size) receives metres along each eye's view axis and may be NULL. */
+typedef struct lw_spike_scene lw_spike_scene;
+typedef struct lw_spike_scene_eye {
+    float orientation[4]; /* world from eye, xyzw */
+    float position[3];    /* world, metres */
+    float angles[4];      /* left, right, up, down, radians */
+    float time;           /* display time, seconds: drives the animation */
+} lw_spike_scene_eye;
+lw_status lw_spike_scene_create(void *d3d11_device, lw_spike_scene **out);
+lw_status lw_spike_scene_draw(lw_spike_scene *scene, void *image, void *depth, const lw_spike_scene_eye eyes[2],
+                              uint32_t stamp, int32_t draw_stamp);
+/* A panel's corner cross in world space: panel 0 ahead, 1 right, 2 behind, 3 left;
+ * corner bit 0 = right, bit 1 = bottom. */
+void lw_spike_scene_marker(int32_t panel, int32_t corner, float out[3]);
+void lw_spike_scene_release(lw_spike_scene *scene);
+
 /* SPIKE ONLY: the frame-source-spike command line (produce, consume,
  * inprocess, gpu-load); see spike_frame_source_tool.cpp. Returns the exit code. */
 int lw_spike_frame_source_tool(int argc, char **argv);

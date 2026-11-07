@@ -11,6 +11,7 @@
 //                                [--out FILE.h265] [--pose]
 //   frame-source-spike inprocess [--seconds S] [--fps F] [--width W] [--height H] [--mbps M] [--csv FILE]
 //   frame-source-spike gpu-load  [--percent P] [--seconds S]
+//   frame-source-spike scene     [--channel C] [--seconds S] [--eye WxH] [--no-stamp] [--no-depth]
 //
 // produce renders a test pattern (panning noise, a moving bar, the frame
 // number as blocks; with --aux an R32_FLOAT "depth" texture holding the frame
@@ -31,6 +32,14 @@
 // identity one: a head 1.6 m up, 63 mm IPD, a 112 x 100 degree field of view
 // per eye, turning slowly left and right, so a VR compositor (the session
 // broker's native output) renders from it as it would from a headset.
+//
+// scene stands in for the session broker on a PCVR host's channel: paced by
+// the host state as the broker's native output is, it ray-casts a world-locked
+// test scene (spike_test_scene.cpp) from the headset's own pose into
+// --eye-sized eyes (default 5184x4160) and submits it with the broker's
+// renderPose side data and exact depth in the aux texture. With no game,
+// runtime, shim or broker in the way, what the headset shows depends only on
+// the host, the network and the headset. S 0 (the default) runs until killed.
 //
 // inprocess is the baseline: the same pattern drawn on the host's own device
 // into a same-format texture, a local fence waited on, the same mailbox and
@@ -64,7 +73,9 @@ struct Options {
             std::string a = argv[i];
             if (a.rfind("--", 0) != 0) continue;
             a = a.substr(2);
-            if (a == "aux" || a == "warp" || a == "verify" || a == "no-encode" || a == "pose") flags.push_back(a);
+            if (a == "aux" || a == "warp" || a == "verify" || a == "no-encode" || a == "pose" || a == "no-stamp" ||
+                a == "no-depth")
+                flags.push_back(a);
             else if (i + 1 < argc) values[a] = argv[++i];
         }
     }
@@ -736,6 +747,206 @@ int gpu_load(const Options &o) {
 
 } // namespace
 
+// ---- scene: the broker's stand-in ------------------------------------------------
+
+namespace scene_detail {
+
+struct Writer {
+    uint8_t *p;
+    void u8(uint8_t v) { *p++ = v; }
+    void u16(uint16_t v) { u8(static_cast<uint8_t>(v)); u8(static_cast<uint8_t>(v >> 8)); }
+    void u32(uint32_t v) { for (int s = 0; s < 32; s += 8) u8(static_cast<uint8_t>(v >> s)); }
+    void u64(uint64_t v) { for (int s = 0; s < 64; s += 8) u8(static_cast<uint8_t>(v >> s)); }
+    void f32(float v) { uint32_t bits; memcpy(&bits, &v, 4); u32(bits); }
+};
+
+void rotate(const float q[4], const float v[3], float out[3]) {
+    const float ux = q[0], uy = q[1], uz = q[2], w = q[3];
+    const float cx = uy * v[2] - uz * v[1], cy = uz * v[0] - ux * v[2], cz = ux * v[1] - uy * v[0];
+    const float ccx = uy * cz - uz * cy, ccy = uz * cx - ux * cz, ccz = ux * cy - uy * cx;
+    out[0] = v[0] + 2.0f * (w * cx + ccx);
+    out[1] = v[1] + 2.0f * (w * cy + ccy);
+    out[2] = v[2] + 2.0f * (w * cz + ccz);
+}
+
+void multiply(const float a[4], const float b[4], float out[4]) {
+    out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+    out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+    out[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+    out[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+}
+
+uint64_t qpc_to_ns(int64_t qpc) {
+    const int64_t f = lw_qpc_frequency();
+    return qpc <= 0 ? 0 : static_cast<uint64_t>(qpc / f) * 1'000'000'000ull + static_cast<uint64_t>((qpc % f) * 1'000'000'000ll / f);
+}
+
+} // namespace scene_detail
+
+static int scene(const Options &o) {
+    using namespace scene_detail;
+    const std::string channel = o.str("channel", "pcvr");
+    const double seconds = o.num("seconds", 0);
+    int eyeWidth = 5184, eyeHeight = 4160;
+    if (sscanf(o.str("eye", "5184x4160").c_str(), "%dx%d", &eyeWidth, &eyeHeight) != 2 || eyeWidth < 256 || eyeHeight < 256) {
+        printf("error: --eye WxH\n");
+        return 1;
+    }
+    eyeWidth &= ~1;
+    eyeHeight &= ~1;
+    const bool stamp = !o.has("no-stamp"), depth = !o.has("no-depth");
+
+    lw_device *shim_device = nullptr;
+    lw_status st = lw_device_create(nullptr, &shim_device);
+    if (st != LW_OK) die("lw_device_create", st);
+    auto *device = static_cast<ID3D11Device *>(lw_device_get_d3d11(shim_device));
+    lw_spike_scene *renderer = nullptr;
+    st = lw_spike_scene_create(device, &renderer);
+    if (st != LW_OK) die("lw_spike_scene_create", st);
+
+    lw_frame_producer_params params{};
+    params.channel = channel.c_str();
+    params.device = device;
+    params.format.layout = LW_FS_LAYOUT_STEREO_SIDE_BY_SIDE;
+    params.format.slot_count = 3;
+    params.format.image_format = LW_FS_FORMAT_B8G8R8A8_UNORM;
+    params.format.image_width = static_cast<uint32_t>(eyeWidth * 2);
+    params.format.image_height = static_cast<uint32_t>(eyeHeight);
+    if (depth) {
+        // A quarter of the eye each way: still sixteen texels per depth-stream texel.
+        params.format.aux_role = LW_FS_AUX_DEPTH;
+        params.format.aux_format = LW_FS_FORMAT_R32_FLOAT;
+        params.format.aux_width = static_cast<uint32_t>(eyeWidth / 2);
+        params.format.aux_height = static_cast<uint32_t>(eyeHeight / 4);
+    }
+    params.timeout_ms = 500;
+
+    lw_frame_producer *producer = nullptr;
+    auto attach = [&]() -> bool {
+        uint32_t refusal = 0;
+        lw_status s = lw_frame_producer_attach(&params, &producer, &refusal);
+        if (s == LW_OK) {
+            printf("scene: attached to '%s', %dx%d per eye%s%s\n", channel.c_str(), eyeWidth, eyeHeight,
+                   depth ? ", exact depth" : "", stamp ? ", stamped" : "");
+            return true;
+        }
+        if (s == LW_E_REFUSED) printf("scene: refused (%u): %s\n", refusal, lw_last_error());
+        producer = nullptr;
+        return false;
+    };
+
+    const int64_t f = lw_qpc_frequency();
+    const int64_t end = seconds > 0 ? lw_qpc_now() + static_cast<int64_t>(seconds * f) : INT64_MAX;
+    int64_t lastHostStart = 0, lastFrameStart = 0, nextLocalStart = 0, lastReport = lw_qpc_now();
+    uint64_t frame = 0;
+    long submitted = 0, hostPaced = 0, posed = 0, busy = 0;
+    std::vector<double> draw_ms;
+    while (lw_qpc_now() < end) {
+        if (!producer && !attach()) {
+            Sleep(200);
+            continue;
+        }
+        // Pacing: the broker's native output (native_output.cpp WaitFrame), with its
+        // half-period rule against taking a host start the local clock already ran.
+        lw_fs_host_state host{};
+        const bool haveHost = lw_frame_producer_read_host_state(producer, &host) == LW_OK;
+        uint32_t refresh = 90000;
+        if (haveHost && host.refresh_millihz >= 30000 && host.refresh_millihz <= 240000) refresh = host.refresh_millihz;
+        const int64_t period = f * 1000 / refresh;
+        const int64_t now = lw_qpc_now();
+        int64_t target;
+        bool paced = false;
+        if (haveHost && host.next_frame_start_qpc > lastHostStart && host.next_frame_start_qpc > lastFrameStart + period / 2 &&
+            host.next_frame_start_qpc < now + 2 * period) {
+            target = lastHostStart = host.next_frame_start_qpc;
+            paced = true;
+        } else {
+            nextLocalStart = (nextLocalStart == 0 || now > nextLocalStart + period) ? now : nextLocalStart + period;
+            target = nextLocalStart;
+        }
+        precise_sleep_until(target);
+        lastFrameStart = lw_qpc_now();
+        if (paced) {
+            nextLocalStart = lastFrameStart;
+            ++hostPaced;
+        }
+        ++frame;
+
+        // The pose as it stands now: the freshest the host has.
+        lw_frame_producer_read_host_state(producer, &host);
+        lw_spike_scene_eye eyes[2]{};
+        uint8_t side[3 + 14 + 2 * 44];
+        Writer w{side};
+        w.u8(1); // renderPose
+        w.u16(14 + 2 * 44);
+        const bool valid = host.pose_valid != 0;
+        const int64_t display = valid && host.pose_display_qpc > 0 ? host.pose_display_qpc : lastFrameStart + 2 * period;
+        w.u32(valid ? host.pose_sequence : 0);
+        w.u16(static_cast<uint16_t>(host.space_epoch));
+        w.u64(qpc_to_ns(display));
+        for (int e = 0; e < 2; ++e) {
+            lw_spike_scene_eye &eye = eyes[e];
+            if (valid) {
+                float offset[3];
+                rotate(host.head.orientation, host.eye_offset[e].position, offset);
+                for (int i = 0; i < 3; ++i) eye.position[i] = host.head.position[i] + offset[i];
+                multiply(host.head.orientation, host.eye_offset[e].orientation, eye.orientation);
+                eye.angles[0] = host.eye_fov[e].angle_left;
+                eye.angles[1] = host.eye_fov[e].angle_right;
+                eye.angles[2] = host.eye_fov[e].angle_up;
+                eye.angles[3] = host.eye_fov[e].angle_down;
+            } else {
+                eye.orientation[3] = 1;
+                eye.position[0] = e == 0 ? -0.032f : 0.032f;
+                eye.position[1] = 1.4f;
+                eye.angles[0] = -1.0f; eye.angles[1] = 1.0f; eye.angles[2] = 0.9f; eye.angles[3] = -0.9f;
+            }
+            eye.time = static_cast<float>(static_cast<double>(qpc_to_ns(display) % 3'600'000'000'000ull) / 1e9);
+            for (float q : eye.orientation) w.f32(q);
+            for (float c : eye.position) w.f32(c);
+            for (float a : eye.angles) w.f32(a);
+        }
+        if (valid) ++posed;
+
+        lw_frame_producer_slot slot{};
+        lw_status s = lw_frame_producer_acquire(producer, &slot);
+        if (s == LW_E_BUSY) { ++busy; continue; }
+        if (s != LW_OK) {
+            printf("scene: host lost (%s); reattaching\n", lw_last_error());
+            lw_frame_producer_detach(producer);
+            producer = nullptr;
+            continue;
+        }
+        const int64_t t0 = lw_qpc_now();
+        s = lw_spike_scene_draw(renderer, slot.textures[LW_FS_TEXTURE_IMAGE], depth ? slot.textures[LW_FS_TEXTURE_AUX] : nullptr,
+                                eyes, valid ? host.pose_sequence : 0, stamp ? 1 : 0);
+        if (s != LW_OK) die("lw_spike_scene_draw", s);
+        draw_ms.push_back(ms(lw_qpc_now() - t0));
+        s = lw_frame_producer_submit(producer, slot.index, frame, side, sizeof side);
+        if (s != LW_OK) {
+            printf("scene: submit failed (%s); reattaching\n", lw_last_error());
+            lw_frame_producer_detach(producer);
+            producer = nullptr;
+            continue;
+        }
+        ++submitted;
+        if (lw_qpc_now() - lastReport > 3 * f) {
+            const double span = ms(lw_qpc_now() - lastReport) / 1000;
+            printf("scene: %.1f fps, %ld of %ld host-paced, %ld with the headset's pose, %ld starved, refresh %.1f Hz\n",
+                   submitted / span, hostPaced, submitted, posed, busy, refresh / 1000.0);
+            describe("draw (CPU, queue only) ms", draw_ms);
+            fflush(stdout);
+            submitted = hostPaced = posed = busy = 0;
+            draw_ms.clear();
+            lastReport = lw_qpc_now();
+        }
+    }
+    if (producer) lw_frame_producer_detach(producer);
+    lw_spike_scene_release(renderer);
+    lw_device_release(shim_device);
+    return 0;
+}
+
 extern "C" int lw_spike_frame_source_tool(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IOLBF, 1 << 16);
     lw_status st = lw_runtime_init();
@@ -746,6 +957,7 @@ extern "C" int lw_spike_frame_source_tool(int argc, char **argv) {
     if (command == "consume") return consume(options);
     if (command == "inprocess") return inprocess(options);
     if (command == "gpu-load") return gpu_load(options);
-    printf("usage: frame-source-spike produce|consume|inprocess|gpu-load [options] (see the source header)\n");
+    if (command == "scene") return scene(options);
+    printf("usage: frame-source-spike produce|consume|inprocess|gpu-load|scene [options] (see the source header)\n");
     return 1;
 }

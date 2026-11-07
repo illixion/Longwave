@@ -35,7 +35,8 @@ enum PCVRShellEndpoints {
                         .boolean("warp", "per-pixel reprojection by the stream's depth (default on); off reprojects on one plane"),
                         .integer("warpSteps", "the most depth-map texels a ray is marched (default 32)", default: 0, range: 0...256),
                         .number("warpStep", "the march's step in depth-map texels (default 2)", default: 0, range: 0...8),
-                        .boolean("warpTint", "diagnostics: the pixels the warp fills in, in magenta"),
+                        .boolean("warpTint", "diagnostics: the pixels the warp fills in, in magenta (cyan: filled from the other eye)"),
+                        .boolean("otherEye", "fill what an eye could not see from the frame's other eye (default on)"),
                         .number("planeDistance", "metres ahead a frame without depth is taken to lie (default 50)",
                                 default: 0, range: 0...1000),
                         .boolean("predictsToLatency", "predict the uplink pose by the measured pipeline latency (default on)"),
@@ -48,6 +49,7 @@ enum PCVRShellEndpoints {
                 if let steps = args.int("warpSteps"), steps > 0 { options.depthWarp.maxSteps = steps }
                 if let step = args.double("warpStep"), step > 0 { options.depthWarp.stepTexels = Float(step) }
                 if let tint = args.bool("warpTint") { options.depthWarp.tintsFills = tint }
+                if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
                 if let plane = args.double("planeDistance"), plane > 0 { options.depthWarp.planeDistance = Float(plane) }
                 if let predicts = args.bool("predictsToLatency") { options.predictsToLatency = predicts }
                 if options != session.renderOptions { session.renderOptions = options }
@@ -103,7 +105,7 @@ enum PCVRShellEndpoints {
             "stats": stats,
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
-                "warpTint": warp.tintsFills, "planeDistance": warp.planeDistance,
+                "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
             ] as [String: Any],
         ]

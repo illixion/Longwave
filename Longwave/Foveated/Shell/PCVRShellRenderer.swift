@@ -26,8 +26,11 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     var isEnabled = true
     var maxSteps = 32
     var stepTexels: Float = 2
-    /// Diagnostics: the pixels the warp fills in, in magenta.
+    /// Diagnostics: the pixels the warp fills in, in magenta (cyan where the
+    /// other eye filled them).
     var tintsFills = false
+    /// Fill what a view's own eye could not see from the frame's other eye.
+    var fillsFromOtherEye = true
     /// Where the picture is taken to lie, metres ahead of the render eye, for a
     /// frame whose depth has not arrived (or a host that sends none).
     var planeDistance: Float = 50
@@ -283,6 +286,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             warper.maxSteps = warp.maxSteps
             warper.stepTexels = warp.stepTexels
             warper.tintsFills = warp.tintsFills
+            warper.fillsFromOtherEye = warp.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1
             if depthEntry == nil { depthWarpsWithoutDepth += 1 }

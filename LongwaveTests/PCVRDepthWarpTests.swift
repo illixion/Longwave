@@ -377,5 +377,73 @@ final class PCVRDepthWarpTests: XCTestCase {
             XCTAssertLessThan(worstDepth, near / 2.1 * 0.01, "eye \(eye): worst depth error")
         }
     }
+
+    /// What a sideways move uncovers beside a near object is filled from the
+    /// other eye, which saw it, rather than smeared from beside the edge.
+    func testUncoveredBackgroundIsFilledFromTheOtherEye() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        // A slab 20 cm wide, 0.5 m ahead, over a wall 4 m ahead, seen from
+        // each eye (left at x = 0, right at x = 6.4 cm): a depth per texel by
+        // casting its ray.
+        let width = Self.depthWidth, height = Self.depthHeight
+        let map = PCVRDepthMap(texture: try texture(.r8Unorm, width: 2 * width, height: height), near: 0.25, far: .infinity)
+        var pixels = [UInt8](repeating: 0, count: 2 * width * height)
+        let fov = Self.fov
+        for y in 0..<height {
+            for x in 0..<(2 * width) {
+                let eye = x / width, eyeX: Float = eye == 0 ? 0 : 0.064
+                let u = (Float(x % width) + 0.5) / Float(width)
+                let tangent = fov.tangents.x + u * (fov.tangents.y - fov.tangents.x)
+                let atSlab = eyeX + tangent * 0.5
+                let z: Float = abs(atSlab) < 0.1 ? 0.5 : 4
+                pixels[y * 2 * width + x] = UInt8((0.25 / z * 255).rounded())
+            }
+        }
+        pixels.withUnsafeBytes {
+            map.texture.replace(region: MTLRegionMake2D(0, 0, 2 * width, height), mipmapLevel: 0,
+                                withBytes: $0.baseAddress!, bytesPerRow: 2 * width)
+        }
+        let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.03, 0, 0])
+        func filled(otherEye: Bool) throws -> (magenta: Int, cyan: Int) {
+            let warper = try PCVRDepthWarper(device: device)
+            warper.tintsFills = true
+            warper.fillsFromOtherEye = otherEye
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: Self.eyeWidth,
+                                                                      height: Self.eyeHeight, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            let colour = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+            let target = PCVRReceiverTarget(
+                eye: 0, colorTexture: colour,
+                viewport: MTLViewport(originX: 0, originY: 0, width: Double(Self.eyeWidth), height: Double(Self.eyeHeight),
+                                      znear: 0, zfar: 1),
+                display: PCVREyeView(pose: frame.renderPose.eyes.left.pose * move, fieldOfView: fov))
+            let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+            try warper.encode(frame: frame, depth: map, views: [target], planeDistance: 2, commandBuffer: commandBuffer)
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+            var out = [Float16](repeating: 0, count: Self.eyeWidth * Self.eyeHeight * 4)
+            out.withUnsafeMutableBytes {
+                colour.getBytes($0.baseAddress!, bytesPerRow: Self.eyeWidth * 8,
+                                from: MTLRegionMake2D(0, 0, Self.eyeWidth, Self.eyeHeight), mipmapLevel: 0)
+            }
+            var magenta = 0, cyan = 0
+            for p in 0..<(Self.eyeWidth * Self.eyeHeight) {
+                let r = out[p * 4], g = out[p * 4 + 1], b = out[p * 4 + 2]
+                if r == 1, g == 0, b == 1 { magenta += 1 }
+                if r == 0, g == 1, b == 1 { cyan += 1 }
+            }
+            return (magenta, cyan)
+        }
+        let alone = try filled(otherEye: false)
+        let helped = try filled(otherEye: true)
+        // The strip uncovered right of the slab: about 3 cm x (1/0.5 - 1/4)
+        // = 0.0525 in tangent, some 9 pixels a row.
+        XCTAssertGreaterThan(alone.magenta, 4 * Self.eyeHeight)
+        XCTAssertEqual(alone.cyan, 0)
+        XCTAssertGreaterThan(helped.cyan, alone.magenta * 3 / 4, "most of the strip from the other eye")
+        XCTAssertLessThan(helped.magenta, alone.magenta / 4)
+    }
 }
 #endif

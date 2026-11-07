@@ -124,6 +124,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// Diagnostics: draw the pixels the warp fills in (their true content was
     /// hidden from the source eye) in magenta.
     var tintsFills = false
+    /// Display views: fill what a view's own eye could not see from the
+    /// frame's other eye where that eye saw it (tinted cyan with `tintsFills`).
+    var fillsFromOtherEye = true
 
     init(device: any MTLDevice) throws {
         self.device = device
@@ -233,6 +236,21 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                  outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
                                  map: map, mapSlot: slot, flags: 4)
         }
+        // Each view's ray through the frame's other eye, for what its own eye
+        // could not see (`fillsFromOtherEye`): slots 2 and 3.
+        var fragmentUniforms = uniforms
+        for slot in 0..<2 {
+            let target = targets[min(slot, targets.count - 1)]
+            let size = Self.logicalSize(target)
+            fragmentUniforms.append(self.uniforms(
+                frame: frame, eye: 1 - min(target.eye, 1), depth: depth, target: target.display.pose,
+                targetTangents: target.display.fieldOfView.tangents, planeDistance: planeDistance,
+                outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
+                map: map, mapSlot: slot, flags: 4))
+        }
+        if fillsFromOtherEye && depth != nil {
+            for slot in 0..<2 { fragmentUniforms[slot].flags |= 8 }
+        }
         let length = MemoryLayout<Uniforms>.stride * 2
         guard let compute = commandBuffer.makeComputeCommandEncoder() else {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
@@ -255,7 +273,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             encoder.label = "PCVR depth warp"
             encoder.setRenderPipelineState(try displayPipeline(for: group[0]))
             if group[0].depthTexture != nil { encoder.setDepthStencilState(depthWrite) }
-            encoder.setFragmentBytes(&uniforms, length: length, index: 0)
+            encoder.setFragmentBytes(&fragmentUniforms, length: MemoryLayout<Uniforms>.stride * 4, index: 0)
             encoder.setFragmentTexture(frame.texture, index: 0)
             encoder.setFragmentTexture(depthTexture, index: 1)
             encoder.setFragmentTexture(map, index: 3)
@@ -402,7 +420,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float edge;             // an inverse-depth jump this large between texels is an edge
         uint maxSteps;
         uint flags;             // 1: a depth map; 2: tint filled pixels; 4: the output is the target's own
-                                // render UV (a display view), not packed by the frame's foveation map
+                                // render UV (a display view), not packed by the frame's foveation map;
+                                // 8: fill from the other eye (display views, uniforms 2 and 3)
     };
 
     struct PCVRDepthWarpHit {
@@ -709,35 +728,57 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float depth [[depth(any)]];
     };
 
-    static PCVRDepthWarpDisplayOut pcvrDepthWarpDisplayPixel(float2 ndc, constant PCVRDepthWarpUniforms &u,
+    // Clip depth of a hit seen from the source eye of `u`, in the display eye.
+    // Never depth 0 (reverse Z: at infinity) or beyond the far plane: the
+    // visionOS compositor clips those pixels when it reprojects and shows
+    // them black, as Oneiros found for its sky (2026-08-27); the sky here
+    // went black the same way (2026-11-08). A hair inside the far plane
+    // instead.
+    static float pcvrDepthWarpClipDepth(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u, float4x4 projection) {
+        if (hit.w <= 1e-6) return PCVR_FAR_DEPTH;
+        float4 st = u.sourceTangents;
+        float2 tangent = float2(st.x + hit.uv.x * (st.y - st.x), st.z - hit.uv.y * (st.z - st.w));
+        float3 inSource = float3(tangent, -1) / hit.w;
+        float3 inDisplay = transpose(u.rotation) * (inSource - u.translation.xyz);
+        float4 clip = projection * float4(inDisplay, 1);
+        return clip.w > 1e-6 ? clamp(clip.z / clip.w, PCVR_FAR_DEPTH, 1.0) : PCVR_FAR_DEPTH;
+    }
+
+    static float3 pcvrDepthWarpSample(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u,
+                                      texture2d<float, access::sample> source, sampler linear) {
+        float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
+        return source.sample(linear, uv).rgb;
+    }
+
+    static PCVRDepthWarpDisplayOut pcvrDepthWarpDisplayPixel(float2 ndc, constant PCVRDepthWarpUniforms *eyes,
                                                              constant PCVRDepthWarpView &v,
                                                              texture2d<float, access::sample> source,
                                                              texture2d<float, access::sample> depth,
                                                              texture2d<float, access::sample> map, sampler linear) {
+        constant PCVRDepthWarpUniforms &u = eyes[v.index.x];
         float2 target = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
         PCVRDepthWarpHit hit = pcvrDepthWarpLookup(target, target, u, depth, map, linear);
         PCVRDepthWarpDisplayOut out;
+        if (hit.filled > 0.5 && (u.flags & 8u)) {
+            // Hidden from this eye's render view: the other eye, 6 cm to the
+            // side, often saw it (what a sideways move uncovers beside a near
+            // object is what the eye on that side sees past it). Its own hit,
+            // if it saw one inside its frame, is the true content.
+            constant PCVRDepthWarpUniforms &o = eyes[2 + v.index.x];
+            PCVRDepthWarpHit other = pcvrDepthWarpMarch(target, o, depth, linear);
+            bool inside = all(other.uv >= 0.0) && all(other.uv <= 1.0);
+            if (other.filled < 0.5 && inside) {
+                out.color = (u.flags & 2u) ? float4(0, 1, 1, 1) : float4(pcvrDepthWarpSample(other, o, source, linear), 1);
+                out.depth = pcvrDepthWarpClipDepth(other, o, v.projection);
+                return out;
+            }
+        }
         if ((u.flags & 2u) && hit.filled > 0.5) {
             out.color = float4(1, 0, 1, 1);
         } else {
-            float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
-            out.color = float4(source.sample(linear, uv).rgb, 1);
+            out.color = float4(pcvrDepthWarpSample(hit, u, source, linear), 1);
         }
-        // The hit point, from the source eye back into the display eye. Never
-        // depth 0 (reverse Z: at infinity) or beyond the far plane: the
-        // visionOS compositor clips those pixels when it reprojects and shows
-        // them black, as Oneiros found for its sky (2026-08-27); the sky here
-        // went black the same way (2026-11-08). A hair inside the far plane
-        // instead.
-        out.depth = PCVR_FAR_DEPTH;
-        if (hit.w > 1e-6) {
-            float4 st = u.sourceTangents;
-            float2 tangent = float2(st.x + hit.uv.x * (st.y - st.x), st.z - hit.uv.y * (st.z - st.w));
-            float3 inSource = float3(tangent, -1) / hit.w;
-            float3 inDisplay = transpose(u.rotation) * (inSource - u.translation.xyz);
-            float4 clip = v.projection * float4(inDisplay, 1);
-            if (clip.w > 1e-6) out.depth = clamp(clip.z / clip.w, PCVR_FAR_DEPTH, 1.0);
-        }
+        out.depth = pcvrDepthWarpClipDepth(hit, u, v.projection);
         return out;
     }
 
@@ -748,7 +789,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                           texture2d<float, access::sample> depth [[texture(1)]],
                                                           texture2d<float, access::sample> map [[texture(3)]],
                                                           sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes[v.index.x], v, source, depth, map, linear);
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, linear);
     }
 
     fragment float4 pcvrDepthWarpDisplayColour(PCVRDepthWarpFullScreen in [[stage_in]],
@@ -758,7 +799,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                texture2d<float, access::sample> depth [[texture(1)]],
                                                texture2d<float, access::sample> map [[texture(3)]],
                                                sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes[v.index.x], v, source, depth, map, linear).color;
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, linear).color;
     }
     """
 }

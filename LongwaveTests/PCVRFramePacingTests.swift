@@ -45,6 +45,65 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertLessThanOrEqual(queue.repeated, 2)
     }
 
+    /// Frames every `source` seconds (plus `offset`), takes every `display`.
+    private func runRates(_ queue: inout PCVRPacedFrameQueue<Frame>, source: TimeInterval, display: TimeInterval,
+                          takes: Int, offset: (Int) -> TimeInterval) -> [UInt32?] {
+        let frames = Int(Double(takes) * display / source) + 2
+        var arrivals = (0..<frames).map { n in Frame(frameNumber: UInt32(n), arrivalTime: Double(n) * source + offset(n)) }
+        var shown: [UInt32?] = []
+        for slot in 0..<takes {
+            let now = Double(slot) * display
+            while let next = arrivals.first, next.arrivalTime <= now { _ = queue.deliver(arrivals.removeFirst()) }
+            let p = queue.takeForPresentation(spaceEpoch: 0, now: now)
+            shown.append(p.isNew ? p.frame?.frameNumber : nil)
+        }
+        return shown
+    }
+
+    /// How many slots each frame stayed up for, in order.
+    private func holds(_ shown: [UInt32?]) -> [Int] {
+        var result: [Int] = []
+        for entry in shown {
+            if entry != nil { result.append(1) } else if !result.isEmpty { result[result.count - 1] += 1 }
+        }
+        return result
+    }
+
+    func testAHalfRateSourceIsHeldTwoSlotsEachThroughJitter() {
+        // 60 fps on a 120 Hz display, frames landing 1 ms either side of a
+        // slot: shown as they come that would be holds of 3 and 1.
+        var queue = PCVRPacedFrameQueue<Frame>()
+        let display = 1.0 / 120, source = 1.0 / 60
+        let shown = runRates(&queue, source: source, display: display, takes: 1200) { n in n % 3 == 0 ? 0.001 : -0.001 }
+        XCTAssertEqual(queue.cadence, 2)
+        let settled = holds(Array(shown.dropFirst(300))).dropFirst().dropLast()
+        XCTAssertEqual(Set(settled), [2], "every frame up for exactly two slots: \(Array(settled.prefix(20)))")
+    }
+
+    func testAHalfRateSourceGivesBackASlotByShorteningAHold() {
+        // Frames arrive half a slot early, until one is held up 1.2 slots on
+        // the network: from then on the stream runs a slot later than it must.
+        var queue = PCVRPacedFrameQueue<Frame>()
+        queue.window = 30
+        let display = 1.0 / 120, source = 1.0 / 60
+        let shown = runRates(&queue, source: source, display: display, takes: 1200) { n in
+            n == 200 ? 1.2 * display : -0.5 * display
+        }
+        XCTAssertGreaterThanOrEqual(queue.trimmed, 1)
+        XCTAssertLessThan(queue.lastWait, display, "shown in the slot it arrived for")
+        let tail = holds(Array(shown.suffix(400))).dropFirst().dropLast()
+        XCTAssertEqual(Set(tail), [2])
+        XCTAssertEqual(queue.dropped, 0, "no frame skipped to do it")
+    }
+
+    func testANinetyHertzSourceOnOneTwentyIsNotHeld() {
+        var queue = PCVRPacedFrameQueue<Frame>()
+        let shown = runRates(&queue, source: 1.0 / 90, display: 1.0 / 120, takes: 1200) { _ in 0.0005 }
+        XCTAssertEqual(queue.cadence, 1)
+        let numbers = shown.dropFirst(200).compactMap { $0 }
+        XCTAssertEqual(numbers, Array(numbers.first!...numbers.last!), "every frame, in order")
+    }
+
     func testDelayNobodyNeedsIsGivenBack() {
         // Frames arrive mid-slot, but an early burst left the queue a frame
         // ahead: every frame waits more than a period for nothing.

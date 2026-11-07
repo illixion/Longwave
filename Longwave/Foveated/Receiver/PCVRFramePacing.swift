@@ -21,11 +21,17 @@ nonisolated protocol PCVRTimedPlayoutFrame: PCVRPlayoutFrame {
 /// microstutter in anything animated. Here the frame that missed its slot is
 /// shown in the next one and the stream simply runs a slot behind.
 ///
+/// A source at a whole fraction of the display rate (60 fps on 120 Hz) has
+/// each frame held for exactly that many slots (`cadence`), so a frame a
+/// millisecond late shifts the stream by a slot once instead of showing for
+/// three slots and its successor for one.
+///
 /// That slot of delay is given back when it is not needed: if every frame over
-/// `window` takes had already been waiting longer than a display period (plus
-/// `margin`), each could have been shown a slot earlier, so one frame is
-/// skipped (`trimmed`). If frames pile up anyway (the presenter stalled), the
-/// oldest are dropped until one is left waiting behind the frame shown.
+/// `window` shows had already been waiting longer than a display period (plus
+/// `margin`), each could have been shown a slot earlier. With a cadence of one
+/// a frame is skipped for it; above one, a hold is a slot shorter (`trimmed`
+/// either way). If frames pile up anyway (the presenter stalled), the oldest
+/// are dropped until one is left waiting behind the frame shown.
 nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     struct Presentation {
         var frame: Frame?
@@ -52,16 +58,30 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     private(set) var repeated = 0
     /// Display slots that showed a frame for the first time.
     private(set) var presentedNew = 0
-    /// Frames skipped to give back a slot of delay (also counted in `dropped`).
+    /// Slots of delay given back: frames skipped (also counted in `dropped`)
+    /// at a cadence of one, holds shortened above it.
     private(set) var trimmed = 0
+    /// The interval between frames, measured from their arrivals.
+    private(set) var sourcePeriod: TimeInterval = 1.0 / 90
+    /// Display slots per frame when the source runs at a whole fraction of
+    /// the display rate, else 1 (frames shown as they come, one per slot).
+    var cadence: Int {
+        let ratio = sourcePeriod / period, whole = ratio.rounded()
+        return whole >= 2 && abs(ratio - whole) < 0.1 ? Int(whole) : 1
+    }
     /// The display period, measured from the takes.
     private(set) var period: TimeInterval = 1.0 / 90
     /// How long the frame shown last had waited for its slot.
     private(set) var lastWait: TimeInterval = 0
 
     private var lastTake: TimeInterval?
+    private var lastArrival: TimeInterval?
     private var minimumWait = TimeInterval.infinity
     private var waits = 0
+    /// Slots the current frame has been shown in.
+    private var heldSlots = 0
+    /// A slot of delay to give back by cutting the current hold short.
+    private var shortenHold = false
 
     init() {}
 
@@ -84,6 +104,12 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
                 queued = []
             }
         }
+        if let lastArrival {
+            // Bursts and gaps average out; only a stall is left out.
+            let interval = frame.arrivalTime - lastArrival
+            if interval >= 0, interval < 0.1 { sourcePeriod += 0.05 * (interval - sourcePeriod) }
+        }
+        lastArrival = frame.arrivalTime
         queued.append(frame)
         while queued.count > Self.capacity {
             released.append(queued.removeFirst())
@@ -107,13 +133,20 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             released.append(queued.removeFirst())
             dropped += 1
         }
-        guard !queued.isEmpty else {
-            guard let current, current.spaceEpoch == spaceEpoch else {
+        let showing = current.flatMap { $0.spaceEpoch == spaceEpoch ? $0 : nil }
+        // Held for its cadence, unless frames are piling up behind it or a
+        // slot of delay is being given back.
+        let holding = showing != nil && heldSlots < cadence && queued.count < 2 && !shortenHold
+        guard !queued.isEmpty, !holding else {
+            guard let showing else {
                 return Presentation(frame: nil, isNew: false, released: released)
             }
             repeated += 1
-            return Presentation(frame: current, isNew: false, released: released)
+            heldSlots += 1
+            return Presentation(frame: showing, isNew: false, released: released)
         }
+        if heldSlots < cadence, shortenHold { trimmed += 1 }
+        shortenHold = false
         // Piled up: show the older of the last two, keeping one behind it.
         while queued.count > Self.queuedAfterTake + 1 {
             released.append(queued.removeFirst())
@@ -123,8 +156,13 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         waits += 1
         if waits >= window, minimumWait > period + margin {
             // Every frame in the window was in time for the slot before its
-            // own. Skip one, once the next has arrived to take its place.
-            if queued.count >= 2 {
+            // own. Above a cadence of one, the next hold ends a slot early;
+            // otherwise skip a frame, once the next has arrived to take its place.
+            if cadence > 1 {
+                shortenHold = true
+                minimumWait = .infinity
+                waits = 0
+            } else if queued.count >= 2 {
                 released.append(queued.removeFirst())
                 dropped += 1
                 trimmed += 1
@@ -139,6 +177,7 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         lastWait = now - next.arrivalTime
         if let previous = current { released.append(previous) }
         current = next
+        heldSlots = 1
         presentedNew += 1
         return Presentation(frame: next, isNew: true, released: released)
     }

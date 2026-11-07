@@ -192,6 +192,9 @@ typedef struct lw_encoder_params {
     uint32_t slices;          /* 0 or 1 = one slice per picture */
     uint32_t async_mode;      /* 1 = wait on a completion event (NVIDIA's advice on
                                  Windows); 0 = block in nvEncLockBitstream */
+    uint32_t const_qp;        /* 1..51: constant QP instead of CBR at bitrate_bps (a
+                                 depth picture, whose bits are cheap and whose
+                                 ringing is not); 0 = CBR */
 } lw_encoder_params;
 
 typedef struct lw_encoder_info {

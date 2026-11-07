@@ -436,6 +436,9 @@ public final class VideoEncoder: @unchecked Sendable {
         public var slices: Int = 1
         /// Wait on an NVENC completion event rather than blocking in the lock call.
         public var asyncMode = false
+        /// 1...51 encodes at that constant QP instead of CBR at `bitrate`
+        /// (which then only caps the sender); 0 is CBR.
+        public var constantQP = 0
 
         public init(width: Int, height: Int, fps: Int, bitrate: Int) {
             self.width = width
@@ -485,6 +488,7 @@ public final class VideoEncoder: @unchecked Sendable {
         params.intra_refresh_period = UInt32(parameters.intraRefreshPeriod)
         params.slices = UInt32(parameters.slices)
         params.async_mode = parameters.asyncMode ? 1 : 0
+        params.const_qp = UInt32(max(0, min(parameters.constantQP, 51)))
         var encoder: OpaquePointer?
         try check(lw_encoder_create(device.raw, &params, &encoder), "lw_encoder_create")
         raw = encoder!

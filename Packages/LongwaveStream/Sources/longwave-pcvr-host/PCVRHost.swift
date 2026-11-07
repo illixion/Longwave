@@ -46,6 +46,12 @@ struct HostOptions {
     /// pixels together, so at 16 a rim of background 16 render pixels wide
     /// moves with every near shape (test scene, 2026-11-07).
     var depthScale = PCVRProfile.depthDivisor
+    /// The depth encoder's constant QP (0: CBR at `depthMbps`). Under CBR the
+    /// rate control spent a megabit or two on the mostly flat picture and let
+    /// its edges ring, and the receiver's reprojection turned that ringing
+    /// into noise around every near shape on head movement (test scene,
+    /// 2026-11-07). At a low constant QP the picture still costs a few Mbps.
+    var depthQP = 12
     /// Diagnostics: a directory the estimate's grids and output are written to.
     var depthDump: String?
 }
@@ -216,6 +222,7 @@ final class PCVRHost: @unchecked Sendable {
     private struct DepthStatistics {
         var frames = 0, stereo = 0, game = 0, dropped = 0
         var bytes = 0
+        var qpTotal = 0, qpMax = 0
         var encodeMilliseconds = 0.0
         var gpuMilliseconds: Double?
         var size: String?
@@ -632,11 +639,13 @@ final class PCVRHost: @unchecked Sendable {
                                                      bitrate: options.depthMbps * 1_000_000)
             parameters.codec = .hevc
             parameters.asyncMode = true
+            parameters.constantQP = options.depthQP
             depthEncoder = nil
             depthEncoder = try VideoEncoder(device: device, parameters: parameters)
             depthParameterSets = []
             depthFormatStale = true
-            log.line("depth encoder: HEVC \(picture.width)x\(picture.height), \(options.depthMbps) Mbps")
+            log.line("depth encoder: HEVC \(picture.width)x\(picture.height), "
+                     + (options.depthQP > 0 ? "QP \(options.depthQP), at most \(options.depthMbps) Mbps" : "\(options.depthMbps) Mbps"))
         }
         guard let depthEncoder else { return }
         let forceKey = lock.withLock { () -> Bool in
@@ -644,9 +653,9 @@ final class PCVRHost: @unchecked Sendable {
             depthWantsKeyFrame = false
             return wanted
         }
-        let (accessUnit, isIDR, milliseconds) = try depthEncoder.encode(job.texture, timestamp: job.sequence,
-                                                                       forceIDR: forceKey) {
-            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+        let (accessUnit, isIDR, milliseconds, qp) = try depthEncoder.encode(job.texture, timestamp: job.sequence,
+                                                                           forceIDR: forceKey) {
+            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
         }
         var newFormat: FormatDescription?
         if isIDR {
@@ -669,6 +678,8 @@ final class PCVRHost: @unchecked Sendable {
             if job.fromGame { depthStats.game += 1 } else { depthStats.stereo += 1 }
             depthStats.bytes += accessUnit.count
             depthStats.encodeMilliseconds += milliseconds
+            depthStats.qpTotal += qp
+            depthStats.qpMax = max(depthStats.qpMax, qp)
             depthStats.gpuMilliseconds = job.gpuMilliseconds
             depthStats.size = "\(job.eye.width)x\(job.eye.height) per eye"
             depthStats.near = job.near
@@ -1098,8 +1109,9 @@ final class PCVRHost: @unchecked Sendable {
             let d = depthStats
             var line = "  depth \(size): \(d.stereo) estimated, \(d.game) from the game"
             if d.frames > 0 {
-                line += String(format: ", encode %.2f ms avg, %.1f Mbps", d.encodeMilliseconds / Double(d.frames),
-                               Double(d.bytes) * 8 / seconds / 1e6)
+                line += String(format: ", encode %.2f ms avg, %.1f Mbps, QP %.1f avg %d max",
+                               d.encodeMilliseconds / Double(d.frames), Double(d.bytes) * 8 / seconds / 1e6,
+                               Double(d.qpTotal) / Double(d.frames), d.qpMax)
             }
             if let gpu = d.gpuMilliseconds { line += String(format: ", GPU %.2f ms", gpu) }
             if d.dropped > 0 { line += ", \(d.dropped) dropped behind the encoder" }

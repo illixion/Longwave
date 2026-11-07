@@ -4,7 +4,7 @@
 //                      [--start-mbps 30] [--refresh auto|Hz] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
-//                      [--depth-mbps 16] [--depth-scale 16] [--depth-dump DIR] [--preset 1-7]
+//                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8]
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
@@ -83,6 +83,12 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 exit(2)
             }
             options.depthMbps = mbps
+        case "--depth-qp":
+            guard let qp = Int(value(argument)), (0...51).contains(qp) else {
+                print("--depth-qp takes 0 (CBR at --depth-mbps) or a constant QP 1-51")
+                exit(2)
+            }
+            options.depthQP = qp
         case "--depth-scale":
             guard let scale = Int(value(argument)), [2, 4, 8, 16, 32].contains(scale) else {
                 print("--depth-scale takes 2, 4, 8, 16 or 32: the depth picture is the render eye divided by it")

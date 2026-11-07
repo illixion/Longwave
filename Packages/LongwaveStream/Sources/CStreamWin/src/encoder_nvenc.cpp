@@ -191,6 +191,16 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     rc.vbvBufferSize = static_cast<uint32_t>(static_cast<uint64_t>(p.bitrate_bps) * vbv_frames / fps);
     rc.vbvInitialDelay = rc.vbvBufferSize;
     rc.multiPass = NV_ENC_MULTI_PASS_DISABLED;
+    if (p.const_qp) {
+        // A constant QP: the depth stream, whose pictures are mostly flat and
+        // cheap at any quality, but whose ringing at a high QP the receiver's
+        // reprojection turns into noise around every edge.
+        rc.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+        const uint32_t qp = std::min(p.const_qp, 51u);
+        rc.constQP.qpInterP = qp;
+        rc.constQP.qpInterB = qp;
+        rc.constQP.qpIntra = qp;
+    }
 
     // Say BT.709 limited range in the VUI. NVENC converts BGRA input to YUV with
     // the matrix the VUI names; with none it picks its own, and the client (which

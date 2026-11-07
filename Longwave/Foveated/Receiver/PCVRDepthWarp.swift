@@ -99,6 +99,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     var maxSteps = 32
     /// The march's step across the depth picture, in texels.
     var stepTexels: Float = 1
+    /// Diagnostics: draw the pixels the warp fills in (their true content was
+    /// hidden from the source eye) in magenta.
+    var tintsFills = false
 
     init(device: any MTLDevice) throws {
         self.device = device
@@ -225,7 +228,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             stepTexels: max(stepTexels, 0.25),
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
-            flags: depth != nil ? 1 : 0)
+            flags: (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0))
     }
 
     static let shaderSource = """
@@ -255,12 +258,13 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float stepTexels;
         float edge;             // an inverse-depth jump this large between texels is an edge
         uint maxSteps;
-        uint flags;             // 1: a depth map
+        uint flags;             // 1: a depth map; 2: tint filled pixels
     };
 
     struct PCVRDepthWarpHit {
-        float2 uv;   // source render UV
-        float w;     // inverse depth there, in the source eye
+        float2 uv;     // source render UV
+        float w;       // inverse depth there, in the source eye
+        float filled;  // 1 where the ray's true point was hidden and the far side fills in
     };
 
     // The scene's inverse depth at a source render UV: five bilinear taps, at
@@ -402,14 +406,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             // Behind the nearer surface at its edge: into its face before it.
                             float a = previousF / (previousF - nearF);
                             float lh = mix(previousLambda, nearLambda, a);
-                            PCVRDepthWarpHit hit;
+                            PCVRDepthWarpHit hit = {float2(0), 0, 0};
                             pcvrDepthWarpRay(D, t, lh, u.sourceTangents, hit.uv, hit.w);
                             return hit;
                         }
                         float farF = farRho - farW;
                         // Past the edge and already behind the farther surface:
                         // its point is hidden. It fills from beside the edge.
-                        if (farF < 0) return PCVRDepthWarpHit{farUV, farW};
+                        if (farF < 0) return PCVRDepthWarpHit{farUV, farW, 1};
                         // Cleared the nearer surface in front of the farther
                         // one: the crossing is between the edge and this sample.
                         previousUV = farUV;
@@ -443,7 +447,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             } else if (f < 0 && previousW - w > u.edge) {
                 // Off the silhouette onto a farther surface and already behind
                 // it: the point the ray hits was hidden from the source eye.
-                return entry;
+                return PCVRDepthWarpHit{entry.uv, entry.w, 1};
             }
             previousUV = uv;
             previousW = w;
@@ -452,7 +456,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         }
         // Still in a shadow at infinity: the hit was hidden. Else the far end:
         // rotation only, the sky.
-        return behind ? entry : PCVRDepthWarpHit{previousUV, previousW};
+        return behind ? PCVRDepthWarpHit{entry.uv, entry.w, 1} : PCVRDepthWarpHit{previousUV, previousW, 0};
     }
 
     // Pass one, the warp map at a quarter of the output per axis: per texel,
@@ -470,7 +474,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float2 wire = (float2(gid.x - eye * eyeWidth, gid.y) + 0.5) / u.mapSize;
         float2 render = pcvrRenderUV(wire, u.wireX, u.wireY);
         PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth, linear);
-        map.write(float4(hit.uv - render, hit.w, 0), gid);
+        map.write(float4(hit.uv - render, hit.w, hit.filled), gid);
     }
 
     // Pass two, every output pixel: the map interpolated where its four
@@ -492,13 +496,20 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float2 at = pcvrEyeTexel(wire, u.sourceRect, u.mapBounds);
         float4 w4 = map.gather(linear, at, int2(0), component::z);
         float spread = max(max(w4.x, w4.y), max(w4.z, w4.w)) - min(min(w4.x, w4.y), min(w4.z, w4.w));
-        PCVRDepthWarpHit hit;
+        PCVRDepthWarpHit hit = {float2(0), 0, 0};
         if (spread > u.edge) {
             hit = pcvrDepthWarpMarch(render, u, depth, linear);
         } else {
             float4 m = map.sample(linear, at);
             hit.uv = render + m.xy;
             hit.w = m.z;
+            hit.filled = m.w;
+        }
+        // Diagnostics: the filled pixels in magenta, to see where the picture
+        // is made up rather than seen.
+        if ((u.flags & 2u) && hit.filled > 0.5) {
+            output.write(float4(1, 0, 1, 1), gid);
+            return;
         }
         float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
         output.write(float4(source.sample(linear, uv).rgb, 1), gid);

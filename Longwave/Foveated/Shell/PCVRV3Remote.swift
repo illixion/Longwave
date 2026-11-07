@@ -119,10 +119,20 @@ nonisolated final class PCVRDepthStore: @unchecked Sendable {
 
     /// The depth with this frame number, else the newest older one within
     /// `tolerance` frames (a lost depth frame: close, not exact), else nil.
-    func depth(for frameNumber: UInt32, tolerance: UInt32 = 2) -> Entry? {
+    /// The depth for `frameNumber`: its own, else the nearest within
+    /// `tolerance` frames, older first. Any recent depth beats none: a frame
+    /// warped without depth is warped as if at the far plane, and one such
+    /// tick in seven (its depth a few frames behind its colour, or an old
+    /// frame repeated) flickered every near object on head movement
+    /// (headset, 2026-11-07).
+    func depth(for frameNumber: UInt32, tolerance: UInt32 = 6) -> Entry? {
         entries.withLock { list in
             if let exact = list.last(where: { $0.frameNumber == frameNumber }) { return exact }
-            return list.last { !PCVRSerialNumber.isNewer($0.frameNumber, than: frameNumber) && frameNumber &- $0.frameNumber <= tolerance }
+            func distance(_ entry: Entry) -> UInt32 {
+                PCVRSerialNumber.isNewer(entry.frameNumber, than: frameNumber)
+                    ? (entry.frameNumber &- frameNumber) * 2 - 1 : (frameNumber &- entry.frameNumber) * 2
+            }
+            return list.filter { distance($0) <= tolerance * 2 }.min { distance($0) < distance($1) }
         }
     }
 

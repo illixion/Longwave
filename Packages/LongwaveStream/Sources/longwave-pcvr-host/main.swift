@@ -2,13 +2,18 @@
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
 //                      [--start-mbps 30] [--refresh 90] [--log FILE] [--seconds N]
-//                      [--foveation off|auto|on] [--foveation-centre 0.4]
-//                      [--foveation-ratio 2.5]
+//                      [--foveation off|auto|on] [--foveation-centre 0.3]
+//                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
+//                      [--depth-mbps 6]
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
 // it: `auto` (the default) when they also send gaze, `on` even without (the
 // centre then sits straight ahead). The centre is the fraction of each axis
 // kept at full density, the ratio how much the rest is compressed.
+//
+// Depth goes to viewers that reproject by it (they negotiated depthVideo):
+// `auto` (the default) sends the game's depth when the frame source carries it
+// and estimates it from the two eyes otherwise, `stereo` always estimates.
 //
 // Run it in the signed-in desktop session (the frame source's objects live in
 // that session's Local\ namespace), as the user the Windows Companion pairs
@@ -55,6 +60,18 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
             }
             options.warp.edgeRatioX = ratio
             options.warp.edgeRatioY = ratio
+        case "--depth":
+            guard let mode = DepthMode(rawValue: value(argument)) else {
+                print("--depth takes off, auto or stereo")
+                exit(2)
+            }
+            options.depth = mode
+        case "--depth-mbps":
+            guard let mbps = Int(value(argument)), mbps > 0 else {
+                print("--depth-mbps takes a positive number")
+                exit(2)
+            }
+            options.depthMbps = mbps
         default:
             print("unknown argument \(argument)")
             exit(2)

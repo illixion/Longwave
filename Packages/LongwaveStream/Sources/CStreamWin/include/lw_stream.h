@@ -244,12 +244,53 @@ lw_status lw_warp_create(lw_device *device, lw_warp **out);
 lw_status lw_warp_apply(lw_warp *warp, void *source, void *destination, const lw_warp_params *params);
 void lw_warp_release(lw_warp *warp);
 
+/* ---- Depth (NATIVE_V3_PROTOCOL.md section 4.8, PCVR reprojection) ---------
+ * Writes a frame's depth for the depthVideo stream: both eyes side by side at
+ * depth size, each in its own render frustum, as grey BGRA8 (B = G = R) holding
+ * inverse depth v = near / z, so v = 1 at `near_depth` and 0 at infinity.
+ *  - LW_DEPTH_STEREO: estimated from the two eyes of a side-by-side colour
+ *    frame. Both are resampled to luminance on one tangent grid (the depth
+ *    eye's spacing, spanning both frusta), where a point's eyes differ only by a
+ *    horizontal shift, its disparity, baseline / z in tangent. Each eye is block
+ *    matched against the other (5x5 sum of absolute differences, up to
+ *    `max_disparity` grid texels, sub-texel by parabola). Matches that fail the
+ *    left-right check, or lack texture or a clear minimum, are filled from the
+ *    farther of the nearest good ones on their row (what an occlusion hides is
+ *    the background). near_depth = baseline / (max_disparity x spacing).
+ *  - LW_DEPTH_LINEAR: from planar depth in metres (R32F or R16F, side by side,
+ *    any size, 0 or less = nothing there): the nearest under each output texel.
+ * GPU work only, on the device's immediate context under its multithread
+ * lock, queued before a later lw_encoder_encode of the destination. */
+#define LW_DEPTH_STEREO 1
+#define LW_DEPTH_LINEAR 2
+typedef struct lw_depth_params {
+    uint32_t source_kind;                         /* LW_DEPTH_* */
+    int32_t source_eye_width, source_eye_height;  /* per eye, at the source's top left, left eye first */
+    int32_t depth_eye_width, depth_eye_height;    /* per eye, at the destination's top left */
+    float tangents[2][4];                         /* per eye: left, right, up, down (left and down negative) */
+    float baseline;                               /* LW_DEPTH_STEREO: metres between the eyes, along x */
+    int32_t max_disparity;                        /* LW_DEPTH_STEREO: 1...128 grid texels */
+    float near_depth;                             /* metres encoded as 255 */
+} lw_depth_params;
+
+typedef struct lw_depth lw_depth;
+lw_status lw_depth_create(lw_device *device, lw_depth **out);
+/* source: an ID3D11Texture2D a float SRV can read; destination: a BGRA8 one
+ * from lw_texture_create, at least two depth eyes wide. */
+lw_status lw_depth_apply(lw_depth *depth, void *source, void *destination, const lw_depth_params *params);
+/* GPU time of the latest apply the GPU has finished, ms; -1 before the first. */
+float lw_depth_gpu_milliseconds(lw_depth *depth);
+/* The same apply's passes: luminance, matching (0 for linear), output. */
+void lw_depth_pass_milliseconds(lw_depth *depth, float out[3]);
+void lw_depth_release(lw_depth *depth);
+
 /* ---- Textures --------------------------------------------------------------
  * Render-target textures on the shim's device (bindable as shader resources
  * too): the warp's destination, which lw_encoder_encode accepts when BGRA8,
  * and fixtures for tests. */
 #define LW_TEXTURE_BGRA8 1   /* DXGI_FORMAT_B8G8R8A8_UNORM */
 #define LW_TEXTURE_RGBA32F 2 /* DXGI_FORMAT_R32G32B32A32_FLOAT */
+#define LW_TEXTURE_R32F 3    /* DXGI_FORMAT_R32_FLOAT */
 /* data: initial pixels with rows `row_pitch` bytes apart, or NULL. */
 lw_status lw_texture_create(lw_device *device, int32_t width, int32_t height, uint32_t format, const void *data,
                             uint32_t row_pitch, void **out);

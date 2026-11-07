@@ -99,6 +99,7 @@ DXGI_FORMAT dxgi_format(uint32_t format) {
     switch (format) {
     case LW_TEXTURE_BGRA8: return DXGI_FORMAT_B8G8R8A8_UNORM;
     case LW_TEXTURE_RGBA32F: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case LW_TEXTURE_R32F: return DXGI_FORMAT_R32_FLOAT;
     default: return DXGI_FORMAT_UNKNOWN;
     }
 }
@@ -268,6 +269,7 @@ extern "C" lw_status lw_texture_read(lw_device *device, void *texture, void *out
         switch (desc.Format) {
         case DXGI_FORMAT_B8G8R8A8_UNORM: bytes_per_pixel = 4; break;
         case DXGI_FORMAT_R32G32B32A32_FLOAT: bytes_per_pixel = 16; break;
+        case DXGI_FORMAT_R32_FLOAT: bytes_per_pixel = 4; break;
         default: return lw::fail(LW_E_INVALID_ARG, "lw_texture_read: format %d", static_cast<int>(desc.Format));
         }
         if (row_pitch < desc.Width * bytes_per_pixel) return lw::fail(LW_E_INVALID_ARG, "lw_texture_read: row pitch too small");

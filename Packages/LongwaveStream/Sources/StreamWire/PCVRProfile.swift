@@ -12,10 +12,33 @@ public enum PCVRProfile {
     /// What a PCVR client offers when it has a gaze source with capture times:
     /// the head-pose uplink then carries the wearer's gaze.
     public static let gazeClientCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze])
+    /// What a PCVR client offers: `gaze` with a gaze source that has capture
+    /// times, `depthVideo` when it reprojects by depth (it then subscribes to
+    /// the eye stream's depth auxiliary, `depthStreamID`).
+    public static func clientCapabilities(gaze: Bool, depth: Bool) -> CapabilitySet {
+        var set = gaze ? gazeClientCapabilities : clientCapabilities
+        if depth { set.insert(.depthVideo) }
+        return set
+    }
     /// What the PCVR host answers with. It accepts gaze and hands it to the
-    /// frame source's host state, where the compositor reads it, and warps the
-    /// eye images for a viewer that negotiated `foveatedVideo`.
-    public static let hostCapabilities = gazeClientCapabilities
+    /// frame source's host state, where the compositor reads it, warps the eye
+    /// images for a viewer that negotiated `foveatedVideo`, and sends depth to
+    /// one that negotiated `depthVideo`.
+    public static let hostCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze, .depthVideo])
+
+    /// The eye stream's depth auxiliary (section 4.8): both eyes' inverse depth
+    /// side by side, each in its render frustum, unwarped, at `depthDivisor`
+    /// of the render eye size, as 8-bit luma (`depthEncoding`). Its frames take
+    /// the eye frame's number and capture time.
+    public static let depthStreamID: UInt32 = 2
+    public static let depthDivisor = 16
+    public static let depthEncoding = DepthEncoding(kind: .inverseLinear, valueBits: 8)
+
+    /// One depth eye for a render eye: `depthDivisor` smaller, even sizes.
+    public static func depthEye(forRender eye: PixelSize) -> PixelSize {
+        func scaled(_ v: UInt16) -> UInt16 { UInt16(max(2, (Int(v) / depthDivisor + 1) & ~1)) }
+        return PixelSize(width: scaled(eye.width), height: scaled(eye.height))
+    }
 
     /// The host's default centre/edge warp, sized for eyes rendered at the
     /// Vision Pro's native density over its whole display frusta (about

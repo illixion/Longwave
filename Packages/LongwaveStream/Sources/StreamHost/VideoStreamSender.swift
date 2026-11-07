@@ -163,8 +163,14 @@ public struct VideoStreamSender: Sendable {
     /// Queues one encoded frame (an access unit as the decoder takes it).
     /// `udpPayload` is the session's confirmed datagram size. `sideData` rides
     /// in the frame's payload (a PCVR frame's render pose, section 4.7).
+    ///
+    /// `frameNumber` is for an auxiliary stream (section 4.2): its frame takes
+    /// the number its primary frame was queued under, so the receiver pairs
+    /// them by number. Numbers must only move forward; a primary frame this
+    /// stream never got leaves a gap the receiver reads as loss.
     public mutating func submit(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, captureTime: UInt64,
-                                sideData: SideData = .none, udpPayload: Int, now: UInt64) throws -> Submission {
+                                sideData: SideData = .none, frameNumber: UInt32? = nil, udpPayload: Int,
+                                now: UInt64) throws -> Submission {
         if let last = lastSubmit, now > last {
             // A still desktop's second-long gaps count as one frame a second.
             let rate = 1e9 / Double(min(now - last, 1_000_000_000))
@@ -184,7 +190,7 @@ public struct VideoStreamSender: Sendable {
         }
         dropQueuedParity()
 
-        let number = nextFrameNumber
+        let number = frameNumber ?? nextFrameNumber
         let info = VideoFrameInfo(
             streamID: configuration.streamID, frameNumber: number, captureTime: captureTime,
             flags: isKeyFrame ? .key : [],
@@ -198,7 +204,7 @@ public struct VideoStreamSender: Sendable {
             queue.append(QueuedShard(frameNumber: number, index: index,
                                      isParity: frame.shard(index).header.isParity, isResend: false))
         }
-        nextFrameNumber &+= 1
+        nextFrameNumber = number &+ 1
         lastQueued = number
         awaitingKeyFrame = false
         statistics.framesQueued += 1

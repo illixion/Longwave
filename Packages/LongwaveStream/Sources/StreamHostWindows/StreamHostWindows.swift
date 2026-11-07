@@ -544,8 +544,14 @@ public final class GraphicsTexture: @unchecked Sendable {
     public enum Format: UInt32, Sendable {
         case bgra8 = 1        // LW_TEXTURE_BGRA8
         case rgba32Float = 2  // LW_TEXTURE_RGBA32F
+        case r32Float = 3     // LW_TEXTURE_R32F
 
-        public var bytesPerPixel: Int { self == .bgra8 ? 4 : 16 }
+        public var bytesPerPixel: Int {
+            switch self {
+            case .bgra8, .r32Float: 4
+            case .rgba32Float: 16
+            }
+        }
     }
 
     let raw: UnsafeMutableRawPointer
@@ -633,6 +639,78 @@ public final class FoveationWarpPass: @unchecked Sendable {
                       wireEye: (width: Int, height: Int), left: Eye, right: Eye) throws {
         try apply(source: source.raw, renderEye: renderEye, destination: destination, wireEye: wireEye,
                   left: left, right: right)
+    }
+}
+
+/// A PCVR frame's depth for the depthVideo stream (lw_depth_*): both eyes
+/// side by side as grey BGRA8 holding inverse depth, `near / z`.
+public final class DepthPass: @unchecked Sendable {
+    public enum Source: Sendable, Equatable {
+        /// Estimated from a side-by-side colour frame's two eyes. `baseline`:
+        /// metres between the eyes along x; `maxDisparity`: grid texels, 1...128.
+        case stereo(baseline: Float, maxDisparity: Int)
+        /// Planar depth in metres (R32F or R16F, side by side).
+        case linear
+    }
+
+    /// The nearest depth a stereo estimate can report: its widest disparity.
+    public static func stereoNear(baseline: Float, maxDisparity: Int, leftTangents: SIMD4<Float>, depthEyeWidth: Int) -> Float {
+        baseline / (Float(maxDisparity) * (leftTangents.y - leftTangents.x) / Float(depthEyeWidth))
+    }
+
+    private let raw: OpaquePointer
+
+    public init(device: GraphicsDevice) throws {
+        var depth: OpaquePointer?
+        try check(lw_depth_create(device.raw, &depth), "lw_depth_create")
+        raw = depth!
+    }
+
+    deinit { lw_depth_release(raw) }
+
+    /// That apply's passes, ms: luminance, matching, output (stereo; linear has the output only).
+    public var passMilliseconds: (luma: Double, match: Double, output: Double) {
+        var out: (Float, Float, Float) = (-1, -1, -1)
+        withUnsafeMutablePointer(to: &out) { $0.withMemoryRebound(to: Float.self, capacity: 3) { lw_depth_pass_milliseconds(raw, $0) } }
+        return (Double(out.0), Double(out.1), Double(out.2))
+    }
+
+    /// GPU time of the latest apply the GPU has finished, ms; nil before the first.
+    public var gpuMilliseconds: Double? {
+        let ms = lw_depth_gpu_milliseconds(raw)
+        return ms >= 0 ? Double(ms) : nil
+    }
+
+    /// Queues `destination`'s depth (two `depthEye` images side by side) from
+    /// `source` (two `sourceEye` images). `tangents` per eye: left, right, up,
+    /// down. `near`: the depth encoded as 1. GPU work only.
+    public func apply(source: UnsafeMutableRawPointer, kind: Source, sourceEye: (width: Int, height: Int),
+                      destination: GraphicsTexture, depthEye: (width: Int, height: Int),
+                      tangents: (left: SIMD4<Float>, right: SIMD4<Float>), near: Float) throws {
+        var params = lw_depth_params()
+        params.source_eye_width = Int32(sourceEye.width)
+        params.source_eye_height = Int32(sourceEye.height)
+        params.depth_eye_width = Int32(depthEye.width)
+        params.depth_eye_height = Int32(depthEye.height)
+        let l = tangents.left, r = tangents.right
+        params.tangents = ((l.x, l.y, l.z, l.w), (r.x, r.y, r.z, r.w))
+        params.near_depth = near
+        switch kind {
+        case .stereo(let baseline, let maxDisparity):
+            params.source_kind = UInt32(LW_DEPTH_STEREO)
+            params.baseline = baseline
+            params.max_disparity = Int32(maxDisparity)
+        case .linear:
+            params.source_kind = UInt32(LW_DEPTH_LINEAR)
+        }
+        try check(lw_depth_apply(raw, source, destination.raw, &params), "lw_depth_apply")
+    }
+
+    public func apply(source: GraphicsTexture, kind: Source, sourceEye: (width: Int, height: Int),
+                      destination: GraphicsTexture, depthEye: (width: Int, height: Int),
+                      tangents: (left: SIMD4<Float>, right: SIMD4<Float>), near: Float) throws {
+        try apply(source: source.raw, kind: kind, sourceEye: sourceEye, destination: destination, depthEye: depthEye,
+                  tangents: tangents, near: near)
     }
 }
 

@@ -26,7 +26,24 @@ struct HostOptions {
     var seconds: Double?
     var foveation = FoveationMode.auto
     var warp = PCVRProfile.defaultWarp
+    var depth = DepthMode.auto
+    /// The depth stream's encoder rate; its picture is small and smooth.
+    var depthMbps = 6
 }
+
+/// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
+enum DepthMode: String {
+    /// Never sent.
+    case off
+    /// The game's own depth when the frame source carries it, else estimated from the two eyes.
+    case auto
+    /// Always estimated from the two eyes, even when the game's depth is there.
+    case stereo
+}
+
+/// The nearest a stereo estimate looks for: closer than this, a vertex stays
+/// at this depth. Sets the disparity search range per frame.
+private let stereoNearest: Float = 0.15
 
 /// When the host packs the eye images with the centre/edge warp. Only ever
 /// for viewers that negotiated `foveatedVideo` (they can undo it).
@@ -49,6 +66,8 @@ final class PCVRHost: @unchecked Sendable {
         let capabilities: CapabilitySet
         var confirmed = false
         var sender: VideoStreamSender
+        /// The eye stream's depth auxiliary, for a viewer that negotiated `depthVideo`.
+        var depthSender: VideoStreamSender?
         var lastPose: UInt32?
         var posesReceived = 0
         var lastPresented: PresentedFrame?
@@ -86,7 +105,9 @@ final class PCVRHost: @unchecked Sendable {
     private var viewers: [UInt32: Viewer] = [:]
     private var answered: [String: (hello: ClientHello, grants: SessionGrants, capabilities: CapabilitySet)] = [:]
     private var format: FormatDescription?
+    private var depthFormat: FormatDescription?
     private var wantsKeyFrame = true
+    private var depthWantsKeyFrame = true
     private var lastKeyFrameRequest: UInt64?
     private var targetBitrate: Int?
     private var headPose: (sequence: UInt32, pose: HeadPose)?
@@ -112,6 +133,13 @@ final class PCVRHost: @unchecked Sendable {
     private var warpUnavailable = false
     private var wireTexture: GraphicsTexture?
     private var lastGazeCentres: (left: NormalizedPoint, right: NormalizedPoint, time: UInt64)?
+    private var depthEncoder: VideoEncoder?
+    private var depthPass: DepthPass?
+    /// The depth shaders couldn't be made: no depth stream rather than no stream.
+    private var depthUnavailable = false
+    private var depthTexture: GraphicsTexture?
+    private var depthParameterSets: [UInt8] = []
+    private var depthFormatStale = true
 
     /// How the eye images go on the wire: their render size per eye, the wire
     /// size per eye, and the warp between the two (none when they are equal).
@@ -130,6 +158,16 @@ final class PCVRHost: @unchecked Sendable {
     private var badSideData = 0
     private var lastStats: UInt64 = 0
     private var foveationStats = FoveationStatistics()
+    private var depthStats = DepthStatistics()
+
+    private struct DepthStatistics {
+        var frames = 0, stereo = 0, game = 0
+        var bytes = 0
+        var encodeMilliseconds = 0.0
+        var gpuMilliseconds: Double?
+        var size: String?
+        var near: Float = 0
+    }
 
     private struct FoveationStatistics {
         var gaze = 0, held = 0, ahead = 0
@@ -332,6 +370,7 @@ final class PCVRHost: @unchecked Sendable {
         // The frame (and its ring slot) is released when `frame` goes out of
         // scope: the encode (and the warp before it) has finished with the texture.
 
+        var colourNumbers: [UInt32: UInt32] = [:]
         var newFormat: FormatDescription?
         if isIDR {
             let sets = Self.parameterSets(in: accessUnit)
@@ -357,7 +396,7 @@ final class PCVRHost: @unchecked Sendable {
                 do {
                     switch try viewer.sender.submit(accessUnit: accessUnit, isKeyFrame: isIDR, captureTime: captureTime,
                                                     sideData: sideData, udpPayload: udpPayload, now: now) {
-                    case .queued: break
+                    case .queued(let number): if viewer.depthSender != nil { colourNumbers[viewer.index] = number }
                     case .awaitingKeyFrame, .queueFull: needsKey = true
                     }
                 } catch {
@@ -365,6 +404,143 @@ final class PCVRHost: @unchecked Sendable {
                 }
             }
             if needsKey { requestKeyFrame(now: now) }
+            pump()
+        }
+
+        // The colour frame is on its way; its depth follows under the same
+        // numbers. Depth decodes in a fraction of the colour's time, so it is
+        // still ready first on the headset.
+        if !colourNumbers.isEmpty, let renderPose = sideData.renderPose {
+            do {
+                try encodeDepth(frame, renderPose: renderPose, renderEye: renderEye, captureTime: captureTime,
+                                numbers: colourNumbers)
+            } catch {
+                log.line("depth failed: \(error)")
+                depthEncoder = nil
+            }
+        }
+    }
+
+    /// The frame's depth, encoded once and queued for each depth viewer under
+    /// the number its colour frame got (`numbers`, by viewer index).
+    private func encodeDepth(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize, captureTime: UInt64,
+                             numbers: [UInt32: UInt32]) throws {
+        guard !depthUnavailable else { return }
+        if depthPass == nil {
+            do {
+                depthPass = try DepthPass(device: device)
+            } catch {
+                depthUnavailable = true
+                log.line("depth unavailable, streaming without it: \(error)")
+                return
+            }
+        }
+        guard let depthPass else { return }
+        let eye = PCVRProfile.depthEye(forRender: renderEye)
+        let picture = PixelSize(width: eye.width * 2, height: eye.height)
+        if depthTexture?.width != Int(picture.width) || depthTexture?.height != Int(picture.height) {
+            depthTexture = try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height),
+                                               format: .bgra8)
+            depthFormatStale = true
+        }
+        if depthEncoder == nil || depthEncoder?.parameters.width != Int(picture.width)
+            || depthEncoder?.parameters.height != Int(picture.height) {
+            var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
+                                                     fps: Int(options.refreshHz.rounded()),
+                                                     bitrate: options.depthMbps * 1_000_000)
+            parameters.codec = .hevc
+            parameters.asyncMode = true
+            depthEncoder = nil
+            depthEncoder = try VideoEncoder(device: device, parameters: parameters)
+            depthParameterSets = []
+            depthFormatStale = true
+            log.line("depth encoder: HEVC \(picture.width)x\(picture.height), \(options.depthMbps) Mbps")
+        }
+        guard let depthEncoder, let depthTexture else { return }
+
+        func tangents(_ fov: FieldOfView) -> SIMD4<Float> {
+            SIMD4(Float(tan(Double(fov.angleLeft))), Float(tan(Double(fov.angleRight))),
+                  Float(tan(Double(fov.angleUp))), Float(tan(Double(fov.angleDown))))
+        }
+        let frusta = (left: tangents(renderPose.left.fieldOfView), right: tangents(renderPose.right.fieldOfView))
+        let near: Float
+        let fromGame: Bool
+        if options.depth == .auto, let external = frame.external, let aux = external.auxTexture,
+           external.auxFormat == 41 || external.auxFormat == 54 { // R32_FLOAT, R16_FLOAT: metres
+            near = 0.1
+            fromGame = true
+            try depthPass.apply(source: aux, kind: .linear, sourceEye: (external.auxWidth / 2, external.auxHeight),
+                                destination: depthTexture, depthEye: (Int(eye.width), Int(eye.height)),
+                                tangents: frusta, near: near)
+        } else {
+            let l = renderPose.left.pose.position, r = renderPose.right.pose.position
+            let baseline = Float(sqrt(Double((r.x - l.x) * (r.x - l.x) + (r.y - l.y) * (r.y - l.y) + (r.z - l.z) * (r.z - l.z))))
+            guard baseline > 0.02, baseline < 0.2 else { return } // not a pair of eyes
+            let spacing = (frusta.left.y - frusta.left.x) / Float(eye.width)
+            let maxDisparity = min(max(Int((baseline / (stereoNearest * spacing)).rounded(.up)), 8), 128)
+            near = DepthPass.stereoNear(baseline: baseline, maxDisparity: maxDisparity, leftTangents: frusta.left,
+                                        depthEyeWidth: Int(eye.width))
+            fromGame = false
+            try depthPass.apply(source: frame.texture, kind: .stereo(baseline: baseline, maxDisparity: maxDisparity),
+                                sourceEye: (Int(renderEye.width), Int(renderEye.height)), destination: depthTexture,
+                                depthEye: (Int(eye.width), Int(eye.height)), tangents: frusta, near: near)
+        }
+
+        let forceKey = lock.withLock { () -> Bool in
+            let wanted = depthWantsKeyFrame || depthFormatStale
+            depthWantsKeyFrame = false
+            return wanted
+        }
+        let (accessUnit, isIDR, milliseconds) = try depthEncoder.encode(depthTexture, timestamp: frame.sequence,
+                                                                       forceIDR: forceKey) {
+            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+        }
+        var newFormat: FormatDescription?
+        if isIDR {
+            let sets = Self.parameterSets(in: accessUnit)
+            if !sets.isEmpty, sets != depthParameterSets || depthFormatStale {
+                depthParameterSets = sets
+                depthFormatStale = false
+                newFormat = FormatDescription(
+                    streamID: PCVRProfile.depthStreamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
+                    size: picture, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: sets,
+                    sideDataTypes: [.depthRange],
+                    auxiliary: AuxiliaryStream(role: .depth, primaryStreamID: PCVRProfile.streamID),
+                    depthEncoding: PCVRProfile.depthEncoding)
+            }
+        }
+        let sideData = SideData(depthRange: .planes(near: near, far: .infinity, convergence: 0))
+        let gpu = depthPass.gpuMilliseconds
+
+        lock.withLock {
+            depthStats.frames += 1
+            if fromGame { depthStats.game += 1 } else { depthStats.stereo += 1 }
+            depthStats.bytes += accessUnit.count
+            depthStats.encodeMilliseconds += milliseconds
+            depthStats.gpuMilliseconds = gpu
+            depthStats.size = "\(eye.width)x\(eye.height) per eye"
+            depthStats.near = near
+            if let newFormat {
+                depthFormat = newFormat
+                for viewer in viewers.values where viewer.confirmed && viewer.depthSender != nil { sendDepthFormat(to: viewer) }
+            }
+            let now = Self.now()
+            var needsKey = false
+            for viewer in viewers.values where viewer.confirmed {
+                guard let number = numbers[viewer.index], viewer.depthSender != nil,
+                      let udpPayload = endpoint.sessions[viewer.index]?.session.udpPayload else { continue }
+                do {
+                    switch try viewer.depthSender!.submit(accessUnit: accessUnit, isKeyFrame: isIDR, captureTime: captureTime,
+                                                          sideData: sideData, frameNumber: number, udpPayload: udpPayload,
+                                                          now: now) {
+                    case .queued: break
+                    case .awaitingKeyFrame, .queueFull: needsKey = true
+                    }
+                } catch {
+                    log.line("could not shard a depth frame: \(error)")
+                }
+            }
+            if needsKey { depthWantsKeyFrame = true }
             pump()
         }
     }
@@ -547,18 +723,30 @@ final class PCVRHost: @unchecked Sendable {
             configuration.rateControl.frameRate = options.refreshHz
             let viewer = Viewer(index: index, deviceID: deviceID, name: hello.deviceName ?? "headset", grants: grants,
                                 capabilities: capabilities, configuration: configuration)
+            if options.depth != .off, capabilities.contains(.depthVideo) {
+                var depth = VideoStreamSender.Configuration(streamID: PCVRProfile.depthStreamID)
+                depth.rateControl.start = UInt64(options.depthMbps) * 2 * 125_000
+                depth.rateControl.frameRate = options.refreshHz
+                viewer.depthSender = VideoStreamSender(configuration: depth)
+            }
             viewers[index] = viewer
             _ = endpoint.withSession(index) { $0.setPathCeiling(DatagramLayout.maxProbedUDPPayload, now: now) }
             if let udpPayload = endpoint.sessions[index]?.session.udpPayload {
                 viewer.sender.setEncoderCeiling(options.maxMbps * 1_000_000, udpPayload: udpPayload)
+                viewer.depthSender?.setEncoderCeiling(options.depthMbps * 2 * 1_000_000, udpPayload: udpPayload)
             }
         case .confirmed(let index):
             guard let viewer = viewers[index], !viewer.confirmed else { return }
             viewer.confirmed = true
             log.line("viewer '\(viewer.name)' connected from \(endpoint.sessions[index]?.address.description ?? "?")"
                 + " (\(viewer.capabilities.contains(.foveatedVideo) ? "can unwarp" : "no unwarp")"
-                + ", \(viewer.capabilities.contains(.gaze) ? "gaze" : "no gaze"))")
+                + ", \(viewer.capabilities.contains(.gaze) ? "gaze" : "no gaze")"
+                + ", \(viewer.depthSender != nil ? "depth" : "no depth"))")
             sendFormat(to: viewer)
+            if viewer.depthSender != nil {
+                sendDepthFormat(to: viewer)
+                depthWantsKeyFrame = true
+            }
             lastKeyFrameRequest = nil
             requestKeyFrame(now: now)
         case .events(let index, let events):
@@ -583,9 +771,14 @@ final class PCVRHost: @unchecked Sendable {
             case .message(.control, let message):
                 switch message.type {
                 case .recoveryRequest:
-                    guard (try? RecoveryRequest(decoding: message.body)) != nil else { continue }
-                    viewer.sender.recoveryRequested()
-                    requestKeyFrame(now: now)
+                    guard let request = try? RecoveryRequest(decoding: message.body) else { continue }
+                    if request.streamID == PCVRProfile.depthStreamID {
+                        viewer.depthSender?.recoveryRequested()
+                        depthWantsKeyFrame = true
+                    } else {
+                        viewer.sender.recoveryRequested()
+                        requestKeyFrame(now: now)
+                    }
                 case .bye:
                     endpoint.remove(viewer.index)
                     removeViewer(viewer, reason: "viewer said goodbye")
@@ -594,9 +787,11 @@ final class PCVRHost: @unchecked Sendable {
                 }
             case .nack(let nack):
                 viewer.sender.handle(nack)
+                viewer.depthSender?.handle(nack)
             case .feedback(_, let results):
                 let rtt = endpoint.sessions[viewer.index]?.session.rtt.smoothed ?? 2_000_000
                 viewer.sender.onFeedback(results, now: now, rtt: rtt)
+                viewer.depthSender?.onFeedback(results, now: now, rtt: rtt)
             case .message, .video, .audio:
                 continue
             }
@@ -608,6 +803,16 @@ final class PCVRHost: @unchecked Sendable {
         format.firstFrameNumber = viewer.sender.upcomingFrameNumber
         viewer.sender.recoveryRequested()
         guard let body = try? format.encoded() else { return }
+        _ = endpoint.withSession(viewer.index) { try? $0.send(.formatDescription, body: body, on: .control) }
+    }
+
+    private func sendDepthFormat(to viewer: Viewer) {
+        guard var depthFormat, let depthSender = viewer.depthSender else { return }
+        // Depth frames take the colour frames' numbers, which are never behind its own.
+        depthFormat.firstFrameNumber = max(depthSender.upcomingFrameNumber, viewer.sender.upcomingFrameNumber)
+        viewer.depthSender?.recoveryRequested()
+        depthWantsKeyFrame = true
+        guard let body = try? depthFormat.encoded() else { return }
         _ = endpoint.withSession(viewer.index) { try? $0.send(.formatDescription, body: body, on: .control) }
     }
 
@@ -637,20 +842,27 @@ final class PCVRHost: @unchecked Sendable {
         let now = Self.now()
         for viewer in viewers.values where viewer.confirmed {
             guard let address = endpoint.sessions[viewer.index]?.address else { continue }
-            while let output = viewer.sender.next(now: now) {
-                let datagram: [UInt8]?? = endpoint.withSession(viewer.index) { session in
-                    switch output {
-                    case .shard(let header, let data): try? session.sealVideo(header, data: data, now: now)
-                    case .padding(let size, let cluster): try? session.sealPadding(size: size, probeCluster: cluster, now: now)
+            func drain(_ next: () -> VideoStreamSender.Output?) {
+                while let output = next() {
+                    let datagram: [UInt8]?? = endpoint.withSession(viewer.index) { session in
+                        switch output {
+                        case .shard(let header, let data): try? session.sealVideo(header, data: data, now: now)
+                        case .padding(let size, let cluster): try? session.sealPadding(size: size, probeCluster: cluster, now: now)
+                        }
                     }
+                    if let datagram = datagram ?? nil { socket.send(datagram, to: address) }
                 }
-                if let datagram = datagram ?? nil { socket.send(datagram, to: address) }
             }
+            // Depth first: a few shards, and the headset wants it before the colour frame.
+            if viewer.depthSender != nil { drain { viewer.depthSender!.next(now: now) } }
+            drain { viewer.sender.next(now: now) }
         }
         flush(now: now)
         let bitrates = viewers.values.filter(\.confirmed).compactMap { viewer -> Int? in
             guard let session = endpoint.sessions[viewer.index]?.session else { return nil }
-            return viewer.sender.encoderBitrate(udpPayload: session.udpPayload)
+            // The depth stream's share comes out of the colour budget.
+            let depth = viewer.depthSender == nil ? 0 : options.depthMbps * 1_000_000
+            return max(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) - depth, 1_000_000)
         }
         targetBitrate = bitrates.min().map { min($0, options.maxMbps * 1_000_000) }
         if now - lastDeviceReload > 10_000_000_000 { reloadDevices(now: now) }
@@ -670,6 +882,7 @@ final class PCVRHost: @unchecked Sendable {
         if let next = endpoint.nextWakeTime(now: now) { wake = min(wake, next) }
         for viewer in viewers.values where viewer.confirmed {
             if let next = viewer.sender.nextWakeTime(now: now) { wake = min(wake, next) }
+            if let next = viewer.depthSender?.nextWakeTime(now: now) { wake = min(wake, next) }
         }
         guard wake > now else { return 0 }
         return Int32(max(1, min(100, (wake - now + 999_999) / 1_000_000)))
@@ -703,6 +916,18 @@ final class PCVRHost: @unchecked Sendable {
             }
             log.line(fov)
             foveationStats = FoveationStatistics(layout: layout)
+        }
+        if let size = depthStats.size {
+            let d = depthStats
+            var line = "  depth \(size): \(d.stereo) estimated, \(d.game) from the game"
+            if d.frames > 0 {
+                line += String(format: ", encode %.2f ms avg, %.1f Mbps", d.encodeMilliseconds / Double(d.frames),
+                               Double(d.bytes) * 8 / seconds / 1e6)
+            }
+            if let gpu = d.gpuMilliseconds { line += String(format: ", GPU %.2f ms", gpu) }
+            line += String(format: ", near %.3f m", d.near)
+            log.line(line)
+            depthStats = DepthStatistics(size: size)
         }
         framesEncoded = 0
         encodeMilliseconds = 0

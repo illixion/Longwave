@@ -121,6 +121,23 @@ final class HelloTests: XCTestCase {
         XCTAssertEqual(Capability.foveatedVideo.description, "foveatedVideo")
     }
 
+    func testPCVRDepthIsNegotiatedOnlyWhenTheHeadsetReprojectsByDepth() {
+        func session(_ offered: CapabilitySet) -> CapabilitySet {
+            let hello = ClientHello(capabilities: offered, platform: .visionOS, deviceName: "Vision Pro")
+            let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.hostCapabilities,
+                                   platform: .windows, keyCodeSpace: .hidUsage, grants: [.screen],
+                                   maxUDPPayload: 1_452)
+            return hello.sessionCapabilities(from: ack)
+        }
+        XCTAssertTrue(session(PCVRProfile.clientCapabilities(gaze: true, depth: true)).contains(.depthVideo))
+        XCTAssertTrue(session(PCVRProfile.clientCapabilities(gaze: false, depth: true)).contains(.depthVideo))
+        XCTAssertFalse(session(PCVRProfile.clientCapabilities(gaze: true, depth: false)).contains(.depthVideo))
+        XCTAssertEqual(PCVRProfile.clientCapabilities(gaze: true, depth: false), PCVRProfile.gazeClientCapabilities)
+        XCTAssertEqual(PCVRProfile.clientCapabilities(gaze: false, depth: false), PCVRProfile.clientCapabilities)
+        XCTAssertEqual(PCVRProfile.depthEye(forRender: PixelSize(width: 5184, height: 4160)), PixelSize(width: 324, height: 260))
+        XCTAssertEqual(PCVRProfile.depthEye(forRender: PixelSize(width: 1584, height: 1266)), PixelSize(width: 100, height: 80))
+    }
+
     func testRefusalIsAnAckWithNoGrants() {
         let refusal = HostHelloAck(answering: Self.hello, hostCapabilities: .known, platform: .windows,
                                    keyCodeSpace: .hidUsage, grants: [], maxUDPPayload: 1_200)

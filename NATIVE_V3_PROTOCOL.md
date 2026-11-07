@@ -1304,8 +1304,11 @@ not VR.
   - **Depth format block:** encoding kind u8 and value bits u8 (at most the
     stream's bit depth).
   - **Kind 1, inverse linear:** `v = round((1/z − 1/far) / (1/near − 1/far) ×
-    (2^bits − 1))`, in full-range luma. Near maps to the maximum value and far
-    to 0, so an infinite far plane, common with reversed Z, works.
+    (2^bits − 1))`, as luma at the stream's own range: a full-range stream
+    carries `v` directly, a limited-range one (the format's `fullRange` 0, as
+    NVENC makes from grey RGB) its nominal 16–235 span stretched back to
+    0…2^bits − 1. Near maps to the maximum value and far to 0, so an infinite
+    far plane, common with reversed Z, works.
   - **`depthRange`** (13 bytes): flags u8 (bit 0 = empty), then near, far and
     convergence as f32 metres. The constraints are 0 < near < far, far may be
     +∞, and convergence 0 means no suggestion. An empty frame has all three
@@ -1317,6 +1320,24 @@ not VR.
   alternative: a Vergence warp into a side-by-side texture on the existing
   stereo player. With no depth stream (cutscenes, games with anti-cheat, the
   Mac desktop), Depth Anything on the headset's Neural Engine is the fallback.
+- **PCVR (2026-11-07).** The same auxiliary carries a PCVR eye stream's depth,
+  for reprojection rather than 3D: the headset pushes each eye's mesh out to it
+  (`PCVREyeMesh`), so near content keeps its parallax when the head moves away
+  from the render pose, as on a repeated frame. Stream ID 2
+  (`PCVRProfile.depthStreamID`), both eyes side by side, each in its own render
+  frustum and unwarped (render UVs address it), at 1/16 of the render eye
+  (324x260 for 5184x4160), 8-bit HEVC, limited range, far at infinity. Its
+  frames take the eye frame's number and capture time for each viewer
+  (`VideoStreamSender.submit(frameNumber:)`), so a skipped eye frame leaves the
+  same gap in both. A headset offers `depthVideo` only when it reprojects by
+  depth. The host's source: the game's depth when the frame source's auxiliary
+  texture carries it (planar metres, R32F or R16F), else an estimate from the
+  two eyes (`lw_depth_*`: luminance on one tangent grid spanning both frusta,
+  where disparity is a horizontal shift; 5x5 block matching each way; a
+  left-right check; holes filled from the farther neighbour), 0.4 ms on an RTX
+  3080 at native density. `near` is the estimate's widest disparity, about
+  0.15 m. Most Unity titles submit no depth (Hyperbolica creates no depth
+  swapchain), which is why the estimate exists.
 - **Pre-rendered cutscenes** have no depth buffer (the component sees a
   cleared or constant one). It marks those frames empty in `depthRange`, and
   the headset switches to estimated depth until real depth returns, rather

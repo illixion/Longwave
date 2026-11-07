@@ -159,8 +159,18 @@ bridge, not provider discovery, entitlement approval, or automatic startup of
 an immersive provider session. The provider presenter still needs to supply
 the source when that route is integrated.
 
-**Next local work:** test asymmetric per-eye gaze projection and a matched
-warp/unwarp with synthetic textures. Enable `gaze` negotiation only once the
+**Reference foveation math (2026-11-07).** `CentreEdgeMapping` in StreamWire
+now defines the paired host/receiver sampling equations below, including
+frame/parameter epoch validation. CPU tests cover golden coordinates,
+monotonicity, moving centres, identity cases, full centre pixel density and
+bilinear reconstruction of synthetic stereo UV ramps. `PCVREyeGeometry.gazeCentre`
+is the headset projection reference: asymmetric frusta, eye rotation, finite
+focus parallax, unknown depth, top-left UVs and invalid/behind-eye gaze are
+covered by simulator tests. These references are not GPU encoder/unwarp passes.
+
+**Next local work:** implement and compare GPU sampling against the reference
+on synthetic textures, including filtering at the density boundaries. Enable
+`gaze` negotiation only once the
 host consumes it and the provider presenter supplies the source. PC/device
 gates then measure capture-to-render gaze age, saccades, channel loss/reconnect,
 pacing and image quality. Apple's provider entitlement remains pending.
@@ -1149,8 +1159,8 @@ the foveation warp's parameter block. Side data on every frame:
   - foveation epoch u32;
   - warp kind u8 and the warp's parameters.
 - **Warp kinds.** Kind 0 is none, where render size must equal wire size.
-  Kind 1 is an axis-aligned centre-plus-edges warp, the shape ALVR's foveated
-  encoding uses. Its parameters are four f32: centre size x and y (the
+  Kind 1 is v3's axis-aligned centre-plus-edges warp (sampling equations
+  below). Its parameters are four f32: centre size x and y (the
   fraction of each axis kept at full density, in (0, 1]) and edge ratio x and
   y (≥ 1). An unknown warp kind makes the format undecodable, because the
   receiver couldn't invert the warp.
@@ -1159,6 +1169,42 @@ the foveation warp's parameter block. Side data on every frame:
   each eye's pose and field of view in the immersive space.
 - **`foveation`** (20 bytes): parameterEpoch u32, then each eye's warp centre
   as a normalised (x, y) in [0, 1], with (0, 0) at the top left.
+
+**Centre/edge sampling equations (2026-11-07).** Each axis is independent.
+For centre size `c`, edge ratio `r`, requested centre `g` in the *unwarped*
+render image, set `h = clamp(g, c/2, 1-c/2)`, `a = h-c/2`, `b = h+c/2`,
+and `L = c + (1-c)/r`. The full centre interval moves inside the image near
+an edge; its width and packed image size remain constant as gaze moves.
+For a render coordinate `x`, the receiver samples the wire texture at:
+
+```
+f(x) = x/r                         if x < a
+       a/r + (x-a)                 if a <= x <= b
+       a/r + c + (x-b)/r            if x > b
+wireUV = f(x) / L
+```
+
+The host samples the render texture with the piecewise inverse: multiply
+wireUV by `L`, then expand either edge by `r`, keeping the middle unchanged.
+Both maps use texture-edge coordinates in [0,1], with pixel centres at
+`(index+0.5)/dimension`. Apply the maps within each eye before side-by-side
+packing; filter within that eye so sampling cannot bleed across the stereo
+seam. `wireDimension = renderDimension * L` preserves centre pixel density
+before codec alignment/rounding. Report actual aligned dimensions; a different
+ratio changes the actual density. `r=1` or `c=1` gives the identity map.
+The CPU reference rejects non-finite/out-of-range inputs and centre intervals
+too narrow to represent. This defines v3's own mapping; no third-party warp
+implementation is imported.
+
+**Gaze projection.** Normalize the device-relative direction. For known
+positive focus distance, transform the fixation point `direction*distance`
+through each `eyeFromDevice` pose, including eye translation. At unknown
+(distance zero) depth, transform only the direction, with no translation.
+Project through each eye's own asymmetric frustum, convert NDC to top-left UV
+(`u=(x+1)/2`, `v=(1-y)/2`), then clamp forward offscreen gaze to the image edge.
+Reject invalid or behind-eye projections. Do not apply the world head pose to
+an already device-relative gaze sample. Missing/stale gaze follows the chosen
+centre fallback policy; never reuse it as fresh tracking input.
 
 **Receiver.** Decode is the existing VideoToolbox path. Unwarp and
 reprojection are Metal that produces a texture for each eye, presented by a

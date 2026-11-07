@@ -138,7 +138,7 @@ public enum StereoLayout: UInt8, Sendable, CaseIterable {
 }
 
 /// Shape of the axis-aligned foveation warp: a full-resolution centre
-/// rectangle and compressed edges, the scheme ALVR's foveated encoding uses.
+/// rectangle and compressed edges. Sampling equations: `CentreEdgeMapping`.
 /// The per-frame centre comes from `FoveationSideData`.
 public struct CentreEdgeWarp: Sendable, Hashable {
     public static let wireSize = 16

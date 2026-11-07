@@ -81,7 +81,9 @@ public struct NormalizedPoint: Sendable, Hashable {
     }
 }
 
-/// Where the foveation warp was centred for this frame (section 4.7). 20 bytes:
+/// Where the foveation warp was centred in each unwarped render image
+/// (top-left UVs), before the centre interval is shifted inside the edges.
+/// Reference equations: `CentreEdgeMapping`. 20 bytes:
 /// `parameterEpoch u32 | left centre (x, y f32) | right centre (x, y f32)`.
 /// The warp's shape comes from the stream's `FoveationParameters`; the epoch
 /// must match them, or the receiver's unwarp would not invert the encoder's.

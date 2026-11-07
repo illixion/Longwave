@@ -41,8 +41,9 @@ Windows hosts.
 The Mac desktop v3 path and the development PCVR host/headset path exist;
 see [the v3 reconciliation](NATIVE_V3_PROTOCOL.md#pcvr-implementation-reconciliation-2026-11-07).
 Provider capture-time preservation, source reset handling and a render-thread
-snapshot bridge now exist. While the Windows PC is busy, prioritize synthetic
-per-eye foveation tests and provider-presenter integration. The intended gaze product integration uses Apple's
+snapshot bridge now exist. Reference centre/edge sampling and per-eye gaze
+projection also have synthetic tests. While the Windows PC is busy, prioritize
+GPU comparison with those references and provider-presenter integration. The intended gaze product integration uses Apple's
 Foveated Streaming Provider API after entitlement approval, still pending.
 Windows encoding/performance and real-title validation remain separate device
 gates. Do not mark gaze-driven native PCVR complete from a working gaze feed alone.

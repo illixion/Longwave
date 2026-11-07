@@ -246,15 +246,58 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertGreaterThan(filled, 50)   // a strip 9 pixels wide, every third column, 29 rows
         XCTAssertGreaterThan(bg, 500)
         // The warped depth: near across the block, far elsewhere, the strip included.
+        try checkWarpedDepth(out, blockStart: blockStart, blockEnd: blockEnd, margin: margin, near: 0.5, far: 2)
+    }
+
+    private func checkWarpedDepth(_ out: Output, blockStart: Float, blockEnd: Float, margin: Float, near: Float,
+                                  far: Float) throws {
         for x in 0..<Self.depthWidth {
             let u = (Float(x) + 0.5) / Float(Self.depthWidth)
             let z = out.warpedDepth(eye: 0, x: x, y: 16)
             if u > blockStart + margin, u < blockEnd - margin {
-                XCTAssertEqual(z, 0.5, accuracy: 0.01, "block depth at texel \(x)")
+                XCTAssertEqual(z, near, accuracy: 0.01 * near, "block depth at texel \(x)")
             } else if abs(u - blockStart) > margin, abs(u - blockEnd) > margin {
-                XCTAssertEqual(z, 2, accuracy: 0.05, "background depth at texel \(x)")
+                XCTAssertEqual(z, far, accuracy: 0.03 * far, "background depth at texel \(x)")
             }
         }
+    }
+
+    /// A block at 0.5 m just in front of a background at 0.55 m, the eye
+    /// moved 10 cm right: rays that reach the block's depth before its edge
+    /// hit its face and show it; rays that clear it show the background where
+    /// they hit it. A secant across the two surfaces put the block's edge
+    /// pixels over the background instead.
+    func testARayGrazingANearEdgeHitsItsFaceOrClearsIt() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try depthMap { x, y in (16..<32).contains(x) && (8..<24).contains(y) ? 0.5 : 0.55 }
+        let shift: Float = 0.1
+        let targets = frame.renderPose.eyes.map { $0.pose * PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
+                                                                     position: [shift, 0, 0]) }
+        let out = try warp(frame, depth: depth, targets: targets)
+        let t = Self.fov.tangents, width = t.y - t.x
+        let nearShift = shift / 0.5 / width, farShift = shift / 0.55 / width
+        let blockStart = 0.25 - nearShift, blockEnd = 0.5 - nearShift, uncoveredEnd = 0.5 - farShift
+        let margin = 1.2 / Float(Self.depthWidth)
+        let texel = 1 / Float(Self.eyeWidth)
+        var fg = 0, bg = 0
+        for y in stride(from: 70, to: 186, by: 4) {
+            let v = (Float(y) + 0.5) / Float(Self.eyeHeight)
+            for x in stride(from: 2, to: Self.eyeWidth - 2, by: 3) {
+                let u = (Float(x) + 0.5) / Float(Self.eyeWidth)
+                let got = out.sourceUV(eye: 0, x: x, y: y)
+                XCTAssertEqual(got.y, v, accuracy: 1.5 * texel, "row \(y) column \(x)")
+                if u > blockStart + margin, u < blockEnd - margin {
+                    XCTAssertEqual(got.x, u + nearShift, accuracy: 1.5 * texel, "block at \(x),\(y)")
+                    fg += 1
+                } else if (u > 0.03 && u < blockStart - margin) || (u > uncoveredEnd + margin && u + farShift < 0.97) {
+                    XCTAssertEqual(got.x, u + farShift, accuracy: 1.5 * texel, "background at \(x),\(y)")
+                    bg += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(fg, 500)
+        XCTAssertGreaterThan(bg, 500)
+        try checkWarpedDepth(out, blockStart: blockStart, blockEnd: blockEnd, margin: margin, near: 0.5, far: 0.55)
     }
 }
 #endif

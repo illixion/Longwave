@@ -333,6 +333,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             float f = rho - w;
             if (!behind) {
                 if (f < 0) {
+                    bool slipped = false;
                     if (w - previousW > u.edge) {
                         // A nearer surface has come under the ray. Into its
                         // face, or behind its silhouette? Where the ray reaches
@@ -366,7 +367,50 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                         }
                         entry = PCVRDepthWarpHit{edgeUV, edgeW};
                         behind = true;
-                    } else {
+                        slipped = true;
+                    } else if (previousW - w > u.edge) {
+                        // Off a nearer surface onto a farther one within this
+                        // step, and behind the farther one by the sample. Not
+                        // a crossing between the two: the ray hit the nearer
+                        // surface's face before its edge, or cleared it and
+                        // then either hit the farther surface or found that
+                        // hidden. Bisect for the edge to tell them apart; a
+                        // secant across the two surfaces smeared the nearer
+                        // one's edge over the farther (headset, 2026-11-07).
+                        float nearLambda = previousLambda, farLambda = lambda;
+                        float2 nearUV = previousUV, farUV = uv;
+                        float nearW = previousW, farW = w;
+                        float nearRho = previousF + previousW, farRho = rho;
+                        for (int pass = 0; pass < 3; pass++) {
+                            float lm = 0.5 * (nearLambda + farLambda);
+                            float2 uvm;
+                            float rhom;
+                            pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
+                            float wm = pcvrDepthWarpScene(uvm, u, depth);
+                            if (previousW - wm > u.edge) { farLambda = lm; farUV = uvm; farW = wm; farRho = rhom; }
+                            else { nearLambda = lm; nearUV = uvm; nearW = wm; nearRho = rhom; }
+                        }
+                        float nearF = nearRho - nearW;
+                        if (nearF < 0) {
+                            // Behind the nearer surface at its edge: into its face before it.
+                            float a = previousF / (previousF - nearF);
+                            float lh = mix(previousLambda, nearLambda, a);
+                            PCVRDepthWarpHit hit;
+                            pcvrDepthWarpRay(D, t, lh, u.sourceTangents, hit.uv, hit.w);
+                            return hit;
+                        }
+                        float farF = farRho - farW;
+                        // Past the edge and already behind the farther surface:
+                        // its point is hidden. It fills from beside the edge.
+                        if (farF < 0) return PCVRDepthWarpHit{farUV, farW};
+                        // Cleared the nearer surface in front of the farther
+                        // one: the crossing is between the edge and this sample.
+                        previousUV = farUV;
+                        previousW = farW;
+                        previousLambda = farLambda;
+                        previousF = farF;
+                    }
+                    if (!slipped) {
                         // Through the surface: the crossing by the secant, twice.
                         for (int pass = 0; pass < 2; pass++) {
                             float a = previousF / (previousF - f);

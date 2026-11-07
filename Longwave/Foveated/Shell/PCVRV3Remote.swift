@@ -775,6 +775,8 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
     private var session: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
     private var configuration: [UInt8] = []
+    /// The format the session was made for, to make it again.
+    private var lastFormat: FormatDescription?
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRV3Remote")
 
     struct Tally {
@@ -811,6 +813,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
     /// Called on the remote's queue, as is `decode`.
     func setFormat(_ format: FormatDescription) throws {
         if format.configuration == configuration, session != nil { return }
+        lastFormat = format
         guard let sets = PCVRAnnexB.parameterSets(format.configuration) else { throw Failure.parameterSets }
         var description: CMVideoFormatDescription?
         let status = sets.vps.withUnsafeBufferPointer { vps in
@@ -861,6 +864,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
 
     func decode(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, frameNumber: UInt32, streamEpoch: UInt32,
                 renderPose: PCVRRenderPose, foveation: PCVRFoveation? = nil) {
+        renewSessionIfLost()
         guard case .colour(let mailbox) = output, let session, let formatDescription else { return }
         let sample = PCVRAnnexB.lengthPrefixedSample(accessUnit)
         guard !sample.isEmpty, let buffer = Self.sampleBuffer(sample, format: formatDescription) else {
@@ -874,6 +878,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         ) { [weak self] status, _, imageBuffer, _, _ in
             guard let self else { return }
             guard status == noErr, let imageBuffer else {
+                noteSessionLost(status)
                 fail("decode failed (\(status))")
                 return
             }
@@ -892,13 +897,17 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
                                          release: { withExtendedLifetime((texture, imageBuffer)) {} })
             mailbox.deliver(frame)
         }
-        if status != noErr { fail("decode refused (\(status))") }
+        if status != noErr {
+            noteSessionLost(status)
+            fail("decode refused (\(status))")
+        }
     }
 
     /// One depth picture: inverse depth from `near` to `far` (§4.8 kind 1), in
     /// limited-range luma unless `fullRange`.
     func decodeDepth(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, frameNumber: UInt32, near: Float, far: Float,
                      fullRange: Bool, valueBits: Int) {
+        renewSessionIfLost()
         guard case .depth(let store) = output, let session, let formatDescription else { return }
         let sample = PCVRAnnexB.lengthPrefixedSample(accessUnit)
         guard !sample.isEmpty, let buffer = Self.sampleBuffer(sample, format: formatDescription) else {
@@ -918,6 +927,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         ) { [weak self] status, _, imageBuffer, _, _ in
             guard let self else { return }
             guard status == noErr, let imageBuffer, let texture = makeTexture(imageBuffer) else {
+                noteSessionLost(status)
                 fail("depth decode failed (\(status))")
                 return
             }
@@ -934,7 +944,10 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
                                                height: height,
                                                release: { withExtendedLifetime((texture, imageBuffer)) {} }))
         }
-        if status != noErr { fail("depth decode refused (\(status))") }
+        if status != noErr {
+            noteSessionLost(status)
+            fail("depth decode refused (\(status))")
+        }
     }
 
     /// The luma plane's bytes, rows packed: a depth picture is small (168 KB
@@ -953,6 +966,28 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         }
         return (values, width, height)
     }
+
+    /// The system tore the session down (the app was suspended): every decode
+    /// fails from then on, and only a new session helps. Noted from any thread.
+    private func noteSessionLost(_ status: OSStatus) {
+        guard status == kVTInvalidSessionErr else { return }
+        sessionLost.withLock { $0 = true }
+    }
+
+    /// Makes the session again from the last format; the caller's key-frame
+    /// request (`onDecodeError`) brings the picture back. On the remote's queue.
+    private func renewSessionIfLost() {
+        guard sessionLost.withLock({ lost in defer { lost = false }; return lost }), let lastFormat else { return }
+        configuration = []
+        do {
+            try setFormat(lastFormat)
+            log.notice("v3 PCVR \(self.isDepth ? "depth " : "", privacy: .public)decoder session renewed after the system invalidated it")
+        } catch {
+            log.error("v3 PCVR decoder could not renew its session: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private let sessionLost = OSAllocatedUnfairLock(initialState: false)
 
     private func fail(_ reason: String) {
         lock.withLock { $0.errors += 1 }

@@ -51,8 +51,19 @@ final class PCVREyeMeshTests: XCTestCase {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
-        let floats = buffer.contents().bindMemory(to: Float.self, capacity: grid.vertexCount * 5)
-        return Array(UnsafeBufferPointer(start: floats, count: grid.vertexCount * 5))
+        // Vertices are position, texture coordinates times depth, (depth, 0):
+        // returned as position and plain texture coordinates, five per vertex.
+        let floats = buffer.contents().bindMemory(to: Float.self, capacity: grid.vertexCount * 7)
+        let raw = Array(UnsafeBufferPointer(start: floats, count: grid.vertexCount * 7))
+        var out: [Float] = []
+        out.reserveCapacity(grid.vertexCount * 5)
+        for n in 0..<grid.vertexCount {
+            let v = Array(raw[n * 7..<n * 7 + 7])
+            XCTAssertGreaterThan(v[5], 0, "vertex \(n) depth")
+            XCTAssertEqual(v[6], 0, "vertex \(n) padding")
+            out += [v[0], v[1], v[2], v[3] / v[5], v[4] / v[5]]
+        }
+        return out
     }
 
     private static let centres: [NormalizedPoint] = [

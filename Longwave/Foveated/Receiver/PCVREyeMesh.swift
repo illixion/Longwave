@@ -29,9 +29,25 @@ import StreamWire
 ///   pose and texture coordinates changed at once on the CPU: for a frame or so
 ///   the picture was drawn at the next frame's pose and through its foveation
 ///   map, seen as flicker when the gaze moved and a jolt on fast turns.)
+/// - **Texture coordinates are screen-affine.** A GPU interpolates vertex
+///   attributes perspective-correctly, as if they were painted on the
+///   triangle's surface in 3D. These coordinates are the frame's own screen
+///   positions, so across a cell whose vertices sit at different depths that
+///   is wrong even from the render eye: between the wheel at 1.3 m and the wall
+///   at 6 m the cell's 3D midpoint projects 82% of the way across it, so the
+///   first half of the picture stretched over 82% of the cell and the rest
+///   squeezed into 18%, a half-degree band of warped picture hugging every
+///   silhouette, with the head still (test scene, 2026-11-07; nothing done to
+///   depth, timing or reprojection changed it). So `uv0` holds the texture
+///   coordinates times the vertex's depth and `uv1.x` the depth: the
+///   rasteriser's perspective-correct interpolation of each is screen-linear
+///   times a common factor, and the material divides them back
+///   (`uv0 / uv1.x`), which is linear interpolation in screen space, exact
+///   from the render eye and the same as before on a flat picture.
 nonisolated enum PCVREyeMesh {
-    /// Vertices are `position` (float3) then `uv0` (float2), packed.
-    static let vertexStride = 20
+    /// Vertices are `position` (float3), `uv0` (float2, texture coordinates
+    /// times depth) and `uv1` (float2: depth, 0), packed.
+    static let vertexStride = 28
 
     /// The grid's size in cells; vertices are one more each way.
     struct Grid: Equatable, Sendable {
@@ -310,7 +326,8 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
 
     struct PCVRMeshVertex {
         packed_float3 position;
-        packed_float2 uv;
+        packed_float2 uv;     // texture coordinates times depth (PCVREyeMesh: screen-affine)
+        packed_float2 depth;  // (depth, 0)
     };
 
     // PCVREyeMesh.Axis.coordinate: line i's render coordinate.
@@ -382,7 +399,8 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
         if (!(u.flags & 1u)) uv.y = 1 - uv.y;
         uint index = gid.y * (u.columns + 1) + gid.x;
         vertices[index].position = packed_float3(position.xyz);
-        vertices[index].uv = packed_float2(uv);
+        vertices[index].uv = packed_float2(uv * z);
+        vertices[index].depth = packed_float2(z, 0);
     }
     """
 }

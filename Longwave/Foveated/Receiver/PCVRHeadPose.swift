@@ -109,9 +109,44 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     private var smoothedLatency: TimeInterval?
     private var lastLogTime: TimeInterval = 0
 
+    /// What the prediction horizon is measured from.
+    enum HorizonSource: Sendable {
+        /// When frames were shown (smoothed): right for a presenter that shows
+        /// each frame as soon as it can.
+        case presentation
+        /// When frames could first have been shown (`recordReadiness`), at the
+        /// 90th percentile: for a presenter that holds each frame until the
+        /// display time it was rendered for. Measured from presentation there,
+        /// the horizon could only ever grow: a frame held to its time is shown
+        /// exactly a horizon late, and one that came late raises it.
+        case readiness
+    }
+    var horizonSource = HorizonSource.presentation
+    private var readinessLatencies: [TimeInterval] = []
+    private static let readinessWindow = 120
+
     /// The current prediction horizon (zero until something has been measured).
     var predictionHorizon: TimeInterval {
-        min(max(smoothedLatency ?? 0, 0), Self.maximumPredictionHorizon)
+        let measured: TimeInterval?
+        switch horizonSource {
+        case .presentation:
+            measured = smoothedLatency
+        case .readiness:
+            let sorted = readinessLatencies.sorted()
+            measured = sorted.isEmpty ? nil : sorted[min(sorted.count - 1, Int(0.9 * Double(sorted.count - 1) + 0.5))]
+        }
+        return min(max(measured ?? 0, 0), Self.maximumPredictionHorizon)
+    }
+
+    /// Records the earliest display time a frame could have been shown at (its
+    /// decode finished, plus what the presenter needs to put it up), for the
+    /// `.readiness` horizon.
+    func recordReadiness(poseSequence: UInt32, readyDisplayTime: TimeInterval) {
+        guard let entry = history.last(where: { $0.sequence == poseSequence }) else { return }
+        readinessLatencies.append(readyDisplayTime - entry.baseDisplayTime)
+        if readinessLatencies.count > Self.readinessWindow {
+            readinessLatencies.removeFirst(readinessLatencies.count - Self.readinessWindow)
+        }
     }
 
     /// The current space epoch: what the next snapshot carries, and what a

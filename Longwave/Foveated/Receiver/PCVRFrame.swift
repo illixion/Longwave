@@ -80,6 +80,8 @@ nonisolated protocol PCVRPlayoutFrame {
 
 extension PCVRDecodedFrame: PCVRTimedPlayoutFrame {
     var spaceEpoch: UInt16 { renderPose.spaceEpoch }
+    var displayTime: TimeInterval { renderPose.displayTime }
+    var poseSequence: UInt32 { renderPose.poseSequence }
 }
 
 /// Latest-wins playout, as pure bookkeeping (§4.7 Pacing: a frame that misses
@@ -167,6 +169,10 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
         /// (`PCVRPacedFrameQueue`): for a presenter that shows frames where they
         /// were rendered, where smooth motion is worth a slot of delay.
         case paced
+        /// Each frame in the slot its render display time falls in
+        /// (`PCVRPacedFrameQueue.takeForPresentation(spaceEpoch:now:until:)`):
+        /// any source rate on any display rate.
+        case timed
     }
 
     private enum Slot {
@@ -180,6 +186,7 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
     init(playout: Playout = .latest) {
         self.playout = playout
         slot = OSAllocatedUnfairLock(initialState: playout == .latest ? .latest(PCVRLatestFrameSlot()) : .paced(PCVRPacedFrameQueue()))
+        // .timed uses the same queue, taken by display time.
     }
 
     // Every method takes the frames the slot let go of out of the lock and lets
@@ -200,6 +207,29 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
             }
         }
         withExtendedLifetime(displaced) {}
+    }
+
+    /// A `.timed` mailbox's next frame: the newest rendered for no later than `target`.
+    func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval, until target: TimeInterval)
+        -> (frame: PCVRDecodedFrame, isNew: Bool)? {
+        let taken: (frame: PCVRDecodedFrame?, isNew: Bool, released: [PCVRDecodedFrame]) = slot.withLock {
+            guard case .paced(var queue) = $0 else { return (nil, false, []) }
+            let p = queue.takeForPresentation(spaceEpoch: spaceEpoch, now: now, until: target)
+            $0 = .paced(queue)
+            return (p.frame, p.isNew, p.released)
+        }
+        withExtendedLifetime(taken.released) {}
+        return taken.frame.map { ($0, taken.isNew) }
+    }
+
+    /// Frames delivered since the last call (pose sequence, arrival time); empty for `.latest`.
+    func drainArrivals() -> [(poseSequence: UInt32, time: TimeInterval)] {
+        slot.withLock {
+            guard case .paced(var queue) = $0 else { return [] }
+            let arrivals = queue.drainArrivals()
+            $0 = .paced(queue)
+            return arrivals
+        }
     }
 
     /// The frame to show at a display pose in `spaceEpoch`, or nil for nothing.

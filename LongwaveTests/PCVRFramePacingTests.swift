@@ -12,6 +12,8 @@ final class PCVRFramePacingTests: XCTestCase {
         let frameNumber: UInt32
         var spaceEpoch: UInt16 = 0
         let arrivalTime: TimeInterval
+        var displayTime: TimeInterval = 0
+        var poseSequence: UInt32 = 0
     }
 
     private let period = 1.0 / 90
@@ -161,6 +163,73 @@ final class PCVRFramePacingTests: XCTestCase {
         var queue = PCVRPacedFrameQueue<Frame>()
         for slot in 0..<200 { _ = queue.takeForPresentation(spaceEpoch: 0, now: Double(slot) / 100) }
         XCTAssertEqual(queue.period, 0.01, accuracy: 0.0002)
+    }
+
+    // MARK: Timed
+
+    /// Frames every `source` seconds, each rendered for `lead` after it was
+    /// started and arriving `latency(n)` after that; slots every `display`. A
+    /// frame written at a slot is shown in the next one. Returns, per frame
+    /// shown, how far its slot's display time was from its render display time.
+    private func runTimed(source: TimeInterval, display: TimeInterval, seconds: TimeInterval, lead: TimeInterval,
+                          latency: (Int) -> TimeInterval) -> (errors: [TimeInterval], shown: [UInt32], queue: PCVRPacedFrameQueue<Frame>) {
+        var queue = PCVRPacedFrameQueue<Frame>()
+        let count = Int(seconds / source)
+        var frames = (0..<count).map { n -> Frame in
+            let start = Double(n) * source
+            return Frame(frameNumber: UInt32(n), arrivalTime: start + latency(n), displayTime: start + lead)
+        }
+        frames.sort { $0.arrivalTime < $1.arrivalTime }
+        var errors: [TimeInterval] = [], shown: [UInt32] = []
+        for slot in 0..<Int(seconds / display) {
+            let now = Double(slot) * display
+            while let next = frames.first, next.arrivalTime <= now { _ = queue.deliver(frames.removeFirst()) }
+            let showAt = now + display
+            let p = queue.takeForPresentation(spaceEpoch: 0, now: now, until: showAt + display / 2)
+            if p.isNew, let frame = p.frame {
+                errors.append(showAt - frame.displayTime)
+                shown.append(frame.frameNumber)
+            }
+        }
+        return (errors, shown, queue)
+    }
+
+    func testTimedPlayoutShowsEachFrameInItsOwnSlotAtAnyRate() {
+        // 50 fps on 120 Hz, 75 on 90 and 90 on 100: no whole cadence, 4 ms of
+        // arrival jitter, and a horizon that covers arrival plus the slot a
+        // write takes before its show (the presenter sizes it so: 24 + 2 x 11 ms).
+        let rates: [(source: TimeInterval, display: TimeInterval)] = [(1.0 / 50, 1.0 / 120), (1.0 / 75, 1.0 / 90), (1.0 / 90, 1.0 / 100)]
+        for (source, display) in rates {
+            let run = runTimed(source: source, display: display, seconds: 4, lead: 0.05) { n -> TimeInterval in
+                n % 3 == 0 ? 0.024 : 0.02
+            }
+            let worst: TimeInterval = run.errors.dropFirst(5).map { abs($0) }.max() ?? 1
+            XCTAssertLessThanOrEqual(worst, display / 2 + 1e-9, "every frame within half a slot of its time (\(source), \(display))")
+            let numbers = run.shown.dropFirst(5)
+            XCTAssertEqual(Array(numbers), Array(numbers.first!...numbers.last!), "every frame shown, in order")
+        }
+    }
+
+    func testTimedPlayoutShowsALateFrameAtOnceAndSkipsWhatItsLatenessCovered() {
+        // A 90 fps source whose frame 100 arrives 30 ms late, after the two behind it.
+        let run = runTimed(source: 1.0 / 90, display: 1.0 / 90, seconds: 3, lead: 0.045) { n in n == 100 ? 0.05 : 0.02 }
+        XCTAssertFalse(run.shown.contains(100), "superseded by the frames meant for its slot and after")
+        XCTAssertTrue(run.shown.contains(101))
+        // Its own slot repeats the frame before (nothing else was meant for it),
+        // and the stream does not fall behind: the frames after it keep their slots.
+        XCTAssertLessThanOrEqual(run.queue.repeated, 1)
+        let after = zip(run.shown, run.errors).filter { $0.0 > 101 }.map { abs($0.1) }
+        XCTAssertLessThanOrEqual(after.max() ?? 1, 1.0 / 180 + 1e-9)
+    }
+
+    func testTimedPlayoutTellsThePresenterWhatArrived() {
+        var queue = PCVRPacedFrameQueue<Frame>()
+        _ = queue.deliver(Frame(frameNumber: 1, arrivalTime: 0.5, poseSequence: 41))
+        _ = queue.deliver(Frame(frameNumber: 2, arrivalTime: 0.6, poseSequence: 43))
+        let arrivals = queue.drainArrivals()
+        XCTAssertEqual(arrivals.map(\.poseSequence), [41, 43])
+        XCTAssertEqual(arrivals.map(\.time), [0.5, 0.6])
+        XCTAssertTrue(queue.drainArrivals().isEmpty)
     }
 
     func testThePacedMailboxHandsOutFramesInOrder() {

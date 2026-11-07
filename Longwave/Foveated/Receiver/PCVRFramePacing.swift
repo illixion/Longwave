@@ -6,6 +6,10 @@ nonisolated protocol PCVRTimedPlayoutFrame: PCVRPlayoutFrame {
     /// When the frame could first have been shown (decode finished), on the
     /// same clock as the `now` its presenter passes in.
     var arrivalTime: TimeInterval { get }
+    /// The display time it was rendered for (its render pose's), same clock.
+    var displayTime: TimeInterval { get }
+    /// The head-pose snapshot it was rendered from.
+    var poseSequence: UInt32 { get }
 }
 
 /// In-order playout with a small delay that sets itself: one new frame per
@@ -76,6 +80,8 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
 
     private var lastTake: TimeInterval?
     private var lastArrival: TimeInterval?
+    /// Frames delivered since `drainArrivals()`: pose sequence and arrival time.
+    private(set) var arrivals: [(poseSequence: UInt32, time: TimeInterval)] = []
     private var minimumWait = TimeInterval.infinity
     private var waits = 0
     /// Slots the current frame has been shown in.
@@ -110,12 +116,64 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             if interval >= 0, interval < 0.1 { sourcePeriod += 0.05 * (interval - sourcePeriod) }
         }
         lastArrival = frame.arrivalTime
+        arrivals.append((frame.poseSequence, frame.arrivalTime))
+        if arrivals.count > Self.capacity * 4 { arrivals.removeFirst(arrivals.count - Self.capacity * 4) }
         queued.append(frame)
         while queued.count > Self.capacity {
             released.append(queued.removeFirst())
             dropped += 1
         }
         return released
+    }
+
+    /// The frames that arrived since the last call, oldest first.
+    mutating func drainArrivals() -> [(poseSequence: UInt32, time: TimeInterval)] {
+        defer { arrivals = [] }
+        return arrivals
+    }
+
+    /// Timed playout: the newest frame rendered for a display time no later
+    /// than `target` (the display time of the slot it will be shown in, plus
+    /// half a slot), whatever the rates. Frames rendered for later wait; older
+    /// eligible ones are superseded. With nothing eligible the slot repeats.
+    ///
+    /// The source runs at whatever rate it manages and every frame is shown
+    /// in the slot its content was meant for, so animation moves at its own
+    /// pace with no cadence to match: 50 fps on 120 Hz, or a game wavering
+    /// between 70 and 90, holds each frame for as long as its time lasts.
+    mutating func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval, until target: TimeInterval) -> Presentation {
+        if let lastTake {
+            let interval = now - lastTake
+            if interval > 1.0 / 150, interval < 1.0 / 40 { period += 0.05 * (interval - period) }
+        }
+        lastTake = now
+        var released: [Frame] = []
+        var next: Frame?
+        while let head = queued.first {
+            if head.spaceEpoch != spaceEpoch {
+                released.append(queued.removeFirst())
+                dropped += 1
+                continue
+            }
+            guard head.displayTime <= target else { break }
+            if let superseded = next {
+                released.append(superseded)
+                dropped += 1
+            }
+            next = queued.removeFirst()
+        }
+        guard let next else {
+            guard let current, current.spaceEpoch == spaceEpoch else {
+                return Presentation(frame: nil, isNew: false, released: released)
+            }
+            repeated += 1
+            return Presentation(frame: current, isNew: false, released: released)
+        }
+        lastWait = now - next.arrivalTime
+        if let previous = current { released.append(previous) }
+        current = next
+        presentedNew += 1
+        return Presentation(frame: next, isNew: true, released: released)
     }
 
     /// The frame for the display slot at `now`, shown at a display pose in `spaceEpoch`.

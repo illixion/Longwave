@@ -222,5 +222,20 @@ final class PCVRPlayoutTests: XCTestCase {
         slow.recordPresentation(frameNumber: 1, poseSequence: pose.sequence, presentTime: 0.5)
         XCTAssertEqual(slow.predictionHorizon, PCVRHeadPoseProducer.maximumPredictionHorizon)
     }
+
+    func testReadinessHorizonCoversNineFramesInTenWhateverWasPresented() {
+        let producer = PCVRHeadPoseProducer()
+        producer.horizonSource = .readiness
+        // Frames are ready 30 ms after their base display time, one in ten 50 ms.
+        var time: TimeInterval = 100
+        for n in 0..<120 {
+            let pose = snapshot(producer, at: time, horizon: producer.predictionHorizon)
+            producer.recordReadiness(poseSequence: pose.sequence, readyDisplayTime: time + 0.02 + (n % 10 == 0 ? 0.05 : 0.03))
+            // Whatever is presented, and however late, does not move it.
+            producer.recordPresentation(frameNumber: pose.sequence, poseSequence: pose.sequence, presentTime: time + 0.5)
+            time += 1.0 / 90
+        }
+        XCTAssertEqual(producer.predictionHorizon, 0.03, accuracy: 1e-3)
+    }
 }
 #endif

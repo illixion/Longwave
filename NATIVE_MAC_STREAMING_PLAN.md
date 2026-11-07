@@ -9,7 +9,7 @@ Windows hosts.
 
 ## Status
 
-- **Next protocol: v3 proposed** — see [[NATIVE_V3_PROTOCOL.md]] (UDP + FEC, one host clock, portable Swift host core; absorbs Phases 4–5).
+- **Next protocol: v3 partially implemented** — see [[NATIVE_V3_PROTOCOL.md]] (UDP + FEC, one host clock, portable Swift host core; absorbs Phases 4–5).
 - Full desktop milestone: **implemented** (see below). Was a transparent
   application-window composition; now the complete display.
 - **Receivers on every client: implemented** — the Mac client
@@ -35,6 +35,17 @@ Windows hosts.
   streams work the same way. Verified end-to-end against a Network.framework
   client on the RTX 3080 host. Intended to double as Desktop View for PCVR
   mode once merged into `appstore/pcvr`.
+
+## Native v3 follow-up (2026-11-07)
+
+The Mac desktop v3 path and the development PCVR host/headset path exist;
+see [the v3 reconciliation](NATIVE_V3_PROTOCOL.md#pcvr-implementation-reconciliation-2026-11-07).
+While the Windows PC is busy, prioritize provider capture-time preservation,
+gaze freshness/session-reset tests, render metadata correctness, and synthetic
+per-eye foveation tests. The intended gaze product integration uses Apple's
+Foveated Streaming Provider API after entitlement approval, still pending.
+Windows encoding/performance and real-title validation remain separate device
+gates. Do not mark gaze-driven native PCVR complete from a working gaze feed alone.
 
 ## First Milestone: Full Desktop
 

@@ -3,15 +3,32 @@ import DebugTrace
 import Foundation
 import os
 import simd
+import StreamWire
 
-/// A gaze sample on the head-pose uplink. Always invalid until the provider
-/// entitlement brings gaze (§4.7 "What the entitlement adds later"); the field
-/// exists now so the wire format doesn't change when it does.
+/// A gaze sample on the head-pose uplink. Device-relative, -Z forward.
+/// `timestamp` is the capture time in CACurrentMediaTime seconds, never Date
+/// or the predicted head-pose display time. Missing capture time means invalid.
 nonisolated struct PCVRGazeSample: Equatable, Sendable {
     var direction: SIMD3<Float>
     var distance: Float
     var timestamp: TimeInterval
     var isValid: Bool
+
+    /// Initial safety budget for foveation; tune from measured provider latency.
+    static let maximumAge: TimeInterval = 0.1
+
+    func wireSample(now: TimeInterval, negotiated: Bool,
+                    hostTime: (TimeInterval) -> UInt64?) -> GazeSample? {
+        let age = now - timestamp
+        let length = simd_length(direction)
+        guard negotiated, isValid, now.isFinite, timestamp.isFinite, timestamp >= 0,
+              age >= 0, age <= Self.maximumAge,
+              length.isFinite, length > 1e-6,
+              distance.isFinite, distance >= 0,
+              let time = hostTime(timestamp) else { return nil }
+        let unit = direction / length
+        return GazeSample(direction: Vector3(unit.x, unit.y, unit.z), distance: distance, sampleTime: time)
+    }
 
     static let invalid = PCVRGazeSample(direction: SIMD3(0, 0, -1), distance: 0, timestamp: 0, isValid: false)
 }
@@ -98,7 +115,8 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     ///     frame renders, before any prediction horizon was added.
     @discardableResult
     func makeSnapshot(head: PCVRPose, eyes: PCVRStereo<PCVREyeGeometry>, sampledAt: TimeInterval,
-                      baseDisplayTime: TimeInterval, displayTime: TimeInterval) -> PCVRHeadPoseSnapshot {
+                      baseDisplayTime: TimeInterval, displayTime: TimeInterval,
+                      gaze: PCVRGazeSample = .invalid) -> PCVRHeadPoseSnapshot {
         sequence &+= 1
         let spaceEpoch = epoch.withLock { $0 }
         let snapshot = PCVRHeadPoseSnapshot(
@@ -110,7 +128,7 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
             eyes: eyes,
             lastPresentedFrame: lastPresented?.frame,
             lastPresentTime: lastPresented?.time,
-            gaze: .invalid
+            gaze: gaze
         )
         history.append((sequence, sampledAt, baseDisplayTime))
         if history.count > Self.historyLength { history.removeFirst(history.count - Self.historyLength) }

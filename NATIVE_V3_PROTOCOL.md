@@ -4,7 +4,7 @@ Design for the third version of the Native stream: a game-grade, cross-platform
 protocol, served by one portable Swift host core, that makes Longwave's own
 stream good enough to retire Moonlight/Sunshine for Windows and Linux hosts.
 
-Written 2026-10-04. Nothing here is implemented yet. Facts carry a link or a
+Written 2026-10-04; implementation status updated below. Facts carry a link or a
 file reference; anything that is a judgement says so. The verified/inferred split
 is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 
@@ -110,6 +110,51 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
+
+### PCVR implementation reconciliation (2026-11-07)
+
+- The Windows `longwave-pcvr-host` and headset `PCVRV3Remote` exist. The
+  broker supplies side-by-side frames and render-pose side data; Shell A
+  receives and decodes them. The development path is not a completed product.
+- Refresh negotiation, matched host warp/headset unwarp, audio on the PCVR
+  profile, and sustained end-to-end performance verification remain open.
+  The current host format is 8-bit HEVC, not the Main10 goal below.
+- The native gaze uplink now has a freshness/validation and host-clock
+  conversion seam. It requires negotiated `gaze`, a valid capture timestamp,
+  and a finite nonzero direction. Samples older than 100 ms or from the
+  future are omitted. This is an initial safety budget, pending measurement.
+  The shipping PCVR capability set still does not advertise `gaze`; the
+  provider-to-render-thread bridge and host consumption must land first.
+- Frames without render-pose metadata or a usable host-clock conversion are
+  not presented with a fabricated timestamp. After skipping reference frames,
+  the receiver requests a key frame to resume decoding cleanly.
+- Apple's official provider route remains the intended product path. Its
+  entitlement request is pending with Apple. Existing shared provider types
+  are preparation, not evidence of entitlement approval or device validation.
+
+**Provider API and clocks.** On visionOS 27+, the observable
+[`FoveatedStreamingProviderContext.latestFocusRegion`](https://developer.apple.com/documentation/foveatedstreaming/foveatedstreamingprovidercontext/latestfocusregion)
+returns a device-relative direction, focus distance in metres, and a capture
+[`timestamp`](https://developer.apple.com/documentation/foveatedstreaming/foveatedstreamingproviderfocusregion/timestamp)
+in `CACurrentMediaTime()` seconds. Keep gaze in head space (-Z forward), not
+world space or UV coordinates. Preserve capture time through the message
+channel; convert it to host nanoseconds using the session clock only at the
+uplink. Do not replace it with receipt `Date`, predicted display time, or
+network-send time. Unknown distance maps to zero on v3.
+
+**Shared package follow-up.** `RAVEGazeWire` carries `providerTime`, but
+`RAVEPushGazeSource.ingest` currently discards it and `RAVEGazeSample` retains
+only wall-clock receipt time. Preserve the optional monotonic capture time
+through that shared seam before connecting the official feed to the uplink.
+Detach/channel loss must clear the source; reconnect must reset provider
+observation and timestamp deduplication so old-session readings cannot return.
+Keep this work in RAVEEngine rather than duplicating a provider in Longwave.
+
+**Next local work:** preserve provider capture time and test session resets;
+bridge immutable gaze samples to the render thread; negotiate `gaze` only
+when both ends consume it; test asymmetric per-eye gaze projection and a
+matched warp/unwarp with synthetic textures. PC/device gates then measure
+capture-to-render gaze age, saccades, loss, pacing and image quality.
 
 ## 1. Goals, non-goals, success metrics
 

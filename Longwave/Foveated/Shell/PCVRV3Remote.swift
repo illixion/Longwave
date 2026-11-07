@@ -72,6 +72,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var connection: NWConnection?
     private var timer: NativeV3Timer?
     private var session: TransportSession?
+    private var gazeNegotiated = false
+    private var needsTimedKeyFrame = true
     private var receiver = VideoStreamReceiver(streamID: PCVRProfile.streamID)
     private var receiverDue: UInt64 = 0
     private var pendingFormats: [FormatDescription] = []
@@ -154,6 +156,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         receiver = VideoStreamReceiver(streamID: PCVRProfile.streamID)
         pendingFormats = []
         activeFormat = nil
+        needsTimedKeyFrame = true
         let connection = NWConnection(host: NWEndpoint.Host(target.host), port: port, using: NativeV3.parameters())
         self.connection = connection
         connection.stateUpdateHandler = { [weak self] state in
@@ -174,6 +177,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         connection = nil
         connector = nil
         session = nil
+        gazeNegotiated = false
     }
 
     /// The session ended or never started: try again shortly while running.
@@ -227,6 +231,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             lost("the PC's host doesn't offer PCVR")
             return
         }
+        gazeNegotiated = capabilities.contains(.gaze)
         var session = opened
         session.setPathCeiling(ack.maxUDPPayload, now: now)
         self.session = session
@@ -300,16 +305,34 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         guard activeFormat != nil else { return }
         guard let wirePose = frame.payload.sideData.renderPose else {
             counters.framesWithoutPose += 1
+            needsTimedKeyFrame = true
             return
         }
-        let now = NativeV3.now()
-        let renderPose = PCVRRenderPose(
-            poseSequence: wirePose.poseSequence,
-            spaceEpoch: wirePose.spaceEpoch,
-            displayTime: session?.clock.localTime(atRemote: wirePose.displayTime).map(Self.seconds) ?? Self.seconds(now),
-            eyes: PCVRStereo(left: Self.eyeView(wirePose.left), right: Self.eyeView(wirePose.right)))
+        guard let renderPose = Self.renderMetadata(wirePose, localTime: {
+            session?.clock.localTime(atRemote: $0)
+        }) else {
+            needsTimedKeyFrame = true
+            return
+        }
+        // Skipping an unsynchronised reference frame breaks its dependants.
+        // Resume on an IDR after clock sync, rather than decoding a P frame
+        // against the missing picture.
+        if needsTimedKeyFrame {
+            guard frame.flags.contains(.key) else { requestKeyFrame(); return }
+            needsTimedKeyFrame = false
+        }
         decoder.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
                        frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose)
+    }
+
+    /// A frame without a clock mapping cannot supply a truthful render time.
+    static func renderMetadata(_ wirePose: RenderPose?, localTime: (UInt64) -> UInt64?) -> PCVRRenderPose? {
+        guard let wirePose, let time = localTime(wirePose.displayTime) else { return nil }
+        return PCVRRenderPose(
+            poseSequence: wirePose.poseSequence,
+            spaceEpoch: wirePose.spaceEpoch,
+            displayTime: Self.seconds(time),
+            eyes: PCVRStereo(left: Self.eyeView(wirePose.left), right: Self.eyeView(wirePose.right)))
     }
 
     private func apply(_ format: FormatDescription) {
@@ -355,7 +378,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         }
         let pose = HeadPose(displayTime: displayTime, spaceEpoch: snapshot.spaceEpoch, head: Self.wirePose(snapshot.head),
                             leftEye: Self.wireEye(snapshot.eyes.left), rightEye: Self.wireEye(snapshot.eyes.right),
-                            presented: presented)
+                            presented: presented,
+                            gaze: snapshot.gaze.wireSample(now: Self.seconds(now), negotiated: gazeNegotiated) {
+                                clock.remoteTime(atLocal: Self.nanoseconds($0))
+                            })
         // Built first: the optional-chained mutating send holds `session`.
         let state = StateSnapshot(sequence: snapshot.sequence, hostTime: hostNow, payload: .headPose(pose))
         session?.send(state)

@@ -40,6 +40,12 @@ struct HostOptions {
     /// mesh displaced by it turns every codec block edge into a step in the
     /// world: at 6 Mbps walls tore along block boundaries (test scene, 2026-11-07).
     var depthMbps = 16
+    /// The depth picture's size: the render eye divided by this, per axis
+    /// (`PCVRProfile.depthDivisor` by default). Each silhouette in it is as
+    /// coarse as a texel, and the receiver's reprojection moves a texel's
+    /// pixels together, so at 16 a rim of background 16 render pixels wide
+    /// moves with every near shape (test scene, 2026-11-07).
+    var depthScale = PCVRProfile.depthDivisor
     /// Diagnostics: a directory the estimate's grids and output are written to.
     var depthDump: String?
 }
@@ -505,7 +511,7 @@ final class PCVRHost: @unchecked Sendable {
             }
         }
         guard let depthPass else { return nil }
-        let eye = PCVRProfile.depthEye(forRender: renderEye)
+        let eye = PCVRProfile.depthEye(forRender: renderEye, divisor: options.depthScale)
         let picture = PixelSize(width: eye.width * 2, height: eye.height)
         if depthTextures.first?.width != Int(picture.width) || depthTextures.first?.height != Int(picture.height) {
             depthTextures = try (0..<Self.depthTextureCount).map { _ in

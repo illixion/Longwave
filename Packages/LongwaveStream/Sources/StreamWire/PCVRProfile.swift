@@ -34,9 +34,13 @@ public enum PCVRProfile {
     public static let depthDivisor = 16
     public static let depthEncoding = DepthEncoding(kind: .inverseLinear, valueBits: 8)
 
-    /// One depth eye for a render eye: `depthDivisor` smaller, even sizes.
-    public static func depthEye(forRender eye: PixelSize) -> PixelSize {
-        func scaled(_ v: UInt16) -> UInt16 { UInt16(max(2, (Int(v) / depthDivisor + 1) & ~1)) }
+    /// One depth eye for a render eye: `divisor` (the default `depthDivisor`)
+    /// smaller, even sizes. A receiver reads the size from the pictures, so a
+    /// host may send finer depth; each silhouette in a depth picture is as
+    /// coarse as its texels, and reprojection moves that whole texel together.
+    public static func depthEye(forRender eye: PixelSize, divisor: Int = depthDivisor) -> PixelSize {
+        let divisor = max(divisor, 1)
+        func scaled(_ v: UInt16) -> UInt16 { UInt16(max(2, (Int(v) / divisor + 1) & ~1)) }
         return PixelSize(width: scaled(eye.width), height: scaled(eye.height))
     }
 

@@ -346,21 +346,33 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
                                 u.tangents.z - render.y * (u.tangents.z - u.tangents.w));
         float z = u.distance;
         if (u.flags & 2u) {
-            // The nearest of the four depth texels around the vertex: a near
-            // object's silhouette takes the vertices it touches, so its edge
-            // moves with it instead of being torn into the background behind
-            // it. Only those four: any wider, and one wrong near value drags
-            // more of the picture at the viewer (the 4x4 of the first cut,
-            // headset 2026-11-07, warped visibly).
-            float nearest = 0;
-            int2 base = int2(floor((u.depthRect.xy + render * u.depthRect.zw) * u.depthSize - 0.5));
+            // The four depth texels around the vertex, as inverse depth. Where
+            // they disagree by more than a few code values, the vertex is on an
+            // edge and takes the nearest: a near object's silhouette takes the
+            // vertices it touches, so its edge moves with it instead of being
+            // torn into the background behind it. Only those four: any wider,
+            // and one wrong near value drags more of the picture at the viewer
+            // (the 4x4 of the first cut, headset 2026-11-07, warped visibly).
+            // Elsewhere they are interpolated: a surface's depth arrives in
+            // 8-bit steps and with codec blocking, and taking the nearest made
+            // every step a tear in the wall once the eye moved (test scene with
+            // exact depth, 2026-11-07).
+            float2 position = (u.depthRect.xy + render * u.depthRect.zw) * u.depthSize - 0.5;
+            int2 base = int2(floor(position));
+            float2 f = position - float2(base);
             int2 low = int2(u.depthTexels.xy), high = int2(u.depthTexels.zw);
-            for (int dy = 0; dy <= 1; dy++) {
-                for (int dx = 0; dx <= 1; dx++) {
-                    uint2 p = uint2(clamp(base + int2(dx, dy), low, high));
-                    float value = saturate(depth.read(p).r * u.depthDecode.x + u.depthDecode.y);
-                    nearest = max(nearest, u.depthDecode.z + value * u.depthDecode.w);
-                }
+            float w[4];
+            for (int k = 0; k < 4; k++) {
+                uint2 p = uint2(clamp(base + int2(k & 1, k >> 1), low, high));
+                float value = saturate(depth.read(p).r * u.depthDecode.x + u.depthDecode.y);
+                w[k] = u.depthDecode.z + value * u.depthDecode.w;
+            }
+            float nearest = max(max(w[0], w[1]), max(w[2], w[3]));
+            float farthest = min(min(w[0], w[1]), min(w[2], w[3]));
+            // Four codes of the 8-bit picture, in inverse metres.
+            float edge = 4.0 / 255.0 * abs(u.depthDecode.x * u.depthDecode.w);
+            if (nearest - farthest <= edge) {
+                nearest = mix(mix(w[0], w[1], f.x), mix(w[2], w[3], f.x), f.y);
             }
             if (nearest * u.distance > 1) z = 1 / nearest;
         }

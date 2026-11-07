@@ -31,8 +31,10 @@ struct HostOptions {
     var foveation = FoveationMode.auto
     var warp = PCVRProfile.defaultWarp
     var depth = DepthMode.auto
-    /// The depth stream's encoder rate; its picture is small and smooth.
-    var depthMbps = 6
+    /// The depth stream's encoder rate. Its picture is small and smooth, but a
+    /// mesh displaced by it turns every codec block edge into a step in the
+    /// world: at 6 Mbps walls tore along block boundaries (test scene, 2026-11-07).
+    var depthMbps = 16
     /// Diagnostics: a directory the estimate's grids and output are written to.
     var depthDump: String?
 }

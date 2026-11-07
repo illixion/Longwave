@@ -195,6 +195,34 @@ final class PCVREyeMeshTests: XCTestCase {
         }
     }
 
+    /// A surface whose depth steps by a code value between texels (8-bit
+    /// quantisation, codec noise) is interpolated, not taken at its nearest
+    /// texel: the nearest turned every step into a tear once the eye moved.
+    func testDepthStepsSmallerThanAnEdgeAreInterpolated() throws {
+        let decoded = try frame(wire: Self.renderEye, foveation: nil, pose: .identity)
+        let width = 32, height = 16
+        let map = PCVRDepthMap(texture: try texture(.r8Unorm, width: 2 * width, height: height), near: 0.25, far: .infinity)
+        // Columns alternate between codes 32 and 33 (about 1.99 and 1.93 m).
+        var pixels = [UInt8](repeating: 0, count: 2 * width * height)
+        for y in 0..<height { for x in 0..<(2 * width) { pixels[y * 2 * width + x] = x % 2 == 0 ? 32 : 33 } }
+        pixels.withUnsafeBytes {
+            map.texture.replace(region: MTLRegionMake2D(0, 0, 2 * width, height), mipmapLevel: 0,
+                                withBytes: $0.baseAddress!, bytesPerRow: 2 * width)
+        }
+        let grid = PCVREyeMesh.Grid(columns: 32, rows: 16)
+        let eye = PCVREyeMeshBuilder.Eye(frame: decoded, eye: 0, grid: grid, distance: 50, flipV: true)
+        let out = try run(eye, eyeIndex: 0, depth: map, grid: grid)
+        let origin = decoded.renderPose.eyes[0].pose.position
+        // Inner vertices sit on texel corners, halfway between a 32 and a 33.
+        let expected = map.depth(atValue: 32.5 / 255)
+        for j in 1..<grid.rows {
+            for i in 1..<grid.columns {
+                let z = origin.z - out[(j * (grid.columns + 1) + i) * 5 + 2]
+                XCTAssertEqual(z, expected, accuracy: 1e-3, "vertex \(i),\(j)")
+            }
+        }
+    }
+
     /// With a skirt the outermost ring of lines lies past the frustum and reads
     /// the edge texels; the lines inside are those of a grid two cells smaller.
     func testSkirtSmearsTheEdgesPastTheFrustum() throws {

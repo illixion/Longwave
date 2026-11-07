@@ -14,7 +14,13 @@ nonisolated struct PCVRShellRenderOptions: Equatable, Sendable {
     /// latency (`PCVRHeadPoseProducer.predictionHorizon`) instead of sending the
     /// pose for the next drawable.
     var predictsToLatency = true
-    /// The readiness latency the prediction horizon takes (`PCVRHeadPoseProducer.readinessPercentile`).
+    /// The readiness latency the prediction horizon takes
+    /// (`PCVRHeadPoseProducer.readinessPercentile`). A trade under Wi-Fi
+    /// jitter (headset, 2026-11-08): at 0.9 the tail pinned the horizon at its
+    /// 100 ms cap, and the eye's distance from the render pose, which the
+    /// warp's uncovered strips grow with, grows with it; at 0.5 every frame
+    /// later than the median is superseded by the next, a repeat and a skip
+    /// (23% of frames at 60 Hz).
     var readinessPercentile = 0.5
     var depthWarp = PCVRShellDepthWarp()
 }
@@ -247,6 +253,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
         frame.startSubmission()
         let options = self.options.withLock { $0 }
+        poseProducer.readinessPercentile = options.readinessPercentile
         let presentLayerTime = primary.frameTiming.presentationTime.pcvrSeconds
         let presentTime = presentLayerTime - clockOffset
         let tracking = worldTracking.state

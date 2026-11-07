@@ -40,7 +40,7 @@ enum PCVRShellEndpoints {
                         .number("planeDistance", "metres ahead a frame without depth is taken to lie (default 50)",
                                 default: 0, range: 0...1000),
                         .boolean("predictsToLatency", "predict the uplink pose by the measured pipeline latency (default on)"),
-                        .number("percentile", "which readiness latency the horizon takes, 0-1 (default 0.5; on open)", default: -1, range: -1...1),
+                        .number("percentile", "which readiness latency the horizon takes, 0-1 (default 0.5)", default: -1, range: -1...1),
                      ]) { args in
                 guard let session = PCVRShellSession.current else {
                     throw DebugError.unavailable("no Shell A session", hint: "a FOVEATED_ENABLED visionOS build makes one at launch")

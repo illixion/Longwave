@@ -260,7 +260,15 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         // without one it would be drawn head-locked, which in VR is worse than black.
         // And only a frame rendered in the display pose's space epoch: across a
         // recentre its pose names a different place.
-        let presented = head == nil ? nil : mailbox.takeForPresentation(spaceEpoch: poseProducer.spaceEpoch)
+        // A frame that arrived since the last drawable could at the earliest
+        // be shown at this one.
+        for arrival in mailbox.drainArrivals() {
+            poseProducer.recordReadiness(poseSequence: arrival.poseSequence, readyDisplayTime: presentTime)
+        }
+        let period = (mailbox.pacing?.periodMs ?? 1000.0 / 90) / 1000
+        let presented = head == nil ? nil
+            : mailbox.takeForPresentation(spaceEpoch: poseProducer.spaceEpoch, now: CACurrentMediaTime(),
+                                          until: presentTime + period / 2)
         if let presented, presented.isNew {
             let poseToPresent = poseProducer.recordPresentation(
                 frameNumber: presented.frame.frameNumber,

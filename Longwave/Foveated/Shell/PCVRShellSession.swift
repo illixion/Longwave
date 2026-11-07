@@ -85,8 +85,15 @@ final class PCVRShellSession {
     /// Called by the space's `CompositorLayer` once its layer renderer exists.
     func start(layerRenderer: LayerRenderer) {
         stop()
-        let mailbox = PCVRFrameMailbox()
+        // Each frame in the display slot it was rendered for: latest-wins
+        // turned a source a few fps off the display rate into a repeat and a
+        // skip every half second, a stutter in anything animated (headset,
+        // 2026-11-08). The warp still shows every frame at the slot's own pose.
+        let mailbox = PCVRFrameMailbox(playout: .timed)
         let poseProducer = PCVRHeadPoseProducer(gazeSource: gazeSource)
+        // Held to their times, frames would raise a horizon measured from
+        // presentation without end: it is measured from readiness instead.
+        poseProducer.horizonSource = .readiness
         let renderer: PCVRShellRenderer
         do {
             renderer = try PCVRShellRenderer(layerRenderer: layerRenderer, mailbox: mailbox, poseProducer: poseProducer)

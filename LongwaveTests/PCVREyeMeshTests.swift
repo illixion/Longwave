@@ -175,11 +175,11 @@ final class PCVREyeMeshTests: XCTestCase {
                         continue
                     }
                     // Vertex (i, j) sits on texel corner (i, j); it reads the
-                    // texels two either side of it, i-2...i+1, so it is near when
-                    // any of them is in the block.
+                    // four texels around it, i-1...i, so it is near when any
+                    // of them is in the block.
                     let ru = eye.columns.coordinate(i), rv = eye.rows.coordinate(j)
-                    let touchesBlock = (i - 2...i + 1).contains { (8..<16).contains($0) }
-                        && (j - 2...j + 1).contains { (4..<12).contains($0) }
+                    let touchesBlock = (i - 1...i).contains { (8..<16).contains($0) }
+                        && (j - 1...j).contains { (4..<12).contains($0) }
                     let expected = map.depth(atValue: Float(value(atDepth: touchesBlock ? 0.5 : 2)) / 255)
                     XCTAssertEqual(z, expected, accuracy: 1e-3, "vertex \(i),\(j)")
                     // On its own ray: the tangent is unchanged by depth.

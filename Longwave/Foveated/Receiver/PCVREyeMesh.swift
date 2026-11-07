@@ -309,15 +309,17 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
                                 u.tangents.z - render.y * (u.tangents.z - u.tangents.w));
         float z = u.distance;
         if (u.flags & 2u) {
-            // The nearest of the 4x4 depth texels around the vertex (two on each
-            // side of it): a near object's silhouette takes the cells it touches,
-            // so its edge moves with it instead of being torn into the
-            // background behind it.
+            // The nearest of the four depth texels around the vertex: a near
+            // object's silhouette takes the vertices it touches, so its edge
+            // moves with it instead of being torn into the background behind
+            // it. Only those four: any wider, and one wrong near value drags
+            // more of the picture at the viewer (the 4x4 of the first cut,
+            // headset 2026-11-07, warped visibly).
             float nearest = 0;
             int2 base = int2(floor((u.depthRect.xy + render * u.depthRect.zw) * u.depthSize - 0.5));
             int2 low = int2(u.depthTexels.xy), high = int2(u.depthTexels.zw);
-            for (int dy = -1; dy <= 2; dy++) {
-                for (int dx = -1; dx <= 2; dx++) {
+            for (int dy = 0; dy <= 1; dy++) {
+                for (int dx = 0; dx <= 1; dx++) {
                     uint2 p = uint2(clamp(base + int2(dx, dy), low, high));
                     float value = saturate(depth.read(p).r * u.depthDecode.x + u.depthDecode.y);
                     nearest = max(nearest, u.depthDecode.z + value * u.depthDecode.w);

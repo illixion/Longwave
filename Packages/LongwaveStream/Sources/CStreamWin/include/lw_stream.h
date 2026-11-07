@@ -282,6 +282,12 @@ lw_status lw_depth_apply(lw_depth *depth, void *source, void *destination, const
 float lw_depth_gpu_milliseconds(lw_depth *depth);
 /* The same apply's passes: luminance, matching (0 for linear), output. */
 void lw_depth_pass_milliseconds(lw_depth *depth, float out[3]);
+/* Diagnostics: the last stereo estimate's luminance grid (which 0), raw grid
+ * disparity (1) or cleaned disparity (2; -1 = unknown), both eyes side by
+ * side, waiting for the GPU.
+ * With out NULL or capacity too small, only the size is written. */
+lw_status lw_depth_debug_read(lw_depth *depth, int32_t which, float *out, int32_t capacity, int32_t *width,
+                              int32_t *height);
 void lw_depth_release(lw_depth *depth);
 
 /* ---- Textures --------------------------------------------------------------

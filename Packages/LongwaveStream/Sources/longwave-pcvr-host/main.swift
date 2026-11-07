@@ -72,6 +72,7 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 exit(2)
             }
             options.depthMbps = mbps
+        case "--depth-dump": options.depthDump = value(argument)
         default:
             print("unknown argument \(argument)")
             exit(2)

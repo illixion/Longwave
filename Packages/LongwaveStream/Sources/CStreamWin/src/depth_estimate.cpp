@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -132,8 +133,24 @@ void cs_match(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         total += cost;
         previous = cost;
     }
-    // No clear winner (repeating or faint texture): unknown rather than a guess.
-    if (bestD < 0 || best > 0.8 * total / maxD) { disparityOut[target] = -1; return; }
+    // No clear winner (faint texture): unknown rather than a guess.
+    if (bestD < 0 || best > 0.6 * total / maxD) { disparityOut[target] = -1; return; }
+    // Nor a second, distinct minimum nearly as good (repeating texture, an edge
+    // along the row): the costs again, away from the winner.
+    float rival = 1e30;
+    for (int d2 = 0; d2 < maxD; d2++) {
+        if (abs(d2 - bestD) <= 2) continue;
+        int shift2 = eye == 0 ? (maxD - 1) - d2 : d2;
+        float cost2 = 0;
+        [unroll] for (int r3 = 0; r3 < WINDOW; r3++) {
+            [unroll] for (int c3 = 0; c3 < WINDOW; c3++) {
+                float b2 = other[r3][t + c3 + shift2];
+                cost2 += b2 < 0 ? 1 : abs(own[r3][t + c3] - b2);
+            }
+        }
+        rival = min(rival, cost2);
+    }
+    if (rival < 1.2 * best + 0.02) { disparityOut[target] = -1; return; }
     float sub = 0;
     if (bestD > 0 && bestD < maxD - 1) {
         float curvature = before - 2 * best + after;
@@ -148,21 +165,149 @@ float4 vs_main(uint id : SV_VertexID) : SV_Position {
     return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 
-// ---- 3. resolve; sizes: depth eye w, h, grid w, h; extra: v per grid texel of disparity, tolerance, fill radius
+// ---- 3. cleaning, both eyes per dispatch; info: grid w, h; extra.y: left-right tolerance
 Texture2D<float> disparityIn : register(t0);
+RWTexture2D<float> cleanOut : register(u0);
 
-float disparityAt(int eye, int gx, int gy, int gw) {
-    return (gx < 0 || gx >= gw) ? -1 : disparityIn.Load(int3(eye * gw + gx, gy, 0));
+float disparityAt(int eye, int gx, int gy, int gw, int gh) {
+    return (gx < 0 || gx >= gw || gy < 0 || gy >= gh) ? -1 : disparityIn.Load(int3(eye * gw + gx, gy, 0));
 }
 
 // The other eye, at the texel this disparity points to, agrees.
-float agreed(int eye, int gx, int gy, int gw) {
-    float d = disparityAt(eye, gx, gy, gw);
+float agreed(int eye, int gx, int gy, int gw, int gh) {
+    float d = disparityAt(eye, gx, gy, gw, gh);
     if (d < 0) return -1;
     int partner = eye == 0 ? gx - (int)round(d) : gx + (int)round(d);
-    float e = disparityAt(1 - eye, partner, gy, gw);
+    float e = disparityAt(1 - eye, partner, gy, gw, gh);
     return (e >= 0 && abs(e - d) <= extra.y) ? d : -1;
 }
+
+// Keeps a disparity only if it agrees with the other eye and with the median
+// of the agreeing ones around it (at least three of them): an isolated match
+// is far more often a mistake than a lone object, and one wrong near value
+// pulls a whole mesh vertex at the viewer.
+[numthreads(8, 8, 1)]
+void cs_clean(uint3 id : SV_DispatchThreadID) {
+    int gw = info.x, gh = info.y;
+    if ((int)id.x >= 2 * gw || (int)id.y >= gh) return;
+    int eye = (int)id.x >= gw ? 1 : 0;
+    int gx = (int)id.x - eye * gw, gy = (int)id.y;
+    float d = agreed(eye, gx, gy, gw, gh);
+    float v[9];
+    int n = 0;
+    [unroll] for (int j = -1; j <= 1; j++) {
+        [unroll] for (int i = -1; i <= 1; i++) {
+            float e = agreed(eye, gx + i, gy + j, gw, gh);
+            if (e >= 0) { v[n] = e; n++; }
+        }
+    }
+    float result = -1;
+    if (d >= 0 && n >= 3) {
+        // Insertion sort of at most nine.
+        for (int a = 1; a < n; a++) {
+            float key = v[a];
+            int b = a - 1;
+            while (b >= 0 && v[b] > key) { v[b + 1] = v[b]; b--; }
+            v[b + 1] = key;
+        }
+        float median = v[n / 2];
+        if (abs(d - median) <= 1.5) result = median;
+    }
+    cleanOut[id.xy] = result;
+}
+
+// ---- 4. hole filling by push-pull: a pyramid of (weighted disparity sum,
+// weight) per eye, each level half the one below (rounded up, eyes kept
+// apart), then back down, each hole taking the smooth value from above. Flat
+// surfaces, where nothing can match and nothing can show, get a smooth
+// surface spanning their edges; a lone surviving value is diluted, not spread.
+// info: level width per eye, height, parent width per eye, parent height.
+Texture2D<float2> levelIn : register(t0);
+RWTexture2D<float2> levelOut : register(u0);
+Texture2D<float> cleanForPyramid : register(t0);
+
+// Level 0 from the cleaned disparities: (d, 1) where known, (0, 0) not.
+[numthreads(8, 8, 1)]
+void cs_seed(uint3 id : SV_DispatchThreadID) {
+    int w = info.x, h = info.y;
+    if ((int)id.x >= 2 * w || (int)id.y >= h) return;
+    float d = cleanForPyramid.Load(int3(id.xy, 0));
+    levelOut[id.xy] = d >= 0 ? float2(d, 1) : float2(0, 0);
+}
+
+// One level up: dispatched over the parent; info = child w, h, parent w, h.
+[numthreads(8, 8, 1)]
+void cs_pull(uint3 id : SV_DispatchThreadID) {
+    int cw = info.x, ch = info.y, pw = info.z, ph = info.w;
+    if ((int)id.x >= 2 * pw || (int)id.y >= ph) return;
+    int eye = (int)id.x >= pw ? 1 : 0;
+    int px = (int)id.x - eye * pw, py = (int)id.y;
+    float sum = 0, weight = 0;
+    [unroll] for (int j = 0; j < 2; j++) {
+        [unroll] for (int i = 0; i < 2; i++) {
+            int cx = 2 * px + i, cy = 2 * py + j;
+            if (cx >= cw || cy >= ch) continue;
+            float2 c = levelIn.Load(int3(eye * cw + cx, cy, 0));
+            sum += c.x * c.y;
+            weight += c.y;
+        }
+    }
+    levelOut[id.xy] = weight > 0 ? float2(sum / weight, min(weight, 1)) : float2(0, 0);
+}
+
+// One level down: dispatched over the child; info = child w, h, parent w, h.
+// Reads the child's pulled level (t0) and the parent's filled one (t1, the
+// pulled one at the top), writes the child's filled level.
+Texture2D<float2> parentIn : register(t1);
+
+[numthreads(8, 8, 1)]
+void cs_push(uint3 id : SV_DispatchThreadID) {
+    int cw = info.x, ch = info.y, pw = info.z, ph = info.w;
+    if ((int)id.x >= 2 * cw || (int)id.y >= ch) return;
+    int eye = (int)id.x >= cw ? 1 : 0;
+    int cx = (int)id.x - eye * cw, cy = (int)id.y;
+    // Bilinear from the parent, inside this eye's half.
+    float2 p = (float2(cx, cy) + 0.5) * 0.5 - 0.5;
+    int2 p0 = int2(floor(p));
+    float2 f = p - p0;
+    float up = 0, upWeight = 0;
+    [unroll] for (int j = 0; j < 2; j++) {
+        [unroll] for (int i = 0; i < 2; i++) {
+            int2 q = clamp(p0 + int2(i, j), int2(0, 0), int2(pw - 1, ph - 1));
+            float2 v = parentIn.Load(int3(eye * pw + q.x, q.y, 0));
+            float w = (i == 0 ? 1 - f.x : f.x) * (j == 0 ? 1 - f.y : f.y) * v.y;
+            up += v.x * w;
+            upWeight += w;
+        }
+    }
+    up = upWeight > 0 ? up / upWeight : 0;
+    float2 own = levelIn.Load(int3(id.xy, 0));
+    float known = saturate(own.y);
+    levelOut[id.xy] = float2(known * own.x + (1 - known) * up, upWeight > 0 || known > 0 ? 1 : 0);
+}
+
+// ---- 5. temporal: each grid texel eases toward the new estimate while it
+// stays close to the last one, and jumps when it doesn't (an edge moved, or
+// the scene changed). The grid moves with the head by a texel or two a frame
+// on a quick turn, well inside the threshold, so lag stays a frame or two.
+// info: grid w, h; extra: blend, threshold (texels), threshold per texel of disparity.
+Texture2D<float2> filledForHistory : register(t0);
+Texture2D<float> historyIn : register(t1);
+RWTexture2D<float> historyOut : register(u0);
+
+[numthreads(8, 8, 1)]
+void cs_temporal(uint3 id : SV_DispatchThreadID) {
+    int gw = info.x, gh = info.y;
+    if ((int)id.x >= 2 * gw || (int)id.y >= gh) return;
+    float d = filledForHistory.Load(int3(id.xy, 0)).x;
+    float old = historyIn.Load(int3(id.xy, 0));
+    float result = d;
+    if (old >= 0 && abs(d - old) <= extra.y + extra.z * d) result = old + extra.x * (d - old);
+    historyOut[id.xy] = result;
+}
+
+// ---- 6. resolve; sizes: depth eye w, h, grid w, h; extra: v per grid texel of disparity
+Texture2D<float> filledIn : register(t0);
 
 float4 ps_resolve(float4 position : SV_Position) : SV_Target {
     int eye = position.x >= sizes.x ? 1 : 0;
@@ -172,16 +317,7 @@ float4 ps_resolve(float4 position : SV_Position) : SV_Target {
     int gw = (int)sizes.z, gh = (int)sizes.w;
     int gx = clamp((int)floor((tx - grid.x) / grid.y), 0, gw - 1);
     int gy = clamp((int)floor((grid.z - ty) / grid.w), 0, gh - 1);
-    float d = agreed(eye, gx, gy, gw);
-    if (d < 0) {
-        float left = -1, right = -1;
-        int radius = (int)extra.z;
-        for (int k = 1; k <= radius && (left < 0 || right < 0); k++) {
-            if (left < 0) left = agreed(eye, gx - k, gy, gw);
-            if (right < 0) right = agreed(eye, gx + k, gy, gw);
-        }
-        d = (left >= 0 && right >= 0) ? min(left, right) : max(max(left, right), 0);
-    }
+    float d = filledIn.Load(int3(eye * gw + gx, gy, 0));
     float v = saturate(d * extra.x);
     return float4(v, v, v, 1);
 }
@@ -244,7 +380,21 @@ struct lw_depth {
     winrt::com_ptr<ID3D11Device> device;
     winrt::com_ptr<ID3D11DeviceContext> context;
     winrt::com_ptr<ID3D11Multithread> multithread;
-    winrt::com_ptr<ID3D11ComputeShader> luma, match;
+    winrt::com_ptr<ID3D11ComputeShader> luma, match, clean, seed, pull, push, temporal;
+    // The smoothed grid, ping-ponged: one is last frame's, the other this one's.
+    winrt::com_ptr<ID3D11Texture2D> history_texture[2];
+    winrt::com_ptr<ID3D11ShaderResourceView> history_srv[2];
+    winrt::com_ptr<ID3D11UnorderedAccessView> history_uav[2];
+    int history_current = 0;
+    bool history_valid = false;
+    // The push-pull pyramid: level 0 is the grid; RG32F, both eyes side by side.
+    struct Level {
+        int width = 0, height = 0; // per eye
+        winrt::com_ptr<ID3D11Texture2D> texture, filled;   // pulled (sum, weight); filled (value, weight)
+        winrt::com_ptr<ID3D11ShaderResourceView> srv, filled_srv;
+        winrt::com_ptr<ID3D11UnorderedAccessView> uav, filled_uav;
+    };
+    std::vector<Level> levels;
     winrt::com_ptr<ID3D11VertexShader> vertex;
     winrt::com_ptr<ID3D11PixelShader> resolve, linear;
     winrt::com_ptr<ID3D11Buffer> constants;
@@ -252,9 +402,9 @@ struct lw_depth {
     winrt::com_ptr<ID3D11RasterizerState> rasterizer;
     // The grid's intermediates, remade when the grid's size changes.
     int grid_width = 0, grid_height = 0;
-    winrt::com_ptr<ID3D11Texture2D> luma_texture, disparity_texture;
-    winrt::com_ptr<ID3D11ShaderResourceView> luma_srv, disparity_srv;
-    winrt::com_ptr<ID3D11UnorderedAccessView> luma_uav, disparity_uav;
+    winrt::com_ptr<ID3D11Texture2D> luma_texture, disparity_texture, clean_texture;
+    winrt::com_ptr<ID3D11ShaderResourceView> luma_srv, disparity_srv, clean_srv;
+    winrt::com_ptr<ID3D11UnorderedAccessView> luma_uav, disparity_uav, clean_uav;
     // GPU time per apply: a few frames of timestamp queries in flight, read
     // back without waiting once the GPU has passed them.
     struct Timing {
@@ -339,6 +489,36 @@ struct lw_depth {
         };
         make(luma_texture, luma_srv, luma_uav);
         make(disparity_texture, disparity_srv, disparity_uav);
+        make(clean_texture, clean_srv, clean_uav);
+        make(history_texture[0], history_srv[0], history_uav[0]);
+        make(history_texture[1], history_srv[1], history_uav[1]);
+        history_valid = false;
+        levels.clear();
+        int w = width, h = height;
+        while (true) {
+            Level level;
+            level.width = w;
+            level.height = h;
+            D3D11_TEXTURE2D_DESC desc{};
+            desc.Width = static_cast<UINT>(2 * w);
+            desc.Height = static_cast<UINT>(h);
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, level.texture.put()));
+            winrt::check_hresult(device->CreateShaderResourceView(level.texture.get(), nullptr, level.srv.put()));
+            winrt::check_hresult(device->CreateUnorderedAccessView(level.texture.get(), nullptr, level.uav.put()));
+            winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, level.filled.put()));
+            winrt::check_hresult(device->CreateShaderResourceView(level.filled.get(), nullptr, level.filled_srv.put()));
+            winrt::check_hresult(device->CreateUnorderedAccessView(level.filled.get(), nullptr, level.filled_uav.put()));
+            levels.push_back(std::move(level));
+            if (w == 1 && h == 1) break;
+            w = (w + 1) / 2;
+            h = (h + 1) / 2;
+        }
         grid_width = width;
         grid_height = height;
     }
@@ -361,6 +541,11 @@ extern "C" lw_status lw_depth_create(lw_device *device, lw_depth **out) {
         depth->multithread = device->device.as<ID3D11Multithread>();
         auto luma = compile("cs_luma", "cs_5_0");
         auto match = compile("cs_match", "cs_5_0");
+        auto clean = compile("cs_clean", "cs_5_0");
+        auto seed = compile("cs_seed", "cs_5_0");
+        auto pull = compile("cs_pull", "cs_5_0");
+        auto push = compile("cs_push", "cs_5_0");
+        auto temporal = compile("cs_temporal", "cs_5_0");
         auto vs = compile("vs_main", "vs_5_0");
         auto resolve = compile("ps_resolve", "ps_5_0");
         auto linear = compile("ps_linear", "ps_5_0");
@@ -369,6 +554,16 @@ extern "C" lw_status lw_depth_create(lw_device *device, lw_depth **out) {
                                                     depth->luma.put()));
         winrt::check_hresult(d->CreateComputeShader(match->GetBufferPointer(), match->GetBufferSize(), nullptr,
                                                     depth->match.put()));
+        winrt::check_hresult(d->CreateComputeShader(clean->GetBufferPointer(), clean->GetBufferSize(), nullptr,
+                                                    depth->clean.put()));
+        winrt::check_hresult(d->CreateComputeShader(seed->GetBufferPointer(), seed->GetBufferSize(), nullptr,
+                                                    depth->seed.put()));
+        winrt::check_hresult(d->CreateComputeShader(pull->GetBufferPointer(), pull->GetBufferSize(), nullptr,
+                                                    depth->pull.put()));
+        winrt::check_hresult(d->CreateComputeShader(push->GetBufferPointer(), push->GetBufferSize(), nullptr,
+                                                    depth->push.put()));
+        winrt::check_hresult(d->CreateComputeShader(temporal->GetBufferPointer(), temporal->GetBufferSize(), nullptr,
+                                                    depth->temporal.put()));
         winrt::check_hresult(d->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr,
                                                    depth->vertex.put()));
         winrt::check_hresult(d->CreatePixelShader(resolve->GetBufferPointer(), resolve->GetBufferSize(), nullptr,
@@ -499,6 +694,92 @@ extern "C" lw_status lw_depth_apply(lw_depth *depth, void *source, void *destina
             }
             ctx->CSSetShaderResources(0, 1, null_srv);
             ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+
+            // 3. cleaning: left-right check and median
+            c.extra[1] = 1.5f; // left-right agreement, grid texels
+            depth->upload(ctx, c);
+            ID3D11ShaderResourceView *disparityIn[] = {depth->disparity_srv.get()};
+            ID3D11UnorderedAccessView *clean[] = {depth->clean_uav.get()};
+            ctx->CSSetShader(depth->clean.get(), nullptr, 0);
+            ctx->CSSetShaderResources(0, 1, disparityIn);
+            ctx->CSSetUnorderedAccessViews(0, 1, clean, nullptr);
+            ctx->Dispatch(static_cast<UINT>((2 * grid_width + 7) / 8), static_cast<UINT>((grid_height + 7) / 8), 1);
+            ctx->CSSetShaderResources(0, 1, null_srv);
+            ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+
+            // 4. push-pull: seed level 0, pull up to 1x1, push back down
+            auto dispatch_over = [&](const lw_depth::Level &l) {
+                ctx->Dispatch(static_cast<UINT>((2 * l.width + 7) / 8), static_cast<UINT>((l.height + 7) / 8), 1);
+            };
+            auto &levels = depth->levels;
+            c.info[0] = levels[0].width;
+            c.info[1] = levels[0].height;
+            depth->upload(ctx, c);
+            ID3D11ShaderResourceView *cleanIn[] = {depth->clean_srv.get()};
+            ID3D11UnorderedAccessView *level0[] = {levels[0].uav.get()};
+            ctx->CSSetShader(depth->seed.get(), nullptr, 0);
+            ctx->CSSetShaderResources(0, 1, cleanIn);
+            ctx->CSSetUnorderedAccessViews(0, 1, level0, nullptr);
+            dispatch_over(levels[0]);
+            ctx->CSSetShaderResources(0, 1, null_srv);
+            ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+            ctx->CSSetShader(depth->pull.get(), nullptr, 0);
+            for (size_t l = 0; l + 1 < levels.size(); l++) {
+                c.info[0] = levels[l].width;
+                c.info[1] = levels[l].height;
+                c.info[2] = levels[l + 1].width;
+                c.info[3] = levels[l + 1].height;
+                depth->upload(ctx, c);
+                ID3D11ShaderResourceView *child[] = {levels[l].srv.get()};
+                ID3D11UnorderedAccessView *parent[] = {levels[l + 1].uav.get()};
+                ctx->CSSetShaderResources(0, 1, child);
+                ctx->CSSetUnorderedAccessViews(0, 1, parent, nullptr);
+                dispatch_over(levels[l + 1]);
+                ctx->CSSetShaderResources(0, 1, null_srv);
+                ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+            }
+            ctx->CSSetShader(depth->push.get(), nullptr, 0);
+            for (size_t l = levels.size() - 1; l-- > 0;) {
+                c.info[0] = levels[l].width;
+                c.info[1] = levels[l].height;
+                c.info[2] = levels[l + 1].width;
+                c.info[3] = levels[l + 1].height;
+                depth->upload(ctx, c);
+                const bool top = l + 2 == levels.size();
+                ID3D11ShaderResourceView *parent[] = {levels[l].srv.get(),
+                                                      top ? levels[l + 1].srv.get() : levels[l + 1].filled_srv.get()};
+                ID3D11UnorderedAccessView *child[] = {levels[l].filled_uav.get()};
+                ctx->CSSetShaderResources(0, 2, parent);
+                ctx->CSSetUnorderedAccessViews(0, 1, child, nullptr);
+                dispatch_over(levels[l]);
+                ID3D11ShaderResourceView *none[] = {nullptr, nullptr};
+                ctx->CSSetShaderResources(0, 2, none);
+                ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+            }
+
+            // 5. temporal smoothing into this frame's history
+            const int previous = depth->history_current, current = 1 - previous;
+            if (!depth->history_valid) {
+                const float unknown[4] = {-1, -1, -1, -1};
+                ctx->ClearUnorderedAccessViewFloat(depth->history_uav[previous].get(), unknown);
+                depth->history_valid = true;
+            }
+            c.info[0] = grid_width;
+            c.info[1] = grid_height;
+            c.extra[0] = 0.4f;  // blend toward the new estimate
+            c.extra[1] = 1.0f;  // threshold, grid texels of disparity
+            c.extra[2] = 0.1f;  // plus this much per texel of disparity
+            depth->upload(ctx, c);
+            ID3D11ShaderResourceView *histories[] = {levels[0].filled_srv.get(), depth->history_srv[previous].get()};
+            ID3D11UnorderedAccessView *history[] = {depth->history_uav[current].get()};
+            ctx->CSSetShader(depth->temporal.get(), nullptr, 0);
+            ctx->CSSetShaderResources(0, 2, histories);
+            ctx->CSSetUnorderedAccessViews(0, 1, history, nullptr);
+            ctx->Dispatch(static_cast<UINT>((2 * grid_width + 7) / 8), static_cast<UINT>((grid_height + 7) / 8), 1);
+            ID3D11ShaderResourceView *none2[] = {nullptr, nullptr};
+            ctx->CSSetShaderResources(0, 2, none2);
+            ctx->CSSetUnorderedAccessViews(0, 1, null_uav, nullptr);
+            depth->history_current = current;
             ctx->CSSetShader(nullptr, nullptr, 0);
             if (timing) {
                 ctx->End(timing->match_done.get());
@@ -509,11 +790,10 @@ extern "C" lw_status lw_depth_apply(lw_depth *depth, void *source, void *destina
             c.sizes[0] = static_cast<float>(p.depth_eye_width);
             c.sizes[1] = static_cast<float>(p.depth_eye_height);
             c.extra[0] = dx * p.near_depth / p.baseline;
-            c.extra[1] = 1.5f; // left-right agreement, grid texels
-            c.extra[2] = 32;   // how far along a row a hole is filled from
+            c.extra[2] = 0;
             c.extra[3] = 0;
             output = depth->resolve.get();
-            output_input = depth->disparity_srv.get();
+            output_input = depth->history_srv[depth->history_current].get();
         } else {
             if (timing) timing->stereo = false;
             c.sizes[0] = static_cast<float>(p.depth_eye_width);
@@ -557,6 +837,43 @@ extern "C" void lw_depth_pass_milliseconds(lw_depth *depth, float out[3]) {
     depth->collect(depth->context.get());
     depth->multithread->Leave();
     std::memcpy(out, depth->pass_milliseconds, sizeof depth->pass_milliseconds);
+}
+
+extern "C" lw_status lw_depth_debug_read(lw_depth *depth, int32_t which, float *out, int32_t capacity, int32_t *width,
+                                         int32_t *height) {
+    if (!depth || !width || !height) return lw::fail(LW_E_INVALID_ARG, "lw_depth_debug_read: NULL argument");
+    return lw::guarded("lw_depth_debug_read", [&]() -> lw_status {
+        ID3D11Texture2D *texture = which == 0   ? depth->luma_texture.get()
+                                   : which == 1 ? depth->disparity_texture.get()
+                                                : depth->clean_texture.get();
+        if (!texture) return lw::fail(LW_E_INVALID_ARG, "lw_depth_debug_read: no stereo estimate yet");
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        *width = static_cast<int32_t>(desc.Width);
+        *height = static_cast<int32_t>(desc.Height);
+        if (!out || capacity < static_cast<int32_t>(desc.Width * desc.Height)) return LW_OK; // size query
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.MiscFlags = 0;
+        winrt::com_ptr<ID3D11Texture2D> staging;
+        winrt::check_hresult(depth->device->CreateTexture2D(&desc, nullptr, staging.put()));
+        depth->multithread->Enter();
+        struct Leave {
+            ID3D11Multithread *m;
+            ~Leave() { m->Leave(); }
+        } leave{depth->multithread.get()};
+        depth->context->CopyResource(staging.get(), texture);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        winrt::check_hresult(depth->context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped));
+        for (UINT y = 0; y < desc.Height; y++) {
+            std::memcpy(out + static_cast<size_t>(y) * desc.Width,
+                        static_cast<const uint8_t *>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
+                        static_cast<size_t>(desc.Width) * sizeof(float));
+        }
+        depth->context->Unmap(staging.get(), 0);
+        return LW_OK;
+    });
 }
 
 extern "C" void lw_depth_release(lw_depth *depth) { delete depth; }

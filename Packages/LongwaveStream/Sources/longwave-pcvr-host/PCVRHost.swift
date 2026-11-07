@@ -29,6 +29,8 @@ struct HostOptions {
     var depth = DepthMode.auto
     /// The depth stream's encoder rate; its picture is small and smooth.
     var depthMbps = 6
+    /// Diagnostics: a directory the estimate's grids and output are written to.
+    var depthDump: String?
 }
 
 /// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
@@ -42,8 +44,10 @@ enum DepthMode: String {
 }
 
 /// The nearest a stereo estimate looks for: closer than this, a vertex stays
-/// at this depth. Sets the disparity search range per frame.
-private let stereoNearest: Float = 0.15
+/// at this depth. Sets the disparity search range per frame. Not nearer: a
+/// false near match does far more harm than a flat picture (the error grows
+/// with 1/z), and little in a game comes closer than a hand's length.
+private let stereoNearest: Float = 0.25
 
 /// When the host packs the eye images with the centre/edge warp. Only ever
 /// for viewers that negotiated `foveatedVideo` (they can undo it).
@@ -133,13 +137,39 @@ final class PCVRHost: @unchecked Sendable {
     private var warpUnavailable = false
     private var wireTexture: GraphicsTexture?
     private var lastGazeCentres: (left: NormalizedPoint, right: NormalizedPoint, time: UInt64)?
-    private var depthEncoder: VideoEncoder?
     private var depthPass: DepthPass?
     /// The depth shaders couldn't be made: no depth stream rather than no stream.
     private var depthUnavailable = false
-    private var depthTexture: GraphicsTexture?
+    /// Written in turn by the depth pass, read by the depth thread's encoder:
+    /// enough that the pass never reaches one still queued or being encoded.
+    private var depthTextures: [GraphicsTexture] = []
+    private var nextDepthTexture = 0
+    private static let depthTextureCount = 4
+    private static let depthQueue = 2
+    private var lastDepthDump: UInt64 = 0
+    private var depthDumpBurst = 0
+    private var depthDumpIndex = 0
+
+    // The depth thread's.
+    private var depthEncoder: VideoEncoder?
     private var depthParameterSets: [UInt8] = []
     private var depthFormatStale = true
+
+    /// A depth picture waiting for the depth thread's encoder.
+    private struct DepthJob {
+        var texture: GraphicsTexture
+        var picture: PixelSize
+        var eye: PixelSize
+        var near: Float
+        var fromGame: Bool
+        var sequence: UInt64
+        var captureTime: UInt64
+        var numbers: [UInt32: UInt32]
+        var gpuMilliseconds: Double?
+    }
+    private let depthLock = NSLock()
+    private var depthJobs: [DepthJob] = []
+    private let depthReady = DispatchSemaphore(value: 0)
 
     /// How the eye images go on the wire: their render size per eye, the wire
     /// size per eye, and the warp between the two (none when they are equal).
@@ -161,7 +191,7 @@ final class PCVRHost: @unchecked Sendable {
     private var depthStats = DepthStatistics()
 
     private struct DepthStatistics {
-        var frames = 0, stereo = 0, game = 0
+        var frames = 0, stereo = 0, game = 0, dropped = 0
         var bytes = 0
         var encodeMilliseconds = 0.0
         var gpuMilliseconds: Double?
@@ -205,6 +235,9 @@ final class PCVRHost: @unchecked Sendable {
         let pacingThread = Thread { [self] in pacingLoop() }
         pacingThread.name = "pacing"
         pacingThread.start()
+        let depthThread = Thread { [self] in depthLoop() }
+        depthThread.name = "depth"
+        depthThread.start()
 
         let end = options.seconds.map { Self.now() + UInt64($0 * 1e9) }
         var buffer = [UInt8](repeating: 0, count: 2048)
@@ -226,6 +259,7 @@ final class PCVRHost: @unchecked Sendable {
             for viewer in Array(viewers.values) { endSession(viewer, reason: "The PC stopped streaming.") }
         }
         frameReady.signal()
+        depthReady.signal()
         source?.stop()
     }
 
@@ -256,7 +290,8 @@ final class PCVRHost: @unchecked Sendable {
     }
 
     private func encode(_ frame: CapturedFrame) throws {
-        let (watched, requestedKey, bitrate, foveate, head) = lock.withLock { () -> (Bool, Bool, Int?, Bool, HeadPose?) in
+        let (watched, requestedKey, bitrate, foveate, head, depthWanted) = lock.withLock {
+            () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool) in
             let confirmed = viewers.values.filter(\.confirmed)
             let watched = !confirmed.isEmpty
             if !watched { framesWithoutViewers += 1 }
@@ -265,7 +300,7 @@ final class PCVRHost: @unchecked Sendable {
             let foveate = watched && options.foveation != .off
                 && confirmed.allSatisfy { $0.capabilities.contains(.foveatedVideo) }
                 && (options.foveation == .on || confirmed.allSatisfy { $0.capabilities.contains(.gaze) })
-            return (watched, force, targetBitrate, foveate, headPose?.pose)
+            return (watched, force, targetBitrate, foveate, headPose?.pose, confirmed.contains { $0.depthSender != nil })
         }
         guard watched else { return }
 
@@ -324,6 +359,15 @@ final class PCVRHost: @unchecked Sendable {
         } else {
             lock.withLock { badSideData += 1 }
             return
+        }
+
+        var depthJob: DepthJob?
+        if depthWanted, let renderPose = sideData.renderPose {
+            do {
+                depthJob = try prepareDepth(frame, renderPose: renderPose, renderEye: renderEye)
+            } catch {
+                log.line("depth failed: \(error)")
+            }
         }
 
         let encoded: (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double)
@@ -408,41 +452,147 @@ final class PCVRHost: @unchecked Sendable {
         }
 
         // The colour frame is on its way; its depth follows under the same
-        // numbers. Depth decodes in a fraction of the colour's time, so it is
-        // still ready first on the headset.
-        if !colourNumbers.isEmpty, let renderPose = sideData.renderPose {
-            do {
-                try encodeDepth(frame, renderPose: renderPose, renderEye: renderEye, captureTime: captureTime,
-                                numbers: colourNumbers)
-            } catch {
-                log.line("depth failed: \(error)")
-                depthEncoder = nil
+        // numbers, encoded on the depth thread. Depth decodes in a fraction of
+        // the colour's time, so it is still ready first on the headset.
+        if var job = depthJob, !colourNumbers.isEmpty {
+            job.numbers = colourNumbers
+            job.captureTime = captureTime
+            let dropped = depthLock.withLock { () -> Bool in
+                depthJobs.append(job)
+                guard depthJobs.count > Self.depthQueue else { return false }
+                depthJobs.removeFirst() // its numbers become a gap the headset recovers from
+                return true
             }
+            if dropped { lock.withLock { depthStats.dropped += 1 } }
+            depthReady.signal()
         }
     }
 
-    /// The frame's depth, encoded once and queued for each depth viewer under
-    /// the number its colour frame got (`numbers`, by viewer index).
-    private func encodeDepth(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize, captureTime: UInt64,
-                             numbers: [UInt32: UInt32]) throws {
-        guard !depthUnavailable else { return }
+    /// The frame's depth into the next of the depth textures: queued on the GPU
+    /// ahead of the colour encode, whose completion then covers it, so the
+    /// frame's ring slot is free of it by the time `frame` is released.
+    private func prepareDepth(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize) throws -> DepthJob? {
+        guard !depthUnavailable else { return nil }
         if depthPass == nil {
             do {
                 depthPass = try DepthPass(device: device)
             } catch {
                 depthUnavailable = true
                 log.line("depth unavailable, streaming without it: \(error)")
-                return
+                return nil
             }
         }
-        guard let depthPass else { return }
+        guard let depthPass else { return nil }
         let eye = PCVRProfile.depthEye(forRender: renderEye)
         let picture = PixelSize(width: eye.width * 2, height: eye.height)
-        if depthTexture?.width != Int(picture.width) || depthTexture?.height != Int(picture.height) {
-            depthTexture = try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height),
-                                               format: .bgra8)
-            depthFormatStale = true
+        if depthTextures.first?.width != Int(picture.width) || depthTextures.first?.height != Int(picture.height) {
+            depthTextures = try (0..<Self.depthTextureCount).map { _ in
+                try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height), format: .bgra8)
+            }
         }
+        let texture = depthTextures[nextDepthTexture]
+        nextDepthTexture = (nextDepthTexture + 1) % depthTextures.count
+
+        func tangents(_ fov: FieldOfView) -> SIMD4<Float> {
+            SIMD4(Float(tan(Double(fov.angleLeft))), Float(tan(Double(fov.angleRight))),
+                  Float(tan(Double(fov.angleUp))), Float(tan(Double(fov.angleDown))))
+        }
+        let frusta = (left: tangents(renderPose.left.fieldOfView), right: tangents(renderPose.right.fieldOfView))
+        let near: Float
+        let fromGame: Bool
+        var maxDisparity = 0
+        if options.depth == .auto, let external = frame.external, let aux = external.auxTexture,
+           external.auxFormat == 41 || external.auxFormat == 54 { // R32_FLOAT, R16_FLOAT: metres
+            near = 0.1
+            fromGame = true
+            try depthPass.apply(source: aux, kind: .linear, sourceEye: (external.auxWidth / 2, external.auxHeight),
+                                destination: texture, depthEye: (Int(eye.width), Int(eye.height)),
+                                tangents: frusta, near: near)
+        } else {
+            let l = renderPose.left.pose.position, r = renderPose.right.pose.position
+            let baseline = Float(sqrt(Double((r.x - l.x) * (r.x - l.x) + (r.y - l.y) * (r.y - l.y) + (r.z - l.z) * (r.z - l.z))))
+            guard baseline > 0.02, baseline < 0.2 else { return nil } // not a pair of eyes
+            let spacing = (frusta.left.y - frusta.left.x) / Float(eye.width)
+            maxDisparity = min(max(Int((baseline / (stereoNearest * spacing)).rounded(.up)), 8), 128)
+            near = DepthPass.stereoNear(baseline: baseline, maxDisparity: maxDisparity, leftTangents: frusta.left,
+                                        depthEyeWidth: Int(eye.width))
+            fromGame = false
+            try depthPass.apply(source: frame.texture, kind: .stereo(baseline: baseline, maxDisparity: maxDisparity),
+                                sourceEye: (Int(renderEye.width), Int(renderEye.height)), destination: texture,
+                                depthEye: (Int(eye.width), Int(eye.height)), tangents: frusta, near: near)
+        }
+        if let directory = options.depthDump, !fromGame {
+            let l = renderPose.left.pose.position, r = renderPose.right.pose.position
+            let note = String(format: "left tangents %.4f %.4f %.4f %.4f at %.4f %.4f %.4f\nright tangents %.4f %.4f %.4f %.4f at %.4f %.4f %.4f\nnear %.4f max disparity %d\n",
+                              frusta.left.x, frusta.left.y, frusta.left.z, frusta.left.w, l.x, l.y, l.z,
+                              frusta.right.x, frusta.right.y, frusta.right.z, frusta.right.w, r.x, r.y, r.z,
+                              near, maxDisparity)
+            dumpDepth(to: directory, texture: texture, maxDisparity: maxDisparity, note: note)
+        }
+        return DepthJob(texture: texture, picture: picture, eye: eye, near: near, fromGame: fromGame,
+                        sequence: frame.sequence, captureTime: 0, numbers: [:], gpuMilliseconds: depthPass.gpuMilliseconds)
+    }
+
+    /// Diagnostics (--depth-dump): every few seconds, three frames in a row of
+    /// the estimate's luminance grid, grid disparity and output, as PGM, plus
+    /// the luminance as raw floats (a fixture for tuning the estimate).
+    private func dumpDepth(to directory: String, texture: GraphicsTexture, maxDisparity: Int, note: String) {
+        let now = Self.now()
+        if depthDumpBurst == 0 {
+            guard now - lastDepthDump > 3_000_000_000 else { return }
+            lastDepthDump = now
+            depthDumpBurst = 3
+            depthDumpIndex += 1
+        }
+        depthDumpBurst -= 1
+        guard let depthPass else { return }
+        let tag = String(format: "%@/%03d-%d", directory, depthDumpIndex, 2 - depthDumpBurst)
+        func pgm(_ path: String, width: Int, height: Int, _ bytes: [UInt8]) {
+            var data = Data("P5\n\(width) \(height)\n255\n".utf8)
+            data.append(contentsOf: bytes)
+            FileManager.default.createFile(atPath: path, contents: data)
+        }
+        do {
+            let luma = try depthPass.debugGrid(.luma)
+            pgm(tag + "-luma.pgm", width: luma.width, height: luma.height,
+                luma.values.map { $0 < 0 ? 0 : UInt8(min(max($0 * 255, 0), 255)) })
+            if depthDumpBurst == 2 {
+                FileManager.default.createFile(atPath: tag + "-pose.txt", contents: Data(note.utf8))
+                let raw = luma.values.withUnsafeBufferPointer { Data(buffer: $0) }
+                FileManager.default.createFile(atPath: tag + "-luma-\(luma.width)x\(luma.height).f32", contents: raw)
+            }
+            for (grid, suffix) in [(DepthPass.DebugGrid.disparity, "disparity"), (.cleaned, "cleaned")] {
+                let values = try depthPass.debugGrid(grid)
+                pgm(tag + "-\(suffix).pgm", width: values.width, height: values.height,
+                    values.values.map { $0 < 0 ? 0 : UInt8(min(1 + $0 / Float(max(maxDisparity, 1)) * 254, 255)) })
+            }
+            let out = try texture.read()
+            pgm(tag + "-depth.pgm", width: texture.width, height: texture.height,
+                stride(from: 0, to: out.count, by: 4).map { out[$0] })
+        } catch {
+            log.line("depth dump failed: \(error)")
+        }
+    }
+
+    private func depthLoop() {
+        while running {
+            _ = depthReady.wait(timeout: .now() + .milliseconds(100))
+            guard let job = depthLock.withLock({ () -> DepthJob? in
+                depthJobs.isEmpty ? nil : depthJobs.removeFirst()
+            }) else { continue }
+            do {
+                try encodeDepth(job)
+            } catch {
+                log.line("depth encode failed: \(error)")
+                depthEncoder = nil
+            }
+        }
+    }
+
+    /// Depth thread: one depth picture encoded once and queued for each depth
+    /// viewer under the number its colour frame got (`job.numbers`, by viewer index).
+    private func encodeDepth(_ job: DepthJob) throws {
+        let picture = job.picture
         if depthEncoder == nil || depthEncoder?.parameters.width != Int(picture.width)
             || depthEncoder?.parameters.height != Int(picture.height) {
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
@@ -456,42 +606,13 @@ final class PCVRHost: @unchecked Sendable {
             depthFormatStale = true
             log.line("depth encoder: HEVC \(picture.width)x\(picture.height), \(options.depthMbps) Mbps")
         }
-        guard let depthEncoder, let depthTexture else { return }
-
-        func tangents(_ fov: FieldOfView) -> SIMD4<Float> {
-            SIMD4(Float(tan(Double(fov.angleLeft))), Float(tan(Double(fov.angleRight))),
-                  Float(tan(Double(fov.angleUp))), Float(tan(Double(fov.angleDown))))
-        }
-        let frusta = (left: tangents(renderPose.left.fieldOfView), right: tangents(renderPose.right.fieldOfView))
-        let near: Float
-        let fromGame: Bool
-        if options.depth == .auto, let external = frame.external, let aux = external.auxTexture,
-           external.auxFormat == 41 || external.auxFormat == 54 { // R32_FLOAT, R16_FLOAT: metres
-            near = 0.1
-            fromGame = true
-            try depthPass.apply(source: aux, kind: .linear, sourceEye: (external.auxWidth / 2, external.auxHeight),
-                                destination: depthTexture, depthEye: (Int(eye.width), Int(eye.height)),
-                                tangents: frusta, near: near)
-        } else {
-            let l = renderPose.left.pose.position, r = renderPose.right.pose.position
-            let baseline = Float(sqrt(Double((r.x - l.x) * (r.x - l.x) + (r.y - l.y) * (r.y - l.y) + (r.z - l.z) * (r.z - l.z))))
-            guard baseline > 0.02, baseline < 0.2 else { return } // not a pair of eyes
-            let spacing = (frusta.left.y - frusta.left.x) / Float(eye.width)
-            let maxDisparity = min(max(Int((baseline / (stereoNearest * spacing)).rounded(.up)), 8), 128)
-            near = DepthPass.stereoNear(baseline: baseline, maxDisparity: maxDisparity, leftTangents: frusta.left,
-                                        depthEyeWidth: Int(eye.width))
-            fromGame = false
-            try depthPass.apply(source: frame.texture, kind: .stereo(baseline: baseline, maxDisparity: maxDisparity),
-                                sourceEye: (Int(renderEye.width), Int(renderEye.height)), destination: depthTexture,
-                                depthEye: (Int(eye.width), Int(eye.height)), tangents: frusta, near: near)
-        }
-
+        guard let depthEncoder else { return }
         let forceKey = lock.withLock { () -> Bool in
             let wanted = depthWantsKeyFrame || depthFormatStale
             depthWantsKeyFrame = false
             return wanted
         }
-        let (accessUnit, isIDR, milliseconds) = try depthEncoder.encode(depthTexture, timestamp: frame.sequence,
+        let (accessUnit, isIDR, milliseconds) = try depthEncoder.encode(job.texture, timestamp: job.sequence,
                                                                        forceIDR: forceKey) {
             (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
         }
@@ -509,17 +630,16 @@ final class PCVRHost: @unchecked Sendable {
                     depthEncoding: PCVRProfile.depthEncoding)
             }
         }
-        let sideData = SideData(depthRange: .planes(near: near, far: .infinity, convergence: 0))
-        let gpu = depthPass.gpuMilliseconds
+        let sideData = SideData(depthRange: .planes(near: job.near, far: .infinity, convergence: 0))
 
         lock.withLock {
             depthStats.frames += 1
-            if fromGame { depthStats.game += 1 } else { depthStats.stereo += 1 }
+            if job.fromGame { depthStats.game += 1 } else { depthStats.stereo += 1 }
             depthStats.bytes += accessUnit.count
             depthStats.encodeMilliseconds += milliseconds
-            depthStats.gpuMilliseconds = gpu
-            depthStats.size = "\(eye.width)x\(eye.height) per eye"
-            depthStats.near = near
+            depthStats.gpuMilliseconds = job.gpuMilliseconds
+            depthStats.size = "\(job.eye.width)x\(job.eye.height) per eye"
+            depthStats.near = job.near
             if let newFormat {
                 depthFormat = newFormat
                 for viewer in viewers.values where viewer.confirmed && viewer.depthSender != nil { sendDepthFormat(to: viewer) }
@@ -527,12 +647,12 @@ final class PCVRHost: @unchecked Sendable {
             let now = Self.now()
             var needsKey = false
             for viewer in viewers.values where viewer.confirmed {
-                guard let number = numbers[viewer.index], viewer.depthSender != nil,
+                guard let number = job.numbers[viewer.index], viewer.depthSender != nil,
                       let udpPayload = endpoint.sessions[viewer.index]?.session.udpPayload else { continue }
                 do {
-                    switch try viewer.depthSender!.submit(accessUnit: accessUnit, isKeyFrame: isIDR, captureTime: captureTime,
-                                                          sideData: sideData, frameNumber: number, udpPayload: udpPayload,
-                                                          now: now) {
+                    switch try viewer.depthSender!.submit(accessUnit: accessUnit, isKeyFrame: isIDR,
+                                                          captureTime: job.captureTime, sideData: sideData,
+                                                          frameNumber: number, udpPayload: udpPayload, now: now) {
                     case .queued: break
                     case .awaitingKeyFrame, .queueFull: needsKey = true
                     }
@@ -925,6 +1045,7 @@ final class PCVRHost: @unchecked Sendable {
                                Double(d.bytes) * 8 / seconds / 1e6)
             }
             if let gpu = d.gpuMilliseconds { line += String(format: ", GPU %.2f ms", gpu) }
+            if d.dropped > 0 { line += ", \(d.dropped) dropped behind the encoder" }
             line += String(format: ", near %.3f m", d.near)
             log.line(line)
             depthStats = DepthStatistics(size: size)

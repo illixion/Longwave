@@ -675,6 +675,22 @@ public final class DepthPass: @unchecked Sendable {
         return (Double(out.0), Double(out.1), Double(out.2))
     }
 
+    public enum DebugGrid: Int32 { case luma = 0, disparity = 1, cleaned = 2 }
+
+    /// Diagnostics: one of the last stereo estimate's grids, row-major, both
+    /// eyes side by side: its luminance, its raw disparities, or those that
+    /// survived cleaning (-1 = unknown). Waits for the GPU.
+    public func debugGrid(_ which: DebugGrid) throws -> (width: Int, height: Int, values: [Float]) {
+        var width: Int32 = 0, height: Int32 = 0
+        try check(lw_depth_debug_read(raw, which.rawValue, nil, 0, &width, &height), "lw_depth_debug_read")
+        var values = [Float](repeating: 0, count: Int(width * height))
+        try values.withUnsafeMutableBufferPointer {
+            try check(lw_depth_debug_read(raw, which.rawValue, $0.baseAddress, Int32($0.count), &width, &height),
+                      "lw_depth_debug_read")
+        }
+        return (Int(width), Int(height), values)
+    }
+
     /// GPU time of the latest apply the GPU has finished, ms; nil before the first.
     public var gpuMilliseconds: Double? {
         let ms = lw_depth_gpu_milliseconds(raw)

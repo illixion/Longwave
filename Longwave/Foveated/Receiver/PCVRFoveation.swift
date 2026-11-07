@@ -67,6 +67,22 @@ nonisolated enum PCVRFoveationShader {
         return float2(pcvrWireCoordinate(renderUV.x, mx), pcvrWireCoordinate(renderUV.y, my));
     }
 
+    // The inverse, CentreEdgeAxisMapping.renderCoordinate(forWire:): the
+    // render coordinate a wire texel came from.
+    static float pcvrRenderCoordinate(float wire, float4 m) {
+        float packed = wire * m.w;
+        float left = m.x / m.z, end = left + m.y - m.x;
+        float x;
+        if (packed < left) { x = packed * m.z; }
+        else if (packed <= end) { x = m.x + packed - left; }
+        else { x = m.y + (packed - end) * m.z; }
+        return saturate(x);
+    }
+
+    static float2 pcvrRenderUV(float2 wireUV, float4 mx, float4 my) {
+        return float2(pcvrRenderCoordinate(wireUV.x, mx), pcvrRenderCoordinate(wireUV.y, my));
+    }
+
     // One eye's texel of a side-by-side texture at eye-local UV `uv`: `rect`
     // places the eye (u origin, v origin, u scale, v scale), `bounds` keeps the
     // tap half a texel inside it so filtering never reaches the other eye.

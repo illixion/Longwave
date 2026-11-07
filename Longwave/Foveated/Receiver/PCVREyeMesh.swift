@@ -394,10 +394,14 @@ extension PCVREyeMeshBuilder.Eye {
     /// frustum to cover; `meshFromWorld` places the mesh's own space.
     /// `skirt`: how far past each frustum edge to smear the picture, in
     /// tangent (0 for none; `grid` then keeps its outermost ring for it).
+    /// `pose`: where the eye is taken to be (world-from-eye) instead of the
+    /// frame's render pose, for a picture already warped to another pose
+    /// (`PCVRDepthWarper`).
     init(frame: PCVRDecodedFrame, eye: Int, window: SIMD4<Float>? = nil, grid: PCVREyeMesh.Grid,
          meshFromWorld: simd_float4x4 = matrix_identity_float4x4, distance: Float, flipV: Bool, swapped: Bool = false,
-         skirt: Float = 0, share: PCVREyeMesh.Share = .wire) {
-        let view = frame.renderPose.eyes[eye]
+         skirt: Float = 0, share: PCVREyeMesh.Share = .wire, pose: PCVRPose? = nil) {
+        let view = PCVREyeView(pose: pose ?? frame.renderPose.eyes[eye].pose,
+                               fieldOfView: frame.renderPose.eyes[eye].fieldOfView)
         let t = view.fieldOfView.tangents
         let w = window ?? t
         let width = t.y - t.x, height = t.z - t.w

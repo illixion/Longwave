@@ -78,7 +78,7 @@ nonisolated protocol PCVRPlayoutFrame {
     var spaceEpoch: UInt16 { get }
 }
 
-extension PCVRDecodedFrame: PCVRPlayoutFrame {
+extension PCVRDecodedFrame: PCVRTimedPlayoutFrame {
     var spaceEpoch: UInt16 { renderPose.spaceEpoch }
 }
 
@@ -158,26 +158,84 @@ nonisolated struct PCVRLatestFrameSlot<Frame: PCVRPlayoutFrame> {
 /// The thread-safe hand-off between a frame producer (the decoder, or the fake
 /// remote) and the presenter's render loop.
 nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
-    private let slot = OSAllocatedUnfairLock(initialState: PCVRLatestFrameSlot<PCVRDecodedFrame>())
+    /// How frames meet display slots.
+    enum Playout: String, Sendable {
+        /// The newest frame at each slot (`PCVRLatestFrameSlot`): least latency,
+        /// for a presenter that reprojects each frame to the display pose.
+        case latest
+        /// One frame per slot in order, a slot behind when arrivals jitter
+        /// (`PCVRPacedFrameQueue`): for a presenter that shows frames where they
+        /// were rendered, where smooth motion is worth a slot of delay.
+        case paced
+    }
+
+    private enum Slot {
+        case latest(PCVRLatestFrameSlot<PCVRDecodedFrame>)
+        case paced(PCVRPacedFrameQueue<PCVRDecodedFrame>)
+    }
+
+    let playout: Playout
+    private let slot: OSAllocatedUnfairLock<Slot>
+
+    init(playout: Playout = .latest) {
+        self.playout = playout
+        slot = OSAllocatedUnfairLock(initialState: playout == .latest ? .latest(PCVRLatestFrameSlot()) : .paced(PCVRPacedFrameQueue()))
+    }
 
     // Every method takes the frames the slot let go of out of the lock and lets
     // them drop after unlocking: one may be a frame's last reference, and its
     // release callback (a texture going back to a pool) must not run locked.
 
     func deliver(_ frame: PCVRDecodedFrame) {
-        let displaced = slot.withLock { $0.deliver(frame) }
+        let displaced: [PCVRDecodedFrame] = slot.withLock {
+            switch $0 {
+            case .latest(var latest):
+                let displaced = latest.deliver(frame)
+                $0 = .latest(latest)
+                return displaced.map { [$0] } ?? []
+            case .paced(var paced):
+                let released = paced.deliver(frame)
+                $0 = .paced(paced)
+                return released
+            }
+        }
         withExtendedLifetime(displaced) {}
     }
 
     /// The frame to show at a display pose in `spaceEpoch`, or nil for nothing.
-    func takeForPresentation(spaceEpoch: UInt16) -> (frame: PCVRDecodedFrame, isNew: Bool)? {
-        let taken = slot.withLock { $0.takeForPresentation(spaceEpoch: spaceEpoch) }
+    /// `now` (the `arrivalTime` clock) paces a `.paced` mailbox; `.latest` ignores it.
+    func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval = 0) -> (frame: PCVRDecodedFrame, isNew: Bool)? {
+        let taken: (frame: PCVRDecodedFrame?, isNew: Bool, released: [PCVRDecodedFrame]) = slot.withLock {
+            switch $0 {
+            case .latest(var latest):
+                let p = latest.takeForPresentation(spaceEpoch: spaceEpoch)
+                $0 = .latest(latest)
+                return (p.frame, p.isNew, p.released)
+            case .paced(var paced):
+                let p = paced.takeForPresentation(spaceEpoch: spaceEpoch, now: now)
+                $0 = .paced(paced)
+                return (p.frame, p.isNew, p.released)
+            }
+        }
         withExtendedLifetime(taken.released) {}
         return taken.frame.map { ($0, taken.isNew) }
     }
 
     var counts: (dropped: Int, repeated: Int, presentedNew: Int) {
-        slot.withLock { ($0.dropped, $0.repeated, $0.presentedNew) }
+        slot.withLock {
+            switch $0 {
+            case .latest(let s): (s.dropped, s.repeated, s.presentedNew)
+            case .paced(let s): (s.dropped, s.repeated, s.presentedNew)
+            }
+        }
+    }
+
+    /// The paced queue's own measures, nil for `.latest`.
+    var pacing: (trimmed: Int, periodMs: Double, lastWaitMs: Double, queued: Int)? {
+        slot.withLock {
+            guard case .paced(let s) = $0 else { return nil }
+            return (s.trimmed, s.period * 1000, s.lastWait * 1000, s.queued.count)
+        }
     }
 }
 #endif

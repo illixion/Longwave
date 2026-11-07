@@ -155,4 +155,46 @@ final class FoveationWarpTests: XCTestCase {
         XCTAssertThrowsError(try warp.apply(source: texture, renderEye: (16, 16), destination: texture, wireEye: (17, 16),
                                             left: good, right: good))
     }
+
+    /// What the host does every frame: warp a production-size BGRA8 frame
+    /// into its wire texture and hand that to NVENC.
+    func testEncoderTakesTheWarpOutput() throws {
+        let device = try GraphicsDevice(for: nil)
+        let render = PixelSize(width: 2400, height: 1920)
+        let wire = try XCTUnwrap(PCVRProfile.defaultWarp.wireSize(forRender: render, alignment: PCVRProfile.wireAlignment))
+        var parameters = VideoEncoder.Parameters(width: 2 * Int(wire.width), height: Int(wire.height), fps: 90,
+                                                 bitrate: 30_000_000)
+        parameters.codec = .hevc
+        parameters.asyncMode = true
+        let encoder: VideoEncoder
+        do {
+            encoder = try VideoEncoder(device: device, parameters: parameters)
+        } catch {
+            throw XCTSkip("no NVENC here: \(error)")
+        }
+        var pixels = [UInt8](repeating: 0, count: 2 * Int(render.width) * Int(render.height) * 4)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            pixels[i] = UInt8((i / 4) % 251)
+            pixels[i + 1] = UInt8((i / 4 / 4800) % 256)
+            pixels[i + 3] = 255
+        }
+        let source = try pixels.withUnsafeBytes {
+            try GraphicsTexture(device: device, width: 2 * Int(render.width), height: Int(render.height), format: .bgra8, pixels: $0)
+        }
+        let destination = try GraphicsTexture(device: device, width: 2 * Int(wire.width), height: Int(wire.height), format: .bgra8)
+        let warp = try FoveationWarpPass(device: device)
+        let parametersBlock = FoveationParameters(epoch: 1, warp: .centreEdge(PCVRProfile.defaultWarp))
+        var sizes: [Int] = []
+        for n in 0..<3 {
+            let centre = NormalizedPoint(x: 0.3 + 0.2 * Float(n), y: 0.5)
+            let maps = try XCTUnwrap(StereoCentreEdgeMapping(
+                parameters: parametersBlock, frame: FoveationSideData(parameterEpoch: 1, leftCentre: centre, rightCentre: centre)))
+            try warp.apply(source: source, renderEye: (Int(render.width), Int(render.height)), destination: destination,
+                           wireEye: (Int(wire.width), Int(wire.height)), left: Self.eye(maps.left), right: Self.eye(maps.right))
+            let (bytes, isIDR) = try encoder.encode(destination, timestamp: UInt64(n), forceIDR: n == 0) { ($0.bytes.count, $0.isIDR) }
+            XCTAssertEqual(isIDR, n == 0)
+            sizes.append(bytes)
+        }
+        XCTAssertTrue(sizes.allSatisfy { $0 > 0 }, "\(sizes)")
+    }
 }

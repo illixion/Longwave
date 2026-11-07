@@ -86,6 +86,11 @@ final class PCVREyeMeshTests: XCTestCase {
             let whole = PCVREyeMesh.axis(from: 0, to: 1, map: map, cells: 100)
             if whole.ends[1] > 0, whole.ends[2] < 1 {
                 XCTAssertEqual(whole.cells[2] - whole.cells[1], 60, accuracy: 2)
+                // Shared by render length it gets its 30%: cells as wide everywhere,
+                // breakpoints still on lines.
+                let even = PCVREyeMesh.axis(from: 0, to: 1, map: map, cells: 100, share: .render)
+                XCTAssertEqual(even.cells[2] - even.cells[1], 30, accuracy: 2)
+                XCTAssertEqual(even.ends, whole.ends)
             }
         }
         // No map: one even segment.

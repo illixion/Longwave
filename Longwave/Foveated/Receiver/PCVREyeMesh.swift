@@ -87,7 +87,19 @@ nonisolated enum PCVREyeMesh {
     /// origin), over `cells` cells, with a line on each of `map`'s breakpoints
     /// inside the range. Cells go to the segments in proportion to how much of
     /// the wire image they cover, at least one to any segment that isn't empty.
-    static func axis(from start: Float, to end: Float, map: CentreEdgeAxisMapping?, cells: Int) -> Axis {
+    /// How an axis's cells are shared between its segments.
+    enum Share: Sendable {
+        /// By wire length: most cells in the full-density centre, where the
+        /// picture has most detail. Enough for a flat or plane-placed picture.
+        case wire
+        /// By render length (angle, near enough): every part of the view gets
+        /// cells of the same size, for a mesh displaced by depth, whose depth
+        /// edges are as sharp in the periphery as in the centre.
+        case render
+    }
+
+    static func axis(from start: Float, to end: Float, map: CentreEdgeAxisMapping?, cells: Int,
+                     share: Share = .wire) -> Axis {
         let start = min(max(start, 0), 1), end = min(max(end, start), 1)
         let constants = map?.constants ?? PCVRFoveation.identity
         let ends = [start, min(max(constants.x, start), end), min(max(constants.y, start), end), end]
@@ -96,7 +108,8 @@ nonisolated enum PCVREyeMesh {
         var counts = [0, 0, 0]
         if !positive.isEmpty {
             let total = max(cells, positive.count)
-            let lengths = positive.map { max(wire[$0 + 1] - wire[$0], 0) }
+            let measure = share == .wire ? wire : ends
+            let lengths = positive.map { max(measure[$0 + 1] - measure[$0], 0) }
             let sum = lengths.reduce(0, +)
             for (n, k) in positive.enumerated() {
                 let share = sum > 0 ? lengths[n] / sum : 1 / Float(positive.count)
@@ -371,7 +384,7 @@ extension PCVREyeMeshBuilder.Eye {
     /// tangent (0 for none; `grid` then keeps its outermost ring for it).
     init(frame: PCVRDecodedFrame, eye: Int, window: SIMD4<Float>? = nil, grid: PCVREyeMesh.Grid,
          meshFromWorld: simd_float4x4 = matrix_identity_float4x4, distance: Float, flipV: Bool, swapped: Bool = false,
-         skirt: Float = 0) {
+         skirt: Float = 0, share: PCVREyeMesh.Share = .wire) {
         let view = frame.renderPose.eyes[eye]
         let t = view.fieldOfView.tangents
         let w = window ?? t
@@ -384,9 +397,9 @@ extension PCVREyeMeshBuilder.Eye {
         let cells = skirt > 0 ? grid.inner : grid
         self.init(meshFromEye: meshFromWorld * view.pose.matrix, tangents: t,
                   columns: PCVREyeMesh.axis(from: (w.x - t.x) / width, to: (w.y - t.x) / width,
-                                            map: maps?.x, cells: cells.columns),
+                                            map: maps?.x, cells: cells.columns, share: share),
                   rows: PCVREyeMesh.axis(from: (t.z - w.z) / height, to: (t.z - w.w) / height,
-                                         map: maps?.y, cells: cells.rows),
+                                         map: maps?.y, cells: cells.rows, share: share),
                   wireX: wire.x, wireY: wire.y,
                   textureRect: SIMD4(half, 0, 0.5, 1),
                   textureBounds: SIMD4(half + halfU, halfV, half + 0.5 - halfU, 1 - halfV),

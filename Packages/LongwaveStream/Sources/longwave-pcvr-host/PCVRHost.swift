@@ -513,7 +513,11 @@ final class PCVRHost: @unchecked Sendable {
         var maxDisparity = 0
         if options.depth == .auto, let external = frame.external, let aux = external.auxTexture,
            external.auxFormat == 41 || external.auxFormat == 54 { // R32_FLOAT, R16_FLOAT: metres
-            near = 0.1
+            // The stereo estimate's floor too: 8-bit inverse depth from 0.1 m
+            // stepped 1.4 m at 6 m, and a mesh displaced by it terraced the
+            // walls (test scene, 2026-11-07). From 0.25 m the steps are 2.5x finer;
+            // anything nearer is drawn at 0.25 m.
+            near = stereoNearest
             fromGame = true
             try depthPass.apply(source: aux, kind: .linear, sourceEye: (external.auxWidth / 2, external.auxHeight),
                                 destination: texture, depthEye: (Int(eye.width), Int(eye.height)),

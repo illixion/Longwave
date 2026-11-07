@@ -21,7 +21,7 @@ import simd
 /// the source eye's depth map, from half the stream's near depth to infinity
 /// in equal steps of inverse distance (which is nearly equal steps across the
 /// depth picture), about one depth texel each, until the ray passes behind the
-/// scene surface; the crossing is refined by two secant steps and the frame is
+/// scene surface; the crossing is refined by three secant steps and the frame is
 /// read there. Pure rotation needs one step. Depth is interpolated between
 /// texels except across an edge (a jump of `edgeCodes` of the 8-bit picture),
 /// where the nearer texel's value stands as a step, as in the mesh kernel.
@@ -67,6 +67,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         var depthTexels: SIMD4<Float>
         var depthDecode: SIMD4<Float>
         var depthSize: SIMD2<Float>
+        var mapRect: SIMD4<Float>
         var mapBounds: SIMD4<Float>
         var mapSize: SIMD2<Float>
         var outputSize: SIMD2<Float>
@@ -87,6 +88,27 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     private let mapPipeline: any MTLComputePipelineState
     private let colourPipeline: any MTLComputePipelineState
     private let depthPipeline: any MTLComputePipelineState
+    private let library: any MTLLibrary
+    /// Depth always written, never tested: each pixel is drawn once. Without
+    /// a state Metal leaves depth writes off, and the views' depth stays clear.
+    private let depthWrite: any MTLDepthStencilState
+    /// Display-view pipelines by attachment formats (`encode(frame:depth:views:...)`).
+    private var displayPipelines: [DisplayPipelineKey: any MTLRenderPipelineState] = [:]
+    /// The warp map for display views, remade when their size changes.
+    private var displayMap: (any MTLTexture)?
+
+    private struct DisplayPipelineKey: Hashable {
+        var color: MTLPixelFormat
+        var depth: MTLPixelFormat
+        var sampleCount: Int
+    }
+
+    /// Mirrors `PCVRDepthWarpView`: what one display view's draw needs beyond its eye's uniforms.
+    private struct ViewUniforms {
+        var projection: simd_float4x4
+        /// x: which of the two uniforms (and warp-map halves) the view uses.
+        var index: SIMD4<UInt32>
+    }
     private let sampler: any MTLSamplerState
     private let noDepth: any MTLTexture
     /// The warp map, remade when the output size changes.
@@ -106,6 +128,11 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     init(device: any MTLDevice) throws {
         self.device = device
         let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+        self.library = library
+        guard let depthWrite = PCVRReceiver.makeDepthWriteState(device: device) else {
+            throw PCVRReceiverError.resourceCreationFailed("depth warp depth state")
+        }
+        self.depthWrite = depthWrite
         guard let map = library.makeFunction(name: "pcvrDepthWarpMap"),
               let colour = library.makeFunction(name: "pcvrDepthWarpColour"),
               let depth = library.makeFunction(name: "pcvrDepthWarpDepth") else {
@@ -143,9 +170,12 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                 commandBuffer: any MTLCommandBuffer) throws {
         let depthTexture = depth?.texture ?? noDepth
         let map = try warpMap(for: colour)
+        let eyeWidth = colour.width / 2
         var uniforms = (0..<2).map { eye in
-            self.uniforms(frame: frame, eye: eye, depth: depth, target: targets[eye], planeDistance: planeDistance,
-                          colour: colour, map: map)
+            self.uniforms(frame: frame, eye: eye, depth: depth, target: targets[eye],
+                          targetTangents: frame.renderPose.eyes[eye].fieldOfView.tangents, planeDistance: planeDistance,
+                          outputSize: SIMD2(Float(eyeWidth), Float(colour.height)),
+                          outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye, flags: 0)
         }
         let length = MemoryLayout<Uniforms>.stride * 2
         // A serial encoder: each dispatch sees the one before it complete.
@@ -174,6 +204,117 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         encoder.endEncoding()
     }
 
+    /// Warps `frame` straight into a presenter's display views, as a render
+    /// pass per view (through its rasterization rate map, if it has one):
+    /// each view's pixel rays come from the view's own eye pose and frustum
+    /// (`PCVRReceiverTarget.display`), so the picture is resampled once, at
+    /// the display's own pixels, and each pixel's depth is written through
+    /// `displayProjection`, for a system compositor that reprojects again by
+    /// depth (CompositorServices). Pixels whose ray leaves the rendered
+    /// frustum take its edge. With no frame, clears the views to black.
+    ///
+    /// The warp map is laid out per display view (left, right) at a quarter
+    /// of the view's logical size; a single view (the simulator's, a capture)
+    /// uses its first half.
+    func encode(frame: PCVRDecodedFrame?, depth: PCVRDepthMap?, views targets: [PCVRReceiverTarget],
+                planeDistance: Float, commandBuffer: any MTLCommandBuffer) throws {
+        guard let frame, let first = targets.first else {
+            try PCVRReceiver.encodeClear(targets: targets, commandBuffer: commandBuffer)
+            return
+        }
+        let depthTexture = depth?.texture ?? noDepth
+        let logical = Self.logicalSize(first)
+        let map = try displayMap(width: logical.width, height: logical.height)
+        var uniforms = (0..<2).map { slot in
+            let target = targets[min(slot, targets.count - 1)]
+            let size = Self.logicalSize(target)
+            return self.uniforms(frame: frame, eye: target.eye, depth: depth, target: target.display.pose,
+                                 targetTangents: target.display.fieldOfView.tangents, planeDistance: planeDistance,
+                                 outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
+                                 map: map, mapSlot: slot, flags: 4)
+        }
+        let length = MemoryLayout<Uniforms>.stride * 2
+        guard let compute = commandBuffer.makeComputeCommandEncoder() else {
+            throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
+        }
+        compute.label = "PCVR depth warp map"
+        compute.setBytes(&uniforms, length: length, index: 0)
+        compute.setTexture(depthTexture, index: 1)
+        compute.setTexture(map, index: 3)
+        compute.setSamplerState(sampler, index: 0)
+        compute.setComputePipelineState(mapPipeline)
+        compute.dispatchThreads(MTLSize(width: map.width, height: map.height, depth: 1),
+                                threadsPerThreadgroup: Self.threadgroup(mapPipeline))
+        compute.endEncoding()
+
+        var slot = 0
+        for group in PCVRReceiver.passGroups(targets) {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: PCVRReceiver.passDescriptor(group[0])) else {
+                throw PCVRReceiverError.resourceCreationFailed("depth warp render encoder")
+            }
+            encoder.label = "PCVR depth warp"
+            encoder.setRenderPipelineState(try displayPipeline(for: group[0]))
+            if group[0].depthTexture != nil { encoder.setDepthStencilState(depthWrite) }
+            encoder.setFragmentBytes(&uniforms, length: length, index: 0)
+            encoder.setFragmentTexture(frame.texture, index: 0)
+            encoder.setFragmentTexture(depthTexture, index: 1)
+            encoder.setFragmentTexture(map, index: 3)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            for target in group {
+                var view = ViewUniforms(projection: target.displayProjection, index: SIMD4(UInt32(min(slot, 1)), 0, 0, 0))
+                encoder.setViewport(target.viewport)
+                encoder.setFragmentBytes(&view, length: MemoryLayout<ViewUniforms>.stride, index: 1)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                slot += 1
+            }
+            encoder.endEncoding()
+        }
+    }
+
+    /// A view's size in logical (unfoveated) pixels: its rate map's screen
+    /// size when it has one, else its viewport.
+    private static func logicalSize(_ target: PCVRReceiverTarget) -> (width: Int, height: Int) {
+        if let map = target.rasterizationRateMap {
+            let size = map.screenSize
+            if size.width > 0, size.height > 0 { return (size.width, size.height) }
+        }
+        return (max(Int(target.viewport.width), 1), max(Int(target.viewport.height), 1))
+    }
+
+    private func displayMap(width: Int, height: Int) throws -> any MTLTexture {
+        let mapWidth = 2 * ((width + Self.mapScale - 1) / Self.mapScale)
+        let mapHeight = (height + Self.mapScale - 1) / Self.mapScale
+        if let displayMap, displayMap.width == mapWidth, displayMap.height == mapHeight { return displayMap }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: mapWidth,
+                                                                  height: mapHeight, mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+        guard let made = device.makeTexture(descriptor: descriptor) else {
+            throw PCVRReceiverError.resourceCreationFailed("display depth warp map")
+        }
+        made.label = "PCVR display depth warp map"
+        displayMap = made
+        return made
+    }
+
+    private func displayPipeline(for target: PCVRReceiverTarget) throws -> any MTLRenderPipelineState {
+        let key = DisplayPipelineKey(color: target.colorTexture.pixelFormat,
+                                     depth: target.depthTexture?.pixelFormat ?? .invalid,
+                                     sampleCount: target.colorTexture.sampleCount)
+        if let cached = displayPipelines[key] { return cached }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "PCVR depth warp"
+        descriptor.vertexFunction = library.makeFunction(name: "pcvrDepthWarpVertex")
+        descriptor.fragmentFunction = library.makeFunction(
+            name: key.depth == .invalid ? "pcvrDepthWarpDisplayColour" : "pcvrDepthWarpDisplay")
+        descriptor.colorAttachments[0].pixelFormat = key.color
+        descriptor.depthAttachmentPixelFormat = key.depth
+        descriptor.rasterSampleCount = key.sampleCount
+        let state = try device.makeRenderPipelineState(descriptor: descriptor)
+        displayPipelines[key] = state
+        return state
+    }
+
     /// The warp map for an output: a quarter of its size per axis, per eye.
     private func warpMap(for colour: any MTLTexture) throws -> any MTLTexture {
         let width = 2 * ((colour.width / 2 + Self.mapScale - 1) / Self.mapScale)
@@ -197,19 +338,19 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     }
 
     private func uniforms(frame: PCVRDecodedFrame, eye: Int, depth: PCVRDepthMap?, target: PCVRPose,
-                          planeDistance: Float, colour: any MTLTexture, map: any MTLTexture) -> Uniforms {
+                          targetTangents: SIMD4<Float>, planeDistance: Float, outputSize: SIMD2<Float>,
+                          outputOrigin: SIMD2<UInt32>, map: any MTLTexture, mapSlot: Int, flags: UInt32) -> Uniforms {
         let source = frame.renderPose.eyes[eye]
         let sourceFromTarget = source.pose.inverse * target
         let wire = frame.wireConstants(eye: eye)
         let depthTexture = depth?.texture ?? noDepth
         let decode = depth?.decode ?? .zero
         let plane = max(planeDistance, 0.01)
-        let eyeWidth = colour.width / 2
         return Uniforms(
             rotation: simd_float3x3(sourceFromTarget.rotation),
             translation: SIMD4(sourceFromTarget.position, 0),
             sourceTangents: source.fieldOfView.tangents,
-            targetTangents: source.fieldOfView.tangents,
+            targetTangents: targetTangents,
             wireX: wire.x, wireY: wire.y,
             sourceRect: PCVRReceiver.eyeRect(eye: eye, texture: frame.texture),
             sourceBounds: PCVRReceiver.eyeBounds(eye: eye, texture: frame.texture),
@@ -217,10 +358,11 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             depthTexels: PCVREyeMeshBuilder.eyeTexels(eye: eye, texture: depthTexture),
             depthDecode: decode,
             depthSize: SIMD2(Float(depthTexture.width), Float(depthTexture.height)),
-            mapBounds: PCVRReceiver.eyeBounds(eye: eye, texture: map),
+            mapRect: PCVRReceiver.eyeRect(eye: mapSlot, texture: map),
+            mapBounds: PCVRReceiver.eyeBounds(eye: mapSlot, texture: map),
             mapSize: SIMD2(Float(map.width / 2), Float(map.height)),
-            outputSize: SIMD2(Float(eyeWidth), Float(colour.height)),
-            outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0),
+            outputSize: outputSize,
+            outputOrigin: outputOrigin,
             // The march starts at half the nearest depth there can be, so its
             // first sample is in front of everything.
             nearInverse: depth.map { 2 / max($0.near, 0.01) } ?? 2 / plane,
@@ -228,7 +370,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             stepTexels: max(stepTexels, 0.25),
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
-            flags: (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0))
+            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0))
     }
 
     static let shaderSource = """
@@ -249,7 +391,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float4 depthTexels;
         float4 depthDecode;
         float2 depthSize;
-        float4 mapBounds;       // this eye's half of the warp map (clamp) and its texels
+        float4 mapRect;         // this eye's half of the warp map, its clamp and its texels
+        float4 mapBounds;
         float2 mapSize;
         float2 outputSize;      // this eye's output pixels and where they start
         uint2 outputOrigin;
@@ -258,7 +401,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float stepTexels;
         float edge;             // an inverse-depth jump this large between texels is an edge
         uint maxSteps;
-        uint flags;             // 1: a depth map; 2: tint filled pixels
+        uint flags;             // 1: a depth map; 2: tint filled pixels; 4: the output is the target's own
+                                // render UV (a display view), not packed by the frame's foveation map
     };
 
     struct PCVRDepthWarpHit {
@@ -321,12 +465,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float rhoNear, rhoFar;
         pcvrDepthWarpRay(D, t, lambdaMax, u.sourceTangents, uvNear, rhoNear);
         pcvrDepthWarpRay(D, t, 0, u.sourceTangents, uvFar, rhoFar);
-        // About a depth texel a step along the ray's track across the picture;
-        // one step without a depth map, where the secant is exact.
+        // About a depth texel a step along the ray's track across the picture,
+        // and at least four: a ray near the axis of a forward or backward move
+        // barely crosses the picture, but its inverse depth is not linear in
+        // lambda there, and one step's two secants landed far off (a wrong
+        // depth for the compositor, 2026-11-08). One step without a depth
+        // map and without motion along the ray, where the secant is exact.
         uint n = 1;
         if (u.flags & 1u) {
             float2 track = (uvFar - uvNear) * u.depthRect.zw * u.depthSize;
-            n = clamp(uint(ceil(length(track) / u.stepTexels)), 1u, u.maxSteps);
+            n = clamp(uint(ceil(length(track) / u.stepTexels)), min(4u, u.maxSteps), u.maxSteps);
         }
         float2 previousUV = uvNear;
         float previousW = pcvrDepthWarpScene(uvNear, u, depth, linear);
@@ -422,15 +570,15 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                         previousF = farF;
                     }
                     if (!slipped) {
-                        // Through the surface: the crossing by the secant, twice.
-                        for (int pass = 0; pass < 2; pass++) {
+                        // Through the surface: the crossing by the secant, three times.
+                        for (int pass = 0; pass < 3; pass++) {
                             float a = previousF / (previousF - f);
                             float lm = mix(previousLambda, lambda, a);
                             float2 uvm;
                             float rhom;
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
                             float fm = rhom - pcvrDepthWarpScene(uvm, u, depth, linear);
-                            if (pass == 1) return PCVRDepthWarpHit{uvm, rhom};
+                            if (pass == 2) return PCVRDepthWarpHit{uvm, rhom};
                             if (fm > 0) { previousLambda = lm; previousF = fm; } else { lambda = lm; f = fm; }
                         }
                     }
@@ -472,14 +620,28 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         uint eye = gid.x >= eyeWidth ? 1 : 0;
         constant PCVRDepthWarpUniforms &u = eyes[eye];
         float2 wire = (float2(gid.x - eye * eyeWidth, gid.y) + 0.5) / u.mapSize;
-        float2 render = pcvrRenderUV(wire, u.wireX, u.wireY);
+        float2 render = (u.flags & 4u) ? wire : pcvrRenderUV(wire, u.wireX, u.wireY);
         PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth, linear);
         map.write(float4(hit.uv - render, hit.w, hit.filled), gid);
     }
 
-    // Pass two, every output pixel: the map interpolated where its four
-    // texels around the pixel agree in depth, the march itself where they
-    // don't (a depth edge, where interpolating would smear near into far).
+    // The hit for an output pixel at `wire` (its UV in the output, which is
+    // where the warp map has it) whose target render UV is `render`: the map
+    // interpolated where its four texels around the pixel agree in depth, the
+    // march itself where they don't (a depth edge, where interpolating would
+    // smear near into far).
+    static PCVRDepthWarpHit pcvrDepthWarpLookup(float2 wire, float2 render, constant PCVRDepthWarpUniforms &u,
+                                                texture2d<float, access::sample> depth,
+                                                texture2d<float, access::sample> map, sampler linear) {
+        float2 at = pcvrEyeTexel(wire, u.mapRect, u.mapBounds);
+        float4 w4 = map.gather(linear, at, int2(0), component::z);
+        float spread = max(max(w4.x, w4.y), max(w4.z, w4.w)) - min(min(w4.x, w4.y), min(w4.z, w4.w));
+        if (spread > u.edge) return pcvrDepthWarpMarch(render, u, depth, linear);
+        float4 m = map.sample(linear, at);
+        return PCVRDepthWarpHit{render + m.xy, m.z, m.w};
+    }
+
+    // Pass two, every output pixel (`pcvrDepthWarpLookup`).
     kernel void pcvrDepthWarpColour(texture2d<float, access::sample> source [[texture(0)]],
                                     texture2d<float, access::sample> depth [[texture(1)]],
                                     texture2d<float, access::write> output [[texture(2)]],
@@ -493,18 +655,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         if (local.x >= uint(u.outputSize.x) || local.y >= uint(u.outputSize.y)) return;
         float2 wire = (float2(local) + 0.5) / u.outputSize;
         float2 render = pcvrRenderUV(wire, u.wireX, u.wireY);
-        float2 at = pcvrEyeTexel(wire, u.sourceRect, u.mapBounds);
-        float4 w4 = map.gather(linear, at, int2(0), component::z);
-        float spread = max(max(w4.x, w4.y), max(w4.z, w4.w)) - min(min(w4.x, w4.y), min(w4.z, w4.w));
-        PCVRDepthWarpHit hit = {float2(0), 0, 0};
-        if (spread > u.edge) {
-            hit = pcvrDepthWarpMarch(render, u, depth, linear);
-        } else {
-            float4 m = map.sample(linear, at);
-            hit.uv = render + m.xy;
-            hit.w = m.z;
-            hit.filled = m.w;
-        }
+        PCVRDepthWarpHit hit = pcvrDepthWarpLookup(wire, render, u, depth, map, linear);
         // Diagnostics: the filled pixels in magenta, to see where the picture
         // is made up rather than seen.
         if ((u.flags & 2u) && hit.filled > 0.5) {
@@ -528,6 +679,80 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth, linear);
         float value = u.depthDecode.w > 0 ? (hit.w - u.depthDecode.z) / u.depthDecode.w : 0;
         output.write(float4(saturate(value), 0, 0, 1), gid);
+    }
+
+    // Display views (a CompositorServices drawable): pass two as a fragment
+    // shader over each view, writing colour and the hit's depth.
+    struct PCVRDepthWarpView {
+        float4x4 projection;  // clip from the display eye, in the presenter's depth convention
+        uint4 index;          // x: which uniforms and warp-map half
+    };
+
+    struct PCVRDepthWarpFullScreen {
+        float4 position [[position]];
+        float2 ndc;
+    };
+
+    vertex PCVRDepthWarpFullScreen pcvrDepthWarpVertex(uint vid [[vertex_id]]) {
+        // One triangle covering the viewport; NDC +Y up. The NDC is
+        // interpolated in logical space, so a rate map leaves it exact.
+        float2 p = float2((vid == 1) ? 3.0 : -1.0, (vid == 2) ? 3.0 : -1.0);
+        PCVRDepthWarpFullScreen out;
+        out.position = float4(p, 0.0, 1.0);
+        out.ndc = p;
+        return out;
+    }
+
+    struct PCVRDepthWarpDisplayOut {
+        float4 color [[color(0)]];
+        float depth [[depth(any)]];
+    };
+
+    static PCVRDepthWarpDisplayOut pcvrDepthWarpDisplayPixel(float2 ndc, constant PCVRDepthWarpUniforms &u,
+                                                             constant PCVRDepthWarpView &v,
+                                                             texture2d<float, access::sample> source,
+                                                             texture2d<float, access::sample> depth,
+                                                             texture2d<float, access::sample> map, sampler linear) {
+        float2 target = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        PCVRDepthWarpHit hit = pcvrDepthWarpLookup(target, target, u, depth, map, linear);
+        PCVRDepthWarpDisplayOut out;
+        if ((u.flags & 2u) && hit.filled > 0.5) {
+            out.color = float4(1, 0, 1, 1);
+        } else {
+            float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
+            out.color = float4(source.sample(linear, uv).rgb, 1);
+        }
+        // The hit point, from the source eye back into the display eye.
+        out.depth = 0;
+        if (hit.w > 1e-6) {
+            float4 st = u.sourceTangents;
+            float2 tangent = float2(st.x + hit.uv.x * (st.y - st.x), st.z - hit.uv.y * (st.z - st.w));
+            float3 inSource = float3(tangent, -1) / hit.w;
+            float3 inDisplay = transpose(u.rotation) * (inSource - u.translation.xyz);
+            float4 clip = v.projection * float4(inDisplay, 1);
+            if (clip.w > 1e-6) out.depth = saturate(clip.z / clip.w);
+        }
+        return out;
+    }
+
+    fragment PCVRDepthWarpDisplayOut pcvrDepthWarpDisplay(PCVRDepthWarpFullScreen in [[stage_in]],
+                                                          constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
+                                                          constant PCVRDepthWarpView &v [[buffer(1)]],
+                                                          texture2d<float, access::sample> source [[texture(0)]],
+                                                          texture2d<float, access::sample> depth [[texture(1)]],
+                                                          texture2d<float, access::sample> map [[texture(3)]],
+                                                          sampler linear [[sampler(0)]]) {
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes[v.index.x], v, source, depth, map, linear);
+    }
+
+    fragment float4 pcvrDepthWarpDisplayColour(PCVRDepthWarpFullScreen in [[stage_in]],
+                                               constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
+                                               constant PCVRDepthWarpView &v [[buffer(1)]],
+                                               texture2d<float, access::sample> source [[texture(0)]],
+                                               texture2d<float, access::sample> depth [[texture(1)]],
+                                               texture2d<float, access::sample> map [[texture(3)]],
+                                               sampler linear [[sampler(0)]]) {
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes[v.index.x], v, source, depth, map, linear).color;
     }
     """
 }

@@ -299,5 +299,83 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertGreaterThan(bg, 500)
         try checkWarpedDepth(out, blockStart: blockStart, blockEnd: blockEnd, margin: margin, near: 0.5, far: 0.55)
     }
+
+    /// Straight into display views (CompositorServices' path): each view's
+    /// rays from its own pose and narrower frustum read the plane homography's
+    /// texel, and each pixel's depth is the plane's, through the view's
+    /// reverse-Z projection.
+    func testDisplayViewsGetThePlaneHomographyAndItsDepth() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try depthMap { _, _ in 2 }
+        // Back 10 cm and aside 2 cm: every point of the plane 2 m ahead of the
+        // render eye is 2.1 m ahead of the display eye.
+        let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.02, 0, 0.1])
+        let displayFOV = PCVRFieldOfView(tangentLeft: -1.5, tangentRight: 0.9, tangentUp: 0.9, tangentDown: -1.0)
+        let near: Float = 0.1
+        // Reverse Z, infinite far: depth = near / distance ahead.
+        let projection = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, -1), SIMD4(0, 0, near, 0)))
+        let width = Self.eyeWidth, height = Self.eyeHeight
+        var colours: [any MTLTexture] = [], depths: [any MTLTexture] = []
+        var targets: [PCVRReceiverTarget] = []
+        for eye in 0..<2 {
+            let colourDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width,
+                                                                            height: height, mipmapped: false)
+            colourDescriptor.usage = [.renderTarget, .shaderRead]
+            colourDescriptor.storageMode = .shared
+            let depthDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: width,
+                                                                           height: height, mipmapped: false)
+            depthDescriptor.usage = .renderTarget
+            depthDescriptor.storageMode = .private
+            let colour = try XCTUnwrap(device.makeTexture(descriptor: colourDescriptor))
+            let depthTexture = try XCTUnwrap(device.makeTexture(descriptor: depthDescriptor))
+            colours.append(colour)
+            depths.append(depthTexture)
+            targets.append(PCVRReceiverTarget(
+                eye: eye, colorTexture: colour, depthTexture: depthTexture, depthClearValue: 0,
+                viewport: MTLViewport(originX: 0, originY: 0, width: Double(width), height: Double(height), znear: 0, zfar: 1),
+                display: PCVREyeView(pose: frame.renderPose.eyes[eye].pose * move, fieldOfView: displayFOV),
+                displayProjection: projection))
+        }
+        let warper = try PCVRDepthWarper(device: device)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        try warper.encode(frame: frame, depth: depth, views: targets, planeDistance: 2, commandBuffer: commandBuffer)
+        let readback = try XCTUnwrap(device.makeBuffer(length: 2 * width * height * 4, options: .storageModeShared))
+        let blit = try XCTUnwrap(commandBuffer.makeBlitCommandEncoder())
+        for eye in 0..<2 {
+            blit.copy(from: depths[eye], sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                      sourceSize: MTLSize(width: width, height: height, depth: 1), to: readback,
+                      destinationOffset: eye * width * height * 4, destinationBytesPerRow: width * 4,
+                      destinationBytesPerImage: width * height * 4)
+        }
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+        let depthValues = readback.contents().bindMemory(to: Float.self, capacity: 2 * width * height)
+        for eye in 0..<2 {
+            var pixels = [Float16](repeating: 0, count: width * height * 4)
+            pixels.withUnsafeMutableBytes {
+                colours[eye].getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height),
+                                      mipmapLevel: 0)
+            }
+            let h = PCVRReprojection.sourceFromDisplay(render: frame.renderPose.eyes[eye], display: targets[eye].display,
+                                                       mode: .rotationAndTranslation(planeDistance: 2))
+            var worst: Float = 0, worstDepth: Float = 0, checked = 0
+            for y in stride(from: 3, to: height, by: 8) {
+                for x in stride(from: 3, to: width, by: 8) {
+                    guard let expected = expectedUV(x: x, y: y, through: h),
+                          expected.x > 0.03, expected.x < 0.97, expected.y > 0.03, expected.y < 0.97 else { continue }
+                    let i = (y * width + x) * 4
+                    let got = SIMD2(Float(pixels[i]), Float(pixels[i + 1]))
+                    worst = max(worst, abs(got.x - expected.x) * Float(width), abs(got.y - expected.y) * Float(height))
+                    worstDepth = max(worstDepth, abs(depthValues[eye * width * height + y * width + x] - near / 2.1))
+                    checked += 1
+                }
+            }
+            XCTAssertGreaterThan(checked, 500)
+            XCTAssertLessThan(worst, 0.6, "eye \(eye): worst error in texels")
+            XCTAssertLessThan(worstDepth, near / 2.1 * 0.01, "eye \(eye): worst depth error")
+        }
+    }
 }
 #endif

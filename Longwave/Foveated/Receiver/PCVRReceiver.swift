@@ -53,6 +53,10 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
     let device: any MTLDevice
     private let library: any MTLLibrary
     private let sampler: any MTLSamplerState
+    /// Depth always written, never tested. Metal's default state leaves depth
+    /// writes off, which until 2026-11-08 left every drawable's depth at its
+    /// clear value (the far plane) for the compositor to reproject by.
+    private let depthWrite: any MTLDepthStencilState
     private var pipelines: [PipelineKey: any MTLRenderPipelineState] = [:]
 
     private struct PipelineKey: Hashable {
@@ -90,6 +94,17 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
             throw PCVRReceiverError.resourceCreationFailed("sampler")
         }
         self.sampler = sampler
+        guard let depthWrite = Self.makeDepthWriteState(device: device) else {
+            throw PCVRReceiverError.resourceCreationFailed("depth state")
+        }
+        self.depthWrite = depthWrite
+    }
+
+    static func makeDepthWriteState(device: any MTLDevice) -> (any MTLDepthStencilState)? {
+        let descriptor = MTLDepthStencilDescriptor()
+        descriptor.depthCompareFunction = .always
+        descriptor.isDepthWriteEnabled = true
+        return device.makeDepthStencilState(descriptor: descriptor)
     }
 
     /// Encodes every target. With no frame (none yet, or no head pose to place
@@ -98,26 +113,13 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
                 options: PCVRReceiverOptions, commandBuffer: any MTLCommandBuffer) throws {
         for group in Self.passGroups(targets) {
             let first = group[0]
-            let pass = MTLRenderPassDescriptor()
-            pass.colorAttachments[0].texture = first.colorTexture
-            pass.colorAttachments[0].slice = first.colorSlice
-            pass.colorAttachments[0].loadAction = .clear
-            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-            pass.colorAttachments[0].storeAction = .store
-            if let depth = first.depthTexture {
-                pass.depthAttachment.texture = depth
-                pass.depthAttachment.slice = first.depthSlice
-                pass.depthAttachment.loadAction = .clear
-                pass.depthAttachment.clearDepth = first.depthClearValue
-                pass.depthAttachment.storeAction = .store
-            }
-            pass.rasterizationRateMap = first.rasterizationRateMap
-            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: Self.passDescriptor(first)) else {
                 throw PCVRReceiverError.resourceCreationFailed("render encoder")
             }
             encoder.label = "PCVR reprojection"
             if let frame {
                 encoder.setRenderPipelineState(try pipeline(for: first))
+                if first.depthTexture != nil { encoder.setDepthStencilState(depthWrite) }
                 encoder.setFragmentTexture(frame.texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 for target in group {
@@ -131,10 +133,40 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
         }
     }
 
+    /// Clears every target to black (and its depth to the clear value).
+    static func encodeClear(targets: [PCVRReceiverTarget], commandBuffer: any MTLCommandBuffer) throws {
+        for group in passGroups(targets) {
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor(group[0])) else {
+                throw PCVRReceiverError.resourceCreationFailed("render encoder")
+            }
+            encoder.label = "PCVR clear"
+            encoder.endEncoding()
+        }
+    }
+
+    /// A pass over a target's texture slice that clears it to black first.
+    static func passDescriptor(_ first: PCVRReceiverTarget) -> MTLRenderPassDescriptor {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = first.colorTexture
+        pass.colorAttachments[0].slice = first.colorSlice
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        pass.colorAttachments[0].storeAction = .store
+        if let depth = first.depthTexture {
+            pass.depthAttachment.texture = depth
+            pass.depthAttachment.slice = first.depthSlice
+            pass.depthAttachment.loadAction = .clear
+            pass.depthAttachment.clearDepth = first.depthClearValue
+            pass.depthAttachment.storeAction = .store
+        }
+        pass.rasterizationRateMap = first.rasterizationRateMap
+        return pass
+    }
+
     /// Targets drawn in one render pass: consecutive views on the same texture
     /// slice (a shared layout). A pass per view there would clear the view drawn
     /// before it.
-    private static func passGroups(_ targets: [PCVRReceiverTarget]) -> [[PCVRReceiverTarget]] {
+    static func passGroups(_ targets: [PCVRReceiverTarget]) -> [[PCVRReceiverTarget]] {
         var groups: [[PCVRReceiverTarget]] = []
         for target in targets {
             if let last = groups.last?.last, last.colorTexture === target.colorTexture,

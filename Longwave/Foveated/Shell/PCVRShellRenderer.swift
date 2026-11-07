@@ -14,6 +14,23 @@ nonisolated struct PCVRShellRenderOptions: Equatable, Sendable {
     /// latency (`PCVRHeadPoseProducer.predictionHorizon`) instead of sending the
     /// pose for the next drawable.
     var predictsToLatency = true
+    var depthWarp = PCVRShellDepthWarp()
+}
+
+/// Per-pixel reprojection by the stream's depth (`PCVRDepthWarper`), straight
+/// into the drawable: each display pixel's ray, from the eye at the drawable's
+/// presentation pose, is marched through the frame's depth map, and the hit's
+/// depth goes to the compositor with the colour. Off, the receiver's
+/// single-plane `PCVRReceiverOptions.mode` is used instead.
+nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
+    var isEnabled = true
+    var maxSteps = 32
+    var stepTexels: Float = 2
+    /// Diagnostics: the pixels the warp fills in, in magenta.
+    var tintsFills = false
+    /// Where the picture is taken to lie, metres ahead of the render eye, for a
+    /// frame whose depth has not arrived (or a host that sends none).
+    var planeDistance: Float = 50
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -35,6 +52,13 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
     var arrivalToPresent: Double?
     var predictionHorizon: Double = 0
     var framesWithoutAnchor = 0
+    /// Frames shown with the depth warp, and how many of those had no depth
+    /// picture (warped at `PCVRShellDepthWarp.planeDistance`).
+    var depthWarps = 0
+    var depthWarpsWithoutDepth = 0
+    /// GPU time of a display frame's command buffer, ms.
+    var gpuTime: Double?
+    var gpuTimeMax: Double?
     var worldTracking = "—"
     var configuration = "—"
 }
@@ -51,11 +75,13 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
 ///    compositor then over-corrects against);
 /// 3. produce the uplink head-pose snapshot (`PCVRHeadPoseProducer`);
 /// 4. take the newest stream frame (latest wins; none new means repeat the last),
-///    reproject it to the anchor's eye poses, and submit with that anchor.
+///    reproject it to the anchor's eye poses (per pixel by the stream's depth,
+///    `PCVRShellDepthWarp`, else on one plane), and submit with that anchor.
 ///
 /// The system compositor then reprojects once more from the drawable's anchor
 /// and depth to the true display pose. That residual is small because our
-/// display pose was predicted for the same presentation time.
+/// display pose was predicted for the same presentation time, and with the
+/// depth warp the depth it reprojects by is the scene's own.
 nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     /// Called once on the render thread when the layer is invalidated (the space
     /// closed), and not after `stop()`.
@@ -75,6 +101,13 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     /// while the compositor still holds the previous one.
     private let inFlight = DispatchSemaphore(value: 3)
     private var receiver: PCVRReceiver?
+    private var depthWarper: PCVRDepthWarper?
+    /// The v3 source's depth pictures, when it asked for them. Set before `start()`.
+    var depthStore: PCVRDepthStore?
+    /// GPU times of completed frames, seconds, drained into the stats window.
+    private let gpuTimes = OSAllocatedUnfairLock(initialState: [Double]())
+    private var depthWarps = 0
+    private var depthWarpsWithoutDepth = 0
     /// `LayerRenderer.Clock` seconds minus `CACurrentMediaTime()`. ARKit takes
     /// the former; the receiver clock everything else stamps is the latter.
     private var clockOffset: TimeInterval = 0
@@ -157,6 +190,11 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         } catch {
             log.error("PCVR receiver could not be created: \(error, privacy: .public)")
         }
+        do {
+            depthWarper = try PCVRDepthWarper(device: layerRenderer.device)
+        } catch {
+            log.error("PCVR depth warp could not be created: \(error, privacy: .public)")
+        }
         clockOffset = LayerRenderer.Clock().now.pcvrSeconds - CACurrentMediaTime()
         log.notice("Shell A render loop started (\(self.stats.withLock { $0.configuration }, privacy: .public)); layer clock leads media time by \(self.clockOffset * 1000, format: .fixed(precision: 3)) ms")
         while true {
@@ -229,23 +267,41 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             return
         }
         commandBuffer.label = "PCVR shell frame"
+        let warp = options.depthWarp
+        let warper = warp.isEnabled ? depthWarper : nil
+        // One depth picture for the frame, kept until the GPU is done with it.
+        var depthEntry: PCVRDepthStore.Entry?
+        if let warper, let presented {
+            warper.maxSteps = warp.maxSteps
+            warper.stepTexels = warp.stepTexels
+            warper.tintsFills = warp.tintsFills
+            depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
+            depthWarps += 1
+            if depthEntry == nil { depthWarpsWithoutDepth += 1 }
+        }
         for drawable in drawables {
             drawable.deviceAnchor = anchor
-            if let receiver {
-                let targets = Self.targets(for: drawable, head: head ?? .identity)
-                do {
+            let targets = Self.targets(for: drawable, head: head ?? .identity)
+            do {
+                if let warper {
+                    try warper.encode(frame: presented?.frame, depth: depthEntry?.map, views: targets,
+                                      planeDistance: warp.planeDistance, commandBuffer: commandBuffer)
+                } else if let receiver {
                     try receiver.encode(frame: presented?.frame, targets: targets,
                                         options: options.receiver, commandBuffer: commandBuffer)
-                } catch {
-                    log.error("Reprojection encode failed: \(error, privacy: .public)")
                 }
+            } catch {
+                log.error("Reprojection encode failed: \(error, privacy: .public)")
             }
             drawable.encodePresent(commandBuffer: commandBuffer)
         }
-        // The frame's texture stays leased until the GPU has finished sampling it.
+        // The frame's texture (and its depth picture) stay leased until the GPU
+        // has finished sampling them.
         let sampled = presented?.frame
-        commandBuffer.addCompletedHandler { [inFlight] _ in
-            withExtendedLifetime(sampled) {}
+        commandBuffer.addCompletedHandler { [inFlight, gpuTimes] buffer in
+            withExtendedLifetime((sampled, depthEntry)) {}
+            let time = buffer.gpuEndTime - buffer.gpuStartTime
+            if time > 0 { gpuTimes.withLock { $0.append(time) } }
             inFlight.signal()
         }
         commandBuffer.commit()
@@ -325,7 +381,16 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         let counts = mailbox.counts
         let horizon = poseProducer.predictionHorizon
         let snapshot = window
+        let gpu = gpuTimes.withLock { times in
+            defer { times.removeAll(keepingCapacity: true) }
+            return times
+        }
+        let warps = depthWarps, withoutDepth = depthWarpsWithoutDepth
         stats.withLock { stats in
+            stats.gpuTime = gpu.isEmpty ? nil : gpu.reduce(0, +) / Double(gpu.count) * 1000
+            stats.gpuTimeMax = gpu.max().map { $0 * 1000 }
+            stats.depthWarps = warps
+            stats.depthWarpsWithoutDepth = withoutDepth
             stats.displayRate = snapshot.presents > 1 ? Double(snapshot.presents - 1) / max(snapshot.lastPresent - snapshot.firstPresent, 1e-3) : 0
             stats.presentedNew = counts.presentedNew
             stats.repeated = counts.repeated

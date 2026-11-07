@@ -23,9 +23,7 @@ struct LongwaveApp: App {
     @State private var pcvrStore = PCVRStore()
     @State private var pcvrLimiter = PCVRSessionLimiter()
     @State private var pcvrBandwidth = PCVRBandwidthMonitor()
-    #if DEBUG
     @State private var pcvrShell = PCVRShellSession()
-    #endif
 
     /// Bridges the manager's style to the scene's existential binding.
     ///
@@ -48,6 +46,9 @@ struct LongwaveApp: App {
             #if FOVEATED_ENABLED
             TrackerDebugEndpoints.register()
             FoveatedGazeDebugEndpoints.register()
+            #if os(visionOS)
+            PCVRShellEndpoints.register()
+            #endif
             #endif
         }
     }
@@ -81,6 +82,7 @@ struct LongwaveApp: App {
                 .environment(pcvrStore)
                 .environment(pcvrLimiter)
                 .environment(pcvrBandwidth)
+                .pcvrShellSpaceControl(pcvrShell)
                 #if DEBUG
                 .pcvrShellDemo()
                 #endif
@@ -445,7 +447,10 @@ struct LongwaveApp: App {
         .defaultSize(width: 480, height: 760)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+        #endif
 
+        // Shell A's space. Opened by the dev window (DEBUG) or the debug
+        // server's `pcvrShellControl`; nothing else in the app opens it yet.
         // Hands stay visible here, unlike the PCVR space: with no game drawing
         // hands, your own are the steadiest reference for judging whether the
         // streamed room holds still.
@@ -453,7 +458,6 @@ struct LongwaveApp: App {
             PCVRShellContent(session: pcvrShell)
         }
         .immersionStyle(selection: .constant(.full), in: .full)
-        #endif
         #endif
     }
 }

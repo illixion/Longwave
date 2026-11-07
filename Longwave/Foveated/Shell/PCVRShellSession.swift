@@ -65,6 +65,18 @@ final class PCVRShellSession {
     }
     #endif
 
+    /// The session the app's scene owns, for the debug endpoints.
+    static weak var current: PCVRShellSession?
+
+    /// Opens and dismisses the space; installed by a view in the main window
+    /// (`pcvrShellSpaceControl()`), since only a view's environment can.
+    @ObservationIgnored var openSpace: (@MainActor () async -> OpenImmersiveSpaceAction.Result)?
+    @ObservationIgnored var dismissSpace: (@MainActor () async -> Void)?
+
+    init() {
+        Self.current = self
+    }
+
     @ObservationIgnored private var renderer: PCVRShellRenderer?
     @ObservationIgnored private var poseProducer: PCVRHeadPoseProducer?
     @ObservationIgnored private var statsTask: Task<Void, Never>?
@@ -94,7 +106,9 @@ final class PCVRShellSession {
         if let v3Target {
             do {
                 if let remote = try PCVRV3Remote(device: layerRenderer.device, mailbox: mailbox, target: v3Target,
-                                                  offersGaze: gazeSource != nil) {
+                                                  offersGaze: gazeSource != nil,
+                                                  wantsDepth: renderOptions.depthWarp.isEnabled) {
+                    renderer.depthStore = remote.depthStore
                     poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
                     remote.start()
                     v3Remote = remote
@@ -158,6 +172,29 @@ final class PCVRShellSession {
         #if DEBUG
         if let fakeRemote { remoteCounts = fakeRemote.counts }
         #endif
+    }
+}
+
+/// Lets the debug endpoints open and close Shell A's space: environment
+/// actions exist only in a view, so the main window lends its own.
+private struct PCVRShellSpaceControl: ViewModifier {
+    let session: PCVRShellSession
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            session.openSpace = { [openImmersiveSpace] in
+                await openImmersiveSpace(id: PCVRShellSession.immersiveSpaceID)
+            }
+            session.dismissSpace = { [dismissImmersiveSpace] in await dismissImmersiveSpace() }
+        }
+    }
+}
+
+extension View {
+    func pcvrShellSpaceControl(_ session: PCVRShellSession) -> some View {
+        modifier(PCVRShellSpaceControl(session: session))
     }
 }
 

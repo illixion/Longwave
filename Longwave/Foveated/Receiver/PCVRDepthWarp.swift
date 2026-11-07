@@ -347,7 +347,24 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
                             if (abs(pcvrDepthWarpScene(uvm, u, depth) - w) <= u.edge) return PCVRDepthWarpHit{uvm, rhom};
                         }
-                        entry = PCVRDepthWarpHit{previousUV, previousW};
+                        // Behind it. The step may be several texels: bisect
+                        // for the far side's last sample before the edge, so
+                        // what fills the uncovered strip is the far surface
+                        // right beside the silhouette, not up to a step away
+                        // (a staircase along every slanted edge, headset
+                        // 2026-11-07).
+                        float lo = previousLambda, hi = lambda;
+                        float2 edgeUV = previousUV;
+                        float edgeW = previousW;
+                        for (int pass = 0; pass < 3; pass++) {
+                            float lm = 0.5 * (lo + hi);
+                            float2 uvm;
+                            float rhom;
+                            pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
+                            float wm = pcvrDepthWarpScene(uvm, u, depth);
+                            if (wm - previousW > u.edge) { hi = lm; } else { lo = lm; edgeUV = uvm; edgeW = wm; }
+                        }
+                        entry = PCVRDepthWarpHit{edgeUV, edgeW};
                         behind = true;
                     } else {
                         // Through the surface: the crossing by the secant, twice.

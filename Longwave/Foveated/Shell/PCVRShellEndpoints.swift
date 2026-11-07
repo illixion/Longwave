@@ -40,6 +40,7 @@ enum PCVRShellEndpoints {
                         .number("planeDistance", "metres ahead a frame without depth is taken to lie (default 50)",
                                 default: 0, range: 0...1000),
                         .boolean("predictsToLatency", "predict the uplink pose by the measured pipeline latency (default on)"),
+                        .number("percentile", "which readiness latency the horizon takes, 0-1 (default 0.5; on open)", default: -1, range: -1...1),
                      ]) { args in
                 guard let session = PCVRShellSession.current else {
                     throw DebugError.unavailable("no Shell A session", hint: "a FOVEATED_ENABLED visionOS build makes one at launch")
@@ -52,6 +53,7 @@ enum PCVRShellEndpoints {
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
                 if let plane = args.double("planeDistance"), plane > 0 { options.depthWarp.planeDistance = Float(plane) }
                 if let predicts = args.bool("predictsToLatency") { options.predictsToLatency = predicts }
+                if let percentile = args.double("percentile"), percentile >= 0 { options.readinessPercentile = percentile }
                 if options != session.renderOptions { session.renderOptions = options }
                 switch args.string("action") ?? "set" {
                 case "open":
@@ -107,6 +109,7 @@ enum PCVRShellEndpoints {
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
+                "percentile": session.renderOptions.readinessPercentile,
             ] as [String: Any],
         ]
         if let v = session.v3Status {

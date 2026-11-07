@@ -122,6 +122,10 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         case readiness
     }
     var horizonSource = HorizonSource.presentation
+    /// Which readiness latency the `.readiness` horizon takes: 0.9 holds nearly
+    /// every frame to its time (smoothest, a Wi-Fi tail adds its jitter to the
+    /// latency of every frame); 0.5 shows the later half as they come.
+    var readinessPercentile = 0.9
     private var readinessLatencies: [TimeInterval] = []
     private static let readinessWindow = 120
 
@@ -133,7 +137,8 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
             measured = smoothedLatency
         case .readiness:
             let sorted = readinessLatencies.sorted()
-            measured = sorted.isEmpty ? nil : sorted[min(sorted.count - 1, Int(0.9 * Double(sorted.count - 1) + 0.5))]
+            let rank = Int(min(max(readinessPercentile, 0), 1) * Double(max(sorted.count - 1, 0)) + 0.5)
+            measured = sorted.isEmpty ? nil : sorted[min(sorted.count - 1, rank)]
         }
         return min(max(measured ?? 0, 0), Self.maximumPredictionHorizon)
     }

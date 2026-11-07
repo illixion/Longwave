@@ -94,6 +94,12 @@ final class PCVRShellSession {
         // Held to their times, frames would raise a horizon measured from
         // presentation without end: it is measured from readiness instead.
         poseProducer.horizonSource = .readiness
+        // The median, not the 90th percentile: under Wi-Fi jitter the tail
+        // pinned the horizon at its 100 ms cap and frames waited 65 ms for
+        // their slots (headset, 2026-11-08), and the eye's distance from the
+        // render pose, which the warp's uncovered strips grow with, grows with
+        // the horizon.
+        poseProducer.readinessPercentile = renderOptions.readinessPercentile
         let renderer: PCVRShellRenderer
         do {
             renderer = try PCVRShellRenderer(layerRenderer: layerRenderer, mailbox: mailbox, poseProducer: poseProducer)

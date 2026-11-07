@@ -14,6 +14,8 @@ nonisolated struct PCVRShellRenderOptions: Equatable, Sendable {
     /// latency (`PCVRHeadPoseProducer.predictionHorizon`) instead of sending the
     /// pose for the next drawable.
     var predictsToLatency = true
+    /// The readiness latency the prediction horizon takes (`PCVRHeadPoseProducer.readinessPercentile`).
+    var readinessPercentile = 0.5
     var depthWarp = PCVRShellDepthWarp()
 }
 

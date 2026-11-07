@@ -11,7 +11,7 @@
 //     (-x), each 1.0 x 0.6 m with its centre 1.4 m up, a black border and
 //     red corner crosses (lw_spike_scene_marker gives their positions);
 //   - a spoked wheel 0.3 m across beside the front panel turning at half a
-//     turn per second of display time: animation smoothness at a glance.
+//     turn per second of the frame clock: animation smoothness at a glance.
 // Four samples per pixel, so the text doesn't alias into a shimmer that would
 // read as shaking.
 //
@@ -77,10 +77,10 @@ void panel(float3 o, float3 d, float3 c, float3 n, float3 r, float seed, inout H
     // Text: lines 16 mm apart, characters 9 mm, 5 x 7 cells of 1.5 mm.
     float x = u + 0.44, y = 0.24 - v;
     if (x > 0 && x < 0.88 && y > 0 && y < 0.48) {
-        float line = floor(y / 0.016), column = floor(x / 0.009);
+        float textRow = floor(y / 0.016), column = floor(x / 0.009);
         float cx = floor(fmod(x, 0.009) / 0.0015), cy = floor(fmod(y, 0.016) / 0.0015);
-        bool space = hash(float2(column * 0.37 + seed, line)) < 0.16;
-        if (!space && cx < 5 && cy < 7 && hash(float2(column + seed * 7.0, line * 13.0 + cx * 5.0 + cy)) > 0.52)
+        bool space = hash(float2(column * 0.37 + seed, textRow)) < 0.16;
+        if (!space && cx < 5 && cy < 7 && hash(float2(column + seed * 7.0, textRow * 13.0 + cx * 5.0 + cy)) > 0.52)
             colour = float3(0.04, 0.04, 0.06);
     }
     hit.t = t;

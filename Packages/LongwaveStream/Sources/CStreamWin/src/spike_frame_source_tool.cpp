@@ -901,7 +901,9 @@ static int scene(const Options &o) {
                 eye.position[1] = 1.4f;
                 eye.angles[0] = -1.0f; eye.angles[1] = 1.0f; eye.angles[2] = 0.9f; eye.angles[3] = -0.9f;
             }
-            eye.time = static_cast<float>(static_cast<double>(qpc_to_ns(display) % 3'600'000'000'000ull) / 1e9);
+            // Animated by frame start, evenly spaced as a game's frame clock is,
+            // not by the pose's display time (which steps with the headset's ticks).
+            eye.time = static_cast<float>(static_cast<double>(qpc_to_ns(lastFrameStart) % 3'600'000'000'000ull) / 1e9);
             for (float q : eye.orientation) w.f32(q);
             for (float c : eye.position) w.f32(c);
             for (float a : eye.angles) w.f32(a);

@@ -124,7 +124,7 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   and a finite nonzero direction. Samples older than 100 ms or from the
   future are omitted. This is an initial safety budget, pending measurement.
   The shipping PCVR capability set still does not advertise `gaze`; the
-  provider-to-render-thread bridge and host consumption must land first.
+  provider-presenter integration and host consumption must land first.
 - Frames without render-pose metadata or a usable host-clock conversion are
   not presented with a fabricated timestamp. After skipping reference frames,
   the receiver requests a key frame to resume decoding cleanly.
@@ -142,19 +142,28 @@ channel; convert it to host nanoseconds using the session clock only at the
 uplink. Do not replace it with receipt `Date`, predicted display time, or
 network-send time. Unknown distance maps to zero on v3.
 
-**Shared package follow-up.** `RAVEGazeWire` carries `providerTime`, but
-`RAVEPushGazeSource.ingest` currently discards it and `RAVEGazeSample` retains
-only wall-clock receipt time. Preserve the optional monotonic capture time
-through that shared seam before connecting the official feed to the uplink.
-Detach/channel loss must clear the source; reconnect must reset provider
-observation and timestamp deduplication so old-session readings cannot return.
-Keep this work in RAVEEngine rather than duplicating a provider in Longwave.
+**Shared timestamp bridge (2026-11-07).** `RAVEGazeSample.localCaptureTime`
+now retains the capture stamp for an established local provider clock. The
+official `RAVEFoveatedProviderFeed` opts its receiver into that clock; generic
+channel/HTTP feeds leave it unset, since a remote clock cannot be assumed to
+match the headset. Invalid provider timestamps are rejected. Source reset,
+detach, channel loss and failed connects clear old readings. Generation guards
+prevent an earlier receiver/observation task from resuming into a new session.
 
-**Next local work:** preserve provider capture time and test session resets;
-bridge immutable gaze samples to the render thread; negotiate `gaze` only
-when both ends consume it; test asymmetric per-eye gaze projection and a
-matched warp/unwarp with synthetic textures. PC/device gates then measure
-capture-to-render gaze age, saccades, loss, pacing and image quality.
+`PCVRHeadPoseProducer(gazeSource:)` borrows the official receiver's thread-safe
+`RAVEPushGazeSource` and samples it on the render thread. No main-thread hop or
+receipt-time substitution is needed. The session owner can set
+`PCVRShellSession.gazeSource` before starting a run; missing timestamps, samples
+older than 100 ms, and detached sources yield invalid gaze. This is a data
+bridge, not provider discovery, entitlement approval, or automatic startup of
+an immersive provider session. The provider presenter still needs to supply
+the source when that route is integrated.
+
+**Next local work:** test asymmetric per-eye gaze projection and a matched
+warp/unwarp with synthetic textures. Enable `gaze` negotiation only once the
+host consumes it and the provider presenter supplies the source. PC/device
+gates then measure capture-to-render gaze age, saccades, channel loss/reconnect,
+pacing and image quality. Apple's provider entitlement remains pending.
 
 ## 1. Goals, non-goals, success metrics
 

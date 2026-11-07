@@ -4,6 +4,7 @@ import DebugTrace
 import Observation
 import os
 import SwiftUI
+import RAVEInput
 
 /// Shell A: the pre-entitlement PCVR presenter. A plain full immersive space
 /// with a CompositorServices layer, which needs no special entitlement, and
@@ -34,6 +35,10 @@ final class PCVRShellSession {
     /// The PC to stream from when the space next opens; nil uses the fake
     /// remote (DEBUG) or nothing.
     var v3Target: PCVRV3Target?
+    /// Set before starting a run to the official feed's `receiver.source`.
+    /// This borrows readings; it never starts another immersive session.
+    /// Nil (or a detached feed) keeps gaze invalid.
+    var gazeSource: RAVEPushGazeSource?
     private(set) var v3Status: PCVRV3Status?
     @ObservationIgnored private var v3Remote: PCVRV3Remote?
 
@@ -69,7 +74,7 @@ final class PCVRShellSession {
     func start(layerRenderer: LayerRenderer) {
         stop()
         let mailbox = PCVRFrameMailbox()
-        let poseProducer = PCVRHeadPoseProducer()
+        let poseProducer = PCVRHeadPoseProducer(gazeSource: gazeSource)
         let renderer: PCVRShellRenderer
         do {
             renderer = try PCVRShellRenderer(layerRenderer: layerRenderer, mailbox: mailbox, poseProducer: poseProducer)

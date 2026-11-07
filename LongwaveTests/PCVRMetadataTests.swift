@@ -1,6 +1,7 @@
 import XCTest
 import simd
 import StreamWire
+import RAVEInput
 @testable import Longwave
 
 #if FOVEATED_ENABLED
@@ -54,5 +55,31 @@ final class PCVRMetadataTests: XCTestCase {
         XCTAssertEqual(converted.eyes.left.pose.position.x, 0.03)
         XCTAssertEqual(converted.eyes.left.fieldOfView.angleLeft, -0.8)
     }
+    func testProviderSourceFeedsSnapshotsAndClearsOnReset() {
+        let source = RAVEPushGazeSource()
+        let producer = PCVRHeadPoseProducer(gazeSource: source)
+        let eye = PCVREyeGeometry(deviceFromEye: .identity,
+                                 fieldOfView: PCVRFieldOfView(tangentLeft: -1, tangentRight: 1,
+                                                             tangentUp: 1, tangentDown: -1))
+        func snapshot(at time: Double) -> PCVRHeadPoseSnapshot {
+            producer.makeSnapshot(head: .identity, eyes: PCVRStereo(left: eye, right: eye), sampledAt: time,
+                                  baseDisplayTime: time + 0.02, displayTime: time + 0.04)
+        }
+        XCTAssertFalse(snapshot(at: 10).gaze.isValid)
+        let sample = RAVEGazeSample(sequence: 1, direction: SIMD3(0, 0, -1))
+        let bytes = RAVEGazeWire.encode(sample, providerTime: 10)
+        source.ingest(bytes) // Unknown provider clock cannot become local capture time.
+        XCTAssertFalse(snapshot(at: 10.01).gaze.isValid)
+        source.reset()
+        source.ingest(bytes, usesLocalProviderClock: true)
+        let gaze = snapshot(at: 10.05).gaze
+        XCTAssertTrue(gaze.isValid)
+        XCTAssertEqual(gaze.timestamp, 10)
+        XCTAssertEqual(gaze.distance, 0)
+        XCTAssertFalse(snapshot(at: 10.2).gaze.isValid)
+        source.reset()
+        XCTAssertFalse(snapshot(at: 10.05).gaze.isValid)
+    }
+
 }
 #endif

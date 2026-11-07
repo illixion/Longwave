@@ -21,7 +21,12 @@ struct HostOptions {
     var maxMbps = 150
     /// The rate estimate's starting point.
     var startMbps = 30
+    /// The frame clock's rate, and whether it follows the headset's display:
+    /// `--refresh auto` (the default) paces at the rate the headset's poses
+    /// arrive, one per display tick, so a producer may render as often as the
+    /// headset can show and no more; a number fixes it.
     var refreshHz = 90.0
+    var followsHeadset = true
     /// NVENC preset, 1 (fastest) to 7, and the rate control's buffer in frames:
     /// a bigger buffer lets detailed frames take more bits, for a little latency.
     var preset = 1
@@ -121,6 +126,10 @@ final class PCVRHost: @unchecked Sendable {
     private var lastKeyFrameRequest: UInt64?
     private var targetBitrate: Int?
     private var headPose: (sequence: UInt32, pose: HeadPose)?
+    /// The frame clock's rate now (`options.refreshHz` until the headset's is known).
+    private var pacedHz: Double
+    /// Poses accepted since the rate was last measured.
+    private var posesForRate = 0
     private var lastDeviceReload: UInt64 = 0
 
     // Frames waiting for the encoder: only the newest is kept.
@@ -218,6 +227,7 @@ final class PCVRHost: @unchecked Sendable {
     init(options: HostOptions, log: HostLog) throws {
         self.options = options
         self.log = log
+        pacedHz = options.refreshHz
         try StreamHostRuntime.initialize()
         socket = try UDPSocket(port: options.port)
         device = try GraphicsDevice(for: nil)
@@ -339,7 +349,7 @@ final class PCVRHost: @unchecked Sendable {
 
         if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height) {
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
-                                                     fps: Int(options.refreshHz.rounded()),
+                                                     fps: Int(lock.withLock { pacedHz }.rounded()),
                                                      bitrate: bitrate ?? options.startMbps * 1_000_000)
             parameters.codec = .hevc
             parameters.asyncMode = true
@@ -612,7 +622,7 @@ final class PCVRHost: @unchecked Sendable {
         if depthEncoder == nil || depthEncoder?.parameters.width != Int(picture.width)
             || depthEncoder?.parameters.height != Int(picture.height) {
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
-                                                     fps: Int(options.refreshHz.rounded()),
+                                                     fps: Int(lock.withLock { pacedHz }.rounded()),
                                                      bitrate: options.depthMbps * 1_000_000)
             parameters.codec = .hevc
             parameters.asyncMode = true
@@ -760,17 +770,40 @@ final class PCVRHost: @unchecked Sendable {
 
     // MARK: Head poses and pacing
 
+    /// The display rates a headset ticks at; a measured pose rate snaps to the nearest within 4%.
+    static let displayRates: [Double] = [60, 72, 90, 96, 100, 120]
+
+    static func displayRate(forPoseRate rate: Double) -> Double? {
+        guard let nearest = displayRates.min(by: { abs($0 - rate) < abs($1 - rate) }),
+              abs(nearest - rate) <= nearest * 0.04 else { return nil }
+        return nearest
+    }
+
     private func pacingLoop() {
-        let interval = Int64(Double(HostClock.ticksPerSecond) / options.refreshHz)
         var next = HostClock.now()
+        var measuredSince = next
         while running {
+            let hz = lock.withLock { pacedHz }
+            let interval = Int64(Double(HostClock.ticksPerSecond) / hz)
             next += interval
+            if options.followsHeadset, next - measuredSince >= 2 * HostClock.ticksPerSecond {
+                let seconds = Double(next - measuredSince) / Double(HostClock.ticksPerSecond)
+                measuredSince = next
+                let (poses, current) = lock.withLock { () -> (Int, Double) in
+                    defer { posesForRate = 0 }
+                    return (posesForRate, pacedHz)
+                }
+                if let rate = Self.displayRate(forPoseRate: Double(poses) / seconds), rate != current {
+                    lock.withLock { pacedHz = rate }
+                    log.line("frame clock: \(Int(rate)) Hz, following the headset (\(String(format: "%.1f", Double(poses) / seconds)) poses/s)")
+                }
+            }
             let wait = HostClock.milliseconds(next - HostClock.now())
             if wait > 1.5 { Thread.sleep(forTimeInterval: (wait - 1) / 1000) }
             while HostClock.now() < next {}
 
             var state = ExternalHostState()
-            state.refreshMillihertz = UInt32(options.refreshHz * 1000)
+            state.refreshMillihertz = UInt32(hz * 1000)
             state.nextFrameStartTicks = next + interval
             if let (sequence, pose) = lock.withLock({ headPose }) {
                 state.poseSequence = sequence
@@ -902,6 +935,7 @@ final class PCVRHost: @unchecked Sendable {
                 if let last = viewer.lastPose, !SerialNumber.isNewer(snapshot.sequence, than: last) { continue }
                 viewer.lastPose = snapshot.sequence
                 viewer.posesReceived += 1
+                posesForRate += 1
                 if let presented = pose.presented { viewer.lastPresented = presented }
                 headPose = (snapshot.sequence, pose)
             case .message(.control, let message):

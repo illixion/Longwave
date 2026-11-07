@@ -1,10 +1,10 @@
 // longwave-pcvr-host: the v3 PCVR host (NATIVE_V3_PROTOCOL.md section 4.7).
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
-//                      [--start-mbps 30] [--refresh 90] [--log FILE] [--seconds N]
+//                      [--start-mbps 30] [--refresh auto|Hz] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
-//                      [--depth-mbps 6] [--depth-dump DIR] [--preset 1-7]
+//                      [--depth-mbps 16] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8]
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
@@ -38,7 +38,17 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
         case "--port": options.port = UInt16(value(argument)) ?? options.port
         case "--max-mbps": options.maxMbps = Int(value(argument)) ?? options.maxMbps
         case "--start-mbps": options.startMbps = Int(value(argument)) ?? options.startMbps
-        case "--refresh": options.refreshHz = Double(value(argument)) ?? options.refreshHz
+        case "--refresh":
+            let rate = value(argument)
+            if rate == "auto" {
+                options.followsHeadset = true
+            } else if let hz = Double(rate), hz >= 30, hz <= 240 {
+                options.refreshHz = hz
+                options.followsHeadset = false
+            } else {
+                print("--refresh takes auto or a rate in Hz (30-240)")
+                exit(2)
+            }
         case "--log": options.logPath = value(argument)
         case "--seconds": options.seconds = Double(value(argument))
         case "--foveation":

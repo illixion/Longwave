@@ -113,11 +113,15 @@ final class CentreEdgeMappingTests: XCTestCase {
 
     func testWireSizeIsTheRenderSizeTimesTheLengthAligned() throws {
         let render = PixelSize(width: 2400, height: 1920)
-        XCTAssertEqual(PCVRProfile.defaultWarp.wireSize(forRender: render, alignment: 16), PixelSize(width: 1536, height: 1232))
+        let shape = CentreEdgeWarp(centreSizeX: 0.4, centreSizeY: 0.4, edgeRatioX: 2.5, edgeRatioY: 2.5)
+        XCTAssertEqual(shape.wireSize(forRender: render, alignment: 16), PixelSize(width: 1536, height: 1232))
+        // The default halves a native-density eye.
+        XCTAssertEqual(PCVRProfile.defaultWarp.wireSize(forRender: PixelSize(width: 5184, height: 4160), alignment: 16),
+                       PixelSize(width: 2592, height: 2080))
         let identity = CentreEdgeWarp(centreSizeX: 1, centreSizeY: 0.5, edgeRatioX: 2, edgeRatioY: 1)
         XCTAssertEqual(identity.wireSize(forRender: render, alignment: 16), render)
         // Never larger than the render, never below one block.
-        XCTAssertEqual(PCVRProfile.defaultWarp.wireSize(forRender: PixelSize(width: 20, height: 8), alignment: 16),
+        XCTAssertEqual(shape.wireSize(forRender: PixelSize(width: 20, height: 8), alignment: 16),
                        PixelSize(width: 16, height: 8))
         XCTAssertNil(PCVRProfile.defaultWarp.wireSize(forRender: PixelSize(width: 0, height: 8), alignment: 16))
         XCTAssertNil(CentreEdgeWarp(centreSizeX: 0, centreSizeY: 1, edgeRatioX: 2, edgeRatioY: 2)

@@ -17,12 +17,16 @@ public enum PCVRProfile {
     /// eye images for a viewer that negotiated `foveatedVideo`.
     public static let hostCapabilities = gazeClientCapabilities
 
-    /// The host's default centre/edge warp: 40% of each axis at full density
-    /// around the gaze, the rest at 1/2.5. That packs each eye into 64% of its
-    /// rendered width and height (41% of the pixels). The centre spans about
-    /// ±20 degrees on a Vision Pro eye, wide enough to absorb the gaze's
-    /// capture-to-encode age and its tracking error.
-    public static let defaultWarp = CentreEdgeWarp(centreSizeX: 0.4, centreSizeY: 0.4, edgeRatioX: 2.5, edgeRatioY: 2.5)
+    /// The host's default centre/edge warp, sized for eyes rendered at the
+    /// Vision Pro's native density over its whole display frusta (about
+    /// 5200x4200): 30% of each axis at full density around the gaze, the rest
+    /// at 1/3.5. That packs each eye into half its rendered width and height (a
+    /// quarter of the pixels), so a native-density stream costs the encoder and
+    /// decoder what a 2600x2100 one would. The centre reaches about 23 degrees
+    /// from the gaze, wide enough for its capture-to-encode age and tracking
+    /// error; at its edge the compressed density is still above what the eye
+    /// resolves that far out.
+    public static let defaultWarp = CentreEdgeWarp(centreSizeX: 0.3, centreSizeY: 0.3, edgeRatioX: 3.5, edgeRatioY: 3.5)
     /// Wire eye sizes are rounded to this, so both eyes and the codec's
     /// blocks line up.
     public static let wireAlignment = 16

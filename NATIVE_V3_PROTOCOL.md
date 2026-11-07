@@ -187,9 +187,11 @@ offers `foveatedVideo` (capability 22, requires `pcvr`; both
 `PCVRProfile` client sets carry it). The host warps only when every viewer
 negotiated it, and by default (`--foveation auto`) only when they also send
 `gaze`; `--foveation on` warps without gaze around straight ahead, `off`
-never. The default warp is `PCVRProfile.defaultWarp`: centre 0.4 of each
-axis, edges at 1/2.5, so a 2400x1920 eye travels as 1536x1232 (41% of the
-pixels; wire sizes round to 16). Per frame the host projects the newest gaze
+never. The default warp is `PCVRProfile.defaultWarp`, sized for native
+density: centre 0.3 of each axis, edges at 1/3.5, so an eye rendered at the
+Vision Pro's native density over its display frusta (5184x4160, about 1860
+pixels per unit tangent over tangents -1.73..1.00 by -1.19..1.00) travels as
+2592x2080, a quarter of the pixels (wire sizes round to 16). Per frame the host projects the newest gaze
 sample (at most 100 ms old) through each eye's head-relative offset and the
 frame's render frustum with StreamWire's `GazeProjection` (the function the
 headset's `PCVREyeGeometry.gazeCentre` now calls). When no sample is fresh it

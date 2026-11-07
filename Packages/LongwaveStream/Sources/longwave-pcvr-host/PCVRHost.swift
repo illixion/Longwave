@@ -22,6 +22,10 @@ struct HostOptions {
     /// The rate estimate's starting point.
     var startMbps = 30
     var refreshHz = 90.0
+    /// NVENC preset, 1 (fastest) to 7, and the rate control's buffer in frames:
+    /// a bigger buffer lets detailed frames take more bits, for a little latency.
+    var preset = 1
+    var vbvFrames = 1
     var logPath: String?
     var seconds: Double?
     var foveation = FoveationMode.auto
@@ -182,6 +186,8 @@ final class PCVRHost: @unchecked Sendable {
 
     // Statistics, under `lock`.
     private var framesEncoded = 0
+    private var qpTotal = 0
+    private var qpMax = 0
     private var encodeMilliseconds = 0.0
     private var encodedBytes = 0
     private var framesWithoutViewers = 0
@@ -335,11 +341,13 @@ final class PCVRHost: @unchecked Sendable {
                                                      bitrate: bitrate ?? options.startMbps * 1_000_000)
             parameters.codec = .hevc
             parameters.asyncMode = true
+            parameters.preset = options.preset
+            parameters.vbvFrames = options.vbvFrames
             encoder = nil
             encoder = try VideoEncoder(device: device, parameters: parameters)
             appliedBitrate = parameters.bitrate
             parameterSets = []
-            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps")
+            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s)")
         }
         guard let encoder else { return }
         if let bitrate, abs(bitrate - appliedBitrate) * 100 > appliedBitrate * 3 {
@@ -370,7 +378,7 @@ final class PCVRHost: @unchecked Sendable {
             }
         }
 
-        let encoded: (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double)
+        let encoded: (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double, qp: Int)
         if let shape = wanted.warp, let renderPose = sideData.renderPose {
             let now = Self.now()
             let (left, right, source) = centres(renderPose: renderPose, head: head, now: now)
@@ -402,14 +410,14 @@ final class PCVRHost: @unchecked Sendable {
                 foveationStats.lastCentres = (left, right)
             }
             encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
-                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
             }
         } else {
             encoded = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
-                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
             }
         }
-        let (accessUnit, isIDR, milliseconds) = encoded
+        let (accessUnit, isIDR, milliseconds, qp) = encoded
         let captureTime = HostClock.nanoseconds(frame.presentTicks)
         // The frame (and its ring slot) is released when `frame` goes out of
         // scope: the encode (and the warp before it) has finished with the texture.
@@ -429,6 +437,8 @@ final class PCVRHost: @unchecked Sendable {
             framesEncoded += 1
             encodeMilliseconds += milliseconds
             encodedBytes += accessUnit.count
+            qpTotal += qp
+            qpMax = max(qpMax, qp)
             if let newFormat {
                 format = newFormat
                 for viewer in viewers.values where viewer.confirmed { sendFormat(to: viewer) }
@@ -1013,9 +1023,10 @@ final class PCVRHost: @unchecked Sendable {
         lastStats = now
         let source = self.source?.statistics
         let superseded = frameLock.withLock { framesSuperseded }
-        var line = String(format: "encoded %.1f fps, %.2f ms avg, %.1f Mbps; ", Double(framesEncoded) / seconds,
+        var line = String(format: "encoded %.1f fps, %.2f ms avg, %.1f Mbps, QP %.1f avg %d max; ", Double(framesEncoded) / seconds,
                           framesEncoded > 0 ? encodeMilliseconds / Double(framesEncoded) : 0,
-                          Double(encodedBytes) * 8 / seconds / 1e6)
+                          Double(encodedBytes) * 8 / seconds / 1e6,
+                          framesEncoded > 0 ? Double(qpTotal) / Double(framesEncoded) : 0, qpMax)
         if let source {
             line += "source \(source.attached ? "attached pid \(source.producerPID)" : "waiting"), delivered \(source.delivered), "
                 + "superseded \(superseded), no viewer \(framesWithoutViewers), no render pose \(badSideData)"
@@ -1053,6 +1064,8 @@ final class PCVRHost: @unchecked Sendable {
         framesEncoded = 0
         encodeMilliseconds = 0
         encodedBytes = 0
+        qpTotal = 0
+        qpMax = 0
         for viewer in viewers.values where viewer.confirmed {
             guard let session = endpoint.sessions[viewer.index]?.session else { continue }
             let rate = viewer.sender.controller

@@ -4,7 +4,8 @@
 //                      [--start-mbps 30] [--refresh 90] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
-//                      [--depth-mbps 6]
+//                      [--depth-mbps 6] [--depth-dump DIR] [--preset 1-7]
+//                      [--vbv-frames 1-8]
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
 // it: `auto` (the default) when they also send gaze, `on` even without (the
@@ -73,6 +74,18 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
             }
             options.depthMbps = mbps
         case "--depth-dump": options.depthDump = value(argument)
+        case "--preset":
+            guard let preset = Int(value(argument)), (1...7).contains(preset) else {
+                print("--preset takes 1 (fastest) to 7")
+                exit(2)
+            }
+            options.preset = preset
+        case "--vbv-frames":
+            guard let frames = Int(value(argument)), (1...8).contains(frames) else {
+                print("--vbv-frames takes 1 to 8")
+                exit(2)
+            }
+            options.vbvFrames = frames
         default:
             print("unknown argument \(argument)")
             exit(2)

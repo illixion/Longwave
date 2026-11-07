@@ -62,6 +62,9 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
     /// Present time minus the frame's arrival: time spent waiting for a display slot.
     var arrivalToPresent: Double?
     var predictionHorizon: Double = 0
+    /// Pose snapshot to the first drawable its frame could be shown in, ms:
+    /// 10th, 50th and 90th percentile of the last 120 frames.
+    var readiness: [Double]?
     var framesWithoutAnchor = 0
     /// Frames shown with the depth warp, and how many of those had no depth
     /// picture (warped at `PCVRShellDepthWarp.planeDistance`).
@@ -409,6 +412,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         guard now - window.start >= 0.5 else { return }
         let counts = mailbox.counts
         let horizon = poseProducer.predictionHorizon
+        let readiness = poseProducer.readinessQuantiles.map { [$0.low * 1000, $0.median * 1000, $0.high * 1000] }
         let snapshot = window
         let gpu = gpuTimes.withLock { times in
             defer { times.removeAll(keepingCapacity: true) }
@@ -429,6 +433,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             stats.poseToPresent = snapshot.poseToPresent.mean.map { $0 * 1000 }
             stats.arrivalToPresent = snapshot.arrivalToPresent.mean.map { $0 * 1000 }
             stats.predictionHorizon = horizon * 1000
+            stats.readiness = readiness
             stats.framesWithoutAnchor += snapshot.withoutAnchor
             stats.worldTracking = "\(tracking)"
         }

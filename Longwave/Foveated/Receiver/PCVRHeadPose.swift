@@ -143,6 +143,14 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         return min(max(measured ?? 0, 0), Self.maximumPredictionHorizon)
     }
 
+    /// The recorded readiness latencies at 10, 50 and 90 per cent, seconds.
+    var readinessQuantiles: (low: TimeInterval, median: TimeInterval, high: TimeInterval)? {
+        let sorted = readinessLatencies.sorted()
+        guard !sorted.isEmpty else { return nil }
+        func at(_ q: Double) -> TimeInterval { sorted[min(sorted.count - 1, Int(q * Double(sorted.count - 1) + 0.5))] }
+        return (at(0.1), at(0.5), at(0.9))
+    }
+
     /// Records the earliest display time a frame could have been shown at (its
     /// decode finished, plus what the presenter needs to put it up), for the
     /// `.readiness` horizon.

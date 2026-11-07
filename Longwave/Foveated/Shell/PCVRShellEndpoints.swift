@@ -101,6 +101,7 @@ enum PCVRShellEndpoints {
             "arrivalToPresentMs": s.arrivalToPresent, "gpuTimeMs": s.gpuTime, "gpuTimeMaxMs": s.gpuTimeMax,
         ]
         for (key, value) in optional { if let value { stats[key] = value } }
+        if let readiness = s.readiness { stats["readinessMs"] = readiness }
         let warp = session.renderOptions.depthWarp
         var body: [String: Any] = [
             "presenting": session.isPresenting,

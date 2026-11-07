@@ -298,11 +298,13 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
                             mix(u.displayTangents.w, u.displayTangents.z, t.y), -1.0);
         float facing = dot(u.displayPlane.xyz, ray);
         float distance = facing > 1e-6 ? u.displayPlane.w / facing : 0.0;
+        // Never 0 or beyond the far plane (reverse Z): the compositor clips
+        // those pixels and shows them black (`PCVRDepthWarper`'s display path).
         if (distance <= 0.0) {
-            out.depth = 0.0;
+            out.depth = 1e-6;
         } else {
             float4 clip = u.displayProjection * float4(ray * distance, 1.0);
-            out.depth = saturate(clip.z / clip.w);
+            out.depth = clamp(clip.z / clip.w, 1e-6, 1.0);
         }
         return out;
     }

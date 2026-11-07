@@ -129,6 +129,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         }
     }
 
+    /// The layer's far plane, metres.
+    static let farPlaneMetres: Float = 10_000
+
     /// Makes the layer's configuration: dedicated layout (one texture and one
     /// rasterization rate map per eye, which the receiver's per-view passes need
     /// to apply foveation correctly) with foveation when the device offers both.
@@ -138,6 +141,11 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
                           configuration: inout LayerRenderer.Configuration) {
         configuration.colorFormat = .bgra8Unorm_srgb
         configuration.depthFormat = .depth32Float
+        // The compositor clips what lies past the far plane when it reprojects
+        // (shown black), so push it past anything a stream draws; the depth
+        // written is never beyond it (`PCVRDepthWarper`). Only the far plane:
+        // it rejects near planes below its own minimum (Oneiros).
+        configuration.defaultDepthRange.x = max(configuration.defaultDepthRange.x, Self.farPlaneMetres)
         let foveated = capabilities.supportsFoveation
             && capabilities.supportedLayouts(options: .foveationEnabled).contains(.dedicated)
         configuration.isFoveationEnabled = foveated

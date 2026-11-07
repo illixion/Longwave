@@ -683,6 +683,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
 
     // Display views (a CompositorServices drawable): pass two as a fragment
     // shader over each view, writing colour and the hit's depth.
+    #define PCVR_FAR_DEPTH 1e-6
     struct PCVRDepthWarpView {
         float4x4 projection;  // clip from the display eye, in the presenter's depth convention
         uint4 index;          // x: which uniforms and warp-map half
@@ -722,15 +723,20 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
             out.color = float4(source.sample(linear, uv).rgb, 1);
         }
-        // The hit point, from the source eye back into the display eye.
-        out.depth = 0;
+        // The hit point, from the source eye back into the display eye. Never
+        // depth 0 (reverse Z: at infinity) or beyond the far plane: the
+        // visionOS compositor clips those pixels when it reprojects and shows
+        // them black, as Oneiros found for its sky (2026-08-27); the sky here
+        // went black the same way (2026-11-08). A hair inside the far plane
+        // instead.
+        out.depth = PCVR_FAR_DEPTH;
         if (hit.w > 1e-6) {
             float4 st = u.sourceTangents;
             float2 tangent = float2(st.x + hit.uv.x * (st.y - st.x), st.z - hit.uv.y * (st.z - st.w));
             float3 inSource = float3(tangent, -1) / hit.w;
             float3 inDisplay = transpose(u.rotation) * (inSource - u.translation.xyz);
             float4 clip = v.projection * float4(inDisplay, 1);
-            if (clip.w > 1e-6) out.depth = saturate(clip.z / clip.w);
+            if (clip.w > 1e-6) out.depth = clamp(clip.z / clip.w, PCVR_FAR_DEPTH, 1.0);
         }
         return out;
     }

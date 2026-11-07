@@ -190,6 +190,33 @@ final class PCVREyeMeshTests: XCTestCase {
         }
     }
 
+    /// With a skirt the outermost ring of lines lies past the frustum and reads
+    /// the edge texels; the lines inside are those of a grid two cells smaller.
+    func testSkirtSmearsTheEdgesPastTheFrustum() throws {
+        let decoded = try frame(wire: Self.renderEye, foveation: nil, pose: .identity)
+        let grid = PCVREyeMesh.Grid(columns: 20, rows: 16)
+        let skirted = PCVREyeMeshBuilder.Eye(frame: decoded, eye: 0, grid: grid, distance: 10, flipV: true, skirt: 2)
+        let plain = PCVREyeMeshBuilder.Eye(frame: decoded, eye: 0, grid: grid.inner, distance: 10, flipV: true)
+        let out = try run(skirted, eyeIndex: 0, depth: nil, grid: grid)
+        let inner = try run(plain, eyeIndex: 0, depth: nil, grid: grid.inner)
+        let t = Self.fov.tangents
+        for j in 0...grid.rows {
+            for i in 0...grid.columns {
+                let k = (j * (grid.columns + 1) + i) * 5
+                let tx = out[k] / 10, ty = out[k + 1] / 10
+                if i == 0 { XCTAssertEqual(tx, t.x - 2, accuracy: 1e-4) }
+                if i == grid.columns { XCTAssertEqual(tx, t.y + 2, accuracy: 1e-4) }
+                if j == 0 { XCTAssertEqual(ty, t.z + 2, accuracy: 1e-4) }
+                if j == grid.rows { XCTAssertEqual(ty, t.w - 2, accuracy: 1e-4) }
+                if i == 0 { XCTAssertEqual(out[k + 3], 0.5 / Float(decoded.texture.width), accuracy: 1e-6, "edge texel") }
+                if (1..<grid.columns).contains(i), (1..<grid.rows).contains(j) {
+                    let m = ((j - 1) * (grid.inner.columns + 1) + (i - 1)) * 5
+                    for c in 0..<5 { XCTAssertEqual(out[k + c], inner[m + c], accuracy: 1e-4) }
+                }
+            }
+        }
+    }
+
     func testGridIndicesCoverEveryCellFacingTheEye() {
         let grid = PCVREyeMesh.Grid(columns: 4, rows: 3)
         let indices = grid.indices

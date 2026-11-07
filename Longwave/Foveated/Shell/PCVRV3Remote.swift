@@ -60,15 +60,47 @@ nonisolated final class PCVRDepthStore: @unchecked Sendable {
     final class Entry: @unchecked Sendable {
         let frameNumber: UInt32
         let map: PCVRDepthMap
+        /// The same values on the CPU (both eyes side by side, rows packed),
+        /// for reading depth at a point, such as where the wearer looks.
+        let values: [UInt8]
+        let width: Int
+        let height: Int
         private let release: (@Sendable () -> Void)?
 
-        init(frameNumber: UInt32, map: PCVRDepthMap, release: (@Sendable () -> Void)?) {
+        init(frameNumber: UInt32, map: PCVRDepthMap, values: [UInt8] = [], width: Int = 0, height: Int = 0,
+             release: (@Sendable () -> Void)?) {
             self.frameNumber = frameNumber
             self.map = map
+            self.values = values
+            self.width = width
+            self.height = height
             self.release = release
         }
 
         deinit { release?() }
+
+        /// Depth in metres around render UV `uv` of `eye` (top-left origin), over
+        /// `radius` texels each way: the value `nearness` of the way from the
+        /// farthest to the nearest (0.5 the median), so a few stray values can't
+        /// move it. Infinity for the far end; nil without CPU values.
+        func depth(eye: Int, uv: SIMD2<Float>, radius: Int, nearness: Float = 0.5) -> Float? {
+            guard width >= 2, height >= 1, values.count >= width * height else { return nil }
+            let eyeWidth = width / 2
+            let cx = eye * eyeWidth + Int(min(max(uv.x, 0), 1) * Float(eyeWidth - 1))
+            let cy = Int(min(max(uv.y, 0), 1) * Float(height - 1))
+            var window: [UInt8] = []
+            window.reserveCapacity((2 * radius + 1) * (2 * radius + 1))
+            for y in max(cy - radius, 0)...min(cy + radius, height - 1) {
+                for x in max(cx - radius, eye * eyeWidth)...min(cx + radius, eye * eyeWidth + eyeWidth - 1) {
+                    window.append(values[y * width + x])
+                }
+            }
+            guard !window.isEmpty else { return nil }
+            window.sort() // far (small values) first
+            let index = min(max(Int((Float(window.count - 1) * nearness).rounded()), 0), window.count - 1)
+            let raw = Float(window[index]) / 255
+            return map.depth(atValue: raw * map.valueScale + map.valueOffset)
+        }
     }
 
     private static let kept = 6
@@ -897,10 +929,29 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
             var map = PCVRDepthMap(texture: texture.texture, near: near, far: far)
             map.valueScale = scale
             map.valueOffset = offset
-            store.deliver(PCVRDepthStore.Entry(frameNumber: frameNumber, map: map,
+            let (values, width, height) = Self.lumaCopy(imageBuffer)
+            store.deliver(PCVRDepthStore.Entry(frameNumber: frameNumber, map: map, values: values, width: width,
+                                               height: height,
                                                release: { withExtendedLifetime((texture, imageBuffer)) {} }))
         }
         if status != noErr { fail("depth decode refused (\(status))") }
+    }
+
+    /// The luma plane's bytes, rows packed: a depth picture is small (168 KB
+    /// at native density), and the presenter reads points of it on the CPU.
+    private static func lumaCopy(_ buffer: CVPixelBuffer) -> (values: [UInt8], width: Int, height: Int) {
+        guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return ([], 0, 0) }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let width = CVPixelBufferGetWidthOfPlane(buffer, 0), height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0), width > 0, height > 0 else { return ([], 0, 0) }
+        var values = [UInt8](repeating: 0, count: width * height)
+        values.withUnsafeMutableBytes { out in
+            for y in 0..<height {
+                memcpy(out.baseAddress! + y * width, base + y * stride, width)
+            }
+        }
+        return (values, width, height)
     }
 
     private func fail(_ reason: String) {

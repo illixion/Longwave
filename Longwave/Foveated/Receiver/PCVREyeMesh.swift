@@ -45,6 +45,9 @@ nonisolated enum PCVREyeMesh {
 
         var vertexCount: Int { (columns + 1) * (rows + 1) }
 
+        /// The cells inside the frustum when the outermost ring is a skirt.
+        var inner: Grid { Grid(columns: columns - 2, rows: rows - 2) }
+
         /// Two triangles per cell, row 0 at the top, wound to face the eye.
         var indices: [UInt32] {
             var result: [UInt32] = []
@@ -167,6 +170,14 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
         var distance: Float
         /// Texture v runs top-down (true) or bottom-up.
         var flipV: Bool
+        /// How far past the frustum, in render units per axis (fractions of its
+        /// width and height), the grid's outermost lines go, reading the edge
+        /// texels: the picture smeared outward, so a head turn faster than the
+        /// prediction shows a stretched edge instead of the room. Zero for
+        /// none; then `columns` and `rows` cover the frustum with every cell.
+        /// With a skirt they cover it with all but the outermost ring, so
+        /// build them for two cells fewer (`PCVREyeMesh.Grid.inner`).
+        var skirt: SIMD2<Float> = .zero
     }
 
     /// Mirrors `PCVREyeMeshUniforms`.
@@ -189,6 +200,7 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
         var flags: UInt32
         var columns: UInt32
         var rows: UInt32
+        var skirt: SIMD2<Float>
     }
 
     let device: any MTLDevice
@@ -233,8 +245,8 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
             depthDecode: depth?.decode ?? .zero,
             depthSize: SIMD2(Float(depthTexture.width), Float(depthTexture.height)),
             distance: eye.distance,
-            flags: (eye.flipV ? 1 : 0) | (depth != nil ? 2 : 0),
-            columns: UInt32(grid.columns), rows: UInt32(grid.rows))
+            flags: (eye.flipV ? 1 : 0) | (depth != nil ? 2 : 0) | (eye.skirt != .zero ? 4 : 0),
+            columns: UInt32(grid.columns), rows: UInt32(grid.rows), skirt: eye.skirt)
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(buffer, offset: 0, index: 0)
         encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -279,7 +291,9 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
         uint flags;
         uint columns;
         uint rows;
+        float2 skirt;
     };
+
 
     struct PCVRMeshVertex {
         packed_float3 position;
@@ -298,13 +312,23 @@ nonisolated final class PCVREyeMeshBuilder: @unchecked Sendable {
         return ends[3];
     }
 
+    // One axis's line: inside the frustum from the axis, or with a skirt the
+    // outermost two lines past it (the axis then covers lines 1...n-1).
+    static float pcvrSkirtedCoordinate(uint i, uint n, bool skirted, float skirt, float4 ends, float4 cells) {
+        if (!skirted) return pcvrGridCoordinate(i, ends, cells);
+        if (i == 0) return -skirt;
+        if (i == n) return 1 + skirt;
+        return pcvrGridCoordinate(i - 1, ends, cells);
+    }
+
     kernel void pcvrEyeMesh(device PCVRMeshVertex *vertices [[buffer(0)]],
                             constant PCVREyeMeshUniforms &u [[buffer(1)]],
                             texture2d<float, access::read> depth [[texture(0)]],
                             uint2 gid [[thread_position_in_grid]]) {
         if (gid.x > u.columns || gid.y > u.rows) return;
-        float2 render = float2(pcvrGridCoordinate(gid.x, u.columnEnds, u.columnCells),
-                               pcvrGridCoordinate(gid.y, u.rowEnds, u.rowCells));
+        bool skirted = (u.flags & 4u) != 0;
+        float2 render = float2(pcvrSkirtedCoordinate(gid.x, u.columns, skirted, u.skirt.x, u.columnEnds, u.columnCells),
+                               pcvrSkirtedCoordinate(gid.y, u.rows, skirted, u.skirt.y, u.rowEnds, u.rowCells));
         float2 tangent = float2(u.tangents.x + render.x * (u.tangents.y - u.tangents.x),
                                 u.tangents.z - render.y * (u.tangents.z - u.tangents.w));
         float z = u.distance;
@@ -343,8 +367,11 @@ extension PCVREyeMeshBuilder.Eye {
     /// and its half of the frame texture (the other half when `swapped`).
     /// `window` (signed tangents, inside the frustum) is how much of the
     /// frustum to cover; `meshFromWorld` places the mesh's own space.
+    /// `skirt`: how far past each frustum edge to smear the picture, in
+    /// tangent (0 for none; `grid` then keeps its outermost ring for it).
     init(frame: PCVRDecodedFrame, eye: Int, window: SIMD4<Float>? = nil, grid: PCVREyeMesh.Grid,
-         meshFromWorld: simd_float4x4 = matrix_identity_float4x4, distance: Float, flipV: Bool, swapped: Bool = false) {
+         meshFromWorld: simd_float4x4 = matrix_identity_float4x4, distance: Float, flipV: Bool, swapped: Bool = false,
+         skirt: Float = 0) {
         let view = frame.renderPose.eyes[eye]
         let t = view.fieldOfView.tangents
         let w = window ?? t
@@ -354,15 +381,17 @@ extension PCVREyeMeshBuilder.Eye {
         let texture = frame.texture
         let half: Float = (eye == 0) != swapped ? 0 : 0.5
         let halfU = 0.5 / Float(texture.width), halfV = 0.5 / Float(texture.height)
+        let cells = skirt > 0 ? grid.inner : grid
         self.init(meshFromEye: meshFromWorld * view.pose.matrix, tangents: t,
                   columns: PCVREyeMesh.axis(from: (w.x - t.x) / width, to: (w.y - t.x) / width,
-                                            map: maps?.x, cells: grid.columns),
+                                            map: maps?.x, cells: cells.columns),
                   rows: PCVREyeMesh.axis(from: (t.z - w.z) / height, to: (t.z - w.w) / height,
-                                         map: maps?.y, cells: grid.rows),
+                                         map: maps?.y, cells: cells.rows),
                   wireX: wire.x, wireY: wire.y,
                   textureRect: SIMD4(half, 0, 0.5, 1),
                   textureBounds: SIMD4(half + halfU, halfV, half + 0.5 - halfU, 1 - halfV),
-                  distance: distance, flipV: flipV)
+                  distance: distance, flipV: flipV,
+                  skirt: skirt > 0 ? SIMD2(skirt / width, skirt / height) : .zero)
     }
 }
 #endif

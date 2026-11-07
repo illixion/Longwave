@@ -26,6 +26,10 @@ enum FoveatedGazeDebugEndpoints {
         /// Since capture, on this headset's clock; absent when the feed gives no
         /// capture time (then the native PCVR uplink sends no gaze).
         var captureAgeSeconds: Double?
+        /// A local HTTP feed's last raw stamp, seconds before now on the uptime and
+        /// continuous clocks (negative: ahead of now), believed or not.
+        var stampOffsetUptimeSeconds: Double?
+        var stampOffsetContinuousSeconds: Double?
     }
 
     static func register() {
@@ -38,10 +42,13 @@ enum FoveatedGazeDebugEndpoints {
                 #if os(visionOS) && !targetEnvironment(simulator)
                 guard let manager = FoveatedConnectionManager.current else { return Reply() }
                 let s = manager.gazeSample
+                let offsets = (manager.gazeFeed?.gaze as? RAVEHTTPGazeSource)?.lastStampOffsets
                 return Reply(feed: manager.gazeFeed?.name, sequence: s?.sequence,
                              direction: s.map { [$0.direction.x, $0.direction.y, $0.direction.z] },
                              distance: s?.distance, ageSeconds: s.map { Date().timeIntervalSince($0.receivedAt) },
-                             captureAgeSeconds: s?.localCaptureTime.map { CACurrentMediaTime() - $0 })
+                             captureAgeSeconds: s?.localCaptureTime.map { CACurrentMediaTime() - $0 },
+                             stampOffsetUptimeSeconds: offsets?.uptime,
+                             stampOffsetContinuousSeconds: offsets?.continuous ?? nil)
                 #else
                 return Reply()
                 #endif

@@ -38,7 +38,7 @@ final class PCVRShellSession {
     /// Set before starting a run to the official feed's `receiver.source`.
     /// This borrows readings; it never starts another immersive session.
     /// Nil (or a detached feed) keeps gaze invalid.
-    var gazeSource: RAVEPushGazeSource?
+    @ObservationIgnored var gazeSource: (any RAVEGazeSource & Sendable)?
     private(set) var v3Status: PCVRV3Status?
     @ObservationIgnored private var v3Remote: PCVRV3Remote?
 
@@ -93,7 +93,8 @@ final class PCVRShellSession {
         }
         if let v3Target {
             do {
-                if let remote = try PCVRV3Remote(device: layerRenderer.device, mailbox: mailbox, target: v3Target) {
+                if let remote = try PCVRV3Remote(device: layerRenderer.device, mailbox: mailbox, target: v3Target,
+                                                  offersGaze: gazeSource != nil) {
                     poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
                     remote.start()
                     v3Remote = remote

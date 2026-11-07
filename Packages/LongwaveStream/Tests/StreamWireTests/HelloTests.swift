@@ -90,6 +90,20 @@ final class HelloTests: XCTestCase {
         XCTAssertEqual(Self.hello.sessionCapabilities(from: ack), CapabilitySet([.h264, .nack, .gamepad]))
     }
 
+    func testPCVRGazeIsNegotiatedOnlyWhenTheHeadsetOffersIt() {
+        func session(_ offered: CapabilitySet) -> CapabilitySet {
+            let hello = ClientHello(capabilities: offered, platform: .visionOS, deviceName: "Vision Pro")
+            let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.hostCapabilities,
+                                   platform: .windows, keyCodeSpace: .hidUsage, grants: [.screen],
+                                   maxUDPPayload: 1_452)
+            return hello.sessionCapabilities(from: ack)
+        }
+        XCTAssertTrue(session(PCVRProfile.gazeClientCapabilities).contains(.gaze))
+        XCTAssertTrue(session(PCVRProfile.gazeClientCapabilities).contains(.pcvr))
+        XCTAssertFalse(session(PCVRProfile.clientCapabilities).contains(.gaze))
+        XCTAssertTrue(session(PCVRProfile.clientCapabilities).contains(.pcvr))
+    }
+
     func testRefusalIsAnAckWithNoGrants() {
         let refusal = HostHelloAck(answering: Self.hello, hostCapabilities: .known, platform: .windows,
                                    keyCodeSpace: .hidUsage, grants: [], maxUDPPayload: 1_200)

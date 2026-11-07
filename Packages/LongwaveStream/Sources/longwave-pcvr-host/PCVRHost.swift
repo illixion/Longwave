@@ -364,7 +364,7 @@ final class PCVRHost: @unchecked Sendable {
         var grants = pairedDevices.first { $0.id == deviceID }?.sessionGrants ?? []
         // This host streams only PCVR: a client that can't take it is refused.
         if !hello.capabilities.contains(.pcvr) || !grants.contains(.screen) { grants = [] }
-        let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.clientCapabilities, platform: .windows,
+        let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.hostCapabilities, platform: .windows,
                                keyCodeSpace: .hidUsage, grants: grants, maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
                                hostName: String(ProcessInfo.processInfo.hostName.prefix(HelloLimits.maxNameBytes)),
                                software: "Longwave PCVR host")

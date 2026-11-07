@@ -8,4 +8,10 @@ public enum PCVRProfile {
     public static let port: UInt16 = 4857
     /// What a PCVR client offers in its hello (each implies `sideData`).
     public static let clientCapabilities = CapabilitySet([.nack, .sideData, .pcvr])
+    /// What a PCVR client offers when it has a gaze source with capture times:
+    /// the head-pose uplink then carries the wearer's gaze.
+    public static let gazeClientCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .gaze])
+    /// What the PCVR host answers with. It accepts gaze and hands it to the
+    /// frame source's host state, where the compositor reads it.
+    public static let hostCapabilities = gazeClientCapabilities
 }

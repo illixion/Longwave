@@ -88,11 +88,13 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     static let maximumPredictionHorizon: TimeInterval = 0.1
 
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
-    /// The official provider's push source is safe to read on the render thread.
-    /// The session owner attaches/detaches the feed; its reset clears this view.
-    private let gazeSource: RAVEPushGazeSource?
+    /// A thread-safe gaze source (the official provider's push source, or a
+    /// local feed's), read on the render thread. Only samples with a local
+    /// capture time count. The session owner attaches/detaches the feed; its
+    /// reset clears this view.
+    private let gazeSource: (any RAVEGazeSource & Sendable)?
 
-    init(gazeSource: RAVEPushGazeSource? = nil) {
+    init(gazeSource: (any RAVEGazeSource & Sendable)? = nil) {
         self.gazeSource = gazeSource
     }
 

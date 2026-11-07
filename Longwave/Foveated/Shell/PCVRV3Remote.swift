@@ -34,6 +34,9 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     var megabitsPerSecond: Double = 0
     var decodeMilliseconds: Double?
     var posesPerSecond: Double = 0
+    /// Whether the host accepted `gaze`, and how many poses a second carried a sample.
+    var gazeNegotiated = false
+    var gazePerSecond: Double = 0
     var picture = "—"
 }
 
@@ -91,19 +94,25 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         var framesWithoutPose = 0
         var payloadBytes = 0
         var posesSent = 0
+        var gazeSent = 0
         var posesUnsynced = 0
     }
 
     private static let retryInterval: UInt64 = 2_000_000_000
     private static let statsInterval: UInt64 = 5_000_000_000
 
-    init?(device: any MTLDevice, mailbox: PCVRFrameMailbox, target: PCVRV3Target) throws {
+    /// - Parameter offersGaze: Offer `gaze` in the hello. Pass true only when
+    ///   the pose producer has a gaze source with local capture times; the
+    ///   uplink then carries fresh samples and stays empty otherwise.
+    init?(device: any MTLDevice, mailbox: PCVRFrameMailbox, target: PCVRV3Target,
+          offersGaze: Bool = false) throws {
         guard let psk = NativeV3.psk(for: target.credential) else { return nil }
         self.target = target
         self.psk = psk
         self.mailbox = mailbox
         decoder = try PCVRHEVCDecoder(device: device, mailbox: mailbox)
-        hello = ClientHello(capabilities: PCVRProfile.clientCapabilities, platform: .visionOS,
+        hello = ClientHello(capabilities: offersGaze ? PCVRProfile.gazeClientCapabilities : PCVRProfile.clientCapabilities,
+                            platform: .visionOS,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload, intent: [.screen],
                             deviceName: NativeV3.helloName(target.deviceName), software: NativeV3.softwareVersion)
         decoder.onDecodeError = { [weak self] in
@@ -232,6 +241,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             return
         }
         gazeNegotiated = capabilities.contains(.gaze)
+        if hello.capabilities.contains(.gaze) {
+            log.notice("v3 PCVR gaze \(self.gazeNegotiated ? "negotiated" : "not offered by the PC", privacy: .public)")
+        }
         var session = opened
         session.setPathCeiling(ack.maxUDPPayload, now: now)
         self.session = session
@@ -386,6 +398,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let state = StateSnapshot(sequence: snapshot.sequence, hostTime: hostNow, payload: .headPose(pose))
         session?.send(state)
         counters.posesSent += 1
+        if pose.gaze != nil { counters.gazeSent += 1 }
         flush(now: now)
     }
 
@@ -446,6 +459,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let mbps = Double(counters.payloadBytes) * 8 / elapsed / 1e6
         let decodeMs = decoded.frames > 0 ? decoded.decodeSeconds / Double(decoded.frames) * 1000 : nil
         let poseRate = Double(counters.posesSent) / elapsed
+        let gazeRate = Double(counters.gazeSent) / elapsed
+        let gazeNegotiated = gazeNegotiated
         let lost = receiver.statistics.framesLost
         status.withLock {
             $0.framesDecoded += decoded.frames
@@ -455,8 +470,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             $0.megabitsPerSecond = mbps
             $0.decodeMilliseconds = decodeMs
             $0.posesPerSecond = poseRate
+            $0.gazeNegotiated = gazeNegotiated
+            $0.gazePerSecond = gazeRate
         }
-        log.notice("v3 PCVR: \(Double(self.counters.framesAssembled) / elapsed, format: .fixed(precision: 1), privacy: .public) fps received, \(Double(decoded.frames) / elapsed, format: .fixed(precision: 1), privacy: .public) decoded, \(decoded.errors, privacy: .public) decode errors, \(lost, privacy: .public) lost in total, \(self.counters.framesWithoutPose, privacy: .public) without a render pose; \(mbps, format: .fixed(precision: 1), privacy: .public) Mbps, RTT \(rtt ?? -1, format: .fixed(precision: 1), privacy: .public) ms, decode \(decodeMs ?? -1, format: .fixed(precision: 2), privacy: .public) ms; poses \(poseRate, format: .fixed(precision: 1), privacy: .public)/s sent, \(self.counters.posesUnsynced, privacy: .public) held for clock sync")
+        log.notice("v3 PCVR: \(Double(self.counters.framesAssembled) / elapsed, format: .fixed(precision: 1), privacy: .public) fps received, \(Double(decoded.frames) / elapsed, format: .fixed(precision: 1), privacy: .public) decoded, \(decoded.errors, privacy: .public) decode errors, \(lost, privacy: .public) lost in total, \(self.counters.framesWithoutPose, privacy: .public) without a render pose; \(mbps, format: .fixed(precision: 1), privacy: .public) Mbps, RTT \(rtt ?? -1, format: .fixed(precision: 1), privacy: .public) ms, decode \(decodeMs ?? -1, format: .fixed(precision: 2), privacy: .public) ms; poses \(poseRate, format: .fixed(precision: 1), privacy: .public)/s sent (gaze in \(gazeRate, format: .fixed(precision: 1), privacy: .public)/s), \(self.counters.posesUnsynced, privacy: .public) held for clock sync")
         counters = Counters()
     }
 

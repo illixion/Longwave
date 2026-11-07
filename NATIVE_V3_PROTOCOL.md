@@ -123,8 +123,14 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   conversion seam. It requires negotiated `gaze`, a valid capture timestamp,
   and a finite nonzero direction. Samples older than 100 ms or from the
   future are omitted. This is an initial safety budget, pending measurement.
-  The shipping PCVR capability set still does not advertise `gaze`; the
-  provider-presenter integration and host consumption must land first.
+  Since 2026-11-07 the headset offers `gaze` (`PCVRProfile.gazeClientCapabilities`)
+  only when its pose producer has a gaze source, and the host accepts it
+  (`PCVRProfile.hostCapabilities`) and writes each sample into the frame
+  source's host state (`gaze_valid`, `gaze_direction`, `gaze_distance`,
+  `gaze_qpc`). A headset with no source keeps offering the plain set, so
+  nothing changes for it. What the compositor does with the sample is its
+  own business (the private broker feeds it to games' eye tracking); the
+  host does not yet foveate the encode by it (no warp, below).
 - Frames without render-pose metadata or a usable host-clock conversion are
   not presented with a fabricated timestamp. After skipping reference frames,
   the receiver requests a key frame to resume decoding cleanly.
@@ -168,10 +174,16 @@ is the headset projection reference: asymmetric frusta, eye rotation, finite
 focus parallax, unknown depth, top-left UVs and invalid/behind-eye gaze are
 covered by simulator tests. These references are not GPU encoder/unwarp passes.
 
+**Gaze sources (2026-11-07).** `PCVRHeadPoseProducer` takes any thread-safe
+`RAVEGazeSource`, not only the provider's push source, and still sends only
+samples with a `localCaptureTime`. RAVEEngine's `RAVEHTTPGazeSource` can now
+supply one, from a local endpoint's `captureNs` (this device's uptime clock),
+when the endpoint is marked local and the stamp is within a second of now.
+`PCVRV3Status` reports `gazeNegotiated` and `gazePerSecond`.
+
 **Next local work:** implement and compare GPU sampling against the reference
-on synthetic textures, including filtering at the density boundaries. Enable
-`gaze` negotiation only once the
-host consumes it and the provider presenter supplies the source. PC/device
+on synthetic textures, including filtering at the density boundaries, then
+let the host foveate the encode by the negotiated gaze. PC/device
 gates then measure capture-to-render gaze age, saccades, channel loss/reconnect,
 pacing and image quality. Apple's provider entitlement remains pending.
 

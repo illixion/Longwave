@@ -263,28 +263,35 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float w;     // inverse depth there, in the source eye
     };
 
-    // The scene's inverse depth at a source render UV: the four texels around
-    // it interpolated where they agree, else the one nearest the point, so an
-    // edge stays a step at the texel boundary (PCVREyeMeshBuilder takes the
-    // nearest depth of the four instead, which here would grow every near
-    // shape by a texel and drag a rim of background with it).
+    // The scene's inverse depth at a source render UV: five bilinear taps, at
+    // the point and two texels each way, averaged where they agree (a tent
+    // about five texels wide: an 8-bit depth picture holds a slanted surface
+    // as terraces a code apart, and under a few centimetres of shift each
+    // terrace moved a pixel more than the next, a shimmer over text and
+    // grids on every head movement, headset 2026-11-07), else the texel
+    // under the point, so an edge stays a step at the texel boundary
+    // (PCVREyeMeshBuilder takes the nearest depth of the four around a vertex
+    // instead, which here would grow every near shape by a texel and drag a
+    // rim of background with it).
     static float pcvrDepthWarpScene(float2 renderUV, constant PCVRDepthWarpUniforms &u,
-                                    texture2d<float, access::read> depth) {
+                                    texture2d<float, access::sample> depth, sampler linear) {
         if (!(u.flags & 1u)) return u.planeInverse;
         float2 position = (u.depthRect.xy + saturate(renderUV) * u.depthRect.zw) * u.depthSize - 0.5;
-        int2 base = int2(floor(position));
-        float2 f = position - float2(base);
-        int2 low = int2(u.depthTexels.xy), high = int2(u.depthTexels.zw);
-        float w[4];
-        for (int k = 0; k < 4; k++) {
-            uint2 p = uint2(clamp(base + int2(k & 1, k >> 1), low, high));
-            float value = saturate(depth.read(p).r * u.depthDecode.x + u.depthDecode.y);
+        float2 low = u.depthTexels.xy, high = u.depthTexels.zw;
+        const float2 offsets[5] = {float2(0, 0), float2(-2, 0), float2(2, 0), float2(0, -2), float2(0, 2)};
+        float w[5];
+        float nearest = -1e30, farthest = 1e30;
+        for (int k = 0; k < 5; k++) {
+            float2 p = clamp(position + offsets[k], low, high);
+            float value = saturate(depth.sample(linear, (p + 0.5) / u.depthSize).r * u.depthDecode.x + u.depthDecode.y);
             w[k] = u.depthDecode.z + value * u.depthDecode.w;
+            nearest = max(nearest, w[k]);
+            farthest = min(farthest, w[k]);
         }
-        float nearest = max(max(w[0], w[1]), max(w[2], w[3]));
-        float farthest = min(min(w[0], w[1]), min(w[2], w[3]));
-        if (nearest - farthest <= u.edge) return mix(mix(w[0], w[1], f.x), mix(w[2], w[3], f.x), f.y);
-        return w[(f.x >= 0.5 ? 1 : 0) + (f.y >= 0.5 ? 2 : 0)];
+        if (nearest - farthest <= u.edge) return (2 * w[0] + w[1] + w[2] + w[3] + w[4]) / 6;
+        uint2 q = uint2(clamp(round(position), low, high));
+        float value = saturate(depth.read(q).r * u.depthDecode.x + u.depthDecode.y);
+        return u.depthDecode.z + value * u.depthDecode.w;
     }
 
     // The target ray at inverse distance `lambda` (1/s along it): where that
@@ -300,7 +307,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     }
 
     static PCVRDepthWarpHit pcvrDepthWarpMarch(float2 targetRenderUV, constant PCVRDepthWarpUniforms &u,
-                                               texture2d<float, access::read> depth) {
+                                               texture2d<float, access::sample> depth, sampler linear) {
         float4 tt = u.targetTangents;
         float3 d = float3(tt.x + targetRenderUV.x * (tt.y - tt.x), tt.z - targetRenderUV.y * (tt.z - tt.w), -1);
         float3 D = u.rotation * d;
@@ -318,7 +325,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             n = clamp(uint(ceil(length(track) / u.stepTexels)), 1u, u.maxSteps);
         }
         float2 previousUV = uvNear;
-        float previousW = pcvrDepthWarpScene(uvNear, u, depth);
+        float previousW = pcvrDepthWarpScene(uvNear, u, depth, linear);
         float previousLambda = lambdaMax, previousF = rhoNear - previousW;
         // In a nearer surface's shadow, and the last thing seen before it: the
         // farther surface beside its edge, which fills what it uncovered.
@@ -329,7 +336,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             float2 uv;
             float rho;
             pcvrDepthWarpRay(D, t, lambda, u.sourceTangents, uv, rho);
-            float w = pcvrDepthWarpScene(uv, u, depth);
+            float w = pcvrDepthWarpScene(uv, u, depth, linear);
             float f = rho - w;
             if (!behind) {
                 if (f < 0) {
@@ -346,7 +353,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             float2 uvm;
                             float rhom;
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
-                            if (abs(pcvrDepthWarpScene(uvm, u, depth) - w) <= u.edge) return PCVRDepthWarpHit{uvm, rhom};
+                            if (abs(pcvrDepthWarpScene(uvm, u, depth, linear) - w) <= u.edge) return PCVRDepthWarpHit{uvm, rhom};
                         }
                         // Behind it. The step may be several texels: bisect
                         // for the far side's last sample before the edge, so
@@ -362,7 +369,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             float2 uvm;
                             float rhom;
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
-                            float wm = pcvrDepthWarpScene(uvm, u, depth);
+                            float wm = pcvrDepthWarpScene(uvm, u, depth, linear);
                             if (wm - previousW > u.edge) { hi = lm; } else { lo = lm; edgeUV = uvm; edgeW = wm; }
                         }
                         entry = PCVRDepthWarpHit{edgeUV, edgeW};
@@ -386,7 +393,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             float2 uvm;
                             float rhom;
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
-                            float wm = pcvrDepthWarpScene(uvm, u, depth);
+                            float wm = pcvrDepthWarpScene(uvm, u, depth, linear);
                             if (previousW - wm > u.edge) { farLambda = lm; farUV = uvm; farW = wm; farRho = rhom; }
                             else { nearLambda = lm; nearUV = uvm; nearW = wm; nearRho = rhom; }
                         }
@@ -418,7 +425,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                             float2 uvm;
                             float rhom;
                             pcvrDepthWarpRay(D, t, lm, u.sourceTangents, uvm, rhom);
-                            float fm = rhom - pcvrDepthWarpScene(uvm, u, depth);
+                            float fm = rhom - pcvrDepthWarpScene(uvm, u, depth, linear);
                             if (pass == 1) return PCVRDepthWarpHit{uvm, rhom};
                             if (fm > 0) { previousLambda = lm; previousF = fm; } else { lambda = lm; f = fm; }
                         }
@@ -447,16 +454,17 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     // how far the hit's render UV is from the texel's own (a displacement,
     // smooth across a surface however the foveation map bends under it) and
     // the hit's inverse depth.
-    kernel void pcvrDepthWarpMap(texture2d<float, access::read> depth [[texture(1)]],
+    kernel void pcvrDepthWarpMap(texture2d<float, access::sample> depth [[texture(1)]],
                                  texture2d<float, access::write> map [[texture(3)]],
                                  constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
+                                 sampler linear [[sampler(0)]],
                                  uint2 gid [[thread_position_in_grid]]) {
         uint eyeWidth = map.get_width() / 2;
         uint eye = gid.x >= eyeWidth ? 1 : 0;
         constant PCVRDepthWarpUniforms &u = eyes[eye];
         float2 wire = (float2(gid.x - eye * eyeWidth, gid.y) + 0.5) / u.mapSize;
         float2 render = pcvrRenderUV(wire, u.wireX, u.wireY);
-        PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth);
+        PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth, linear);
         map.write(float4(hit.uv - render, hit.w, 0), gid);
     }
 
@@ -464,7 +472,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     // texels around the pixel agree in depth, the march itself where they
     // don't (a depth edge, where interpolating would smear near into far).
     kernel void pcvrDepthWarpColour(texture2d<float, access::sample> source [[texture(0)]],
-                                    texture2d<float, access::read> depth [[texture(1)]],
+                                    texture2d<float, access::sample> depth [[texture(1)]],
                                     texture2d<float, access::write> output [[texture(2)]],
                                     texture2d<float, access::sample> map [[texture(3)]],
                                     constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
@@ -481,7 +489,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float spread = max(max(w4.x, w4.y), max(w4.z, w4.w)) - min(min(w4.x, w4.y), min(w4.z, w4.w));
         PCVRDepthWarpHit hit;
         if (spread > u.edge) {
-            hit = pcvrDepthWarpMarch(render, u, depth);
+            hit = pcvrDepthWarpMarch(render, u, depth, linear);
         } else {
             float4 m = map.sample(linear, at);
             hit.uv = render + m.xy;
@@ -492,15 +500,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     }
 
     // The warped depth, at the output's size, encoded as the source map is.
-    kernel void pcvrDepthWarpDepth(texture2d<float, access::read> depth [[texture(1)]],
+    kernel void pcvrDepthWarpDepth(texture2d<float, access::sample> depth [[texture(1)]],
                                    texture2d<float, access::write> output [[texture(2)]],
                                    constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
+                                   sampler linear [[sampler(0)]],
                                    uint2 gid [[thread_position_in_grid]]) {
         uint eyeWidth = output.get_width() / 2;
         uint eye = gid.x >= eyeWidth ? 1 : 0;
         constant PCVRDepthWarpUniforms &u = eyes[eye];
         float2 render = (float2(gid.x - eye * eyeWidth, gid.y) + 0.5) / float2(eyeWidth, output.get_height());
-        PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth);
+        PCVRDepthWarpHit hit = pcvrDepthWarpMarch(render, u, depth, linear);
         float value = u.depthDecode.w > 0 ? (hit.w - u.depthDecode.z) / u.depthDecode.w : 0;
         output.write(float4(saturate(value), 0, 0, 1), gid);
     }

@@ -2,6 +2,13 @@
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
 //                      [--start-mbps 30] [--refresh 90] [--log FILE] [--seconds N]
+//                      [--foveation off|auto|on] [--foveation-centre 0.4]
+//                      [--foveation-ratio 2.5]
+//
+// Foveation packs each eye with the centre/edge warp for viewers that can undo
+// it: `auto` (the default) when they also send gaze, `on` even without (the
+// centre then sits straight ahead). The centre is the fraction of each axis
+// kept at full density, the ratio how much the rest is compressed.
 //
 // Run it in the signed-in desktop session (the frame source's objects live in
 // that session's Local\ namespace), as the user the Windows Companion pairs
@@ -28,6 +35,26 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
         case "--refresh": options.refreshHz = Double(value(argument)) ?? options.refreshHz
         case "--log": options.logPath = value(argument)
         case "--seconds": options.seconds = Double(value(argument))
+        case "--foveation":
+            guard let mode = FoveationMode(rawValue: value(argument)) else {
+                print("--foveation takes off, auto or on")
+                exit(2)
+            }
+            options.foveation = mode
+        case "--foveation-centre":
+            guard let size = Float(value(argument)), size > 0, size <= 1 else {
+                print("--foveation-centre takes a fraction in (0, 1]")
+                exit(2)
+            }
+            options.warp.centreSizeX = size
+            options.warp.centreSizeY = size
+        case "--foveation-ratio":
+            guard let ratio = Float(value(argument)), ratio.isFinite, ratio >= 1 else {
+                print("--foveation-ratio takes a number of at least 1")
+                exit(2)
+            }
+            options.warp.edgeRatioX = ratio
+            options.warp.edgeRatioY = ratio
         default:
             print("unknown argument \(argument)")
             exit(2)

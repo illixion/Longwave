@@ -72,6 +72,10 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
         var displayProjection: simd_float4x4
         /// x: edge fade, y: 1 when a frame is bound.
         var parameters: SIMD4<Float>
+        /// The frame's centre/edge map for this eye (`PCVRFoveation`), identity when unwarped.
+        var wireX: SIMD4<Float>
+        var wireY: SIMD4<Float>
+        var sourceBounds: SIMD4<Float>
     }
 
     init(device: any MTLDevice) throws {
@@ -147,22 +151,32 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
                               options: PCVRReceiverOptions) -> Uniforms {
         let render = frame.renderPose.eyes[target.eye]
         let fov = target.display.fieldOfView
+        let wire = frame.wireConstants(eye: target.eye)
         return Uniforms(
             sourceFromDisplay: PCVRReprojection.sourceFromDisplay(render: render, display: target.display, mode: options.mode),
             sourceRect: Self.eyeRect(eye: target.eye, texture: frame.texture),
             displayTangents: fov.tangents,
             displayPlane: PCVRReprojection.displayPlane(render: render, display: target.display, mode: options.mode),
             displayProjection: target.displayProjection,
-            parameters: SIMD4(max(options.edgeFade, 1e-4), 1, 0, 0)
+            parameters: SIMD4(max(options.edgeFade, 1e-4), 1, 0, 0),
+            wireX: wire.x,
+            wireY: wire.y,
+            sourceBounds: Self.eyeBounds(eye: target.eye, texture: frame.texture)
         )
     }
 
-    /// The eye's half of a side-by-side texture as `(u0, v0, du, dv)`, inset by
-    /// half a texel so bilinear filtering never reaches into the other eye.
+    /// The eye's half of a side-by-side texture as `(u0, v0, du, dv)`: texture
+    /// UV `= (u0, v0) + eyeUV * (du, dv)`, so eye UVs keep their texel edges.
     static func eyeRect(eye: Int, texture: any MTLTexture) -> SIMD4<Float> {
+        SIMD4(eye == 0 ? 0 : 0.5, 0, 0.5, 1)
+    }
+
+    /// The texture UVs a tap of this eye may take, `(minU, minV, maxU, maxV)`:
+    /// half a texel inside its half, so bilinear filtering never reaches the other eye.
+    static func eyeBounds(eye: Int, texture: any MTLTexture) -> SIMD4<Float> {
         let halfTexelU = 0.5 / Float(texture.width), halfTexelV = 0.5 / Float(texture.height)
-        let u0 = (eye == 0 ? 0 : 0.5) + halfTexelU
-        return SIMD4(u0, halfTexelV, 0.5 - 2 * halfTexelU, 1 - 2 * halfTexelV)
+        let u0: Float = eye == 0 ? 0 : 0.5
+        return SIMD4(u0 + halfTexelU, halfTexelV, u0 + 0.5 - halfTexelU, 1 - halfTexelV)
     }
 
     private func pipeline(for target: PCVRReceiverTarget) throws -> any MTLRenderPipelineState {
@@ -186,6 +200,7 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
+    \(PCVRFoveationShader.source)
 
     struct PCVRReprojectUniforms {
         float3x3 sourceFromDisplay;
@@ -194,6 +209,9 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
         float4 displayPlane;      // n.xyz, d with dot(n, p) = d in display-eye space
         float4x4 displayProjection;
         float4 parameters;        // x: edge fade (NDC), y: frame bound
+        float4 wireX;             // this eye's centre/edge map (PCVRFoveation), identity when unwarped
+        float4 wireY;
+        float4 sourceBounds;      // the eye's taps, half a texel inside its half
     };
 
     struct FullScreenOut {
@@ -219,7 +237,8 @@ nonisolated final class PCVRReceiver: @unchecked Sendable {
         float outside = max(max(abs(source.x), abs(source.y)) - 1.0, 0.0);
         float fade = 1.0 - saturate(outside / u.parameters.x);
         float2 uv = saturate(float2(source.x * 0.5 + 0.5, 0.5 - source.y * 0.5));
-        float3 rgb = frame.sample(s, u.sourceRect.xy + uv * u.sourceRect.zw).rgb;
+        float2 wire = pcvrWireUV(uv, u.wireX, u.wireY);
+        float3 rgb = frame.sample(s, pcvrEyeTexel(wire, u.sourceRect, u.sourceBounds)).rgb;
         return float4(rgb * fade, 1.0);
     }
 

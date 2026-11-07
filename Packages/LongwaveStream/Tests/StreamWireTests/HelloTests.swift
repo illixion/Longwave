@@ -104,6 +104,23 @@ final class HelloTests: XCTestCase {
         XCTAssertTrue(session(PCVRProfile.clientCapabilities).contains(.pcvr))
     }
 
+    func testFoveatedVideoNeedsPCVRAndBothSides() {
+        func session(_ offered: CapabilitySet, host: CapabilitySet = PCVRProfile.hostCapabilities) -> CapabilitySet {
+            let hello = ClientHello(capabilities: offered, platform: .visionOS, deviceName: "Vision Pro")
+            let ack = HostHelloAck(answering: hello, hostCapabilities: host,
+                                   platform: .windows, keyCodeSpace: .hidUsage, grants: [.screen],
+                                   maxUDPPayload: 1_452)
+            return hello.sessionCapabilities(from: ack)
+        }
+        XCTAssertTrue(session(PCVRProfile.clientCapabilities).contains(.foveatedVideo))
+        XCTAssertTrue(session(PCVRProfile.gazeClientCapabilities).contains(.foveatedVideo))
+        // A headset from before the warp doesn't offer it, so it gets plain frames.
+        XCTAssertFalse(session(CapabilitySet([.nack, .sideData, .pcvr, .gaze])).contains(.foveatedVideo))
+        // Without PCVR it means nothing.
+        XCTAssertFalse(session(CapabilitySet([.sideData, .foveatedVideo]), host: .known).contains(.foveatedVideo))
+        XCTAssertEqual(Capability.foveatedVideo.description, "foveatedVideo")
+    }
+
     func testRefusalIsAnAckWithNoGrants() {
         let refusal = HostHelloAck(answering: Self.hello, hostCapabilities: .known, platform: .windows,
                                    keyCodeSpace: .hidUsage, grants: [], maxUDPPayload: 1_200)

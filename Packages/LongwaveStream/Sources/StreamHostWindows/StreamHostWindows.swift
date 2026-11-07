@@ -513,6 +513,19 @@ public final class VideoEncoder: @unchecked Sendable {
                                 doneTicks: packet.done_qpc))
     }
 
+    /// Encodes one of our own textures (BGRA8, encoder-sized): the foveation
+    /// warp's output.
+    public func encode<R>(_ texture: GraphicsTexture, timestamp: UInt64, forceIDR: Bool = false,
+                          _ body: (Picture) throws -> R) throws -> R {
+        var packet = lw_packet()
+        try check(lw_encoder_encode(raw, texture.raw, timestamp, forceIDR ? UInt32(LW_ENCODE_FORCE_IDR) : 0, &packet),
+                  "lw_encoder_encode")
+        return try body(Picture(bytes: UnsafeRawBufferPointer(start: packet.data, count: Int(packet.size)),
+                                isIDR: packet.is_idr != 0, averageQP: Int(packet.average_qp),
+                                timestamp: packet.timestamp, submitTicks: packet.submit_qpc,
+                                doneTicks: packet.done_qpc))
+    }
+
     /// Stops the encoder predicting from these pictures (by timestamp).
     public func invalidate(timestamps: [UInt64]) throws {
         try check(lw_encoder_invalidate(raw, timestamps, UInt32(timestamps.count)), "lw_encoder_invalidate")
@@ -520,6 +533,106 @@ public final class VideoEncoder: @unchecked Sendable {
 
     public func setBitrate(_ bitsPerSecond: Int) throws {
         try check(lw_encoder_set_bitrate(raw, UInt32(bitsPerSecond)), "lw_encoder_set_bitrate")
+    }
+}
+
+// MARK: - Textures and the foveation warp
+
+/// A texture on the shim's device that we own: a render target the shim's
+/// shaders write and the encoder or a shader can read.
+public final class GraphicsTexture: @unchecked Sendable {
+    public enum Format: UInt32, Sendable {
+        case bgra8 = 1        // LW_TEXTURE_BGRA8
+        case rgba32Float = 2  // LW_TEXTURE_RGBA32F
+
+        public var bytesPerPixel: Int { self == .bgra8 ? 4 : 16 }
+    }
+
+    let raw: UnsafeMutableRawPointer
+    private let device: GraphicsDevice
+    public let width: Int
+    public let height: Int
+    public let format: Format
+
+    /// - Parameter pixels: Initial contents, tightly packed rows, or nil.
+    public init(device: GraphicsDevice, width: Int, height: Int, format: Format,
+                pixels: UnsafeRawBufferPointer? = nil) throws {
+        if let pixels { precondition(pixels.count >= width * height * format.bytesPerPixel, "too few pixels") }
+        var texture: UnsafeMutableRawPointer?
+        try check(lw_texture_create(device.raw, Int32(width), Int32(height), format.rawValue, pixels?.baseAddress,
+                                    UInt32(width * format.bytesPerPixel), &texture), "lw_texture_create")
+        raw = texture!
+        self.device = device
+        self.width = width
+        self.height = height
+        self.format = format
+    }
+
+    deinit { lw_texture_release(raw) }
+
+    /// The pixels, tightly packed rows. Waits for the GPU: tests and diagnostics only.
+    public func read() throws -> [UInt8] {
+        let pitch = width * format.bytesPerPixel
+        var bytes = [UInt8](repeating: 0, count: pitch * height)
+        try bytes.withUnsafeMutableBytes { buffer in
+            try check(lw_texture_read(device.raw, raw, buffer.baseAddress, UInt32(pitch)), "lw_texture_read")
+        }
+        return bytes
+    }
+}
+
+/// v3's centre/edge foveation warp on the GPU (lw_warp_*): each eye of a
+/// side-by-side render texture packed into a smaller wire texture.
+public final class FoveationWarpPass: @unchecked Sendable {
+    /// One eye's sampling map: per axis StreamWire's `CentreEdgeAxisMapping.constants`
+    /// (centre start, centre end, edge ratio, packed length), passed on unchanged.
+    public struct Eye: Sendable, Hashable {
+        public var x: SIMD4<Float>
+        public var y: SIMD4<Float>
+
+        public init(x: SIMD4<Float>, y: SIMD4<Float>) {
+            self.x = x
+            self.y = y
+        }
+    }
+
+    private let raw: OpaquePointer
+    private let device: GraphicsDevice
+
+    public init(device: GraphicsDevice) throws {
+        var warp: OpaquePointer?
+        try check(lw_warp_create(device.raw, &warp), "lw_warp_create")
+        raw = warp!
+        self.device = device
+    }
+
+    deinit { lw_warp_release(raw) }
+
+    /// Queues the warp of `source` (two `renderEye` images side by side) into
+    /// `destination` (two `wireEye` images side by side). GPU work only.
+    public func apply(source: UnsafeMutableRawPointer, renderEye: (width: Int, height: Int),
+                      destination: GraphicsTexture, wireEye: (width: Int, height: Int),
+                      left: Eye, right: Eye) throws {
+        func axis(_ v: SIMD4<Float>) -> lw_warp_axis { lw_warp_axis(lower: v.x, upper: v.y, ratio: v.z, length: v.w) }
+        var params = lw_warp_params()
+        params.render_eye_width = Int32(renderEye.width)
+        params.render_eye_height = Int32(renderEye.height)
+        params.wire_eye_width = Int32(wireEye.width)
+        params.wire_eye_height = Int32(wireEye.height)
+        params.eyes = (lw_warp_eye(x: axis(left.x), y: axis(left.y)), lw_warp_eye(x: axis(right.x), y: axis(right.y)))
+        try check(lw_warp_apply(raw, source, destination.raw, &params), "lw_warp_apply")
+    }
+
+    public func apply(source: CapturedFrame, renderEye: (width: Int, height: Int), destination: GraphicsTexture,
+                      wireEye: (width: Int, height: Int), left: Eye, right: Eye) throws {
+        try apply(source: source.texture, renderEye: renderEye, destination: destination, wireEye: wireEye,
+                  left: left, right: right)
+    }
+
+    public func apply(source: GraphicsTexture, renderEye: (width: Int, height: Int), destination: GraphicsTexture,
+                      wireEye: (width: Int, height: Int), left: Eye, right: Eye) throws {
+        try apply(source: source.raw, renderEye: renderEye, destination: destination, wireEye: wireEye,
+                  left: left, right: right)
     }
 }
 

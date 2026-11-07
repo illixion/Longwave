@@ -116,8 +116,9 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 - The Windows `longwave-pcvr-host` and headset `PCVRV3Remote` exist. The
   broker supplies side-by-side frames and render-pose side data; Shell A
   receives and decodes them. The development path is not a completed product.
-- Refresh negotiation, matched host warp/headset unwarp, audio on the PCVR
-  profile, and sustained end-to-end performance verification remain open.
+- Refresh negotiation, audio on the PCVR profile, and sustained end-to-end
+  performance verification remain open. The matched host warp/headset unwarp
+  exists since 2026-11-07 (below, "Gaze-driven foveation").
   The current host format is 8-bit HEVC, not the Main10 goal below.
 - The native gaze uplink now has a freshness/validation and host-clock
   conversion seam. It requires negotiated `gaze`, a valid capture timestamp,
@@ -130,7 +131,7 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   `gaze_qpc`). A headset with no source keeps offering the plain set, so
   nothing changes for it. What the compositor does with the sample is its
   own business (the private broker feeds it to games' eye tracking); the
-  host does not yet foveate the encode by it (no warp, below).
+  host also centres its foveation warp on it (below).
 - Frames without render-pose metadata or a usable host-clock conversion are
   not presented with a fabricated timestamp. After skipping reference frames,
   the receiver requests a key frame to resume decoding cleanly.
@@ -181,11 +182,40 @@ supply one, from a local endpoint's `captureNs` (this device's uptime clock),
 when the endpoint is marked local and the stamp is within a second of now.
 `PCVRV3Status` reports `gazeNegotiated` and `gazePerSecond`.
 
-**Next local work:** implement and compare GPU sampling against the reference
-on synthetic textures, including filtering at the density boundaries, then
-let the host foveate the encode by the negotiated gaze. PC/device
-gates then measure capture-to-render gaze age, saccades, channel loss/reconnect,
-pacing and image quality. Apple's provider entitlement remains pending.
+**Gaze-driven foveation (2026-11-07).** A receiver that can undo the warp
+offers `foveatedVideo` (capability 22, requires `pcvr`; both
+`PCVRProfile` client sets carry it). The host warps only when every viewer
+negotiated it, and by default (`--foveation auto`) only when they also send
+`gaze`; `--foveation on` warps without gaze around straight ahead, `off`
+never. The default warp is `PCVRProfile.defaultWarp`: centre 0.4 of each
+axis, edges at 1/2.5, so a 2400x1920 eye travels as 1536x1232 (41% of the
+pixels; wire sizes round to 16). Per frame the host projects the newest gaze
+sample (at most 100 ms old) through each eye's head-relative offset and the
+frame's render frustum with StreamWire's `GazeProjection` (the function the
+headset's `PCVREyeGeometry.gazeCentre` now calls). When no sample is fresh it
+holds the last gaze centres for 500 ms, then centres straight ahead. The warp
+itself is `lw_warp_*` in CStreamWin: one D3D11 pixel-shader pass, compiled
+at start-up with D3DCompile, that evaluates `renderCoordinate(forWire:)` from
+the four `CentreEdgeAxisMapping.constants` per axis and averages four
+bilinear taps over compressed footprints. Each tap stays half a texel inside
+its own eye. NVENC then encodes the packed texture. Each layout change
+bumps the parameter epoch and forces a key frame with a new format;
+`foveation` side data names that epoch and the centres. On the headset
+`PCVRV3Remote` drops a warped frame whose side data doesn't match (and asks
+for a key frame). `PCVRDecodedFrame.foveation` carries the map. The receiver's reprojection maps each render UV through
+`wireCoordinate(forRender:)` (`PCVRFoveationShader`, identity constants for
+unwarped frames). `PCVRUnwarp` draws a render-size texture for presenters
+that can't sample through the map. Eye UVs now keep their texel edges and
+taps clamp half a texel inside the eye, where they used to be rescaled onto
+the inset. Verified: `FoveationWarpTests` on the PC's RTX 3080 (GPU warp vs
+the reference within 0.02 render texels inside the image, no seam bleed,
+identity exact on BGRA8) and `PCVRFoveationTests` on the simulator (unwarp
+and reprojection vs the reference within 0.05 wire texels).
+
+**Next:** device gates for the foveated stream: picture quality at the
+density boundary, saccades against the ~30-50 ms capture-to-encode gaze age,
+bitrate saved, channel loss/reconnect and pacing. Apple's provider
+entitlement remains pending.
 
 ## 1. Goals, non-goals, success metrics
 
@@ -1031,18 +1061,18 @@ diagnostics overlay), and `bye` with a reason.
   `hevc10bitHDR`, `av1`, `h264`, `ltrRecovery`, `rfiRecovery`, `nack`,
   `audioOpus`, `audioPCM24`, `audioMultichannel`, `spatialObjects`, `gamepad`,
   `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
-  `sideData`, `depthVideo`, `pcvr`, `gaze`.
+  `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`.
   Unknown capabilities are ignored, never fatal.
   *Encoding (2026-10-12):*
   - **Bit numbers** follow the list order: `windowStreams` = 0 through
-    `gaze` = 21, append-only.
+    `foveatedVideo` = 22, append-only.
   - **Wire form:** `byteCount u8 | bitmap`, where bit n of byte n/8 is
     capability n, up to 256 capabilities. Senders write the shortest bitmap.
     Receivers accept trailing zero bytes and unknown bits.
   - **Negotiation** takes the intersection, restricted to capabilities the
     build knows. It then drops any capability whose requirements didn't
-    survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` needs
-    `pcvr`.
+    survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` and
+    `foveatedVideo` need `pcvr`.
 - **Hello and hello-ack (2026-10-24)** (`StreamWire/Hello.swift`). These are
   the handshake payloads: v2's JSON `Hello` and `HelloAck`, now binary. Each has
   a fixed core followed by items (`type u8 | length u16 | value`, as in side

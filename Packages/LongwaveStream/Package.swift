@@ -106,11 +106,12 @@ targets += [
             .linkedLibrary("winmm"),      // timeBeginPeriod
             .linkedLibrary("user32"),
             .linkedLibrary("advapi32"),   // security descriptors for the frame source's named objects
+            .linkedLibrary("d3dcompiler"), // the foveation warp's shader, compiled at startup
         ]
     ),
     .target(name: "StreamHostWindows", dependencies: ["CStreamWin"]),
     .executableTarget(name: "frame-source-spike", dependencies: ["CStreamWin"]),
-    .testTarget(name: "StreamHostWindowsTests", dependencies: ["StreamHostWindows", "CStreamWin"]),
+    .testTarget(name: "StreamHostWindowsTests", dependencies: ["StreamHostWindows", "CStreamWin", "StreamWire"]),
     // The v3 PCVR host: the session broker's frames -> NVENC -> v3 (section 4.7).
     .executableTarget(
         name: "longwave-pcvr-host",

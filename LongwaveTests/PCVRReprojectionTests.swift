@@ -297,12 +297,18 @@ final class PCVRReprojectionTests: XCTestCase {
         let device = MTLCreateSystemDefaultDevice()!
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 200, height: 100, mipmapped: false)
         let texture = device.makeTexture(descriptor: descriptor)!
-        let left = PCVRReceiver.eyeRect(eye: 0, texture: texture)
-        let right = PCVRReceiver.eyeRect(eye: 1, texture: texture)
+        // Eye UVs map onto their half with texel edges kept...
+        XCTAssertEqual(PCVRReceiver.eyeRect(eye: 0, texture: texture), SIMD4(0, 0, 0.5, 1))
+        XCTAssertEqual(PCVRReceiver.eyeRect(eye: 1, texture: texture), SIMD4(0.5, 0, 0.5, 1))
+        // ...and taps stay half a texel inside it.
+        let left = PCVRReceiver.eyeBounds(eye: 0, texture: texture)
+        let right = PCVRReceiver.eyeBounds(eye: 1, texture: texture)
         XCTAssertEqual(left.x, 0.0025, accuracy: 1e-6)
-        XCTAssertLessThanOrEqual(left.x + left.z, 0.5 - 0.0025 + 1e-6)
-        XCTAssertGreaterThanOrEqual(right.x, 0.5 + 0.0025 - 1e-6)
-        XCTAssertLessThanOrEqual(right.x + right.z, 1 - 0.0025 + 1e-6)
+        XCTAssertEqual(left.z, 0.5 - 0.0025, accuracy: 1e-6)
+        XCTAssertEqual(right.x, 0.5 + 0.0025, accuracy: 1e-6)
+        XCTAssertEqual(right.z, 1 - 0.0025, accuracy: 1e-6)
+        XCTAssertEqual(left.y, 0.005, accuracy: 1e-6)
+        XCTAssertEqual(left.w, 0.995, accuracy: 1e-6)
     }
 }
 

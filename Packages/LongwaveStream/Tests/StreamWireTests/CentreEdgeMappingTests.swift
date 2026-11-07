@@ -100,4 +100,27 @@ final class CentreEdgeMappingTests: XCTestCase {
             }
         }
     }
+
+    func testGPUConstantsAreTheReferenceIntervalRatioAndLength() throws {
+        let map = try XCTUnwrap(CentreEdgeAxisMapping(centreSize: 0.4, edgeRatio: 2.5, centre: 0.1))
+        // The centre is pushed inside the image: [0, 0.4], L = 0.4 + 0.6 / 2.5.
+        XCTAssertEqual(map.constants.x, 0, accuracy: 1e-7)
+        XCTAssertEqual(map.constants.y, 0.4, accuracy: 1e-7)
+        XCTAssertEqual(map.constants.z, 2.5)
+        XCTAssertEqual(map.constants.w, map.wireScale)
+        XCTAssertEqual(map.wireScale, 0.64, accuracy: 1e-6)
+    }
+
+    func testWireSizeIsTheRenderSizeTimesTheLengthAligned() throws {
+        let render = PixelSize(width: 2400, height: 1920)
+        XCTAssertEqual(PCVRProfile.defaultWarp.wireSize(forRender: render, alignment: 16), PixelSize(width: 1536, height: 1232))
+        let identity = CentreEdgeWarp(centreSizeX: 1, centreSizeY: 0.5, edgeRatioX: 2, edgeRatioY: 1)
+        XCTAssertEqual(identity.wireSize(forRender: render, alignment: 16), render)
+        // Never larger than the render, never below one block.
+        XCTAssertEqual(PCVRProfile.defaultWarp.wireSize(forRender: PixelSize(width: 20, height: 8), alignment: 16),
+                       PixelSize(width: 16, height: 8))
+        XCTAssertNil(PCVRProfile.defaultWarp.wireSize(forRender: PixelSize(width: 0, height: 8), alignment: 16))
+        XCTAssertNil(CentreEdgeWarp(centreSizeX: 0, centreSizeY: 1, edgeRatioX: 2, edgeRatioY: 2)
+            .wireSize(forRender: render, alignment: 16))
+    }
 }

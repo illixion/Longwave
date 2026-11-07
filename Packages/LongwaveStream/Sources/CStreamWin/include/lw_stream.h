@@ -212,6 +212,52 @@ lw_status lw_encoder_invalidate(lw_encoder *encoder, const uint64_t *timestamps,
 lw_status lw_encoder_set_bitrate(lw_encoder *encoder, uint32_t bitrate_bps);
 void lw_encoder_release(lw_encoder *encoder);
 
+/* ---- Foveation warp (NATIVE_V3_PROTOCOL.md section 4.7) -------------------
+ * Packs each eye of a side-by-side render texture into a smaller wire texture
+ * with v3's centre/edge warp: the centre interval at full density, the edges
+ * compressed. Per eye and axis it takes StreamWire's CentreEdgeAxisMapping
+ * constants (centre interval a..b in render UV, edge ratio r, packed length L)
+ * and evaluates that type's renderCoordinate(forWire:) at every wire pixel
+ * centre; StreamHostWindowsTests compares the two. Compressed pixels average
+ * four bilinear taps spread over their footprint; full-density pixels take one.
+ * Every tap stays half a texel inside its own eye, so nothing crosses the seam.
+ * GPU work only, on the device's immediate context (under its multithread
+ * lock), queued before a later lw_encoder_encode of the destination. */
+typedef struct lw_warp_axis {
+    float lower, upper; /* the full-density interval, render UV, 0 <= lower < upper <= 1 */
+    float ratio;        /* edge compression, >= 1 */
+    float length;       /* wire/render length, (0, 1] */
+} lw_warp_axis;
+typedef struct lw_warp_eye {
+    lw_warp_axis x, y;
+} lw_warp_eye;
+typedef struct lw_warp_params {
+    int32_t render_eye_width, render_eye_height; /* per eye, at the source's top left, left eye first */
+    int32_t wire_eye_width, wire_eye_height;     /* per eye, at the destination's top left */
+    lw_warp_eye eyes[2];                         /* left, right */
+} lw_warp_params;
+
+typedef struct lw_warp lw_warp;
+lw_status lw_warp_create(lw_device *device, lw_warp **out);
+/* source: an ID3D11Texture2D a float SRV can read (a frame's BGRA8 texture);
+ * destination: one from lw_texture_create, at least two wire eyes wide. */
+lw_status lw_warp_apply(lw_warp *warp, void *source, void *destination, const lw_warp_params *params);
+void lw_warp_release(lw_warp *warp);
+
+/* ---- Textures --------------------------------------------------------------
+ * Render-target textures on the shim's device (bindable as shader resources
+ * too): the warp's destination, which lw_encoder_encode accepts when BGRA8,
+ * and fixtures for tests. */
+#define LW_TEXTURE_BGRA8 1   /* DXGI_FORMAT_B8G8R8A8_UNORM */
+#define LW_TEXTURE_RGBA32F 2 /* DXGI_FORMAT_R32G32B32A32_FLOAT */
+/* data: initial pixels with rows `row_pitch` bytes apart, or NULL. */
+lw_status lw_texture_create(lw_device *device, int32_t width, int32_t height, uint32_t format, const void *data,
+                            uint32_t row_pitch, void **out);
+/* Copies the pixels to `out` (rows `row_pitch` bytes apart), waiting for the
+ * GPU: tests and diagnostics only. */
+lw_status lw_texture_read(lw_device *device, void *texture, void *out, uint32_t row_pitch);
+void lw_texture_release(void *texture);
+
 /* ---- Audio (WASAPI loopback) ---------------------------------------------- */
 typedef struct lw_audio_endpoint_info {
     char id[256];   /* pass to lw_audio_loopback_start */

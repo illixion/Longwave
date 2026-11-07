@@ -160,6 +160,8 @@ struct PCVRShellDevView: View {
                     LabeledContent("RTT", value: Self.milliseconds(status.rttMilliseconds))
                     LabeledContent("Decode", value: Self.milliseconds(status.decodeMilliseconds))
                     LabeledContent("Poses sent", value: String(format: "%.0f/s", status.posesPerSecond))
+                    LabeledContent("Gaze sent", value: status.gazeNegotiated ? String(format: "%.0f/s", status.gazePerSecond) : "not negotiated")
+                    LabeledContent("Foveation", value: Self.foveation(status))
                 }
             }
         } header: {
@@ -169,6 +171,13 @@ struct PCVRShellDevView: View {
                 Text("Streams from the PC's v3 PCVR host on UDP \(PCVRProfile.port), using the credential from pairing with its Companion (it needs the screen grant). Takes effect when the space opens.")
             }
         }
+    }
+
+    /// Where the last frame's full-density centres sat, per eye.
+    private static func foveation(_ status: PCVRV3Status) -> String {
+        guard status.foveated else { return "off" }
+        guard let c = status.foveationCentres, c.count == 4 else { return "on" }
+        return String(format: "L %.2f, %.2f · R %.2f, %.2f", c[0], c[1], c[2], c[3])
     }
 
     /// The v3 target for the space about to open, or nil for the fake remote.

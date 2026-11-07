@@ -26,9 +26,12 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
     public static let depthVideo = Capability(rawValue: 19)
     public static let pcvr = Capability(rawValue: 20)
     public static let gaze = Capability(rawValue: 21)
+    /// The receiver undoes the PCVR centre/edge warp (`FoveationWarp.centreEdge`),
+    /// so the host may send warped eye images.
+    public static let foveatedVideo = Capability(rawValue: 22)
 
     /// Every capability this build implements the wire side of.
-    public static let known: [Capability] = (0...21).map { Capability(rawValue: $0) }
+    public static let known: [Capability] = (0...22).map { Capability(rawValue: $0) }
 
     /// Capabilities that are meaningless without others. Negotiation drops a
     /// capability whose requirements didn't survive.
@@ -36,6 +39,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         .depthVideo: [.sideData],
         .pcvr: [.sideData],
         .gaze: [.pcvr],
+        .foveatedVideo: [.pcvr],
     ]
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
@@ -44,7 +48,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         let names = ["windowStreams", "alphaVideo", "hevc422", "hevc10bitHDR", "av1", "h264", "ltrRecovery",
                      "rfiRecovery", "nack", "audioOpus", "audioPCM24", "audioMultichannel", "spatialObjects",
                      "gamepad", "relativePointer", "clipboard", "virtualDisplay", "localCursor", "sideData",
-                     "depthVideo", "pcvr", "gaze"]
+                     "depthVideo", "pcvr", "gaze", "foveatedVideo"]
         return Int(rawValue) < names.count ? names[Int(rawValue)] : "capability(\(rawValue))"
     }
 }

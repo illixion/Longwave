@@ -31,6 +31,14 @@ public struct CentreEdgeAxisMapping: Sendable, Hashable {
         effectiveCentre = Float(c)
     }
 
+    /// The four numbers both GPU passes evaluate the maps from, as a shader
+    /// vector: the centre interval's start `a` and end `b` in render UV, the
+    /// edge ratio `r` and the packed length `L` (`wireScale`). The host's warp
+    /// and the headset's unwarp take exactly these, so neither re-derives them.
+    public var constants: SIMD4<Float> {
+        SIMD4(Float(lower), Float(upper), Float(ratio), Float(scale))
+    }
+
     /// Receiver sampling: where an unwarped render UV reads the wire texture.
     public func wireCoordinate(forRender coordinate: Float) -> Float? {
         guard coordinate.isFinite, (0...1).contains(coordinate) else { return nil }
@@ -52,6 +60,23 @@ public struct CentreEdgeAxisMapping: Sendable, Hashable {
         else if packed <= end { x = lower + packed - left }
         else { x = upper + (packed - end) * ratio }
         return Float(min(max(x, 0), 1))
+    }
+}
+
+extension CentreEdgeWarp {
+    /// The wire size of an eye rendered at `render`: each axis times its
+    /// packed length `L`, rounded to `alignment` pixels (at least one block).
+    /// Density in the centre is then within half a block of full; the maps
+    /// work in UVs, so they hold for whatever size is reported.
+    public func wireSize(forRender render: PixelSize, alignment: Int) -> PixelSize? {
+        guard let x = CentreEdgeAxisMapping(centreSize: centreSizeX, edgeRatio: edgeRatioX, centre: 0.5),
+              let y = CentreEdgeAxisMapping(centreSize: centreSizeY, edgeRatio: edgeRatioY, centre: 0.5),
+              alignment > 0, render.isNonZero else { return nil }
+        func aligned(_ dimension: UInt16, _ scale: Float) -> UInt16 {
+            let blocks = max(1, (Float(dimension) * scale / Float(alignment)).rounded())
+            return UInt16(min(Float(dimension), blocks * Float(alignment)))
+        }
+        return PixelSize(width: aligned(render.width, x.wireScale), height: aligned(render.height, y.wireScale))
     }
 }
 

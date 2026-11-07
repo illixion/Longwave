@@ -24,6 +24,20 @@ struct HostOptions {
     var refreshHz = 90.0
     var logPath: String?
     var seconds: Double?
+    var foveation = FoveationMode.auto
+    var warp = PCVRProfile.defaultWarp
+}
+
+/// When the host packs the eye images with the centre/edge warp. Only ever
+/// for viewers that negotiated `foveatedVideo` (they can undo it).
+enum FoveationMode: String {
+    /// Never: every pixel at render density.
+    case off
+    /// When every viewer also sends gaze, so the full-density centre follows
+    /// the eyes. Without gaze, fixed foveation would only blur the edges.
+    case auto
+    /// Whenever the viewers can undo it; without gaze the centre sits straight ahead.
+    case on
 }
 
 final class PCVRHost: @unchecked Sendable {
@@ -32,22 +46,30 @@ final class PCVRHost: @unchecked Sendable {
         let deviceID: String
         let name: String
         let grants: SessionGrants
+        let capabilities: CapabilitySet
         var confirmed = false
         var sender: VideoStreamSender
         var lastPose: UInt32?
         var posesReceived = 0
         var lastPresented: PresentedFrame?
 
-        init(index: UInt32, deviceID: String, name: String, grants: SessionGrants, configuration: VideoStreamSender.Configuration) {
+        init(index: UInt32, deviceID: String, name: String, grants: SessionGrants, capabilities: CapabilitySet,
+             configuration: VideoStreamSender.Configuration) {
             self.index = index
             self.deviceID = deviceID
             self.name = name
             self.grants = grants
+            self.capabilities = capabilities
             sender = VideoStreamSender(configuration: configuration)
         }
     }
 
     private static let keyFrameInterval: UInt64 = 250_000_000
+    /// Gaze older than this doesn't centre the warp (the headset's own uplink budget).
+    private static let gazeMaxAge: UInt64 = 100_000_000
+    /// A centre outlives its gaze this long (a blink, a dropped pose) before
+    /// the warp falls back to straight ahead.
+    private static let centreHold: UInt64 = 500_000_000
 
     private let options: HostOptions
     private let log: HostLog
@@ -80,6 +102,25 @@ final class PCVRHost: @unchecked Sendable {
     private var encoder: VideoEncoder?
     private var appliedBitrate = 0
     private var parameterSets: [UInt8] = []
+    private var layout: Layout?
+    /// Bumped with every layout: the `FoveationParameters.epoch` frames name.
+    private var foveationEpoch: UInt32 = 0
+    /// The layout changed since the last format: send one with the next key frame.
+    private var formatStale = true
+    private var warp: FoveationWarpPass?
+    /// The warp's shader couldn't be made: stream unwarped rather than not at all.
+    private var warpUnavailable = false
+    private var wireTexture: GraphicsTexture?
+    private var lastGazeCentres: (left: NormalizedPoint, right: NormalizedPoint, time: UInt64)?
+
+    /// How the eye images go on the wire: their render size per eye, the wire
+    /// size per eye, and the warp between the two (none when they are equal).
+    private struct Layout: Equatable {
+        var renderEye: PixelSize
+        var wireEye: PixelSize
+        var warp: CentreEdgeWarp?
+        var pictureSize: PixelSize { PixelSize(width: wireEye.width * 2, height: wireEye.height) }
+    }
 
     // Statistics, under `lock`.
     private var framesEncoded = 0
@@ -88,6 +129,15 @@ final class PCVRHost: @unchecked Sendable {
     private var framesWithoutViewers = 0
     private var badSideData = 0
     private var lastStats: UInt64 = 0
+    private var foveationStats = FoveationStatistics()
+
+    private struct FoveationStatistics {
+        var gaze = 0, held = 0, ahead = 0
+        var gazeAgeTotal: UInt64 = 0
+        var gazeAgeMax: UInt64 = 0
+        var lastCentres: (NormalizedPoint, NormalizedPoint)?
+        var layout: String?
+    }
 
     init(options: HostOptions, log: HostLog) throws {
         self.options = options
@@ -168,17 +218,46 @@ final class PCVRHost: @unchecked Sendable {
     }
 
     private func encode(_ frame: CapturedFrame) throws {
-        let (watched, forceKey, bitrate) = lock.withLock { () -> (Bool, Bool, Int?) in
-            let watched = viewers.values.contains(where: \.confirmed)
+        let (watched, requestedKey, bitrate, foveate, head) = lock.withLock { () -> (Bool, Bool, Int?, Bool, HeadPose?) in
+            let confirmed = viewers.values.filter(\.confirmed)
+            let watched = !confirmed.isEmpty
             if !watched { framesWithoutViewers += 1 }
             let force = watched && wantsKeyFrame
             if force { wantsKeyFrame = false }
-            return (watched, force, targetBitrate)
+            let foveate = watched && options.foveation != .off
+                && confirmed.allSatisfy { $0.capabilities.contains(.foveatedVideo) }
+                && (options.foveation == .on || confirmed.allSatisfy { $0.capabilities.contains(.gaze) })
+            return (watched, force, targetBitrate, foveate, headPose?.pose)
         }
         guard watched else { return }
 
-        if encoder == nil || encoder?.parameters.width != frame.width || encoder?.parameters.height != frame.height {
-            var parameters = VideoEncoder.Parameters(width: frame.width, height: frame.height,
+        var forceKey = requestedKey
+        let renderEye = PixelSize(width: UInt16(frame.width / 2), height: UInt16(frame.height))
+        if foveate, warp == nil, !warpUnavailable {
+            do {
+                warp = try FoveationWarpPass(device: device)
+            } catch {
+                warpUnavailable = true
+                log.line("foveation unavailable, streaming unwarped: \(error)")
+            }
+        }
+        let wanted = Self.layout(renderEye: renderEye, warp: foveate && warp != nil ? options.warp : nil)
+        if wanted != layout {
+            layout = wanted
+            foveationEpoch &+= 1
+            formatStale = true
+            forceKey = true
+            lastGazeCentres = nil
+            let description = wanted.warp == nil
+                ? "off, \(renderEye.width)x\(renderEye.height) per eye"
+                : "on, \(wanted.wireEye.width)x\(wanted.wireEye.height) of \(renderEye.width)x\(renderEye.height) per eye"
+            lock.withLock { foveationStats.layout = description }
+            log.line("foveation \(description) (epoch \(foveationEpoch))")
+        }
+        let picture = wanted.pictureSize
+
+        if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height) {
+            var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
                                                      fps: Int(options.refreshHz.rounded()),
                                                      bitrate: bitrate ?? options.startMbps * 1_000_000)
             parameters.codec = .hevc
@@ -187,7 +266,7 @@ final class PCVRHost: @unchecked Sendable {
             encoder = try VideoEncoder(device: device, parameters: parameters)
             appliedBitrate = parameters.bitrate
             parameterSets = []
-            log.line("encoder: \(encoder!.info.name) HEVC \(frame.width)x\(frame.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps")
+            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps")
         }
         guard let encoder else { return }
         if let bitrate, abs(bitrate - appliedBitrate) * 100 > appliedBitrate * 3 {
@@ -209,20 +288,57 @@ final class PCVRHost: @unchecked Sendable {
             return
         }
 
-        let (accessUnit, isIDR, milliseconds) = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
-            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+        let encoded: (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double)
+        if let shape = wanted.warp, let renderPose = sideData.renderPose {
+            let now = Self.now()
+            let (left, right, source) = centres(renderPose: renderPose, head: head, now: now)
+            let parameters = FoveationParameters(epoch: foveationEpoch, warp: .centreEdge(shape))
+            let side = FoveationSideData(parameterEpoch: foveationEpoch, leftCentre: left, rightCentre: right)
+            guard let maps = StereoCentreEdgeMapping(parameters: parameters, frame: side) else {
+                lock.withLock { badSideData += 1 }
+                return
+            }
+            if wireTexture?.width != Int(picture.width) || wireTexture?.height != Int(picture.height) {
+                wireTexture = try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height),
+                                                  format: .bgra8)
+            }
+            guard let warp, let wireTexture else { return }
+            try warp.apply(source: frame, renderEye: (Int(renderEye.width), Int(renderEye.height)),
+                           destination: wireTexture, wireEye: (Int(wanted.wireEye.width), Int(wanted.wireEye.height)),
+                           left: FoveationWarpPass.Eye(x: maps.left.x.constants, y: maps.left.y.constants),
+                           right: FoveationWarpPass.Eye(x: maps.right.x.constants, y: maps.right.y.constants))
+            sideData.foveation = side
+            lock.withLock {
+                switch source {
+                case .gaze(let age):
+                    foveationStats.gaze += 1
+                    foveationStats.gazeAgeTotal += age
+                    foveationStats.gazeAgeMax = max(foveationStats.gazeAgeMax, age)
+                case .held: foveationStats.held += 1
+                case .ahead: foveationStats.ahead += 1
+                }
+                foveationStats.lastCentres = (left, right)
+            }
+            encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
+                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+            }
+        } else {
+            encoded = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
+                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks))
+            }
         }
+        let (accessUnit, isIDR, milliseconds) = encoded
         let captureTime = HostClock.nanoseconds(frame.presentTicks)
-        let size = PixelSize(width: UInt16(frame.width), height: UInt16(frame.height))
         // The frame (and its ring slot) is released when `frame` goes out of
-        // scope: the encode has finished with the texture.
+        // scope: the encode (and the warp before it) has finished with the texture.
 
         var newFormat: FormatDescription?
         if isIDR {
             let sets = Self.parameterSets(in: accessUnit)
-            if !sets.isEmpty, sets != parameterSets {
+            if !sets.isEmpty, sets != parameterSets || formatStale {
                 parameterSets = sets
-                newFormat = Self.format(size: size, parameterSets: sets)
+                formatStale = false
+                newFormat = Self.format(layout: wanted, epoch: foveationEpoch, parameterSets: sets)
             }
         }
 
@@ -277,14 +393,57 @@ final class PCVRHost: @unchecked Sendable {
         return result
     }
 
-    private static func format(size: PixelSize, parameterSets: [UInt8]) -> FormatDescription {
-        let eye = PixelSize(width: size.width / 2, height: size.height)
-        return FormatDescription(
+    private static func format(layout: Layout, epoch: UInt32, parameterSets: [UInt8]) -> FormatDescription {
+        FormatDescription(
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
-            size: size, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
-            sideDataTypes: [.renderPose],
-            pcvr: PCVRLayout(layout: .sideBySide, renderSize: eye, wireSize: eye,
-                             foveation: FoveationParameters(epoch: 0, warp: .none)))
+            size: layout.pictureSize, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
+            sideDataTypes: layout.warp == nil ? [.renderPose] : [.renderPose, .foveation],
+            pcvr: PCVRLayout(layout: .sideBySide, renderSize: layout.renderEye, wireSize: layout.wireEye,
+                             foveation: FoveationParameters(epoch: epoch, warp: layout.warp.map { .centreEdge($0) } ?? .none)))
+    }
+
+    /// The layout for eyes rendered at `renderEye`: warped when `warp` is
+    /// given and actually makes them smaller, as rendered otherwise.
+    private static func layout(renderEye: PixelSize, warp: CentreEdgeWarp?) -> Layout {
+        if let warp, let wire = warp.wireSize(forRender: renderEye, alignment: PCVRProfile.wireAlignment), wire != renderEye {
+            return Layout(renderEye: renderEye, wireEye: wire, warp: warp)
+        }
+        return Layout(renderEye: renderEye, wireEye: renderEye, warp: nil)
+    }
+
+    /// Each eye's warp centre for a frame: where fresh gaze lands in that eye's
+    /// rendered frustum; else the last gaze centres, for a short while; else
+    /// straight ahead. Gaze and the eye offsets are head-relative, so the head
+    /// pose itself never enters (NATIVE_V3_PROTOCOL.md 4.7, gaze projection).
+    private func centres(renderPose: RenderPose, head: HeadPose?, now: UInt64)
+        -> (NormalizedPoint, NormalizedPoint, CentreSourceSample) {
+        if let head, let gaze = head.gaze, let age = Self.age(of: gaze.sampleTime, now: now),
+           let left = GazeProjection.centre(direction: gaze.direction, distance: gaze.distance,
+                                            deviceFromEye: head.leftEye.pose, fieldOfView: renderPose.left.fieldOfView),
+           let right = GazeProjection.centre(direction: gaze.direction, distance: gaze.distance,
+                                             deviceFromEye: head.rightEye.pose, fieldOfView: renderPose.right.fieldOfView) {
+            lastGazeCentres = (left, right, now)
+            return (left, right, .gaze(age: age))
+        }
+        if let last = lastGazeCentres, now &- last.time <= Self.centreHold {
+            return (last.left, last.right, .held)
+        }
+        func ahead(_ eye: EyeView?, _ fov: FieldOfView) -> NormalizedPoint {
+            GazeProjection.centre(direction: Vector3(0, 0, -1), distance: 0, deviceFromEye: eye?.pose ?? .identity,
+                                  fieldOfView: fov) ?? .centre
+        }
+        return (ahead(head?.leftEye, renderPose.left.fieldOfView), ahead(head?.rightEye, renderPose.right.fieldOfView), .ahead)
+    }
+
+    /// Where a frame's warp centre came from.
+    private enum CentreSourceSample { case gaze(age: UInt64), held, ahead }
+
+    /// A gaze sample's age, or nil when it is too old to centre the warp. A
+    /// few milliseconds in the future (the clock mapping's error) count as 0.
+    static func age(of sampleTime: UInt64, now: UInt64) -> UInt64? {
+        if sampleTime > now { return sampleTime - now <= 5_000_000 ? 0 : nil }
+        let age = now - sampleTime
+        return age <= gazeMaxAge ? age : nil
     }
 
     // MARK: Head poses and pacing
@@ -387,7 +546,7 @@ final class PCVRHost: @unchecked Sendable {
             configuration.rateControl.start = UInt64(options.startMbps) * 125_000
             configuration.rateControl.frameRate = options.refreshHz
             let viewer = Viewer(index: index, deviceID: deviceID, name: hello.deviceName ?? "headset", grants: grants,
-                                configuration: configuration)
+                                capabilities: capabilities, configuration: configuration)
             viewers[index] = viewer
             _ = endpoint.withSession(index) { $0.setPathCeiling(DatagramLayout.maxProbedUDPPayload, now: now) }
             if let udpPayload = endpoint.sessions[index]?.session.udpPayload {
@@ -396,7 +555,9 @@ final class PCVRHost: @unchecked Sendable {
         case .confirmed(let index):
             guard let viewer = viewers[index], !viewer.confirmed else { return }
             viewer.confirmed = true
-            log.line("viewer '\(viewer.name)' connected from \(endpoint.sessions[index]?.address.description ?? "?")")
+            log.line("viewer '\(viewer.name)' connected from \(endpoint.sessions[index]?.address.description ?? "?")"
+                + " (\(viewer.capabilities.contains(.foveatedVideo) ? "can unwarp" : "no unwarp")"
+                + ", \(viewer.capabilities.contains(.gaze) ? "gaze" : "no gaze"))")
             sendFormat(to: viewer)
             lastKeyFrameRequest = nil
             requestKeyFrame(now: now)
@@ -527,6 +688,22 @@ final class PCVRHost: @unchecked Sendable {
                 + "superseded \(superseded), no viewer \(framesWithoutViewers), no render pose \(badSideData)"
         }
         log.line(line)
+        if let layout = foveationStats.layout {
+            let f = foveationStats
+            var fov = "  foveation \(layout)"
+            if f.gaze + f.held + f.ahead > 0 {
+                fov += "; centres: \(f.gaze) gaze, \(f.held) held, \(f.ahead) ahead"
+                if f.gaze > 0 {
+                    fov += String(format: "; gaze age %.1f ms avg, %.1f max", Double(f.gazeAgeTotal) / Double(f.gaze) / 1e6,
+                                  Double(f.gazeAgeMax) / 1e6)
+                }
+                if let (l, r) = f.lastCentres {
+                    fov += String(format: "; last L (%.2f, %.2f) R (%.2f, %.2f)", l.x, l.y, r.x, r.y)
+                }
+            }
+            log.line(fov)
+            foveationStats = FoveationStatistics(layout: layout)
+        }
         framesEncoded = 0
         encodeMilliseconds = 0
         encodedBytes = 0

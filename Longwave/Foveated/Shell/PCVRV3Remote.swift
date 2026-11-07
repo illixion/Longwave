@@ -38,6 +38,12 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     var gazeNegotiated = false
     var gazePerSecond: Double = 0
     var picture = "—"
+    /// Whether the host packs the eyes with the centre/edge warp, and where the
+    /// last frame's full-density centres were (left x, y, right x, y; top-left UVs).
+    var foveated = false
+    var foveationCentres: [Float]?
+    /// Frames dropped because their foveation side data didn't match the format.
+    var framesWithoutFoveation = 0
 }
 
 /// Shell A's real frame source: the client half of Native v3's PCVR profile
@@ -88,10 +94,12 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var attempts = 0
     private var counters = Counters()
     private var lastStats: UInt64 = 0
+    private var lastCentres: [Float]?
 
     private struct Counters {
         var framesAssembled = 0
         var framesWithoutPose = 0
+        var framesWithoutFoveation = 0
         var payloadBytes = 0
         var posesSent = 0
         var gazeSent = 0
@@ -326,6 +334,18 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             needsTimedKeyFrame = true
             return
         }
+        // A warped picture is only drawable with the centres it was warped
+        // around, under this format's parameters.
+        var foveation: PCVRFoveation?
+        if let pcvr = activeFormat?.pcvr, pcvr.foveation.warp != .none {
+            guard let side = frame.payload.sideData.foveation,
+                  let mapping = PCVRFoveation(parameters: pcvr.foveation, frame: side, renderEye: pcvr.renderSize) else {
+                counters.framesWithoutFoveation += 1
+                needsTimedKeyFrame = true
+                return
+            }
+            foveation = mapping
+        }
         // Skipping an unsynchronised reference frame breaks its dependants.
         // Resume on an IDR after clock sync, rather than decoding a P frame
         // against the missing picture.
@@ -333,8 +353,15 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             guard frame.flags.contains(.key) else { requestKeyFrame(); return }
             needsTimedKeyFrame = false
         }
+        if let foveation {
+            let l = foveation.mapping.left, r = foveation.mapping.right
+            lastCentres = [l.x.effectiveCentre, l.y.effectiveCentre, r.x.effectiveCentre, r.y.effectiveCentre]
+        } else {
+            lastCentres = nil
+        }
         decoder.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
-                       frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose)
+                       frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose,
+                       foveation: foveation)
     }
 
     /// A frame without a clock mapping cannot supply a truthful render time.
@@ -352,11 +379,6 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             log.error("v3 PCVR format not supported (\(String(describing: format.codec), privacy: .public), kind \(format.formatKind.rawValue, privacy: .public))")
             return
         }
-        if let pcvr = format.pcvr, pcvr.foveation.warp != .none {
-            // Not implemented on either side yet; showing it unwarped would be wrong.
-            log.error("v3 PCVR format uses a foveation warp this receiver can't undo yet")
-            return
-        }
         do {
             try decoder.setFormat(format)
         } catch {
@@ -367,8 +389,19 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         }
         activeFormat = format
         streamEpoch &+= 1
-        let eye = format.pcvr.map { "\($0.wireSize.width)×\($0.wireSize.height) per eye" } ?? "\(format.size.width)×\(format.size.height)"
-        status.withLock { $0.picture = "HEVC \(eye)" }
+        var eye = format.pcvr.map { "\($0.wireSize.width)×\($0.wireSize.height) per eye" } ?? "\(format.size.width)×\(format.size.height)"
+        var foveated = false
+        if let pcvr = format.pcvr, case .centreEdge(let warp) = pcvr.foveation.warp {
+            foveated = true
+            eye += String(format: ", foveated from %d×%d (centre %.2f×%.2f, edges 1/%.1f×1/%.1f)",
+                          Int(pcvr.renderSize.width), Int(pcvr.renderSize.height), warp.centreSizeX, warp.centreSizeY,
+                          warp.edgeRatioX, warp.edgeRatioY)
+            log.notice("v3 PCVR stream is foveated: \(eye, privacy: .public)")
+        }
+        status.withLock {
+            $0.picture = "HEVC \(eye)"
+            $0.foveated = foveated
+        }
         setState("Streaming")
         log.notice("v3 PCVR format: HEVC \(format.size.width, privacy: .public)x\(format.size.height, privacy: .public), \(format.bitDepth, privacy: .public)-bit")
     }
@@ -462,7 +495,11 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let gazeRate = Double(counters.gazeSent) / elapsed
         let gazeNegotiated = gazeNegotiated
         let lost = receiver.statistics.framesLost
+        let withoutFoveation = counters.framesWithoutFoveation
+        let centres = lastCentres
         status.withLock {
+            $0.framesWithoutFoveation += withoutFoveation
+            $0.foveationCentres = centres
             $0.framesDecoded += decoded.frames
             $0.decodeErrors += decoded.errors
             $0.framesLost = lost
@@ -473,7 +510,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             $0.gazeNegotiated = gazeNegotiated
             $0.gazePerSecond = gazeRate
         }
-        log.notice("v3 PCVR: \(Double(self.counters.framesAssembled) / elapsed, format: .fixed(precision: 1), privacy: .public) fps received, \(Double(decoded.frames) / elapsed, format: .fixed(precision: 1), privacy: .public) decoded, \(decoded.errors, privacy: .public) decode errors, \(lost, privacy: .public) lost in total, \(self.counters.framesWithoutPose, privacy: .public) without a render pose; \(mbps, format: .fixed(precision: 1), privacy: .public) Mbps, RTT \(rtt ?? -1, format: .fixed(precision: 1), privacy: .public) ms, decode \(decodeMs ?? -1, format: .fixed(precision: 2), privacy: .public) ms; poses \(poseRate, format: .fixed(precision: 1), privacy: .public)/s sent (gaze in \(gazeRate, format: .fixed(precision: 1), privacy: .public)/s), \(self.counters.posesUnsynced, privacy: .public) held for clock sync")
+        log.notice("v3 PCVR: \(Double(self.counters.framesAssembled) / elapsed, format: .fixed(precision: 1), privacy: .public) fps received, \(Double(decoded.frames) / elapsed, format: .fixed(precision: 1), privacy: .public) decoded, \(decoded.errors, privacy: .public) decode errors, \(lost, privacy: .public) lost in total, \(self.counters.framesWithoutPose, privacy: .public) without a render pose, \(self.counters.framesWithoutFoveation, privacy: .public) without matching foveation; \(mbps, format: .fixed(precision: 1), privacy: .public) Mbps, RTT \(rtt ?? -1, format: .fixed(precision: 1), privacy: .public) ms, decode \(decodeMs ?? -1, format: .fixed(precision: 2), privacy: .public) ms; poses \(poseRate, format: .fixed(precision: 1), privacy: .public)/s sent (gaze in \(gazeRate, format: .fixed(precision: 1), privacy: .public)/s), \(self.counters.posesUnsynced, privacy: .public) held for clock sync")
         counters = Counters()
     }
 
@@ -603,7 +640,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
     }
 
     func decode(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, frameNumber: UInt32, streamEpoch: UInt32,
-                renderPose: PCVRRenderPose) {
+                renderPose: PCVRRenderPose, foveation: PCVRFoveation? = nil) {
         guard let session, let formatDescription else { return }
         let sample = PCVRAnnexB.lengthPrefixedSample(accessUnit)
         guard !sample.isEmpty, let buffer = Self.sampleBuffer(sample, format: formatDescription) else {
@@ -631,7 +668,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
             }
             let metalTexture = texture.texture
             let frame = PCVRDecodedFrame(streamEpoch: streamEpoch, frameNumber: frameNumber, texture: metalTexture,
-                                         renderPose: renderPose, arrivalTime: now,
+                                         renderPose: renderPose, foveation: foveation, arrivalTime: now,
                                          release: { withExtendedLifetime((texture, imageBuffer)) {} })
             mailbox.deliver(frame)
         }

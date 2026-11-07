@@ -431,11 +431,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                         }
                     }
                 }
-            } else if (f >= 0) {
-                // Out from behind it, in front of what lies farther (or at
-                // the sky, at infinity, which it can only be level with).
+            } else if (f >= 0 && (previousW - w > u.edge || w == 0)) {
+                // Off the nearer surface's far edge and in front of what lies
+                // farther (or at the sky, at infinity, which it can only be
+                // level with). Only off an edge: a texel of codec noise inside
+                // the nearer surface, read as farther, let the ray out, and the
+                // next texel took it back behind with that noise as its entry,
+                // so the uncovered strip beside the whiteboard filled with the
+                // whiteboard's own text (headset, 2026-11-07).
                 behind = false;
-            } else if (previousW - w > u.edge) {
+            } else if (f < 0 && previousW - w > u.edge) {
                 // Off the silhouette onto a farther surface and already behind
                 // it: the point the ray hits was hidden from the source eye.
                 return entry;

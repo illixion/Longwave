@@ -36,6 +36,11 @@ struct HostOptions {
     /// a bigger buffer lets detailed frames take more bits, for a little latency.
     var preset = 1
     var vbvFrames = 1
+    /// The colour encoder's rate control: a first pass (0 off, 1 quarter, 2 full
+    /// resolution), spatial AQ strength (0 off) and a QP cap (0 none).
+    var multiPass = 0
+    var spatialAQ = 0
+    var maxQP = 0
     var logPath: String?
     var seconds: Double?
     var foveation = FoveationMode.auto
@@ -377,11 +382,15 @@ final class PCVRHost: @unchecked Sendable {
             parameters.asyncMode = true
             parameters.preset = options.preset
             parameters.vbvFrames = options.vbvFrames
+            parameters.multiPass = options.multiPass
+            parameters.spatialAQ = options.spatialAQ
+            parameters.maxQP = options.maxQP
             encoder = nil
             encoder = try VideoEncoder(device: device, parameters: parameters)
             appliedBitrate = parameters.bitrate
             parameterSets = []
-            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s)")
+            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s), P\(parameters.preset), "
+                     + "multipass \(["off", "quarter", "full"][parameters.multiPass]), AQ \(parameters.spatialAQ), max QP \(parameters.maxQP)")
         }
         guard let encoder else { return }
         if let bitrate, abs(bitrate - appliedBitrate) * 100 > appliedBitrate * 3 {

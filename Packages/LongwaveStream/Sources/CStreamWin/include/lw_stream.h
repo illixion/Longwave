@@ -195,6 +195,12 @@ typedef struct lw_encoder_params {
     uint32_t const_qp;        /* 1..51: constant QP instead of CBR at bitrate_bps (a
                                  depth picture, whose bits are cheap and whose
                                  ringing is not); 0 = CBR */
+    uint32_t multi_pass;      /* CBR only: 0 single pass, 1 a quarter-resolution first
+                                 pass, 2 a full-resolution one (the first pass measures
+                                 this frame before its QP is chosen) */
+    uint32_t spatial_aq;      /* CBR only: 0 off, 1..15 spatial adaptive quantisation strength */
+    uint32_t max_qp;          /* CBR only: 1..51 caps the QP (frames may then overrun
+                                 the VBV); 0 = no cap */
 } lw_encoder_params;
 
 typedef struct lw_encoder_info {

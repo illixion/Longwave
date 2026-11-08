@@ -432,6 +432,12 @@ public final class VideoEncoder: @unchecked Sendable {
         public var bitrate: Int
         public var preset: Int = 1
         public var vbvFrames: Int = 1
+        /// CBR only: 0 single pass, 1 a quarter-resolution first pass, 2 a full-resolution one.
+        public var multiPass: Int = 0
+        /// CBR only: spatial adaptive quantisation strength 1...15, 0 off.
+        public var spatialAQ: Int = 0
+        /// CBR only: the highest QP allowed, 1...51; 0 no cap.
+        public var maxQP: Int = 0
         public var intraRefreshPeriod: Int = 0
         public var slices: Int = 1
         /// Wait on an NVENC completion event rather than blocking in the lock call.
@@ -485,6 +491,9 @@ public final class VideoEncoder: @unchecked Sendable {
         params.bitrate_bps = UInt32(parameters.bitrate)
         params.preset = UInt32(parameters.preset)
         params.vbv_frames = UInt32(parameters.vbvFrames)
+        params.multi_pass = UInt32(max(0, min(parameters.multiPass, 2)))
+        params.spatial_aq = UInt32(max(0, min(parameters.spatialAQ, 15)))
+        params.max_qp = UInt32(max(0, min(parameters.maxQP, 51)))
         params.intra_refresh_period = UInt32(parameters.intraRefreshPeriod)
         params.slices = UInt32(parameters.slices)
         params.async_mode = parameters.asyncMode ? 1 : 0

@@ -5,7 +5,7 @@
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
-//                      [--vbv-frames 1-8]
+//                      [--vbv-frames 1-8] [--multipass off|quarter|full] [--aq 0-15] [--max-qp 0-51]
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
 // it: `auto` (the default) when they also send gaze, `on` even without (the
@@ -116,6 +116,24 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 exit(2)
             }
             options.vbvFrames = frames
+        case "--multipass":
+            guard let mode = ["off", "quarter", "full"].firstIndex(of: value(argument)) else {
+                print("--multipass takes off, quarter or full")
+                exit(2)
+            }
+            options.multiPass = mode
+        case "--aq":
+            guard let strength = Int(value(argument)), (0...15).contains(strength) else {
+                print("--aq takes 0 (off) to 15")
+                exit(2)
+            }
+            options.spatialAQ = strength
+        case "--max-qp":
+            guard let qp = Int(value(argument)), (0...51).contains(qp) else {
+                print("--max-qp takes 0 (none) to 51")
+                exit(2)
+            }
+            options.maxQP = qp
         default:
             print("unknown argument \(argument)")
             exit(2)

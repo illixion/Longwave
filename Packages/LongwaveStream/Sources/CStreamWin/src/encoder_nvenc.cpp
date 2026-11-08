@@ -191,6 +191,24 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     rc.vbvBufferSize = static_cast<uint32_t>(static_cast<uint64_t>(p.bitrate_bps) * vbv_frames / fps);
     rc.vbvInitialDelay = rc.vbvBufferSize;
     rc.multiPass = NV_ENC_MULTI_PASS_DISABLED;
+    if (!p.const_qp) {
+        // A first pass sees this frame before its QP is picked: a head turn's
+        // first frame (everything moved) no longer gets the QP the still frames
+        // before it earned, overshoots, and leaves the next frames to pay.
+        if (p.multi_pass == 1) rc.multiPass = NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
+        if (p.multi_pass >= 2) rc.multiPass = NV_ENC_TWO_PASS_FULL_RESOLUTION;
+        if (p.spatial_aq) {
+            rc.enableAQ = 1;
+            rc.aqStrength = std::min(p.spatial_aq, 15u);
+        }
+        if (p.max_qp) {
+            const uint32_t qp = std::min(p.max_qp, 51u);
+            rc.enableMaxQP = 1;
+            rc.maxQP.qpInterP = qp;
+            rc.maxQP.qpInterB = qp;
+            rc.maxQP.qpIntra = qp;
+        }
+    }
     if (p.const_qp) {
         // A constant QP: the depth stream, whose pictures are mostly flat and
         // cheap at any quality, but whose ringing at a high QP the receiver's

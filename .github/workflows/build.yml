@@ -47,7 +47,13 @@ jobs:
       # invocation below dies in package resolution with exit 74, before
       # compiling anything.
       #
-      # No credentials, and none would help: all three repos are public, while
+      # Vergence (../vergence) has to sit beside RAVESDK too. RAVESDK's
+      # Package.swift leaves RAVEMedia and the products built on it out of the
+      # package when ../vergence/Package.swift is absent, so without this clone
+      # package resolution still succeeds and the archive then dies with
+      # "Missing package product 'RAVEMedia'".
+      #
+      # No credentials, and none would help: all four repos are public, while
       # github.token is scoped to this repository alone. If any goes private
       # again this needs a PAT or deploy key in secrets instead.
       #
@@ -60,6 +66,7 @@ jobs:
           git clone --depth 1 https://github.com/illixion/RAVESDK.git ../RAVESDK
           git clone --depth 1 https://github.com/illixion/RAVEEngine.git ../RAVEEngine
           git clone --depth 1 https://github.com/illixion/DebugTrace.git ../DebugTrace
+          git clone --depth 1 https://github.com/illixion/vergence.git ../vergence
 
       - name: Clone and patch RoyalVNC
         run: |

@@ -126,21 +126,26 @@ Vision Pro has no 6 GHz radio, so moving the network to 6 GHz won't help.
 
 ### RAVE Packages
 
-Longwave links two shared packages:
+Longwave links two shared packages, plus two that they build on:
 
 | Package | Products used |
 |---|---|
 | [`RAVESDK`](https://github.com/illixion/RAVESDK) | `RAVEUI`, `RAVEConsole`, `RAVEMedia`, `RAVECamera` |
 | [`RAVEEngine`](https://github.com/illixion/RAVEEngine) | `RAVEInput`, `RAVEDiagnostics` |
+| [`DebugTrace`](https://github.com/illixion/DebugTrace) | `DebugTraceServer`, `DebugTraceUI` (logging and the debug console; both RAVE packages use it too) |
+| [`vergence`](https://github.com/illixion/vergence) | Needed by RAVESDK's `RAVEMedia` (the stereo 3D pipeline); no products linked directly |
 
-Both are referenced as **local** Swift packages by relative path —
-`../RAVESDK` and `../RAVEEngine`, resolved against the directory holding
-`Longwave.xcodeproj` — not as versioned remote dependencies. A clone therefore
-does not fetch them; check them out as **siblings** of this repo:
+All four are referenced as **local** Swift packages by relative path —
+`../RAVESDK`, `../RAVEEngine` and `../DebugTrace`, resolved against the directory
+holding `Longwave.xcodeproj`, and `../vergence`, which RAVESDK finds beside itself —
+not as versioned remote dependencies. A clone therefore does not fetch them;
+check them out as **siblings** of this repo:
 
 ```bash
 git clone https://github.com/illixion/RAVESDK.git
 git clone https://github.com/illixion/RAVEEngine.git
+git clone https://github.com/illixion/DebugTrace.git
+git clone https://github.com/illixion/vergence.git
 ```
 
 giving you:
@@ -149,12 +154,16 @@ giving you:
 some-parent/
 ├── RAVESDK/
 ├── RAVEEngine/
+├── DebugTrace/
+├── vergence/
 └── Longwave/
 ```
 
 The requirement is only that this repo's parent directory also contains
-directories named exactly `RAVESDK` and `RAVEEngine`; this repo's own directory
-name does not matter. Get it wrong and Xcode fails at package resolution, before
+directories named exactly `RAVESDK`, `RAVEEngine`, `DebugTrace` and `vergence`;
+this repo's own directory name does not matter. Without `vergence`, RAVESDK
+silently leaves `RAVEMedia` out of the package and the build fails with
+"Missing package product 'RAVEMedia'". Get it wrong and Xcode fails at package resolution, before
 compiling anything.
 
 Why path references and not versions: the packages and the apps co-evolve

@@ -124,9 +124,25 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// Diagnostics: draw the pixels the warp fills in (their true content was
     /// hidden from the source eye) in magenta.
     var tintsFills = false
-    /// Display views: fill what a view's own eye could not see from the
-    /// frame's other eye where that eye saw it (tinted cyan with `tintsFills`).
+    /// Fill what a view's own eye could not see from the frame's other eye
+    /// where that eye saw it (tinted cyan with `tintsFills`).
     var fillsFromOtherEye = true
+
+    /// An earlier frame and its depth, for filling what the frame being
+    /// warped did not see (`encode(frame:...fills:)`).
+    struct FillSource {
+        var frame: PCVRDecodedFrame
+        var depth: PCVRDepthMap
+    }
+    /// Views tried per output eye for a pixel its own source could not see,
+    /// best first.
+    static let fillSlots = 2
+    /// Earlier frames bound per encode, at most.
+    static let fillFrames = 4
+    /// A fill view's age counts against it as this many metres per second
+    /// of render-time difference: of two views about as close to the eye,
+    /// the newer one, since anything moving in the scene has moved since.
+    static let fillAgePenalty: Float = 0.1
 
     init(device: any MTLDevice) throws {
         self.device = device
@@ -168,19 +184,69 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// eyes side by side; the source depth's size is natural). Without `depth`
     /// the whole picture is taken to lie `planeDistance` metres ahead of the
     /// source eye and `warpedDepth` is left alone.
+    ///
+    /// **Fills.** A pixel whose true point the frame's eye could not see (the
+    /// strip a move uncovers beside a near object, or past the frame's edge
+    /// after a turn) is the prediction's error made visible: the frame was
+    /// rendered from where the eye was predicted to be, 60-125 ms ahead, and
+    /// on a head shake that misses by centimetres. It is taken, where one of
+    /// them saw it, from the view rendered nearest to where the eye is now:
+    /// the frame's other eye (what a sideways move uncovers is what the eye on
+    /// that side sees past the object), or one of `fills`, earlier frames,
+    /// which on a back-and-forth shake were rendered from the far side of the
+    /// swing. `fillSlots` views per eye, by distance to the eye plus
+    /// `fillAgePenalty`. Only the pixels that need it march again: the cost
+    /// is a few per cent of a warp. Tinted with `tintsFills`: cyan from the
+    /// other eye, yellow from an earlier frame, magenta where none saw it.
     func encode(frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>, planeDistance: Float,
-                into colour: any MTLTexture, warpedDepth: (any MTLTexture)? = nil,
+                into colour: any MTLTexture, warpedDepth: (any MTLTexture)? = nil, fills: [FillSource] = [],
                 commandBuffer: any MTLCommandBuffer) throws {
         let depthTexture = depth?.texture ?? noDepth
         let map = try warpMap(for: colour)
         let eyeWidth = colour.width / 2
+        let outputSize = SIMD2(Float(eyeWidth), Float(colour.height))
         var uniforms = (0..<2).map { eye in
             self.uniforms(frame: frame, eye: eye, depth: depth, target: targets[eye],
                           targetTangents: frame.renderPose.eyes[eye].fieldOfView.tangents, planeDistance: planeDistance,
-                          outputSize: SIMD2(Float(eyeWidth), Float(colour.height)),
+                          outputSize: outputSize,
                           outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye, flags: 0)
         }
-        let length = MemoryLayout<Uniforms>.stride * 2
+        // Fill views per eye: uniforms 2 + fillSlots * eye + slot, each naming
+        // its source in the fill texture arrays (0: this frame).
+        var sources: [FillSource] = depth.map { [FillSource(frame: frame, depth: $0)] } ?? []
+        let plan = depth == nil ? [[], []] : Self.fillPlan(frame: frame, targets: targets, fills: fills,
+                                                           otherEye: fillsFromOtherEye)
+        for eye in 0..<2 {
+            for slot in 0..<Self.fillSlots {
+                var index: Int?
+                var view: FillView?
+                if slot < plan[eye].count, let depth {
+                    let chosen = plan[eye][slot]
+                    let source = chosen.fill.map { fills[$0] } ?? FillSource(frame: frame, depth: depth)
+                    if let existing = sources.firstIndex(where: { $0.frame === source.frame }) {
+                        index = existing
+                    } else if sources.count <= Self.fillFrames {
+                        index = sources.count
+                        sources.append(source)
+                    }
+                    view = chosen
+                }
+                guard let index, let view else {
+                    var unused = uniforms[eye]
+                    unused.flags = 0
+                    uniforms.append(unused)
+                    continue
+                }
+                let source = sources[index]
+                uniforms.append(self.uniforms(
+                    frame: source.frame, eye: view.eye, depth: source.depth, target: targets[eye],
+                    targetTangents: frame.renderPose.eyes[eye].fieldOfView.tangents, planeDistance: planeDistance,
+                    outputSize: outputSize, outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye,
+                    flags: 32 | UInt32(index) << 8))
+                uniforms[eye].flags |= 8
+            }
+        }
+        let length = MemoryLayout<Uniforms>.stride * uniforms.count
         // A serial encoder: each dispatch sees the one before it complete.
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
@@ -191,6 +257,11 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         encoder.setTexture(depthTexture, index: 1)
         encoder.setTexture(colour, index: 2)
         encoder.setTexture(map, index: 3)
+        let slots = Self.fillFrames + 1
+        let fillColours: [(any MTLTexture)?] = (0..<slots).map { $0 < sources.count ? sources[$0].frame.texture : noDepth }
+        let fillDepths: [(any MTLTexture)?] = (0..<slots).map { $0 < sources.count ? sources[$0].depth.texture : noDepth }
+        encoder.setTextures(fillColours, range: 4..<(4 + slots))
+        encoder.setTextures(fillDepths, range: (4 + slots)..<(4 + 2 * slots))
         encoder.setSamplerState(sampler, index: 0)
         encoder.setComputePipelineState(mapPipeline)
         encoder.dispatchThreads(MTLSize(width: map.width, height: map.height, depth: 1),
@@ -286,6 +357,38 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                 slot += 1
             }
             encoder.endEncoding()
+        }
+    }
+
+    /// One view a pixel can be filled from: `fill` indexes the earlier
+    /// frames (nil: the frame being warped), `eye` is that frame's eye.
+    struct FillView: Equatable {
+        var fill: Int?
+        var eye: Int
+        var score: Float
+    }
+
+    /// Per output eye, the best `fillSlots` views to fill from: the frame's
+    /// other eye (with `otherEye`) and both eyes of every earlier frame in
+    /// the same space epoch, nearest to that eye's target first, a view's
+    /// age against it (`fillAgePenalty`). Pure, for the tests.
+    static func fillPlan(frame: PCVRDecodedFrame, targets: PCVRStereo<PCVRPose>, fills: [FillSource],
+                         otherEye: Bool) -> [[FillView]] {
+        (0..<2).map { eye in
+            let target = targets[eye].position
+            var views: [FillView] = []
+            func score(_ source: PCVRDecodedFrame, _ sourceEye: Int) -> Float {
+                let age = Float(abs(frame.renderPose.displayTime - source.renderPose.displayTime))
+                return simd_distance(source.renderPose.eyes[sourceEye].pose.position, target) + age * fillAgePenalty
+            }
+            if otherEye { views.append(FillView(fill: nil, eye: 1 - eye, score: score(frame, 1 - eye))) }
+            for (index, fill) in fills.enumerated()
+            where fill.frame !== frame && fill.frame.renderPose.spaceEpoch == frame.renderPose.spaceEpoch {
+                for sourceEye in 0..<2 {
+                    views.append(FillView(fill: index, eye: sourceEye, score: score(fill.frame, sourceEye)))
+                }
+            }
+            return Array(views.sorted { $0.score < $1.score }.prefix(fillSlots))
         }
     }
 
@@ -421,7 +524,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         uint maxSteps;
         uint flags;             // 1: a depth map; 2: tint filled pixels; 4: the output is the target's own
                                 // render UV (a display view), not packed by the frame's foveation map;
-                                // 8: fill from the other eye (display views, uniforms 2 and 3)
+                                // 8: fill from the other eye (display views, uniforms 2 and 3), or
+                                // from the fill views (the compute colour pass, uniforms 2 + 2 * eye + slot);
+                                // 32: a fill view in use, its source in bits 8-10 of the fill arrays
     };
 
     struct PCVRDepthWarpHit {
@@ -660,11 +765,17 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         return PCVRDepthWarpHit{render + m.xy, m.z, m.w};
     }
 
-    // Pass two, every output pixel (`pcvrDepthWarpLookup`).
+    // Pass two, every output pixel (`pcvrDepthWarpLookup`). A pixel its own
+    // eye could not see, or whose ray left that eye's frame, tries the fill
+    // views in turn (the encoder's "Fills"): the first that saw it inside
+    // its frame gives its colour.
+    #define PCVR_FILL_FRAMES \(PCVRDepthWarper.fillFrames + 1)
     kernel void pcvrDepthWarpColour(texture2d<float, access::sample> source [[texture(0)]],
                                     texture2d<float, access::sample> depth [[texture(1)]],
                                     texture2d<float, access::write> output [[texture(2)]],
                                     texture2d<float, access::sample> map [[texture(3)]],
+                                    array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillColour [[texture(4)]],
+                                    array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillDepth [[texture(9)]],
                                     constant PCVRDepthWarpUniforms *eyes [[buffer(0)]],
                                     sampler linear [[sampler(0)]],
                                     uint2 gid [[thread_position_in_grid]]) {
@@ -675,6 +786,23 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float2 wire = (float2(local) + 0.5) / u.outputSize;
         float2 render = pcvrRenderUV(wire, u.wireX, u.wireY);
         PCVRDepthWarpHit hit = pcvrDepthWarpLookup(wire, render, u, depth, map, linear);
+        bool outside = any(hit.uv < 0.0) || any(hit.uv > 1.0);
+        if ((hit.filled > 0.5 || outside) && (u.flags & 8u)) {
+            for (uint slot = 0; slot < 2; slot++) {
+                constant PCVRDepthWarpUniforms &o = eyes[2 + 2 * eye + slot];
+                if (!(o.flags & 32u)) break;
+                uint index = min((o.flags >> 8) & 7u, uint(PCVR_FILL_FRAMES - 1));
+                PCVRDepthWarpHit other = pcvrDepthWarpMarch(render, o, fillDepth[index], linear);
+                if (other.filled > 0.5 || any(other.uv < 0.0) || any(other.uv > 1.0)) continue;
+                if (u.flags & 2u) {
+                    output.write(index == 0 ? float4(0, 1, 1, 1) : float4(1, 1, 0, 1), gid);
+                    return;
+                }
+                float2 uv = pcvrEyeTexel(pcvrWireUV(other.uv, o.wireX, o.wireY), o.sourceRect, o.sourceBounds);
+                output.write(float4(fillColour[index].sample(linear, uv).rgb, 1), gid);
+                return;
+            }
+        }
         // Diagnostics: the filled pixels in magenta, to see where the picture
         // is made up rather than seen.
         if ((u.flags & 2u) && hit.filled > 0.5) {

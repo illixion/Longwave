@@ -94,6 +94,8 @@ final class PCVRDepthWarpTests: XCTestCase {
     private func warp(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>,
                       planeDistance: Float = 2) throws -> Output {
         let warper = try PCVRDepthWarper(device: device)
+        // These scenes' right eyes are flat (`depthMap`), not what that eye saw.
+        warper.fillsFromOtherEye = false
         let width = 2 * Self.eyeWidth, height = Self.eyeHeight
         let colour = try texture(.rgba16Float, width: width, height: height, write: true)
         let warped = try texture(.r16Float, width: 2 * Self.depthWidth, height: Self.depthHeight, write: true)
@@ -444,6 +446,114 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertEqual(alone.cyan, 0)
         XCTAssertGreaterThan(helped.cyan, alone.magenta * 3 / 4, "most of the strip from the other eye")
         XCTAssertLessThan(helped.magenta, alone.magenta / 4)
+    }
+    /// A slab 20 cm wide, 0.5 m ahead, over a wall 4 m ahead, as each eye of
+    /// a frame whose left eye is at `leftX` saw it (the right eye 6.4 cm
+    /// further right): a depth per texel by casting its ray.
+    private func slabDepth(leftX: Float) throws -> PCVRDepthMap {
+        let width = Self.depthWidth, height = Self.depthHeight
+        let map = PCVRDepthMap(texture: try texture(.r8Unorm, width: 2 * width, height: height), near: 0.25, far: .infinity)
+        var pixels = [UInt8](repeating: 0, count: 2 * width * height)
+        let t = Self.fov.tangents
+        for y in 0..<height {
+            for x in 0..<(2 * width) {
+                let eyeX = leftX + (x / width == 0 ? 0 : 0.064)
+                let u = (Float(x % width) + 0.5) / Float(width)
+                let atSlab = eyeX + (t.x + u * (t.y - t.x)) * 0.5
+                let z: Float = abs(atSlab) < 0.1 ? 0.5 : 4
+                pixels[y * 2 * width + x] = UInt8((0.25 / z * 255).rounded())
+            }
+        }
+        pixels.withUnsafeBytes {
+            map.texture.replace(region: MTLRegionMake2D(0, 0, 2 * width, height), mipmapLevel: 0,
+                                withBytes: $0.baseAddress!, bytesPerRow: 2 * width)
+        }
+        return map
+    }
+
+    /// The overlay's path (`encode(frame:...into:fills:)`): the strip a move
+    /// uncovers beside the slab is filled from the frame's other eye, or, with
+    /// that off, from an earlier frame rendered from where the eye is now,
+    /// and only magenta where nothing saw it.
+    func testTheComputeWarpFillsFromTheOtherEyeAndFromEarlierFrames() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try slabDepth(leftX: 0)
+        let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.03, 0, 0])
+        let targets = frame.renderPose.eyes.map { $0.pose * move }
+        // An earlier frame, rendered 3 cm to the right: from the target itself.
+        let earlierFrame = try gradientFrame(foveation: nil, pose: move)
+        let earlier = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 0, texture: earlierFrame.texture,
+                                       renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: 0, displayTime: -0.05,
+                                                                  eyes: earlierFrame.renderPose.eyes),
+                                       arrivalTime: 0)
+        let earlierDepth = try slabDepth(leftX: 0.03)
+        func tints(otherEye: Bool, fills: [PCVRDepthWarper.FillSource]) throws -> (magenta: Int, cyan: Int, yellow: Int) {
+            let warper = try PCVRDepthWarper(device: device)
+            warper.tintsFills = true
+            warper.fillsFromOtherEye = otherEye
+            let width = 2 * Self.eyeWidth, height = Self.eyeHeight
+            let colour = try texture(.rgba16Float, width: width, height: height, write: true)
+            let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+            try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: 2, into: colour, fills: fills,
+                              commandBuffer: commandBuffer)
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+            var out = [Float16](repeating: 0, count: width * height * 4)
+            out.withUnsafeMutableBytes {
+                colour.getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+            }
+            var magenta = 0, cyan = 0, yellow = 0
+            // The left eye only: the right eye's strip is the same story mirrored.
+            for y in 0..<height {
+                for x in 0..<Self.eyeWidth {
+                    let i = (y * width + x) * 4
+                    let r = out[i], g = out[i + 1], b = out[i + 2]
+                    if r == 1, g == 0, b == 1 { magenta += 1 }
+                    if r == 0, g == 1, b == 1 { cyan += 1 }
+                    if r == 1, g == 1, b == 0 { yellow += 1 }
+                }
+            }
+            return (magenta, cyan, yellow)
+        }
+        let alone = try tints(otherEye: false, fills: [])
+        XCTAssertGreaterThan(alone.magenta, 4 * Self.eyeHeight)
+        XCTAssertEqual(alone.cyan + alone.yellow, 0)
+        let otherEye = try tints(otherEye: true, fills: [])
+        XCTAssertGreaterThan(otherEye.cyan, alone.magenta * 3 / 4, "most of the strip from the other eye")
+        XCTAssertLessThan(otherEye.magenta, alone.magenta / 4)
+        let history = try tints(otherEye: false, fills: [.init(frame: earlier, depth: earlierDepth)])
+        XCTAssertGreaterThan(history.yellow, alone.magenta * 3 / 4, "most of the strip from the earlier frame")
+        XCTAssertLessThan(history.magenta, alone.magenta / 4)
+        XCTAssertEqual(history.cyan, 0)
+    }
+
+    /// Fill views go nearest to the target eye first, an older one losing a
+    /// near-tie, and never from another space epoch or the frame itself.
+    func testFillViewsAreRankedByDistanceToTheEye() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        func shifted(_ x: Float, time: TimeInterval, epoch: UInt16 = 0) throws -> PCVRDecodedFrame {
+            let made = try gradientFrame(foveation: nil, pose: PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
+                                                                         position: [x, 0, 0]))
+            return PCVRDecodedFrame(streamEpoch: 0, frameNumber: 0, texture: made.texture,
+                                    renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: epoch, displayTime: time,
+                                                               eyes: made.renderPose.eyes), arrivalTime: 0)
+        }
+        let depth = try slabDepth(leftX: 0)
+        let near = try shifted(0.02, time: -0.05), older = try shifted(0.021, time: -0.1)
+        let elsewhere = try shifted(0.03, time: -0.01, epoch: 1)
+        let fills = [older, near, elsewhere].map { PCVRDepthWarper.FillSource(frame: $0, depth: depth) }
+            + [PCVRDepthWarper.FillSource(frame: frame, depth: depth)]
+        let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.03, 0, 0])
+        let plan = PCVRDepthWarper.fillPlan(frame: frame, targets: frame.renderPose.eyes.map { $0.pose * move },
+                                            fills: fills, otherEye: true)
+        // Left eye at 3 cm: `near`'s left eye (1 cm off), then `older`'s
+        // (0.9 cm off, but 50 ms older); the other eye (3.4 cm) is third.
+        XCTAssertEqual(plan[0].map(\.fill), [1, 0])
+        XCTAssertEqual(plan[0].map(\.eye), [0, 0])
+        // Right eye at 9.4 cm: `near`'s right eye (8.4 cm), then `older`'s.
+        XCTAssertEqual(plan[1].map(\.fill), [1, 0])
+        XCTAssertEqual(plan[1].map(\.eye), [1, 1])
     }
 }
 #endif

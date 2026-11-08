@@ -143,6 +143,12 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// of render-time difference: of two views about as close to the eye,
     /// the newer one, since anything moving in the scene has moved since.
     static let fillAgePenalty: Float = 0.1
+    /// The fill views' march, coarser than the main one: on a hard shake the
+    /// strips are a tenth of the picture or more, and two full marches for
+    /// each of their pixels took the warp past 20 ms, a skipped refresh in
+    /// ten at 60 Hz (headset, 2026-11-08).
+    var fillMaxSteps = 16
+    var fillStepTexels: Float = 2
 
     init(device: any MTLDevice) throws {
         self.device = device
@@ -238,11 +244,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                     continue
                 }
                 let source = sources[index]
-                uniforms.append(self.uniforms(
+                var fill = self.uniforms(
                     frame: source.frame, eye: view.eye, depth: source.depth, target: targets[eye],
                     targetTangents: frame.renderPose.eyes[eye].fieldOfView.tangents, planeDistance: planeDistance,
                     outputSize: outputSize, outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye,
-                    flags: 32 | UInt32(index) << 8))
+                    flags: 32 | UInt32(index) << 8)
+                fill.maxSteps = UInt32(max(fillMaxSteps, 1))
+                fill.stepTexels = max(fillStepTexels, 0.25)
+                uniforms.append(fill)
                 uniforms[eye].flags |= 8
             }
         }

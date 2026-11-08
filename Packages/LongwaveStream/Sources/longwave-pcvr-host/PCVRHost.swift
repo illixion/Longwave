@@ -76,6 +76,9 @@ struct HostOptions {
     var depthQP = 12
     /// Diagnostics: a directory the estimate's grids and output are written to.
     var depthDump: String?
+    /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
+    /// not, is scaled down uniformly to fit, keeping its aspect.
+    var maxWireEye: PixelSize?
 }
 
 /// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
@@ -237,6 +240,8 @@ final class PCVRHost: @unchecked Sendable {
         var wireEye: PixelSize
         var warp: CentreEdgeWarp?
         var stereoLayout: StereoLayout = .sideBySide
+        /// Unwarped but smaller than rendered (`maxWireEye`): a uniform scale.
+        var scaled: Bool { warp == nil && wireEye != renderEye }
         var wirePictureSize: PixelSize { PixelSize(width: wireEye.width * 2, height: wireEye.height) }
         var pictureSize: PixelSize { stereoLayout == .separateAccessUnits ? wireEye : wirePictureSize }
         /// Separate eyes go to encoded consumers, which take Main10, so they are
@@ -382,16 +387,19 @@ final class PCVRHost: @unchecked Sendable {
 
         var forceKey = requestedKey
         let renderEye = PixelSize(width: UInt16(frame.width / 2), height: UInt16(frame.height))
-        if foveate, warp == nil, !warpUnavailable {
+        // The warp pass also does the uniform scale a `maxWireEye` cap needs.
+        let capped = options.maxWireEye.map { Self.fitted(renderEye, within: $0) != renderEye } ?? false
+        if foveate || capped, warp == nil, !warpUnavailable {
             do {
                 warp = try FoveationWarpPass(device: device)
             } catch {
                 warpUnavailable = true
-                log.line("foveation unavailable, streaming unwarped: \(error)")
+                log.line("foveation unavailable, streaming unwarped and unscaled: \(error)")
             }
         }
         let wanted = Self.layout(renderEye: renderEye, warp: foveate && warp != nil ? options.warp : nil,
-                                 stereoLayout: separateEyes ? .separateAccessUnits : .sideBySide)
+                                 stereoLayout: separateEyes ? .separateAccessUnits : .sideBySide,
+                                 maxWireEye: warp != nil ? options.maxWireEye : nil)
         if wanted != layout {
             layout = wanted
             foveationEpoch &+= 1
@@ -399,7 +407,9 @@ final class PCVRHost: @unchecked Sendable {
             forceKey = true
             lastGazeCentres = nil
             let description = wanted.warp == nil
-                ? "off, \(renderEye.width)x\(renderEye.height) per eye"
+                ? (wanted.scaled
+                    ? "off, \(renderEye.width)x\(renderEye.height) scaled to \(wanted.wireEye.width)x\(wanted.wireEye.height) per eye"
+                    : "off, \(renderEye.width)x\(renderEye.height) per eye")
                 : "on, \(wanted.wireEye.width)x\(wanted.wireEye.height) of \(renderEye.width)x\(renderEye.height) per eye"
             lock.withLock { foveationStats.layout = description }
             log.line("foveation \(description) (epoch \(foveationEpoch))")
@@ -493,6 +503,25 @@ final class PCVRHost: @unchecked Sendable {
                 }
                 foveationStats.lastCentres = (left, right)
             }
+            if separateEyes {
+                encoded = try encodeEyePair(frame: frame, texture: wireTexture, eyeSize: wanted.wireEye, forceIDR: forceKey)
+            } else {
+                encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
+                    (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+                }
+            }
+        } else if wanted.scaled {
+            let wirePicture = wanted.wirePictureSize
+            if wireTexture?.width != Int(wirePicture.width) || wireTexture?.height != Int(wirePicture.height) {
+                wireTexture = try GraphicsTexture(device: device, width: Int(wirePicture.width), height: Int(wirePicture.height),
+                                                  format: .bgra8)
+            }
+            guard let warp, let wireTexture,
+                  let identity = CentreEdgeAxisMapping(centreSize: 1, edgeRatio: 1, centre: 0.5)?.constants else { return }
+            let eye = FoveationWarpPass.Eye(x: identity, y: identity)
+            try warp.apply(source: frame, renderEye: (Int(renderEye.width), Int(renderEye.height)),
+                           destination: wireTexture, wireEye: (Int(wanted.wireEye.width), Int(wanted.wireEye.height)),
+                           left: eye, right: eye)
             if separateEyes {
                 encoded = try encodeEyePair(frame: frame, texture: wireTexture, eyeSize: wanted.wireEye, forceIDR: forceKey)
             } else {
@@ -837,17 +866,38 @@ final class PCVRHost: @unchecked Sendable {
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
             size: layout.pictureSize, bitDepth: layout.bitDepth, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
             sideDataTypes: layout.warp == nil ? [.renderPose] : [.renderPose, .foveation],
-            pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.renderEye, wireSize: layout.wireEye,
+            // A uniformly scaled eye has nothing to unwarp: to the viewer it was rendered at the wire size.
+            pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.warp == nil ? layout.wireEye : layout.renderEye,
+                             wireSize: layout.wireEye,
                              foveation: FoveationParameters(epoch: epoch, warp: layout.warp.map { .centreEdge($0) } ?? .none)))
     }
 
     /// The layout for eyes rendered at `renderEye`: warped when `warp` is
     /// given and actually makes them smaller, as rendered otherwise.
-    private static func layout(renderEye: PixelSize, warp: CentreEdgeWarp?, stereoLayout: StereoLayout = .sideBySide) -> Layout {
+    /// A cap on the wire eye (`maxWireEye`) then scales either down uniformly;
+    /// the warp's maps are in UVs, so they hold at the smaller size.
+    private static func layout(renderEye: PixelSize, warp: CentreEdgeWarp?, stereoLayout: StereoLayout = .sideBySide,
+                               maxWireEye: PixelSize? = nil) -> Layout {
+        var layout = Layout(renderEye: renderEye, wireEye: renderEye, warp: nil, stereoLayout: stereoLayout)
         if let warp, let wire = warp.wireSize(forRender: renderEye, alignment: PCVRProfile.wireAlignment), wire != renderEye {
-            return Layout(renderEye: renderEye, wireEye: wire, warp: warp, stereoLayout: stereoLayout)
+            layout = Layout(renderEye: renderEye, wireEye: wire, warp: warp, stereoLayout: stereoLayout)
         }
-        return Layout(renderEye: renderEye, wireEye: renderEye, warp: nil, stereoLayout: stereoLayout)
+        if let cap = maxWireEye {
+            layout.wireEye = fitted(layout.wireEye, within: cap)
+        }
+        return layout
+    }
+
+    /// `size` scaled down (never up) to fit `cap` with its aspect, each side a
+    /// multiple of the wire alignment.
+    static func fitted(_ size: PixelSize, within cap: PixelSize) -> PixelSize {
+        let scale = min(1, Double(cap.width) / Double(size.width), Double(cap.height) / Double(size.height))
+        guard scale < 1 else { return size }
+        let alignment = Double(PCVRProfile.wireAlignment)
+        func side(_ value: UInt16) -> UInt16 {
+            UInt16(max(alignment, (Double(value) * scale / alignment).rounded(.down) * alignment))
+        }
+        return PixelSize(width: side(size.width), height: side(size.height))
     }
 
     /// Each eye's warp centre for a frame: where fresh gaze lands in that eye's

@@ -158,6 +158,44 @@ final class FoveationWarpTests: XCTestCase {
         }
     }
 
+    /// The host's `--max-eye` scale: identity axes into a smaller wire eye are a
+    /// uniform box-filtered downscale, with neither eye reaching into the other.
+    func testIdentityAxesScaleEachEyeUniformly() throws {
+        let device = try GraphicsDevice(for: nil)
+        let warp = try FoveationWarpPass(device: device)
+        let width = 64, height = 48, wireWidth = 32, wireHeight = 24
+        var pixels = [UInt8](repeating: 0, count: 2 * width * height * 4)
+        for y in 0..<height {
+            for x in 0..<(2 * width) {
+                let i = (y * 2 * width + x) * 4
+                // Left: a horizontal ramp in blue. Right: flat red.
+                (pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]) = x < width ? (UInt8(x * 2), 0, 0, 255) : (0, 0, 255, 255)
+            }
+        }
+        let source = try pixels.withUnsafeBytes {
+            try GraphicsTexture(device: device, width: 2 * width, height: height, format: .bgra8, pixels: $0)
+        }
+        let identity = try XCTUnwrap(CentreEdgeAxisMapping(centreSize: 1, edgeRatio: 1, centre: 0.5)).constants
+        let eye = FoveationWarpPass.Eye(x: identity, y: identity)
+        let scaled = try GraphicsTexture(device: device, width: 2 * wireWidth, height: wireHeight, format: .bgra8)
+        try warp.apply(source: source, renderEye: (width, height), destination: scaled, wireEye: (wireWidth, wireHeight),
+                       left: eye, right: eye)
+        let out = try scaled.read()
+        for y in 0..<wireHeight {
+            for x in 0..<(2 * wireWidth) {
+                let i = (y * 2 * wireWidth + x) * 4
+                if x < wireWidth {
+                    // Wire pixel x covers render pixels 2x and 2x+1: ramp values 4x and 4x+2.
+                    guard x > 0, x < wireWidth - 1 else { continue }
+                    XCTAssertEqual(Double(out[i]), Double(4 * x + 1), accuracy: 1.5, "left pixel \(x),\(y)")
+                    XCTAssertEqual(Array(out[(i + 1)..<(i + 4)]), [0, 0, 255], "left pixel \(x),\(y)")
+                } else {
+                    XCTAssertEqual(Array(out[i..<(i + 4)]), [0, 0, 255, 255], "right pixel \(x),\(y)")
+                }
+            }
+        }
+    }
+
     func testRejectsConstantsOutsideTheReferenceRanges() throws {
         let device = try GraphicsDevice(for: nil)
         let warp = try FoveationWarpPass(device: device)

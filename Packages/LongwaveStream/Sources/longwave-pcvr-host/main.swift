@@ -7,6 +7,10 @@
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8] [--multipass off|quarter|full] [--aq 0-15] [--max-qp 0-51]
+//                      [--max-eye WxH]
+//
+// --max-eye caps each eye's encoded picture: a larger one (warped or not) is
+// scaled down uniformly to fit, for viewers whose decoder takes no more.
 //
 // Foveation packs each eye with the centre/edge warp for viewers that can undo
 // it: `auto` (the default) when they also send gaze, `on` even without (the
@@ -22,6 +26,7 @@
 // devices for. The session broker attaches with LONGWAVE_BROKER_OUTPUT=native.
 
 import Foundation
+import StreamWire
 
 func parseOptions(_ arguments: [String]) -> HostOptions {
     var options = HostOptions()
@@ -124,6 +129,13 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
             }
             options.depthScale = scale
         case "--depth-dump": options.depthDump = value(argument)
+        case "--max-eye":
+            let parts = value(argument).split(separator: "x").compactMap { UInt16($0) }
+            guard parts.count == 2, parts.allSatisfy({ $0 >= 256 }) else {
+                print("--max-eye takes WxH, each at least 256")
+                exit(2)
+            }
+            options.maxWireEye = PixelSize(width: parts[0], height: parts[1])
         case "--preset":
             guard let preset = Int(value(argument)), (1...7).contains(preset) else {
                 print("--preset takes 1 (fastest) to 7")

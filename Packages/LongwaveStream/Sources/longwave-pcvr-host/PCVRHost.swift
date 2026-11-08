@@ -261,6 +261,20 @@ final class PCVRHost: @unchecked Sendable {
     private var lastStats: UInt64 = 0
     private var foveationStats = FoveationStatistics()
     private var depthStats = DepthStatistics()
+    /// Where a frame's time goes on this PC, per frame since the last
+    /// statistics line (ms): the producer's render (its submit to its GPU
+    /// work finishing), the wait for the encoder thread, the encode call
+    /// (warp, NVENC, sharding), and from the colour frame's submit to its
+    /// first and last shard leaving (the pacer). The headset sees only the
+    /// sum: capture (the producer's submit) to its first shard arriving.
+    private var stages = StageTimes()
+    /// Colour frames being sent: submitted, first and last shard out (ns).
+    private var sending: [UInt32: (submitted: UInt64, first: UInt64?, last: UInt64)] = [:]
+
+    private struct StageTimes {
+        var render: [Double] = [], pickup: [Double] = [], encode: [Double] = []
+        var firstShard: [Double] = [], spread: [Double] = []
+    }
 
     private struct DepthStatistics {
         var frames = 0, stereo = 0, game = 0, dropped = 0
@@ -361,6 +375,11 @@ final class PCVRHost: @unchecked Sendable {
                 lock.withLock {
                     encodeTimes.append(took)
                     if encodeTimes.count > 240 { encodeTimes.removeFirst(encodeTimes.count - 240) }
+                    if frame.readyTicks >= frame.presentTicks, frame.presentTicks > 0 {
+                        stages.render.append(HostClock.milliseconds(frame.readyTicks - frame.presentTicks))
+                        stages.pickup.append(HostClock.milliseconds(max(started - frame.readyTicks, 0)))
+                    }
+                    stages.encode.append(took)
                 }
             } catch {
                 log.line("encode failed: \(error)")
@@ -571,7 +590,9 @@ final class PCVRHost: @unchecked Sendable {
                 do {
                     switch try viewer.sender.submit(accessUnit: accessUnit, isKeyFrame: isIDR, captureTime: captureTime,
                                                     sideData: sideData, udpPayload: udpPayload, now: now) {
-                    case .queued(let number): if viewer.depthSender != nil { colourNumbers[viewer.index] = number }
+                    case .queued(let number):
+                        if viewer.depthSender != nil { colourNumbers[viewer.index] = number }
+                        if sending.count < 32 { sending[number] = (now, nil, now) }
                     case .awaitingKeyFrame, .queueFull: needsKey = true
                     }
                 } catch {
@@ -1232,6 +1253,10 @@ final class PCVRHost: @unchecked Sendable {
             guard let address = endpoint.sessions[viewer.index]?.address else { continue }
             func drain(_ next: () -> VideoStreamSender.Output?) {
                 while let output = next() {
+                    // Its own time: one drain can send a whole frame, for as long as the socket takes.
+                    if case .shard(let header, _) = output, header.streamID == PCVRProfile.streamID {
+                        noteShardSent(frame: header.frameNumber, now: Self.now())
+                    }
                     let datagram: [UInt8]?? = endpoint.withSession(viewer.index) { session in
                         switch output {
                         case .shard(let header, let data): try? session.sealVideo(header, data: data, now: now)
@@ -1255,6 +1280,22 @@ final class PCVRHost: @unchecked Sendable {
         targetBitrate = bitrates.min().map { min($0, options.maxMbps * 1_000_000) }
         if now - lastDeviceReload > 10_000_000_000 { reloadDevices(now: now) }
         if now - lastStats > 5_000_000_000 { logStatistics(now: now) }
+    }
+
+    /// A colour shard of `frame` left: the first marks the end of its wait
+    /// behind the pacer, and a newer frame's closes the older ones' sends.
+    private func noteShardSent(frame: UInt32, now: UInt64) {
+        guard var entry = sending[frame] else { return }
+        if entry.first == nil { entry.first = now }
+        entry.last = now
+        sending[frame] = entry
+        for (number, older) in sending where SerialNumber.isNewer(frame, than: number) {
+            if let first = older.first, first >= older.submitted, older.last >= first {
+                stages.firstShard.append(Double(first - older.submitted) / 1e6)
+                stages.spread.append(Double(older.last - first) / 1e6)
+            }
+            sending[number] = nil
+        }
     }
 
     private func flush(now: UInt64) {
@@ -1329,6 +1370,18 @@ final class PCVRHost: @unchecked Sendable {
             line += String(format: ", near %.3f m", d.near)
             log.line(line)
             depthStats = DepthStatistics(size: size)
+        }
+        if !stages.encode.isEmpty {
+            func spread(_ values: [Double]) -> String {
+                guard !values.isEmpty else { return "-" }
+                let sorted = values.sorted()
+                return String(format: "%.1f/%.1f", sorted[sorted.count / 2], sorted[(sorted.count - 1) * 95 / 100])
+            }
+            let s = stages
+            log.line("  stages p50/p95 ms: render \(spread(s.render)), encoder wait \(spread(s.pickup)), "
+                     + "encode \(spread(s.encode)), to first shard \(spread(s.firstShard)), "
+                     + "first to last shard \(spread(s.spread))")
+            stages = StageTimes()
         }
         framesEncoded = 0
         encodeMilliseconds = 0

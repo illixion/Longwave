@@ -260,9 +260,9 @@ final class PCVRPlayoutTests: XCTestCase {
         run(latency: 0.031)        // 3.72 periods
         XCTAssertEqual(producer.displayPeriod ?? 0, period, accuracy: 1e-9)
         XCTAssertEqual(chosen.last!, 4 * period, accuracy: 1e-9)
-        run(latency: 0.0245)       // 2.94 periods: just under the boundary, kept at 4
+        run(latency: 0.0258)       // 3.10 periods: inside the hold band under the 3/4 boundary (3.15), kept at 4
         XCTAssertEqual(chosen.last!, 4 * period, accuracy: 1e-9)
-        run(latency: 0.022)        // 2.64 periods: clearly under, 3
+        run(latency: 0.0245)       // 2.94 periods: a whole number of ticks, as readiness is, so 3
         XCTAssertEqual(chosen.last!, 3 * period, accuracy: 1e-9)
         // Every horizon chosen once the period was known is a whole number of periods.
         for horizon in chosen.dropFirst(10) where horizon > 0 {

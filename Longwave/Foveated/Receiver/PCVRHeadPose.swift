@@ -158,16 +158,28 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     /// a display slot and the frames rendered for consecutive slots are a
     /// whole number of slots apart. (A horizon in fractions of a period moved
     /// each frame's slot boundary with every new readiness sample; the PC's
-    /// frame lock reads the slots off the poses.) It changes by a period only
-    /// once the measured horizon is a sixth of one past the boundary, either
+    /// frame lock reads the slots off the poses.) The boundary between n and
+    /// n + 1 periods is at n + `boundaryAllowance`; the count changes only
+    /// once the measured horizon is `hysteresis` of a period past it, either
     /// way, so it doesn't flap between two counts.
+    ///
+    /// Readiness is measured in whole display ticks, so the measured horizon
+    /// sits a hair over a whole number of periods, not near a boundary. The
+    /// hold band once reached a sixth of a period below the boundary (to n -
+    /// 0.02), and a horizon at n + 0.03 never stepped back down from n + 1:
+    /// a whole period of latency, every frame waiting 27 ms (headset 2026-11-08).
+    static let boundaryAllowance = 0.15
+    static let hysteresis = 0.08
+
     func nextHorizon() -> TimeInterval {
         let measured = predictionHorizon
         guard let period = displayPeriod, period > 0, measured > 0 else { return measured }
         let raw = measured / period
-        var periods = Int((raw - 0.15).rounded(.up))
-        if let last = horizonPeriods, periods != last, abs(raw - (periods > last ? Double(last) : Double(last) - 1)) < 1.0 / 6 {
-            periods = last
+        var periods = Int((raw - Self.boundaryAllowance).rounded(.up))
+        if let last = horizonPeriods, periods != last {
+            // The boundary crossed: up from `last` at last + allowance, down at last - 1 + allowance.
+            let boundary = Double(periods > last ? last : last - 1) + Self.boundaryAllowance
+            if abs(raw - boundary) < Self.hysteresis { periods = last }
         }
         periods = min(max(periods, 0), Int((Self.maximumPredictionHorizon / period).rounded(.up)))
         if let last = horizonPeriods, last != periods { horizonSteps += 1 }

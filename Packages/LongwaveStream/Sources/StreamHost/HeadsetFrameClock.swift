@@ -166,6 +166,11 @@ public enum StreamRate {
     /// back up only under `stepUp`.
     public static let stepDown = 0.85
     public static let stepUp = 0.7
+    /// Never halve below this: at 60 Hz the display's own rate stays, late
+    /// frames and all. Halving 60 to 30 also locked itself in: each frame
+    /// then carries twice the bits and the GPU clocks down, so the encoder
+    /// measured 22 ms and never came back under the step-up line (2026-11-08).
+    public static let lowestHalf = 45.0
 
     /// - Parameters:
     ///   - display: the headset's display rate, Hz.
@@ -175,6 +180,7 @@ public enum StreamRate {
     public static func choose(display: Double, encodeMilliseconds: Double?, current: Double?,
                               ceiling: Double = .infinity) -> Double {
         let full = display, half = display / 2
+        guard half >= lowestHalf else { return min(full, ceiling) }
         guard full <= ceiling else { return half }
         guard let encode = encodeMilliseconds else { return current.map { $0 == full ? full : half } ?? half }
         let period = 1000 / full

@@ -181,6 +181,9 @@ import Testing
         // No measure yet: half, unless already at the display's rate.
         #expect(StreamRate.choose(display: 90, encodeMilliseconds: nil, current: nil) == 45)
         #expect(StreamRate.choose(display: 90, encodeMilliseconds: nil, current: 90) == 90)
+        // Never under 45: 60 stays 60 however slow the encoder (it was 30 with a slow start).
+        #expect(StreamRate.choose(display: 60, encodeMilliseconds: 26.5, current: 90) == 60)
+        #expect(StreamRate.choose(display: 60, encodeMilliseconds: 22, current: 30) == 60)
         // A ceiling below the display's rate: half.
         #expect(StreamRate.choose(display: 120, encodeMilliseconds: 3, current: 120, ceiling: 100) == 60)
     }

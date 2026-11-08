@@ -7,7 +7,13 @@
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8] [--multipass off|quarter|full] [--aq 0-15] [--max-qp 0-51]
-//                      [--max-eye WxH]
+//                      [--max-eye WxH] [--fovea-qp -10] [--edge-qp 10] [--fovea-radius 8] [--edge-radius 30]
+//                      [--rate-change reconfigure|rebuild]
+//
+// --fovea-qp/--edge-qp shift the colour encoder's QP per 32x32 block by angle
+// from the warp centre (FovealQPMap; 0 and 0 turn it off). --rate-change says
+// what a new stream rate does to the encoder: change it in place (the default,
+// no key frame) or rebuild it.
 //
 // --max-eye caps each eye's encoded picture: a larger one (warped or not) is
 // scaled down uniformly to fit, for viewers whose decoder takes no more.
@@ -166,6 +172,26 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 exit(2)
             }
             options.maxQP = qp
+        case "--fovea-qp", "--edge-qp":
+            guard let qp = Int(value(argument)), (-20...20).contains(qp) else {
+                print("\(argument) takes -20 to 20")
+                exit(2)
+            }
+            if argument == "--fovea-qp" { options.fovealQP.foveaQP = qp } else { options.fovealQP.edgeQP = qp }
+        case "--fovea-radius", "--edge-radius":
+            guard let degrees = Double(value(argument)), (0...90).contains(degrees) else {
+                print("\(argument) takes 0 to 90 degrees")
+                exit(2)
+            }
+            if argument == "--fovea-radius" { options.fovealQP.foveaRadius = degrees } else { options.fovealQP.edgeRadius = degrees }
+        case "--rate-change":
+            switch value(argument) {
+            case "reconfigure": options.reconfiguresRate = true
+            case "rebuild": options.reconfiguresRate = false
+            default:
+                print("--rate-change takes reconfigure or rebuild")
+                exit(2)
+            }
         default:
             print("unknown argument \(argument)")
             exit(2)

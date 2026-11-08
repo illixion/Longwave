@@ -47,12 +47,18 @@ struct HostOptions {
     /// NVENC preset, 1 (fastest) to 7, and the rate control's buffer in frames:
     /// a bigger buffer lets detailed frames take more bits, for a little latency.
     var preset = 1
-    var vbvFrames = 1
+    /// 4: at 1 NVENC's CBR undershot by a quarter on pcvr-codec-bench (76 of 100 Mbit/s).
+    var vbvFrames = 4
     /// The colour encoder's rate control: a first pass (0 off, 1 quarter, 2 full
     /// resolution), spatial AQ strength (0 off) and a QP cap (0 none).
     var multiPass = 0
     var spatialAQ = 0
     var maxQP = 0
+    /// The colour encoder's QP by angle from the warp centre (warped pictures only).
+    var fovealQP = FovealQPMap()
+    /// A new stream rate reconfigures the encoder in place rather than
+    /// rebuilding it: no key frame each time the headset's display steps down.
+    var reconfiguresRate = true
     var logPath: String?
     var seconds: Double?
     var foveation = FoveationMode.auto
@@ -436,8 +442,17 @@ final class PCVRHost: @unchecked Sendable {
         let picture = wanted.pictureSize
 
         let fps = Int(lock.withLock { pacedHz }.rounded())
-        if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height)
-            || encoder?.parameters.fps != fps || (separateEyes != (rightEncoder != nil)) {
+        let mapsQP = wanted.warp != nil && !separateEyes && options.fovealQP.isEnabled
+        let reshaped = encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height)
+            || (separateEyes != (rightEncoder != nil)) || encoder?.parameters.qpMap != mapsQP
+        if !reshaped, options.reconfiguresRate, let encoder, encoder.parameters.fps != fps {
+            // In place: the rate control's per-frame budget follows, and no key frame goes out.
+            let previous = encoder.parameters.fps
+            try encoder.reconfigure(bitrate: encoder.parameters.bitrate, fps: fps)
+            try rightEncoder?.reconfigure(bitrate: rightEncoder!.parameters.bitrate, fps: fps)
+            log.line("encoder: \(previous) Hz -> \(fps) Hz in place")
+        }
+        if reshaped || encoder?.parameters.fps != fps {
             // A new rate too: the rate control's per-frame budget is bitrate / fps.
             if encoder != nil { forceKey = true }
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
@@ -450,6 +465,7 @@ final class PCVRHost: @unchecked Sendable {
             parameters.multiPass = options.multiPass
             parameters.spatialAQ = options.spatialAQ
             parameters.maxQP = options.maxQP
+            parameters.qpMap = mapsQP
             parameters.bitDepth = Int(wanted.bitDepth)
             encoder = nil
             rightEncoder = nil
@@ -458,7 +474,9 @@ final class PCVRHost: @unchecked Sendable {
             appliedBitrate = parameters.bitrate * (separateEyes ? 2 : 1)
             parameterSets = []
             log.line("encoder: \(encoder!.info.name) HEVC \(parameters.bitDepth)-bit \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s), P\(parameters.preset), "
-                     + "multipass \(["off", "quarter", "full"][parameters.multiPass]), AQ \(parameters.spatialAQ), max QP \(parameters.maxQP)")
+                     + "multipass \(["off", "quarter", "full"][parameters.multiPass]), AQ \(parameters.spatialAQ), max QP \(parameters.maxQP)"
+                     + (mapsQP ? ", foveal QP \(options.fovealQP.foveaQP)/+\(options.fovealQP.edgeQP) at \(Int(options.fovealQP.foveaRadius))-\(Int(options.fovealQP.edgeRadius))°" : "")
+                     + (options.reconfiguresRate ? ", rate changes in place" : ""))
         }
         guard let encoder else { return }
         if let bitrate, abs(bitrate - appliedBitrate) * 100 > appliedBitrate * 3 {
@@ -493,7 +511,10 @@ final class PCVRHost: @unchecked Sendable {
         let encoded: (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double, qp: Int)
         if let shape = wanted.warp, let renderPose = sideData.renderPose {
             let now = Self.now()
-            let (left, right, source) = centres(renderPose: renderPose, head: head, now: now)
+            let (gazeLeft, gazeRight, source) = centres(renderPose: renderPose, head: head, now: now)
+            // On the pixel grid, so the full-density centre is a copy of the render, not a blend.
+            let left = shape.pixelAlignedCentre(gazeLeft, renderEye: renderEye, wireEye: wanted.wireEye)
+            let right = shape.pixelAlignedCentre(gazeRight, renderEye: renderEye, wireEye: wanted.wireEye)
             let parameters = FoveationParameters(epoch: foveationEpoch, warp: .centreEdge(shape))
             let side = FoveationSideData(parameterEpoch: foveationEpoch, leftCentre: left, rightCentre: right)
             guard let maps = StereoCentreEdgeMapping(parameters: parameters, frame: side) else {
@@ -524,6 +545,12 @@ final class PCVRHost: @unchecked Sendable {
             }
             if separateEyes {
                 encoded = try encodeEyePair(frame: frame, texture: wireTexture, eyeSize: wanted.wireEye, forceIDR: forceKey)
+            } else if encoder.parameters.qpMap {
+                let map = options.fovealQP.offsets(maps: maps, fieldsOfView: (renderPose.left.fieldOfView, renderPose.right.fieldOfView),
+                                                   wireEye: wanted.wireEye)
+                encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey, qpDeltaMap: map, recon: nil) {
+                    (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+                }
             } else {
                 encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
                     (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)

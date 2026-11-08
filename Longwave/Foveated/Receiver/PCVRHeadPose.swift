@@ -143,6 +143,38 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
         return min(max(measured ?? 0, 0), Self.maximumPredictionHorizon)
     }
 
+    /// The display period, from the gaps between consecutive snapshots'
+    /// `baseDisplayTime`s (their median); nil until there are a few.
+    private(set) var displayPeriod: TimeInterval?
+    private var baseGaps: [TimeInterval] = []
+    private var lastBaseDisplayTime: TimeInterval?
+    /// The horizon `nextHorizon()` last chose, in display periods.
+    private(set) var horizonPeriods: Int?
+    /// Times the chosen whole number of periods changed.
+    private(set) var horizonSteps = 0
+
+    /// The horizon for the snapshot about to be made: `predictionHorizon`
+    /// rounded up to whole display periods, so every snapshot's display time is
+    /// a display slot and the frames rendered for consecutive slots are a
+    /// whole number of slots apart. (A horizon in fractions of a period moved
+    /// each frame's slot boundary with every new readiness sample; the PC's
+    /// frame lock reads the slots off the poses.) It changes by a period only
+    /// once the measured horizon is a sixth of one past the boundary, either
+    /// way, so it doesn't flap between two counts.
+    func nextHorizon() -> TimeInterval {
+        let measured = predictionHorizon
+        guard let period = displayPeriod, period > 0, measured > 0 else { return measured }
+        let raw = measured / period
+        var periods = Int((raw - 0.15).rounded(.up))
+        if let last = horizonPeriods, periods != last, abs(raw - (periods > last ? Double(last) : Double(last) - 1)) < 1.0 / 6 {
+            periods = last
+        }
+        periods = min(max(periods, 0), Int((Self.maximumPredictionHorizon / period).rounded(.up)))
+        if let last = horizonPeriods, last != periods { horizonSteps += 1 }
+        horizonPeriods = periods
+        return Double(periods) * period
+    }
+
     /// The recorded readiness latencies at 10, 50 and 90 per cent, seconds.
     var readinessQuantiles: (low: TimeInterval, median: TimeInterval, high: TimeInterval)? {
         let sorted = readinessLatencies.sorted()
@@ -197,6 +229,15 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
             gaze: gaze ?? .from(gazeSource?.latest, now: sampledAt)
         )
         history.append((sequence, sampledAt, baseDisplayTime))
+        if let last = lastBaseDisplayTime {
+            let gap = baseDisplayTime - last
+            if gap > 0.004, gap < 0.03 {
+                baseGaps.append(gap)
+                if baseGaps.count > 31 { baseGaps.removeFirst(baseGaps.count - 31) }
+                if baseGaps.count >= 5 { displayPeriod = baseGaps.sorted()[baseGaps.count / 2] }
+            }
+        }
+        lastBaseDisplayTime = baseDisplayTime
         if history.count > Self.historyLength { history.removeFirst(history.count - Self.historyLength) }
         logIfDue(snapshot)
         onSnapshot?(snapshot)

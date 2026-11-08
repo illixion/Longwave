@@ -1,7 +1,7 @@
 // longwave-pcvr-host: the v3 PCVR host (NATIVE_V3_PROTOCOL.md section 4.7).
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
-//                      [--start-mbps 30] [--refresh auto|Hz] [--log FILE] [--seconds N]
+//                      [--start-mbps 30] [--refresh auto|Hz] [--frame-lock on|off] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
@@ -47,6 +47,14 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 options.followsHeadset = false
             } else {
                 print("--refresh takes auto or a rate in Hz (30-240)")
+                exit(2)
+            }
+        case "--frame-lock":
+            switch value(argument) {
+            case "on": options.locksToHeadset = true
+            case "off": options.locksToHeadset = false
+            default:
+                print("--frame-lock takes on or off")
                 exit(2)
             }
         case "--log": options.logPath = value(argument)

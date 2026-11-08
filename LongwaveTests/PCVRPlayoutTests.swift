@@ -237,5 +237,38 @@ final class PCVRPlayoutTests: XCTestCase {
         }
         XCTAssertEqual(producer.predictionHorizon, 0.03, accuracy: 1e-3)
     }
+
+    /// The horizon goes out in whole display periods, so every pose names a
+    /// display slot, and steps only once the measured horizon is clearly past
+    /// a boundary.
+    func testTheHorizonIsWholeDisplayPeriodsWithHysteresis() {
+        let producer = PCVRHeadPoseProducer()
+        producer.horizonSource = .readiness
+        producer.readinessPercentile = 0.5
+        let period = 1.0 / 120
+        var time: TimeInterval = 100
+        var chosen: [TimeInterval] = []
+        func run(latency: TimeInterval) {
+            for _ in 0..<130 {
+                let horizon = producer.nextHorizon()
+                chosen.append(horizon)
+                let pose = snapshot(producer, at: time, horizon: horizon)
+                producer.recordReadiness(poseSequence: pose.sequence, readyDisplayTime: time + 0.02 + latency)
+                time += period
+            }
+        }
+        run(latency: 0.031)        // 3.72 periods
+        XCTAssertEqual(producer.displayPeriod ?? 0, period, accuracy: 1e-9)
+        XCTAssertEqual(chosen.last!, 4 * period, accuracy: 1e-9)
+        run(latency: 0.0245)       // 2.94 periods: just under the boundary, kept at 4
+        XCTAssertEqual(chosen.last!, 4 * period, accuracy: 1e-9)
+        run(latency: 0.022)        // 2.64 periods: clearly under, 3
+        XCTAssertEqual(chosen.last!, 3 * period, accuracy: 1e-9)
+        // Every horizon chosen once the period was known is a whole number of periods.
+        for horizon in chosen.dropFirst(10) where horizon > 0 {
+            XCTAssertEqual((horizon / period).rounded(), horizon / period, accuracy: 1e-6)
+        }
+        XCTAssertEqual(producer.horizonSteps, 1)
+    }
 }
 #endif

@@ -27,6 +27,11 @@ struct HostOptions {
     /// headset can show and no more; a number fixes it.
     var refreshHz = 90.0
     var followsHeadset = true
+    /// Lock the frame clock's phase to the headset's display (`HeadsetFrameClock`):
+    /// each frame for the display slot one frame interval after the last, the
+    /// wake corrected toward its pose's arrival. Off (`--frame-lock off`), the
+    /// clock free-runs on this PC's crystal and each frame takes the latest pose.
+    var locksToHeadset = true
     /// NVENC preset, 1 (fastest) to 7, and the rate control's buffer in frames:
     /// a bigger buffer lets detailed frames take more bits, for a little latency.
     var preset = 1
@@ -142,6 +147,10 @@ final class PCVRHost: @unchecked Sendable {
     private var pacedHz: Double
     /// Poses accepted since the rate was last measured.
     private var posesForRate = 0
+    /// The frame clock's phase lock to the headset's display (under `lock`).
+    private var frameClock = HeadsetFrameClock(streamInterval: 11_111_111)
+    /// Frame-lock counters since the last statistics line.
+    private var frameLockStats = (frames: 0, corrections: 0.0, maxCorrection: 0.0)
     private var lastDeviceReload: UInt64 = 0
 
     // Frames waiting for the encoder: only the newest is kept.
@@ -796,13 +805,18 @@ final class PCVRHost: @unchecked Sendable {
         return nearest
     }
 
+    /// How long after the host wakes the producer is told to start: long
+    /// enough that it reads the state published on this wake, never the one
+    /// before (both landing on the same instant made which pose a frame got a
+    /// coin toss).
+    static let producerStartLead: Int64 = 1_000_000
+
     private func pacingLoop() {
         var next = HostClock.now()
         var measuredSince = next
         while running {
             let hz = lock.withLock { pacedHz }
             let interval = Int64(Double(HostClock.ticksPerSecond) / hz)
-            next += interval
             if options.followsHeadset, next - measuredSince >= 2 * HostClock.ticksPerSecond {
                 let seconds = Double(next - measuredSince) / Double(HostClock.ticksPerSecond)
                 measuredSince = next
@@ -819,12 +833,33 @@ final class PCVRHost: @unchecked Sendable {
             if wait > 1.5 { Thread.sleep(forTimeInterval: (wait - 1) / 1000) }
             while HostClock.now() < next {}
 
+            // The frame starting now: its pose, its display slot, and how far
+            // this wake was from where the lock wants it.
+            let woke = Self.now()
+            let (posed, frame) = lock.withLock { () -> ((UInt32, HeadPose)?, HeadsetFrameClock.Frame?) in
+                frameClock.streamInterval = Int64(1e9 / hz)
+                return (headPose, options.locksToHeadset ? frameClock.frame(now: Int64(clamping: woke)) : nil)
+            }
+            var correction: Int64 = 0
+            if let error = frame?.phaseError {
+                // A tenth of the error per frame, at most an eighth of a frame:
+                // the uplink's jitter averages out, the crystals' drift does not.
+                let ns = max(min(error / 10, Int64(1e9 / hz) / 8), -Int64(1e9 / hz) / 8)
+                correction = Self.ticks(fromNanoseconds: UInt64(abs(ns))) * (ns < 0 ? -1 : 1)
+                lock.withLock {
+                    frameLockStats.frames += 1
+                    frameLockStats.corrections += Double(abs(ns)) / 1e6
+                    frameLockStats.maxCorrection = max(frameLockStats.maxCorrection, Double(abs(error)) / 1e6)
+                }
+            }
+            next += interval - correction
+
             var state = ExternalHostState()
             state.refreshMillihertz = UInt32(hz * 1000)
-            state.nextFrameStartTicks = next + interval
-            if let (sequence, pose) = lock.withLock({ headPose }) {
+            state.nextFrameStartTicks = next + Self.ticks(fromNanoseconds: UInt64(Self.producerStartLead))
+            if let (sequence, pose) = posed {
                 state.poseSequence = sequence
-                state.poseDisplayTicks = Self.ticks(fromNanoseconds: pose.displayTime)
+                state.poseDisplayTicks = Self.ticks(fromNanoseconds: frame.map { UInt64(clamping: $0.displayTime) } ?? pose.displayTime)
                 state.spaceEpoch = UInt32(pose.spaceEpoch)
                 state.head = Self.hostPose(pose.head)
                 state.eyeOffsets = (Self.hostPose(pose.leftEye.pose), Self.hostPose(pose.rightEye.pose))
@@ -955,6 +990,7 @@ final class PCVRHost: @unchecked Sendable {
                 posesForRate += 1
                 if let presented = pose.presented { viewer.lastPresented = presented }
                 headPose = (snapshot.sequence, pose)
+                frameClock.pose(displayTime: Int64(clamping: pose.displayTime), arrival: Int64(clamping: now))
             case .message(.control, let message):
                 switch message.type {
                 case .recoveryRequest:
@@ -1089,6 +1125,14 @@ final class PCVRHost: @unchecked Sendable {
                 + "superseded \(superseded), no viewer \(framesWithoutViewers), no render pose \(badSideData)"
         }
         log.line(line)
+        if options.locksToHeadset {
+            let c = frameClock, f = frameLockStats
+            frameLockStats = (0, 0, 0)
+            log.line(String(format: "  frame lock: headset %@, %d locked, %d early, %d retargeted in total; "
+                                + "correction %.3f ms avg, error %.2f ms max",
+                            c.headsetPeriod.map { String(format: "%.2f Hz", 1e9 / Double($0)) } ?? "unknown",
+                            c.locked, c.early, c.retargets, f.frames > 0 ? f.corrections / Double(f.frames) : 0, f.maxCorrection))
+        }
         if let layout = foveationStats.layout {
             let f = foveationStats
             var fov = "  foveation \(layout)"

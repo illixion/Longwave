@@ -351,7 +351,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             PCVREyeGeometry(deviceFromEye: PCVRPose(views[index].transform),
                             fieldOfView: PCVRFieldOfView(projection: drawable.computeProjection(viewIndex: index)))
         }
-        let horizon = predictsToLatency ? poseProducer.predictionHorizon : 0
+        let horizon = predictsToLatency ? poseProducer.nextHorizon() : 0
         var predicted = head
         if horizon > 0, let ahead = worldTracking.queryDeviceAnchor(atTimestamp: presentLayerTime + horizon) {
             predicted = PCVRPose(ahead.originFromAnchorTransform)

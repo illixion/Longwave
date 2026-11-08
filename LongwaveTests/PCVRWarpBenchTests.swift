@@ -114,6 +114,7 @@ final class PCVRWarpBenchTests: XCTestCase {
     private func hostDepth(_ rendered: Rendered, divisor: Int) throws -> PCVRDepthMap {
         let w = Self.width, h = Self.height
         let dw = w / divisor, dh = h / divisor
+        let noise = Int(ProcessInfo.processInfo.environment["PCVR_BENCH_DEPTH_NOISE"] ?? "") ?? 0
         var bytes = [UInt8](repeating: 0, count: 2 * dw * dh)
         for eye in 0..<2 {
             for y in 0..<dh {
@@ -127,7 +128,15 @@ final class PCVRWarpBenchTests: XCTestCase {
                         }
                     }
                     let v = nearest.isFinite ? min(max(0.25 / nearest, 0), 1) : 0
-                    bytes[y * 2 * dw + eye * dw + x] = UInt8((v * 255).rounded())
+                    // Codec noise, `PCVR_BENCH_DEPTH_NOISE` codes at most (the stream's
+                    // depth is HEVC at QP 12): a fixed pattern, so cases compare.
+                    var code = (v * 255).rounded()
+                    if noise > 0 {
+                        var h = UInt32(truncatingIfNeeded: (eye * 7919 + y) &* 73_856_093 ^ x &* 19_349_663)
+                        h = (h ^ (h >> 13)) &* 1_274_126_177
+                        code += Float(Int(h % UInt32(2 * noise + 1)) - noise)
+                    }
+                    bytes[y * 2 * dw + eye * dw + x] = UInt8(min(max(code, 0), 255))
                 }
             }
         }

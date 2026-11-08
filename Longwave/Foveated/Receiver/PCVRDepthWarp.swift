@@ -774,6 +774,34 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         return PCVRDepthWarpHit{render + m.xy, m.z, m.w};
     }
 
+    // What a pixel no view saw shows: the farther surface beside the edge,
+    // as the march found it, averaged over five taps along the edge (across
+    // the ray's track), three depth texels apart. A single tap there, its
+    // spot a little different for every pixel, drew the strip as a comb of
+    // streaks of whatever texture the far surface had (the wall's grid under
+    // the whiteboard on a vertical shake, headset 2026-11-08); a blend along
+    // the edge reads as a smudge of the right colour.
+    static float3 pcvrDepthWarpHoleColour(float2 render, PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u,
+                                          texture2d<float, access::sample> source, sampler linear) {
+        float4 tt = u.targetTangents;
+        float3 d = float3(tt.x + render.x * (tt.y - tt.x), tt.z - render.y * (tt.z - tt.w), -1);
+        float3 D = u.rotation * d;
+        float2 uvNear, uvFar;
+        float rhoNear, rhoFar;
+        pcvrDepthWarpRay(D, u.translation.xyz, u.nearInverse, u.sourceTangents, uvNear, rhoNear);
+        pcvrDepthWarpRay(D, u.translation.xyz, 0, u.sourceTangents, uvFar, rhoFar);
+        float2 texel = 1.0 / max(u.depthRect.zw * u.depthSize, float2(1));
+        float2 track = (uvFar - uvNear) / texel;
+        float2 along = length(track) > 1e-3 ? normalize(track) : float2(1, 0);
+        float2 across = float2(-along.y, along.x) * texel * 1.5;
+        float3 sum = float3(0);
+        for (int k = -2; k <= 2; k++) {
+            float2 p = saturate(hit.uv + across * float(k));
+            sum += source.sample(linear, pcvrEyeTexel(pcvrWireUV(p, u.wireX, u.wireY), u.sourceRect, u.sourceBounds)).rgb;
+        }
+        return sum / 5;
+    }
+
     // Pass two, every output pixel (`pcvrDepthWarpLookup`). A pixel its own
     // eye could not see, or whose ray left that eye's frame, tries the fill
     // views in turn (the encoder's "Fills"): the first that saw it inside
@@ -816,6 +844,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         // is made up rather than seen.
         if ((u.flags & 2u) && hit.filled > 0.5) {
             output.write(float4(1, 0, 1, 1), gid);
+            return;
+        }
+        if (hit.filled > 0.5 && (u.flags & 1u)) {
+            output.write(float4(pcvrDepthWarpHoleColour(render, hit, u, source, linear), 1), gid);
             return;
         }
         float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);

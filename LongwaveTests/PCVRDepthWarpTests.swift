@@ -555,5 +555,48 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertEqual(plan[1].map(\.fill), [1, 0])
         XCTAssertEqual(plan[1].map(\.eye), [1, 1])
     }
+    /// A pitch past the frame's bottom edge: the band the frame never saw is
+    /// filled from an earlier frame rendered from the pitched pose, each
+    /// pixel with exactly what that frame showed in its direction (here its
+    /// own render UV, since the earlier frame was rendered from the target).
+    func testAPitchPastTheEdgeIsFilledFromAnEarlierFrameInPlace() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try depthMap { _, _ in 2 }
+        let pitch = PCVRPose(rotation: simd_quatf(angle: -0.25, axis: [1, 0, 0]), position: .zero)
+        let targets = frame.renderPose.eyes.map { $0.pose * pitch }
+        let made = try gradientFrame(foveation: nil, pose: pitch)
+        let earlier = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 0, texture: made.texture,
+                                       renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: 0, displayTime: -0.05,
+                                                                  eyes: made.renderPose.eyes), arrivalTime: 0)
+        let warper = try PCVRDepthWarper(device: device)
+        warper.fillsFromOtherEye = false
+        let width = 2 * Self.eyeWidth, height = Self.eyeHeight
+        let colour = try texture(.rgba16Float, width: width, height: height, write: true)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: 2, into: colour,
+                          fills: [.init(frame: earlier, depth: depth)], commandBuffer: commandBuffer)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        var pixels = [Float16](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes {
+            colour.getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        let out = Output(colour: pixels, depth: [])
+        let texel = 1 / Float(Self.eyeWidth), rowTexel = 1 / Float(Self.eyeHeight)
+        var checked = 0, worst: Float = 0
+        for eye in 0..<2 {
+            // Rows below where the frame's own picture ends (looking down 0.25 rad).
+            for y in stride(from: Self.eyeHeight - 30, to: Self.eyeHeight - 2, by: 3) {
+                for x in stride(from: 4, to: Self.eyeWidth - 4, by: 7) {
+                    let got = out.sourceUV(eye: eye, x: x, y: y)
+                    let u = (Float(x) + 0.5) * texel, v = (Float(y) + 0.5) * rowTexel
+                    worst = max(worst, abs(got.x - u) / texel, abs(got.y - v) / rowTexel)
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 500)
+        XCTAssertLessThan(worst, 1.5, "worst fill error in texels")
+    }
 }
 #endif

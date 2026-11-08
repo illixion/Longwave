@@ -503,7 +503,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0))
     }
 
-    static let shaderSource = """
+    /// Computed, not stored: a live patch (`inject`) can change a computed
+    /// property, and a warper made after it compiles the new source.
+    static var shaderSource: String { """
     #include <metal_stdlib>
     using namespace metal;
     \(PCVRFoveationShader.source)
@@ -970,6 +972,6 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                sampler linear [[sampler(0)]]) {
         return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, linear).color;
     }
-    """
+    """ }
 }
 #endif

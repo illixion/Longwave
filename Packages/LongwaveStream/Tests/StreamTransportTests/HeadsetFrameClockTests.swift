@@ -8,6 +8,8 @@ import Testing
 @Suite struct HeadsetFrameClockTests {
     struct Run {
         var slots: [Int64] = []
+        /// The display time of the latest pose at each frame.
+        var poseDisplays: [Int64] = []
         var clock: HeadsetFrameClock
     }
 
@@ -17,11 +19,12 @@ import Testing
     ///   - drift: the host crystal's error (1.001 runs 0.1% fast).
     ///   - jitter: uplink jitter, nanoseconds, deterministic pseudo-random in 0..<jitter.
     static func simulate(headsetHz: Double, streamHz: Double, drift: Double, jitter: Int64, seconds: Double,
-                         startPhase: Int64 = 3_000_000) -> Run {
+                         startPhase: Int64 = 3_000_000, horizonTicks: (Int64) -> Int64 = { _ in 6 }) -> Run {
         let tick = Int64(1e9 / headsetHz)
         let interval = Int64(1e9 / streamHz)
         var clock = HeadsetFrameClock(streamInterval: interval)
         var run = Run(clock: clock)
+        run.poseDisplays = []
         var seed: UInt64 = 0x2545F4914F6CDD1D
         func random() -> Int64 {
             seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17
@@ -32,7 +35,7 @@ import Testing
         let end = Int64(seconds * 1e9)
         var n: Int64 = 0
         while n * tick < end + tick {
-            poses.append((n * tick + 3_000_000 + random(), n * tick + 6 * tick))
+            poses.append((n * tick + 3_000_000 + random(), n * tick + horizonTicks(n * tick) * tick))
             n += 1
         }
         poses.sort { $0.arrival < $1.arrival }
@@ -46,6 +49,7 @@ import Testing
             }
             if let frame = clock.frame(now: next) {
                 run.slots.append(frame.displayTime)
+                run.poseDisplays.append(poses[delivered - 1].display)
                 let correction = frame.phaseError.map { max(min($0 / 10, interval / 8), -interval / 8) } ?? 0
                 next += hostInterval - correction
             } else {
@@ -111,6 +115,25 @@ import Testing
         let tick = Int64(1e9 / 90)
         let run = Self.simulate(headsetHz: 90, streamHz: 90, drift: 1.0008, jitter: 2_000_000, seconds: 20)
         #expect(Self.spacings(run, tick: tick, skip: 90).keys.sorted() == [1])
+    }
+
+    /// The headset's horizon steps a tick up at 5 s and two ticks down at 10 s:
+    /// a frame or two land off the cadence, then every frame is for its pose's
+    /// own slot again, never for one the pose wasn't predicted for.
+    @Test func horizonStepsCostAFrameOrTwo() {
+        let tick = Int64(1e9 / 120)
+        let run = Self.simulate(headsetHz: 120, streamHz: 60, drift: 1.0005, jitter: 2_000_000, seconds: 15,
+                                horizonTicks: { t in t < 5_000_000_000 ? 6 : t < 10_000_000_000 ? 7 : 5 })
+        let counts = Self.spacings(run, tick: tick, skip: 60)
+        let offCadence = counts.filter { $0.key != 2 }.values.reduce(0, +)
+        #expect(offCadence <= 6, "\(counts)")
+        // After each step settles (a quarter second), the slot is the pose's.
+        let settled = zip(run.slots, run.poseDisplays).enumerated().filter { index, _ in
+            let t = Double(index) / 60
+            return t > 1 && !(5...5.25).contains(t) && !(10...10.25).contains(t)
+        }
+        let mismatched = settled.filter { $0.element.0 != $0.element.1 }.count
+        #expect(mismatched <= 3, "\(mismatched) of \(settled.count)")
     }
 
     @Test func noPeriodYetUsesTheLatestPose() {

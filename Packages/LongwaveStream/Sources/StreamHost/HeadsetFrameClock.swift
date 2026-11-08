@@ -24,9 +24,10 @@ public struct HeadsetFrameClock: Sendable {
     /// consecutive poses' display times; nil until a few are in.
     public private(set) var headsetPeriod: Int64?
     /// Frames whose slot could not be the planned one: the latest pose was for
-    /// a later slot (the host woke late, or the headset's horizon stepped up).
+    /// a later slot (the host woke late, or the headset's horizon stepped up),
+    /// or for one at least two ticks earlier (the horizon stepped down).
     public private(set) var retargets = 0
-    /// Frames started before their slot's pose had arrived.
+    /// Frames started one tick before their slot's pose arrived.
     public private(set) var early = 0
     public private(set) var locked = 0
 
@@ -85,10 +86,18 @@ public struct HeadsetFrameClock: Sendable {
             display = pose.display
             next = pose.display
             error = (now - pose.arrival) - period / 2
-        } else {
-            early += 1
+        } else if ticks == 1 {
             // One tick early: its pose is due one period after the latest's.
-            if ticks == 1 { error = (now - (pose.arrival + period)) - period / 2 }
+            early += 1
+            error = (now - (pose.arrival + period)) - period / 2
+        } else {
+            // Two or more ticks ahead of every pose: the headset's horizon
+            // stepped down (or the uplink is stalled). Waiting it out would
+            // render every frame for a pose that old; take the latest for its
+            // own slot instead.
+            retargets += 1
+            display = pose.display
+            next = pose.display
         }
         // Back to the grid if the plan wandered more than a tick from it.
         if abs(next - display) > period { next = display }

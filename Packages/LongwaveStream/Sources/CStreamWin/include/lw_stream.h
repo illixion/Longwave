@@ -204,6 +204,14 @@ typedef struct lw_encoder_params {
     uint32_t bit_depth;       /* HEVC only: 10 encodes Main10 from the same 8-bit input
                                  (NVENC converts; less banding in dark gradients);
                                  0 or 8 = Main */
+    uint32_t tuning;          /* 0 = ultra-low latency, 1 = low latency (NVENC's tuning info) */
+    uint32_t temporal_aq;     /* CBR only: 1 = temporal adaptive quantisation */
+    uint32_t key_frame_scale; /* CBR only: the I to P bit ratio NVENC aims for in a
+                                 short VBV (lowDelayKeyFrameScale); 0 = its default */
+    uint32_t min_qp;          /* CBR only: 1..51, the lowest QP; 0 = none */
+    uint32_t recon;           /* 1 = write each picture's reconstruction (what any
+                                 decoder outputs) to the texture lw_encoder_encode_ex names */
+    uint32_t qp_map;          /* 1 = take a QP delta map with each picture (lw_encoder_encode_ex) */
 } lw_encoder_params;
 
 typedef struct lw_encoder_info {
@@ -241,6 +249,21 @@ lw_status lw_encoder_encode(lw_encoder *encoder, void *texture, uint64_t timesta
  * picture predicts only from what the client still has. */
 lw_status lw_encoder_invalidate(lw_encoder *encoder, const uint64_t *timestamps, uint32_t count);
 lw_status lw_encoder_set_bitrate(lw_encoder *encoder, uint32_t bitrate_bps);
+/* A new bitrate and frame rate in place: no new session, no key frame (the
+ * rate control's per-frame budget follows the new rate). */
+lw_status lw_encoder_reconfigure(lw_encoder *encoder, uint32_t bitrate_bps, uint32_t fps);
+/* What lw_encoder_encode does, plus: */
+typedef struct lw_encode_extras {
+    /* With params.qp_map: a QP offset per 32x32 CTB, raster order, added to
+     * what rate control picks (negative = sharper); NULL for none this picture. */
+    const int8_t *qp_delta_map;
+    uint32_t qp_delta_map_size; /* ceil(width / 32) * ceil(height / 32) */
+    /* With params.recon: an encoder-sized NV12 texture (lw_texture_create,
+     * LW_TEXTURE_NV12) that receives the reconstructed picture. */
+    void *recon;
+} lw_encode_extras;
+lw_status lw_encoder_encode_ex(lw_encoder *encoder, void *texture, uint64_t timestamp, uint32_t flags,
+                               const lw_encode_extras *extras, lw_packet *out);
 void lw_encoder_release(lw_encoder *encoder);
 
 /* ---- Foveation warp (NATIVE_V3_PROTOCOL.md section 4.7) -------------------
@@ -328,6 +351,7 @@ void lw_depth_release(lw_depth *depth);
 #define LW_TEXTURE_BGRA8 1   /* DXGI_FORMAT_B8G8R8A8_UNORM */
 #define LW_TEXTURE_RGBA32F 2 /* DXGI_FORMAT_R32G32B32A32_FLOAT */
 #define LW_TEXTURE_R32F 3    /* DXGI_FORMAT_R32_FLOAT */
+#define LW_TEXTURE_NV12 4    /* DXGI_FORMAT_NV12: an encoder's reconstruction (not readable by lw_texture_read) */
 /* data: initial pixels with rows `row_pitch` bytes apart, or NULL. */
 lw_status lw_texture_create(lw_device *device, int32_t width, int32_t height, uint32_t format, const void *data,
                             uint32_t row_pitch, void **out);
@@ -339,6 +363,45 @@ lw_status lw_texture_read(lw_device *device, void *texture, void *out, uint32_t 
 lw_status lw_texture_copy_region(lw_device *device, void *source, uint32_t source_x,
                                  uint32_t source_y, void *destination);
 void lw_texture_release(void *texture);
+
+/* ---- Picture quality (the codec bench) -------------------------------------
+ * Compares pictures on the GPU, in luma (BT.709, limited range: what NVENC
+ * encodes from BGRA), and reads back small per-tile sums. Waits for the GPU:
+ * benches only. */
+typedef struct lw_quality lw_quality;
+lw_status lw_quality_create(lw_device *device, lw_quality **out);
+/* The codec alone: `reference` (BGRA8) against `recon` (NV12, the same size),
+ * per 16x16 tile in raster order (ceil(w/16) x ceil(h/16) tiles), 4 floats each:
+ * squared error summed, the mean SSIM of the tile's four 8x8 windows, block-edge
+ * excess (how much more the recon steps across the 8-pixel grid inside the tile
+ * than the reference does, beyond its steps elsewhere; code values), and the
+ * reference's variance. `capacity` is in floats. */
+lw_status lw_quality_wire(lw_quality *quality, void *reference, void *recon, float *out, uint32_t capacity);
+/* What the headset shows at a point. A box of render pixels in one eye of
+ * `truth` (two render eyes side by side, BGRA8) against the same pixels read
+ * from a wire picture (two wire eyes side by side) at their warped positions,
+ * bilinear, as the headset's unwarp reads them: from `recon` (NV12) and from
+ * `wire` (BGRA8, unencoded). */
+typedef struct lw_quality_box {
+    int32_t eye;                  /* 0 left, 1 right */
+    int32_t x, y;                 /* the box's top-left render pixel, in that eye */
+    int32_t size;                 /* square, a multiple of 16 */
+    float axis_x[4], axis_y[4];   /* the eye's warp constants (lower, upper, ratio, length) */
+} lw_quality_box;
+typedef struct lw_quality_eyes {
+    int32_t render_eye_width, render_eye_height;
+    int32_t wire_eye_width, wire_eye_height;
+} lw_quality_eyes;
+/* Per 16x16 tile of each box in turn, 8 floats: squared error shown (recon)
+ * and unencoded (wire), SSIM shown and unencoded (mean of four 8x8 windows),
+ * Laplacian energy of the truth and of the shown pixels (the tile's inner
+ * 14x14), and two zeros. */
+lw_status lw_quality_gaze(lw_quality *quality, void *truth, void *wire, void *recon, const lw_quality_eyes *eyes,
+                          const lw_quality_box *boxes, uint32_t count, float *out, uint32_t capacity);
+/* Pixels to look at: the box from the truth and as shown, BGRA8, size x size each. */
+lw_status lw_quality_crop(lw_quality *quality, void *truth, void *recon, const lw_quality_eyes *eyes,
+                          const lw_quality_box *box, uint8_t *truth_out, uint8_t *shown_out);
+void lw_quality_release(lw_quality *quality);
 
 /* ---- Audio (WASAPI loopback) ---------------------------------------------- */
 typedef struct lw_audio_endpoint_info {

@@ -80,6 +80,37 @@ extension CentreEdgeWarp {
     }
 }
 
+extension CentreEdgeWarp {
+    /// `centre` moved by less than a pixel so the full-density interval copies
+    /// render pixels onto wire pixels: each render pixel centre there lands on
+    /// a wire pixel centre, and the warp's single tap reads one texel instead
+    /// of blending two. Anywhere else the copy is a half-pixel blend of fine
+    /// detail, and a centre that follows the gaze changes that blend every
+    /// frame (measured on pcvr-codec-bench, 2026-11-09: the warp alone lost
+    /// 27-44 dB at the gaze from frame to frame, the codec more on top).
+    /// When the wire eye isn't exactly `wireScale` times the render eye the
+    /// density isn't 1, but the snapped centre still keeps the sampling
+    /// pattern the same from frame to frame.
+    public func pixelAlignedCentre(_ centre: NormalizedPoint, renderEye: PixelSize, wireEye: PixelSize) -> NormalizedPoint {
+        NormalizedPoint(x: Self.aligned(centre.x, size: centreSizeX, ratio: edgeRatioX, render: Int(renderEye.width), wire: Int(wireEye.width)),
+                        y: Self.aligned(centre.y, size: centreSizeY, ratio: edgeRatioY, render: Int(renderEye.height), wire: Int(wireEye.height)))
+    }
+
+    static func aligned(_ centre: Float, size: Float, ratio: Float, render: Int, wire: Int) -> Float {
+        guard centre.isFinite, size > 0, size < 1, ratio > 1, render > 0, wire > 0 else { return centre }
+        let s = Double(size), r = Double(ratio)
+        let scale = s + (1 - s) / r
+        let c = min(max(Double(centre), s / 2), 1 - s / 2)
+        // In the interval a wire pixel coordinate is (x - a (1 - 1/r)) * wire / scale for
+        // render UV x and interval start a: whole pixels when a (1 - 1/r) wire / scale is.
+        let pixelsPerStart = (1 - 1 / r) * Double(wire) / scale
+        let start = (c - s / 2) * pixelsPerStart
+        // Round down, so the interval never moves past 1 - size.
+        let snapped = start.rounded(.down) / pixelsPerStart
+        return Float(min(max(snapped + s / 2, s / 2), 1 - s / 2))
+    }
+}
+
 /// Per-eye 2D sampling map. UVs in both domains have a top-left origin.
 public struct CentreEdgeMapping: Sendable, Hashable {
     public let x: CentreEdgeAxisMapping

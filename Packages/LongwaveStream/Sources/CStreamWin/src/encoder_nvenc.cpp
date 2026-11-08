@@ -21,6 +21,7 @@ namespace {
 struct Registration {
     winrt::com_ptr<ID3D11Texture2D> texture; // keeps the pointer from being reused
     NV_ENC_REGISTERED_PTR handle = nullptr;
+    NV_ENC_BUFFER_USAGE usage = NV_ENC_INPUT_IMAGE;
     uint64_t last_use = 0;
 };
 
@@ -106,7 +107,15 @@ struct lw_encoder {
     }
 
     lw_status open(lw_device *dev, const lw_encoder_params &p);
-    lw_status registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTERED_PTR &out);
+    lw_status registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTERED_PTR &out,
+                               NV_ENC_BUFFER_USAGE usage = NV_ENC_INPUT_IMAGE);
+    lw_status encode(void *texture, uint64_t timestamp, uint32_t flags, const lw_encode_extras *extras, lw_packet *out);
+    lw_status reconfigure();
+    uint32_t vbv_bits(uint32_t bitrate) const {
+        const uint32_t fps = params.fps ? params.fps : 60;
+        const uint32_t vbv_frames = params.vbv_frames ? params.vbv_frames : 1;
+        return static_cast<uint32_t>(static_cast<uint64_t>(bitrate) * vbv_frames / fps);
+    }
 };
 
 lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
@@ -167,8 +176,8 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     NV_ENC_PRESET_CONFIG preset{};
     preset.version = NV_ENC_PRESET_CONFIG_VER;
     preset.presetCfg.version = NV_ENC_CONFIG_VER;
-    status = api.nvEncGetEncodePresetConfigEx(session, codec_guid, preset_guid,
-                                              NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset);
+    const NV_ENC_TUNING_INFO tuning = p.tuning == 1 ? NV_ENC_TUNING_INFO_LOW_LATENCY : NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    status = api.nvEncGetEncodePresetConfigEx(session, codec_guid, preset_guid, tuning, &preset);
     if (status != NV_ENC_SUCCESS) return nv_fail(status, "nvEncGetEncodePresetConfigEx");
 
     config = preset.presetCfg;
@@ -208,6 +217,20 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
             rc.maxQP.qpInterB = qp;
             rc.maxQP.qpIntra = qp;
         }
+        if (p.min_qp) {
+            const uint32_t qp = std::min(p.min_qp, 51u);
+            rc.enableMinQP = 1;
+            rc.minQP.qpInterP = qp;
+            rc.minQP.qpInterB = qp;
+            rc.minQP.qpIntra = qp;
+        }
+        if (p.temporal_aq) {
+            if (!cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ)) return lw::fail(LW_E_ENCODER, "this GPU's NVENC has no temporal AQ");
+            rc.enableTemporalAQ = 1;
+        }
+        if (p.key_frame_scale) rc.lowDelayKeyFrameScale = static_cast<uint8_t>(std::min(p.key_frame_scale, 255u));
+        // A QP offset per CTB from the caller (the bench's foveal map).
+        if (p.qp_map) rc.qpMapMode = NV_ENC_QP_MAP_DELTA;
     }
     if (p.const_qp) {
         // A constant QP: the depth stream, whose pictures are mostly flat and
@@ -262,6 +285,8 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
         hevc.idrPeriod = NVENC_INFINITE_GOPLENGTH;
         hevc.repeatSPSPPS = 1; // VPS/SPS/PPS before every IDR: a client can join at any key frame
         hevc.chromaFormatIDC = 1;
+        // The only CTB size NVENC's HEVC has; fixed here so a QP map's grid is known.
+        hevc.maxCUSize = NV_ENC_HEVC_CUSIZE_32x32;
         if (p.intra_refresh_period && info.supports_intra_refresh) {
             hevc.enableIntraRefresh = 1;
             hevc.intraRefreshPeriod = p.intra_refresh_period;
@@ -276,7 +301,11 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     init.version = NV_ENC_INITIALIZE_PARAMS_VER;
     init.encodeGUID = codec_guid;
     init.presetGUID = preset_guid;
-    init.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    init.tuningInfo = tuning;
+    if (p.recon) {
+        if (!cap(NV_ENC_CAPS_OUTPUT_RECON_SURFACE)) return lw::fail(LW_E_ENCODER, "this GPU's NVENC can't output reconstructed pictures");
+        init.enableReconFrameOutput = 1;
+    }
     init.encodeWidth = static_cast<uint32_t>(p.width);
     init.encodeHeight = static_cast<uint32_t>(p.height);
     init.darWidth = static_cast<uint32_t>(p.width);
@@ -312,10 +341,10 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     return LW_OK;
 }
 
-lw_status lw_encoder::registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTERED_PTR &out) {
+lw_status lw_encoder::registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTERED_PTR &out, NV_ENC_BUFFER_USAGE usage) {
     ++use_counter;
     for (auto &r : registrations) {
-        if (r.texture.get() == texture) {
+        if (r.texture.get() == texture && r.usage == usage) {
             r.last_use = use_counter;
             out = r.handle;
             return LW_OK;
@@ -326,8 +355,10 @@ lw_status lw_encoder::registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTER
     if (static_cast<int32_t>(desc.Width) != params.width || static_cast<int32_t>(desc.Height) != params.height)
         return lw::fail(LW_E_INVALID_ARG, "texture is %ux%u but the encoder is %dx%d", desc.Width, desc.Height,
                         params.width, params.height);
-    if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
-        return lw::fail(LW_E_INVALID_ARG, "texture format %d is not BGRA8", static_cast<int>(desc.Format));
+    const DXGI_FORMAT wanted = usage == NV_ENC_OUTPUT_RECON ? DXGI_FORMAT_NV12 : DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (desc.Format != wanted)
+        return lw::fail(LW_E_INVALID_ARG, "texture format %d is not %s", static_cast<int>(desc.Format),
+                        usage == NV_ENC_OUTPUT_RECON ? "NV12" : "BGRA8");
 
     // Bounded cache: capture rings are small, but a resize leaves stale slots.
     if (registrations.size() >= 16) {
@@ -343,14 +374,16 @@ lw_status lw_encoder::registration_for(ID3D11Texture2D *texture, NV_ENC_REGISTER
     reg.resourceToRegister = texture;
     reg.width = desc.Width;
     reg.height = desc.Height;
-    reg.bufferFormat = NV_ENC_BUFFER_FORMAT_ARGB; // NVENC's "ARGB" is BGRA in memory
-    reg.bufferUsage = NV_ENC_INPUT_IMAGE;
+    // NVENC's "ARGB" is BGRA in memory.
+    reg.bufferFormat = usage == NV_ENC_OUTPUT_RECON ? NV_ENC_BUFFER_FORMAT_NV12 : NV_ENC_BUFFER_FORMAT_ARGB;
+    reg.bufferUsage = usage;
     NVENCSTATUS status = api.nvEncRegisterResource(session, &reg);
     if (status != NV_ENC_SUCCESS) return nv_fail(status, "nvEncRegisterResource");
 
     Registration entry;
     entry.texture.copy_from(texture);
     entry.handle = reg.registeredResource;
+    entry.usage = usage;
     entry.last_use = use_counter;
     registrations.push_back(entry);
     out = entry.handle;
@@ -378,70 +411,118 @@ extern "C" void lw_encoder_get_info(const lw_encoder *encoder, lw_encoder_info *
     if (encoder && out) *out = encoder->info;
 }
 
+lw_status lw_encoder::encode(void *texture, uint64_t timestamp, uint32_t flags, const lw_encode_extras *extras,
+                             lw_packet *out) {
+    NV_ENC_REGISTERED_PTR registered = nullptr;
+    lw_status result = registration_for(static_cast<ID3D11Texture2D *>(texture), registered);
+    if (result != LW_OK) return result;
+
+    NV_ENC_MAP_INPUT_RESOURCE map{};
+    map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+    map.registeredResource = registered;
+    NVENCSTATUS status = api.nvEncMapInputResource(session, &map);
+    if (status != NV_ENC_SUCCESS) return nv_fail(status, "nvEncMapInputResource");
+
+    NV_ENC_MAP_INPUT_RESOURCE recon_map{};
+    if (extras && extras->recon) {
+        if (!params.recon) {
+            api.nvEncUnmapInputResource(session, map.mappedResource);
+            return lw::fail(LW_E_INVALID_ARG, "a recon texture needs an encoder created with recon = 1");
+        }
+        NV_ENC_REGISTERED_PTR recon_registered = nullptr;
+        result = registration_for(static_cast<ID3D11Texture2D *>(extras->recon), recon_registered, NV_ENC_OUTPUT_RECON);
+        if (result != LW_OK) {
+            api.nvEncUnmapInputResource(session, map.mappedResource);
+            return result;
+        }
+        recon_map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+        recon_map.registeredResource = recon_registered;
+        status = api.nvEncMapInputResource(session, &recon_map);
+        if (status != NV_ENC_SUCCESS) {
+            api.nvEncUnmapInputResource(session, map.mappedResource);
+            return nv_fail(status, "nvEncMapInputResource (recon)");
+        }
+    }
+    auto unmap = [&] {
+        api.nvEncUnmapInputResource(session, map.mappedResource);
+        if (recon_map.mappedResource) api.nvEncUnmapInputResource(session, recon_map.mappedResource);
+    };
+
+    NV_ENC_PIC_PARAMS pic{};
+    pic.version = NV_ENC_PIC_PARAMS_VER;
+    pic.inputWidth = static_cast<uint32_t>(params.width);
+    pic.inputHeight = static_cast<uint32_t>(params.height);
+    pic.inputBuffer = map.mappedResource;
+    pic.bufferFmt = map.mappedBufferFmt;
+    pic.outputBitstream = bitstream;
+    pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+    pic.inputTimeStamp = timestamp;
+    if (flags & LW_ENCODE_FORCE_IDR) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+    if (recon_map.mappedResource) {
+        pic.outputReconBuffer = recon_map.mappedResource;
+        pic.encodePicFlags |= NV_ENC_PIC_FLAG_OUTPUT_RECON_FRAME;
+    }
+    if (extras && extras->qp_delta_map) {
+        const uint32_t ctbs = static_cast<uint32_t>(((params.width + 31) / 32) * ((params.height + 31) / 32));
+        if (!params.qp_map || extras->qp_delta_map_size != ctbs) {
+            unmap();
+            return lw::fail(LW_E_INVALID_ARG, "a QP map needs qp_map = 1 and %u entries (got %u)", ctbs,
+                            extras->qp_delta_map_size);
+        }
+        pic.qpDeltaMap = const_cast<int8_t *>(extras->qp_delta_map);
+        pic.qpDeltaMapSize = extras->qp_delta_map_size;
+    }
+    pic.completionEvent = completion;
+
+    const int64_t submit = lw::qpc_now();
+    status = api.nvEncEncodePicture(session, &pic);
+    if (status != NV_ENC_SUCCESS) {
+        unmap();
+        return nv_fail(status, "nvEncEncodePicture");
+    }
+
+    if (completion && WaitForSingleObject(completion, 1000) != WAIT_OBJECT_0) {
+        unmap();
+        return lw::fail(LW_E_ENCODER, "NVENC completion event timed out");
+    }
+    NV_ENC_LOCK_BITSTREAM lock{};
+    lock.version = NV_ENC_LOCK_BITSTREAM_VER;
+    lock.outputBitstream = bitstream;
+    status = api.nvEncLockBitstream(session, &lock); // sync mode: waits for the hardware
+    const int64_t done = lw::qpc_now();
+    if (status != NV_ENC_SUCCESS) {
+        unmap();
+        return nv_fail(status, "nvEncLockBitstream");
+    }
+    auto *bytes = static_cast<const uint8_t *>(lock.bitstreamBufferPtr);
+    output.assign(bytes, bytes + lock.bitstreamSizeInBytes);
+    const NV_ENC_PIC_TYPE type = lock.pictureType;
+    const uint32_t qp = lock.frameAvgQP;
+    api.nvEncUnlockBitstream(session, bitstream);
+    unmap();
+
+    out->data = output.data();
+    out->size = static_cast<uint32_t>(output.size());
+    out->is_idr = type == NV_ENC_PIC_TYPE_IDR ? 1 : 0;
+    out->picture_type = static_cast<uint32_t>(type);
+    out->average_qp = qp;
+    out->timestamp = timestamp;
+    out->submit_qpc = submit;
+    out->done_qpc = done;
+    return LW_OK;
+}
+
 extern "C" lw_status lw_encoder_encode(lw_encoder *encoder, void *texture, uint64_t timestamp, uint32_t flags,
                                        lw_packet *out) {
     if (!encoder || !texture || !out) return lw::fail(LW_E_INVALID_ARG, "lw_encoder_encode: NULL argument");
-    return lw::guarded("lw_encoder_encode", [&]() -> lw_status {
-        auto &api = encoder->api;
-        NV_ENC_REGISTERED_PTR registered = nullptr;
-        lw_status result = encoder->registration_for(static_cast<ID3D11Texture2D *>(texture), registered);
-        if (result != LW_OK) return result;
+    return lw::guarded("lw_encoder_encode", [&]() -> lw_status { return encoder->encode(texture, timestamp, flags, nullptr, out); });
+}
 
-        NV_ENC_MAP_INPUT_RESOURCE map{};
-        map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
-        map.registeredResource = registered;
-        NVENCSTATUS status = api.nvEncMapInputResource(encoder->session, &map);
-        if (status != NV_ENC_SUCCESS) return encoder->nv_fail(status, "nvEncMapInputResource");
-
-        NV_ENC_PIC_PARAMS pic{};
-        pic.version = NV_ENC_PIC_PARAMS_VER;
-        pic.inputWidth = static_cast<uint32_t>(encoder->params.width);
-        pic.inputHeight = static_cast<uint32_t>(encoder->params.height);
-        pic.inputBuffer = map.mappedResource;
-        pic.bufferFmt = map.mappedBufferFmt;
-        pic.outputBitstream = encoder->bitstream;
-        pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
-        pic.inputTimeStamp = timestamp;
-        if (flags & LW_ENCODE_FORCE_IDR) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
-        pic.completionEvent = encoder->completion;
-
-        const int64_t submit = lw::qpc_now();
-        status = api.nvEncEncodePicture(encoder->session, &pic);
-        if (status != NV_ENC_SUCCESS) {
-            api.nvEncUnmapInputResource(encoder->session, map.mappedResource);
-            return encoder->nv_fail(status, "nvEncEncodePicture");
-        }
-
-        if (encoder->completion && WaitForSingleObject(encoder->completion, 1000) != WAIT_OBJECT_0) {
-            api.nvEncUnmapInputResource(encoder->session, map.mappedResource);
-            return lw::fail(LW_E_ENCODER, "NVENC completion event timed out");
-        }
-        NV_ENC_LOCK_BITSTREAM lock{};
-        lock.version = NV_ENC_LOCK_BITSTREAM_VER;
-        lock.outputBitstream = encoder->bitstream;
-        status = api.nvEncLockBitstream(encoder->session, &lock); // sync mode: waits for the hardware
-        const int64_t done = lw::qpc_now();
-        if (status != NV_ENC_SUCCESS) {
-            api.nvEncUnmapInputResource(encoder->session, map.mappedResource);
-            return encoder->nv_fail(status, "nvEncLockBitstream");
-        }
-        auto *bytes = static_cast<const uint8_t *>(lock.bitstreamBufferPtr);
-        encoder->output.assign(bytes, bytes + lock.bitstreamSizeInBytes);
-        const NV_ENC_PIC_TYPE type = lock.pictureType;
-        const uint32_t qp = lock.frameAvgQP;
-        api.nvEncUnlockBitstream(encoder->session, encoder->bitstream);
-        api.nvEncUnmapInputResource(encoder->session, map.mappedResource);
-
-        out->data = encoder->output.data();
-        out->size = static_cast<uint32_t>(encoder->output.size());
-        out->is_idr = type == NV_ENC_PIC_TYPE_IDR ? 1 : 0;
-        out->picture_type = static_cast<uint32_t>(type);
-        out->average_qp = qp;
-        out->timestamp = timestamp;
-        out->submit_qpc = submit;
-        out->done_qpc = done;
-        return LW_OK;
-    });
+extern "C" lw_status lw_encoder_encode_ex(lw_encoder *encoder, void *texture, uint64_t timestamp, uint32_t flags,
+                                          const lw_encode_extras *extras, lw_packet *out) {
+    if (!encoder || !texture || !out) return lw::fail(LW_E_INVALID_ARG, "lw_encoder_encode_ex: NULL argument");
+    return lw::guarded("lw_encoder_encode_ex",
+                       [&]() -> lw_status { return encoder->encode(texture, timestamp, flags, extras, out); });
 }
 
 extern "C" lw_status lw_encoder_invalidate(lw_encoder *encoder, const uint64_t *timestamps, uint32_t count) {
@@ -453,23 +534,44 @@ extern "C" lw_status lw_encoder_invalidate(lw_encoder *encoder, const uint64_t *
     return LW_OK;
 }
 
-extern "C" lw_status lw_encoder_set_bitrate(lw_encoder *encoder, uint32_t bitrate_bps) {
-    if (!encoder || bitrate_bps == 0) return lw::fail(LW_E_INVALID_ARG, "lw_encoder_set_bitrate: bad argument");
-    const uint32_t fps = encoder->params.fps ? encoder->params.fps : 60;
-    const uint32_t vbv_frames = encoder->params.vbv_frames ? encoder->params.vbv_frames : 1;
-    auto &rc = encoder->config.rcParams;
-    rc.averageBitRate = bitrate_bps;
-    rc.maxBitRate = bitrate_bps;
-    rc.vbvBufferSize = static_cast<uint32_t>(static_cast<uint64_t>(bitrate_bps) * vbv_frames / fps);
+lw_status lw_encoder::reconfigure() {
+    auto &rc = config.rcParams;
+    rc.averageBitRate = params.bitrate_bps;
+    rc.maxBitRate = params.bitrate_bps;
+    rc.vbvBufferSize = vbv_bits(params.bitrate_bps);
     rc.vbvInitialDelay = rc.vbvBufferSize;
+    init.frameRateNum = params.fps ? params.fps : 60;
+    init.frameRateDen = 1;
     NV_ENC_RECONFIGURE_PARAMS reconfigure{};
     reconfigure.version = NV_ENC_RECONFIGURE_PARAMS_VER;
-    reconfigure.reInitEncodeParams = encoder->init;
-    reconfigure.reInitEncodeParams.encodeConfig = &encoder->config;
-    NVENCSTATUS status = encoder->api.nvEncReconfigureEncoder(encoder->session, &reconfigure);
-    if (status != NV_ENC_SUCCESS) return encoder->nv_fail(status, "nvEncReconfigureEncoder");
-    encoder->params.bitrate_bps = bitrate_bps;
+    reconfigure.reInitEncodeParams = init;
+    reconfigure.reInitEncodeParams.encodeConfig = &config;
+    NVENCSTATUS status = api.nvEncReconfigureEncoder(session, &reconfigure);
+    if (status != NV_ENC_SUCCESS) return nv_fail(status, "nvEncReconfigureEncoder");
     return LW_OK;
+}
+
+extern "C" lw_status lw_encoder_set_bitrate(lw_encoder *encoder, uint32_t bitrate_bps) {
+    if (!encoder || bitrate_bps == 0) return lw::fail(LW_E_INVALID_ARG, "lw_encoder_set_bitrate: bad argument");
+    const uint32_t previous = encoder->params.bitrate_bps;
+    encoder->params.bitrate_bps = bitrate_bps;
+    lw_status status = encoder->reconfigure();
+    if (status != LW_OK) encoder->params.bitrate_bps = previous;
+    return status;
+}
+
+extern "C" lw_status lw_encoder_reconfigure(lw_encoder *encoder, uint32_t bitrate_bps, uint32_t fps) {
+    if (!encoder || bitrate_bps == 0 || fps == 0 || fps > 1000)
+        return lw::fail(LW_E_INVALID_ARG, "lw_encoder_reconfigure: bad argument");
+    const lw_encoder_params previous = encoder->params;
+    encoder->params.bitrate_bps = bitrate_bps;
+    encoder->params.fps = fps;
+    lw_status status = encoder->reconfigure();
+    if (status != LW_OK) {
+        encoder->params = previous;
+        encoder->reconfigure();
+    }
+    return status;
 }
 
 extern "C" void lw_encoder_release(lw_encoder *encoder) { delete encoder; }

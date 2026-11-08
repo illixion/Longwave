@@ -128,3 +128,36 @@ final class CentreEdgeMappingTests: XCTestCase {
             .wireSize(forRender: render, alignment: 16))
     }
 }
+
+final class PixelAlignedCentreTests: XCTestCase {
+    /// After snapping, every render pixel centre in the full-density interval
+    /// lands on a wire pixel centre (fraction 0.5), so the warp copies pixels.
+    func testAlignedCentreCopiesPixelsInTheInterval() throws {
+        let warp = PCVRProfile.defaultWarp
+        let render = PixelSize(width: 5184, height: 4160)
+        let wire = try XCTUnwrap(warp.wireSize(forRender: render, alignment: PCVRProfile.wireAlignment))
+        for raw in stride(from: Float(0.2), through: 0.8, by: 0.0137) {
+            let centre = warp.pixelAlignedCentre(NormalizedPoint(x: raw, y: raw), renderEye: render, wireEye: wire)
+            XCTAssertEqual(centre.x, raw, accuracy: 2 / Float(render.width), "moved by under a couple of pixels")
+            let mapping = try XCTUnwrap(CentreEdgeMapping(warp: warp, centre: centre))
+            let c = mapping.x.constants
+            let first = Int((c.x * Float(render.width)).rounded(.up)) + 1, last = Int((c.y * Float(render.width)).rounded(.down)) - 1
+            for px in stride(from: first, through: last, by: 97) {
+                let u = (Float(px) + 0.5) / Float(render.width)
+                let w = try XCTUnwrap(mapping.x.wireCoordinate(forRender: u)) * Float(wire.width)
+                XCTAssertEqual(w - w.rounded(.down), 0.5, accuracy: 0.02, "render pixel \(px) at centre \(raw)")
+            }
+        }
+    }
+
+    /// Without the snap a typical gaze centre blends neighbouring pixels.
+    func testAnUnalignedCentreBlends() throws {
+        let warp = PCVRProfile.defaultWarp
+        let render = PixelSize(width: 5184, height: 4160)
+        let wire = try XCTUnwrap(warp.wireSize(forRender: render, alignment: PCVRProfile.wireAlignment))
+        let mapping = try XCTUnwrap(CentreEdgeMapping(warp: warp, centre: NormalizedPoint(x: 0.6123, y: 0.5)))
+        let u = (Float(3100) + 0.5) / Float(render.width)
+        let w = try XCTUnwrap(mapping.x.wireCoordinate(forRender: u)) * Float(wire.width)
+        XCTAssertGreaterThan(abs(w - w.rounded(.down) - 0.5), 0.05)
+    }
+}

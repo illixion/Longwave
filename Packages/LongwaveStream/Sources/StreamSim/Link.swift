@@ -48,6 +48,12 @@ public struct LinkModel: Sendable, Equatable {
     /// The headset's Wi-Fi stalls (section 7.5): delivery holds, then releases
     /// everything held at once.
     public var stalls: Stalls?
+    /// More stall schedules, each drawn independently of `stalls`: AWDL's
+    /// short, frequent trips off channel beside the rare long holds.
+    public var extraStalls: [Stalls] = []
+    /// Spells at a fraction of the bottleneck rate (Wi-Fi rate adaptation, a
+    /// neighbour's traffic). Needs `rate`.
+    public var fades: Fades?
     /// Largest UDP payload the path carries; bigger datagrams vanish, as on a
     /// path that drops rather than fragments (Tailscale: 1252 over IPv4).
     public var maxDatagram: Int?
@@ -77,10 +83,30 @@ public struct LinkModel: Sendable, Equatable {
 
         /// Fitted to the measured headset behaviour: 60–180 ms holds every 20–40 s.
         public static let headset = Stalls(interval: 20_000_000_000...40_000_000_000, duration: 60_000_000...180_000_000)
+        /// AWDL (AirDrop, Continuity, Mac Virtual Display) taking the radio to
+        /// its social channel: the "lag spike every second or two" of games on
+        /// a Mac with AWDL up, 20–90 ms each.
+        public static let awdl = Stalls(interval: 800_000_000...2_000_000_000, duration: 20_000_000...90_000_000)
+    }
+
+    public struct Fades: Sendable, Equatable {
+        /// Time between fade starts, ns.
+        public var interval: ClosedRange<UInt64>
+        /// How long each lasts, ns.
+        public var duration: ClosedRange<UInt64>
+        /// The rate during a fade, as a fraction of `rate`.
+        public var factor: Double
+
+        public init(interval: ClosedRange<UInt64>, duration: ClosedRange<UInt64>, factor: Double) {
+            self.interval = interval
+            self.duration = duration
+            self.factor = factor
+        }
     }
 
     public init(propagationDelay: UInt64 = 1_000_000, jitter: UInt64 = 0, rate: UInt64 = 0, queueLimit: Int = 512 * 1024,
-                loss: Double = 0, burst: BurstLoss? = nil, stalls: Stalls? = nil, maxDatagram: Int? = nil) {
+                loss: Double = 0, burst: BurstLoss? = nil, stalls: Stalls? = nil, maxDatagram: Int? = nil,
+                extraStalls: [Stalls] = [], fades: Fades? = nil) {
         self.propagationDelay = propagationDelay
         self.jitter = jitter
         self.rate = rate
@@ -89,6 +115,8 @@ public struct LinkModel: Sendable, Equatable {
         self.burst = burst
         self.stalls = stalls
         self.maxDatagram = maxDatagram
+        self.extraStalls = extraStalls
+        self.fades = fades
     }
 
     /// A clean LAN: 1 ms each way, a little jitter.
@@ -103,15 +131,24 @@ public struct SimLink: Sendable {
     public private(set) var lost = 0
     public private(set) var queueDrops = 0
     public private(set) var oversizeDrops = 0
+    /// Datagrams a stall held, and the longest hold, ns.
+    public private(set) var stalled = 0
+    public private(set) var longestHold: UInt64 = 0
 
     private var random: SimRandom
     private var bottleneckFreeAt: UInt64 = 0
     private var inBadState = false
     private var stall: (start: UInt64, end: UInt64)?
+    /// `model.extraStalls`' schedules, each with its own generator so adding
+    /// one leaves the others' draws (and `stalls`') unchanged.
+    private var extraStallState: [(window: (start: UInt64, end: UInt64)?, random: SimRandom)] = []
+    private var fade: (start: UInt64, end: UInt64)?
+    private var fadeRandom: SimRandom
 
     public init(model: LinkModel, seed: UInt64) {
         self.model = model
         random = SimRandom(seed: seed)
+        fadeRandom = SimRandom(seed: seed ^ 0xFADE_FADE_FADE_FADE)
     }
 
     /// When a datagram of `size` bytes sent at `now` arrives, or nil if lost.
@@ -138,29 +175,71 @@ public struct SimLink: Sendable {
         var departure = now
         if model.rate > 0 {
             let start = max(now, bottleneckFreeAt)
-            let queued = Double(start - now) * Double(model.rate) / 1e9
+            let rate = Double(model.rate) * fadeFactor(at: start)
+            let queued = Double(start - now) * rate / 1e9
             guard Int(queued) + size <= model.queueLimit else {
                 queueDrops += 1
                 return nil
             }
-            bottleneckFreeAt = start + UInt64(Double(size) / Double(model.rate) * 1e9)
+            bottleneckFreeAt = start + UInt64(Double(size) / rate * 1e9)
             departure = bottleneckFreeAt
         }
-        var arrival = departure + model.propagationDelay + (model.jitter > 0 ? random.uniform(0...model.jitter) : 0)
+        let unheld = departure + model.propagationDelay + (model.jitter > 0 ? random.uniform(0...model.jitter) : 0)
+        var arrival = unheld
         if let stalls = model.stalls {
-            if stall == nil { stall = schedule(after: 0, stalls) }
+            if stall == nil { stall = schedule(after: 0, stalls, &random) }
             // Stalls that ended before this arrival are history.
-            while let current = stall, current.end <= arrival { stall = schedule(after: current.end, stalls) }
+            while let current = stall, current.end <= arrival { stall = schedule(after: current.end, stalls, &random) }
             if let current = stall, arrival >= current.start {
                 // Held by the stall; released together when it ends.
                 arrival = current.end
             }
         }
+        if !model.extraStalls.isEmpty {
+            if extraStallState.count != model.extraStalls.count {
+                extraStallState = model.extraStalls.indices.map { (nil, SimRandom(seed: random.state ^ UInt64($0 + 1) &* 0x9E37_79B9)) }
+            }
+            // A hold can end inside another schedule's stall: go round until none holds it.
+            var moved = true
+            while moved {
+                moved = false
+                for i in extraStallState.indices {
+                    let stalls = model.extraStalls[i]
+                    var state = extraStallState[i]
+                    if state.window == nil { state.window = schedule(after: 0, stalls, &state.random) }
+                    // Strictly before: a datagram this window just held arrives at its
+                    // end, and the window must stay to hold the ones behind it.
+                    while let current = state.window, current.end < arrival {
+                        state.window = schedule(after: current.end, stalls, &state.random)
+                    }
+                    if let current = state.window, arrival >= current.start, arrival < current.end {
+                        arrival = current.end
+                        moved = true
+                    }
+                    extraStallState[i] = state
+                }
+            }
+        }
+        if arrival > unheld {
+            stalled += 1
+            longestHold = max(longestHold, arrival - unheld)
+        }
         delivered += 1
         return arrival
     }
 
-    private mutating func schedule(after time: UInt64, _ stalls: LinkModel.Stalls) -> (start: UInt64, end: UInt64) {
+    /// The bottleneck's share of its rate at `time`: `fades.factor` inside a fade.
+    private mutating func fadeFactor(at time: UInt64) -> Double {
+        guard let fades = model.fades else { return 1 }
+        if fade == nil { fade = schedule(after: 0, LinkModel.Stalls(interval: fades.interval, duration: fades.duration), &fadeRandom) }
+        while let current = fade, current.end <= time {
+            fade = schedule(after: current.end, LinkModel.Stalls(interval: fades.interval, duration: fades.duration), &fadeRandom)
+        }
+        if let current = fade, time >= current.start { return max(fades.factor, 0.01) }
+        return 1
+    }
+
+    private func schedule(after time: UInt64, _ stalls: LinkModel.Stalls, _ random: inout SimRandom) -> (start: UInt64, end: UInt64) {
         let start = time + random.uniform(stalls.interval)
         return (start, start + random.uniform(stalls.duration))
     }

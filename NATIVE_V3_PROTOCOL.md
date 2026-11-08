@@ -1722,7 +1722,9 @@ Packages/LongwaveStream/
     StreamHostLinux/       Swift side of the Linux shims (only built on Linux)
     CStreamLinux/          C shim: portal + PipeWire, VAAPI/NVENC, uinput
     longwave-host/         executable for Windows/Linux (headless daemon + CLI)
-    StreamSim/             deterministic network simulator (test support)
+    StreamSim/             deterministic network simulator (test support), named scenarios
+    StreamBench/           the host's closed loop on virtual time, encoder pluggable
+    pcvr-codec-bench/      Windows: test scene -> warp -> NVENC -> StreamBench, scored (§7.5)
   Tests/                   per-module unit tests; Sim-driven integration tests
 ```
 
@@ -2146,6 +2148,32 @@ change to DebugTrace and lands before the core's first non-Apple build.
   time. The owner runs the socket and the timer. On the app side that is a
   thin Network.framework driver; in tests it's a loop over `SimNetwork`. That
   removed the `DatagramSocket`/`MonotonicClock`/`Timer` seam from the package.
+- **Codec bench (`StreamBench`, `pcvr-codec-bench`; 2026-11-09).** The
+  PCVR picture as the headset would get it, without a headset. `StreamBench`
+  (portable) runs the host's closed loop on virtual time: frames at the
+  display's rate (halved as `StreamRate` does), the real `VideoStreamSender`
+  with FEC, pacing and GCC, `StreamSim` links, `VideoStreamReceiver` with NACKs
+  and recovery, and playout at the display's ticks. `LinkScenario` names the
+  paths: `wifi` (Wi-Fi 6, the measured stalls), `wifi-awdl` (plus AWDL trips
+  off channel, 20–90 ms every 0.8–2 s), `wifi-busy` (160 Mbit/s with fades to
+  40%), `stockholm` (EC2 eu-north-1 over a 300 Mbit/s home line, ~12 ms each
+  way), `stockholm-awdl`, `stockholm-tailscale` and `clean`. On the PC,
+  `pcvr-codec-bench` drives it with the real picture path: the test scene
+  ray-cast along a recorded head trajectory, the host's warp centred where a
+  gaze model looks (fixation with the vestibulo-ocular reflex), NVENC with the
+  host's settings, and NVENC's own reconstruction scored on the GPU against the
+  render (`lw_quality_*`): PSNR, SSIM and detail kept in a box round the gaze,
+  through the headset's unwarp, plus the codec alone in the wire picture.
+  Variants run over the same motion in one process (`--variant "label:
+  options"`, `@file` for argument lists); `--refresh 120:3,90:3,60` steps the
+  display down as a warm headset does; `--crops` writes truth/shown pairs.
+  What it found on a recorded head shake: an unaligned warp centre blended
+  pixels in the full-density interval (now `pixelAlignedCentre`); a foveal
+  QP map (`FovealQPMap`, -10 at the centre to +10 past 30°) took the gaze
+  from 32.5 to 40.4 dB at 100 Mbit/s; the 40 Mbit/s depth reservation came
+  out of the colour budget while depth used under 6; rebuilding the encoder
+  on every refresh step cost a key frame each time. Together: 31.6 to 48.6 dB
+  at the gaze while moving, detail kept from 65% to 100%.
 - **Recorded-trace replay.** Phase 0 records packet timing from real sessions
   (Moonlight and v2 on the user's Wi-Fi 7 AP, the Grandstream GWN7665); the
   simulator replays them against candidate estimators and FEC policies.

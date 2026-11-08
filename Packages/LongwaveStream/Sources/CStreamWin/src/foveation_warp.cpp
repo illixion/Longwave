@@ -100,6 +100,7 @@ DXGI_FORMAT dxgi_format(uint32_t format) {
     case LW_TEXTURE_BGRA8: return DXGI_FORMAT_B8G8R8A8_UNORM;
     case LW_TEXTURE_RGBA32F: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     case LW_TEXTURE_R32F: return DXGI_FORMAT_R32_FLOAT;
+    case LW_TEXTURE_NV12: return DXGI_FORMAT_NV12;
     default: return DXGI_FORMAT_UNKNOWN;
     }
 }
@@ -251,9 +252,20 @@ extern "C" lw_status lw_texture_create(lw_device *device, int32_t width, int32_t
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        if (dxgi == DXGI_FORMAT_NV12) {
+            // An encoder's reconstruction target: even sizes, no initial pixels,
+            // read through per-plane views (R8 luma, R8G8 chroma).
+            if ((width & 1) || (height & 1) || data)
+                return lw::fail(LW_E_INVALID_ARG, "lw_texture_create: NV12 wants even sizes and no initial pixels");
+        }
         D3D11_SUBRESOURCE_DATA initial{data, row_pitch, 0};
         ID3D11Texture2D *texture = nullptr;
-        winrt::check_hresult(device->device->CreateTexture2D(&desc, data ? &initial : nullptr, &texture));
+        HRESULT hr = device->device->CreateTexture2D(&desc, data ? &initial : nullptr, &texture);
+        if (FAILED(hr) && dxgi == DXGI_FORMAT_NV12) {
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            hr = device->device->CreateTexture2D(&desc, nullptr, &texture);
+        }
+        winrt::check_hresult(hr);
         *out = texture; // the caller's reference, released by lw_texture_release
         return LW_OK;
     });

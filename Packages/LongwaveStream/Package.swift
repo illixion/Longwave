@@ -18,7 +18,10 @@
 //                               driven by the rate controller (6.3, 6.4); its
 //                               simulations run in StreamTransportTests
 //            StreamSim          deterministic network simulator: links with delay,
-//                               jitter, bottleneck, loss, bursts, Wi-Fi stalls (7.5)
+//                               jitter, bottleneck, loss, bursts, Wi-Fi stalls (7.5),
+//                               and named scenarios (Wi-Fi, AWDL, EC2 Stockholm)
+//            StreamBench        the host's closed loop on virtual time over those
+//            StreamBenchTests   scenarios, encoder pluggable (pcvr-codec-bench: NVENC)
 //   kept     CStreamWin         C ABI over WGC/DXGI capture, NVENC, WASAPI (Windows),
 //                                 and the external frame source producer/consumer
 //            StreamHostWindows  its Swift side
@@ -66,6 +69,12 @@ var targets: [Target] = [
     .target(name: "StreamHost", dependencies: ["StreamTransport", "StreamFEC", "StreamWire"]),
     // Test support: the deterministic network simulator (section 7.5).
     .target(name: "StreamSim"),
+    // The stream bench: the host's closed loop (rate control, FEC, recovery,
+    // playout) on virtual time over StreamSim's scenarios, with a pluggable
+    // encoder. pcvr-codec-bench drives it with NVENC on Windows.
+    .target(name: "StreamBench", dependencies: ["StreamSim", "StreamTransport", "StreamHost", "StreamPlayout", "StreamFEC",
+                                                "StreamWire", "StreamCrypto"]),
+    .testTarget(name: "StreamBenchTests", dependencies: ["StreamBench", "StreamSim", "StreamWire", "StreamHost"]),
     .target(name: "CFrameSourceCore"),
     .testTarget(name: "FrameSourceCoreTests", dependencies: ["CFrameSourceCore"]),
     .target(name: "StreamSpikeWire"),
@@ -80,6 +89,7 @@ var targets: [Target] = [
 products.append(.executable(name: "longwave-host-spike", targets: ["longwave-host-spike"]))
 products.append(.executable(name: "frame-source-spike", targets: ["frame-source-spike"]))
 products.append(.executable(name: "longwave-pcvr-host", targets: ["longwave-pcvr-host"]))
+products.append(.executable(name: "pcvr-codec-bench", targets: ["pcvr-codec-bench"]))
 targets += [
     .target(
         name: "CStreamWin",
@@ -117,6 +127,12 @@ targets += [
         name: "longwave-pcvr-host",
         dependencies: ["StreamHostWindows", "StreamHost", "StreamTransport", "StreamWire", "StreamCrypto"],
         linkerSettings: [.linkedLibrary("ws2_32"), .linkedLibrary("crypt32"), .linkedLibrary("advapi32")]
+    ),
+    // The codec bench: the test scene along a recorded head trajectory, through
+    // the host's warp and NVENC, scored against the truth, over StreamBench's links.
+    .executableTarget(
+        name: "pcvr-codec-bench",
+        dependencies: ["StreamHostWindows", "CStreamWin", "StreamBench", "StreamSim", "StreamWire", "StreamHost"]
     ),
     .executableTarget(
         name: "longwave-host-spike",

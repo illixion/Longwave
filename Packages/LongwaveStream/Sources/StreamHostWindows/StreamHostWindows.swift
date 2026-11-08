@@ -79,7 +79,7 @@ public struct Monitor: Sendable, CustomStringConvertible {
 
 /// One D3D11 device shared by capture and encode.
 public final class GraphicsDevice: @unchecked Sendable {
-    let raw: OpaquePointer
+    public let raw: OpaquePointer
     public let adapterName: String
     public let vendorID: UInt32
 
@@ -102,7 +102,7 @@ public final class GraphicsDevice: @unchecked Sendable {
 /// A captured picture: a GPU texture the shim lent us. Releasing (deinit)
 /// returns its ring slot, so hold it only until it is encoded.
 public final class CapturedFrame: @unchecked Sendable {
-    let raw: OpaquePointer
+    public let raw: OpaquePointer
     public let texture: UnsafeMutableRawPointer
     public let width: Int
     public let height: Int
@@ -447,6 +447,21 @@ public final class VideoEncoder: @unchecked Sendable {
         public var constantQP = 0
         /// HEVC only: 10 encodes Main10 from the same 8-bit input; 8 is Main.
         public var bitDepth = 8
+        /// NVENC's tuning: ultra-low latency (the host's) or low latency.
+        public var lowLatencyTuning = false
+        /// CBR only: temporal adaptive quantisation.
+        public var temporalAQ = false
+        /// CBR only: the I to P bit ratio aimed for in a short VBV; 0 is NVENC's default.
+        public var keyFrameScale = 0
+        /// CBR only: the lowest QP allowed, 1...51; 0 no floor.
+        public var minQP = 0
+        /// Write each picture's reconstruction to the `recon` texture `encode` is given.
+        public var reconstruction = false
+        /// Take a QP delta map (one per 32x32 CTB) with each picture.
+        public var qpMap = false
+
+        /// CTBs a QP map covers: one per 32x32 block, raster order.
+        public var qpMapSize: (width: Int, height: Int) { ((width + 31) / 32, (height + 31) / 32) }
 
         public init(width: Int, height: Int, fps: Int, bitrate: Int) {
             self.width = width
@@ -479,7 +494,7 @@ public final class VideoEncoder: @unchecked Sendable {
 
     private let raw: OpaquePointer
     private let device: GraphicsDevice
-    public let parameters: Parameters
+    public private(set) var parameters: Parameters
     public let info: Info
 
     public init(device: GraphicsDevice, parameters: Parameters) throws {
@@ -501,6 +516,12 @@ public final class VideoEncoder: @unchecked Sendable {
         params.async_mode = parameters.asyncMode ? 1 : 0
         params.const_qp = UInt32(max(0, min(parameters.constantQP, 51)))
         params.bit_depth = parameters.codec == .hevc && parameters.bitDepth == 10 ? 10 : 8
+        params.tuning = parameters.lowLatencyTuning ? 1 : 0
+        params.temporal_aq = parameters.temporalAQ ? 1 : 0
+        params.key_frame_scale = UInt32(max(0, min(parameters.keyFrameScale, 255)))
+        params.min_qp = UInt32(max(0, min(parameters.minQP, 51)))
+        params.recon = parameters.reconstruction ? 1 : 0
+        params.qp_map = parameters.qpMap ? 1 : 0
         var encoder: OpaquePointer?
         try check(lw_encoder_create(device.raw, &params, &encoder), "lw_encoder_create")
         raw = encoder!
@@ -542,6 +563,34 @@ public final class VideoEncoder: @unchecked Sendable {
                                 doneTicks: packet.done_qpc))
     }
 
+    /// `encode(_:timestamp:forceIDR:_:)` with a QP delta map (`Parameters.qpMap`,
+    /// `qpMapSize` entries) and a reconstruction target (`Parameters.reconstruction`,
+    /// an encoder-sized `.nv12` texture).
+    public func encode<R>(_ texture: GraphicsTexture, timestamp: UInt64, forceIDR: Bool = false, qpDeltaMap: [Int8]?,
+                          recon: GraphicsTexture?, _ body: (Picture) throws -> R) throws -> R {
+        var packet = lw_packet()
+        let flags = forceIDR ? UInt32(LW_ENCODE_FORCE_IDR) : 0
+        let status: lw_status = (qpDeltaMap ?? []).withUnsafeBufferPointer { map in
+            var extras = lw_encode_extras()
+            extras.qp_delta_map = qpDeltaMap == nil ? nil : map.baseAddress
+            extras.qp_delta_map_size = UInt32(map.count)
+            extras.recon = recon?.raw
+            return lw_encoder_encode_ex(raw, texture.raw, timestamp, flags, &extras, &packet)
+        }
+        try check(status, "lw_encoder_encode_ex")
+        return try body(Picture(bytes: UnsafeRawBufferPointer(start: packet.data, count: Int(packet.size)),
+                                isIDR: packet.is_idr != 0, averageQP: Int(packet.average_qp),
+                                timestamp: packet.timestamp, submitTicks: packet.submit_qpc,
+                                doneTicks: packet.done_qpc))
+    }
+
+    /// A new bitrate and frame rate in the same session: no key frame.
+    public func reconfigure(bitrate: Int, fps: Int) throws {
+        try check(lw_encoder_reconfigure(raw, UInt32(bitrate), UInt32(fps)), "lw_encoder_reconfigure")
+        parameters.bitrate = bitrate
+        parameters.fps = fps
+    }
+
     /// Stops the encoder predicting from these pictures (by timestamp).
     public func invalidate(timestamps: [UInt64]) throws {
         try check(lw_encoder_invalidate(raw, timestamps, UInt32(timestamps.count)), "lw_encoder_invalidate")
@@ -549,6 +598,7 @@ public final class VideoEncoder: @unchecked Sendable {
 
     public func setBitrate(_ bitsPerSecond: Int) throws {
         try check(lw_encoder_set_bitrate(raw, UInt32(bitsPerSecond)), "lw_encoder_set_bitrate")
+        parameters.bitrate = bitsPerSecond
     }
 }
 
@@ -561,16 +611,19 @@ public final class GraphicsTexture: @unchecked Sendable {
         case bgra8 = 1        // LW_TEXTURE_BGRA8
         case rgba32Float = 2  // LW_TEXTURE_RGBA32F
         case r32Float = 3     // LW_TEXTURE_R32F
+        /// An encoder's reconstruction (`VideoEncoder.Parameters.reconstruction`): GPU only, no `read()`.
+        case nv12 = 4         // LW_TEXTURE_NV12
 
         public var bytesPerPixel: Int {
             switch self {
             case .bgra8, .r32Float: 4
             case .rgba32Float: 16
+            case .nv12: 1 // luma; the chroma plane adds half again
             }
         }
     }
 
-    let raw: UnsafeMutableRawPointer
+    public let raw: UnsafeMutableRawPointer
     private let device: GraphicsDevice
     public let width: Int
     public let height: Int

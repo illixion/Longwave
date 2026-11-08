@@ -28,6 +28,7 @@ nonisolated struct PCVRV3Target: Sendable, Equatable {
 nonisolated struct PCVRV3Status: Equatable, Sendable {
     var state = "Idle"
     var framesDecoded = 0
+    var framesForwarded = 0
     var framesLost = 0
     var decodeErrors = 0
     var rttMilliseconds: Double?
@@ -145,6 +146,19 @@ nonisolated final class PCVRDepthStore: @unchecked Sendable {
     }
 }
 
+/// An alternative consumer of native HEVC frames, before local decoding.
+/// Calls are serial on the receive queue. Implementations must copy/retain the
+/// values they need and hand work off promptly; never block the network loop.
+/// Format and frame metadata stay together: a presenter must use the echoed
+/// render pose, not arrival time or the most recent head pose.
+nonisolated protocol PCVREncodedVideoSink: AnyObject, Sendable {
+    func setFormat(_ format: FormatDescription) throws
+    func receive(_ frame: AssembledVideoFrame, streamEpoch: UInt32,
+                 renderPose: PCVRRenderPose) throws
+    /// Retract queued pictures and format state on disconnect/reconnect.
+    func reset()
+}
+
 /// Shell A's real frame source: the client half of Native v3's PCVR profile
 /// (NATIVE_V3_PROTOCOL.md §4.7) against the Windows host. A drop-in for
 /// `PCVRFakeRemote`: it feeds the same `PCVRFrameMailbox` and takes the same
@@ -177,8 +191,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
 
     private let target: PCVRV3Target
     private let psk: StreamPSK
-    private let mailbox: PCVRFrameMailbox
-    private let decoder: PCVRHEVCDecoder
+    private let encodedSink: (any PCVREncodedVideoSink)?
+    private let decoder: PCVRHEVCDecoder?
     /// The test scene's stamps, checked on every decoded picture once enabled.
     let stamps = PCVRStampChecker()
     /// The depth stream, when this receiver asked for it (`wantsDepth`).
@@ -234,12 +248,13 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     /// - Parameter wantsDepth: Offer `depthVideo`, for a presenter that
     ///   reprojects by depth: the host's depth pictures land in `depthStore`.
     init?(device: any MTLDevice, mailbox: PCVRFrameMailbox, target: PCVRV3Target,
-          offersGaze: Bool = false, wantsDepth: Bool = false) throws {
+          offersGaze: Bool = false, wantsDepth: Bool = false,
+          encodedSink: (any PCVREncodedVideoSink)? = nil) throws {
         guard let psk = NativeV3.psk(for: target.credential) else { return nil }
         self.target = target
         self.psk = psk
-        self.mailbox = mailbox
-        decoder = try PCVRHEVCDecoder(device: device, output: .colour(mailbox))
+        self.encodedSink = encodedSink
+        decoder = encodedSink == nil ? try PCVRHEVCDecoder(device: device, output: .colour(mailbox)) : nil
         if wantsDepth {
             let store = PCVRDepthStore()
             depthStore = store
@@ -252,10 +267,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
                             platform: .visionOS,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload, intent: [.screen],
                             deviceName: NativeV3.helloName(target.deviceName), software: NativeV3.softwareVersion)
-        decoder.onDecodeError = { [weak self] in
+        decoder?.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestKeyFrame() }
         }
-        decoder.stampChecker = stamps
+        decoder?.stampChecker = stamps
         depthDecoder?.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestDepthKeyFrame() }
         }
@@ -287,7 +302,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             tearDownConnection()
             timer?.cancel()
             timer = nil
-            decoder.invalidate()
+            decoder?.invalidate()
             depthDecoder?.invalidate()
             depthStore?.clear()
             setState("Stopped")
@@ -339,6 +354,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     }
 
     private func tearDownConnection() {
+        encodedSink?.reset()
         connection?.cancel()
         connection = nil
         connector = nil
@@ -591,7 +607,19 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         } else {
             lastCentres = nil
         }
-        decoder.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
+        if let encodedSink {
+            do {
+                try encodedSink.receive(frame, streamEpoch: streamEpoch, renderPose: renderPose)
+                status.withLock { $0.framesForwarded += 1 }
+            } catch {
+                // A dropped reference frame invalidates its dependants at the
+                // sink too. Recover on an IDR instead of forwarding broken P's.
+                needsTimedKeyFrame = true
+                requestKeyFrame()
+            }
+            return
+        }
+        decoder?.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
                        frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose,
                        foveation: foveation)
     }
@@ -612,7 +640,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             return
         }
         do {
-            try decoder.setFormat(format)
+            if let encodedSink { try encodedSink.setFormat(format) }
+            else { try decoder?.setFormat(format) }
         } catch {
             log.error("v3 PCVR decoder could not take the format: \(String(describing: error), privacy: .public)")
             activeFormat = nil
@@ -724,7 +753,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             counters = Counters()
             return
         }
-        let decoded = decoder.takeCounters()
+        let decoded = decoder?.takeCounters() ?? PCVRHEVCDecoder.Tally()
         let depthDecoded = depthDecoder?.takeCounters()
         let depthLost = depthReceiver.statistics.framesLost
         let rtt = session.map { Double($0.rtt.smoothed) / 1e6 }

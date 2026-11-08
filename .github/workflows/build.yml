@@ -26,7 +26,11 @@ jobs:
   # into it. The stubs are then swapped for the real (patched) dependencies
   # and the GPLv3 Moonlight-enabled IPA is archived second.
   build-apple:
-    runs-on: macos-26
+    # xcode-27 is GitHub's macOS 27 image (public preview, no SLA; there is no macos-27 label yet).
+    # The app and its sibling packages use version 27 SDK APIs (scene accessories, MetricKit's
+    # MetricManager, frame interpolation limits), which the Xcode 26.x on macos-26 cannot compile,
+    # so this is the runner that builds the full app. Move to macos-27 once it reaches GA.
+    runs-on: xcode-27
 
     steps:
       # Full history: the iPhone/iPad build number is the commit count (see below).
@@ -36,7 +40,7 @@ jobs:
           fetch-depth: 0
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
 
       # RAVESDK, RAVEEngine and DebugTrace are local Swift package path references
       # (../RAVESDK, ../RAVEEngine, ../DebugTrace relative to Longwave.xcodeproj,

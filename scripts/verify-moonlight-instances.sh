@@ -13,7 +13,7 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/verify-moonlight-instances.sh [DerivedData or OBJROOT dir…]
-#       Verifies every MoonlightCommonC*.build / enet.build object tree found
+#       Verifies every MoonlightCommonC*.build / enet.build (or *-t.build) object tree found
 #       under the given directories (default: ~/Library/Developer/Xcode/DerivedData).
 #   scripts/verify-moonlight-instances.sh --regenerate [dirs…]
 #       Rewrites the GENERATED block of ci/deps/moonlight-common-c/ml_redefine_symbols.h
@@ -37,16 +37,19 @@ defined_symbols() { # <object files…>
     nm -gjU "$@" 2>/dev/null | grep -v -E ':$|^$' | sed 's/^_//' | sort -u
 }
 
-find_objects() { # <build dir name>
+# Xcode 27 names a target's build directory "<target>-t.build", where Xcode 26 and
+# earlier wrote "<target>.build"; take either. (On Xcode 27 the old pattern found no
+# objects at all, and this script exited 2 as if nothing had been built.)
+find_objects() { # <target name>
     for root in "${roots[@]}"; do
-        find "$root" -type f -path "*/$1/Objects-normal/*/*.o" 2>/dev/null
+        find "$root" -type f \( -path "*/$1.build/Objects-normal/*/*.o" -o -path "*/$1-t.build/Objects-normal/*/*.o" \) 2>/dev/null
     done
 }
 
 # Objects of the unprefixed original: the MoonlightCommonC target plus enet.
 original_objs=()
 while IFS= read -r f; do original_objs+=("$f"); done < <(
-    { find_objects "MoonlightCommonC.build"; find_objects "enet.build"; } | sort -u
+    { find_objects "MoonlightCommonC"; find_objects "enet"; } | sort -u
 )
 if [[ ${#original_objs[@]} -eq 0 ]]; then
     echo "verify-moonlight-instances: no MoonlightCommonC/enet objects under: ${roots[*]}" >&2
@@ -87,7 +90,7 @@ fi
 checked=0
 for n in 1 2 3 4 5 6 7 8; do
     objs=()
-    while IFS= read -r f; do objs+=("$f"); done < <(find_objects "MoonlightCommonC$n.build" | sort -u)
+    while IFS= read -r f; do objs+=("$f"); done < <(find_objects "MoonlightCommonC$n" | sort -u)
     [[ ${#objs[@]} -gt 0 ]] || continue
     checked=$((checked + 1))
     if leaked="$(defined_symbols "${objs[@]}" | grep -v "^ml${n}_")" && [[ -n "$leaked" ]]; then

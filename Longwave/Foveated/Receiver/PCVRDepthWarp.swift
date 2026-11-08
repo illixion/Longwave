@@ -127,6 +127,23 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// Fill what a view's own eye could not see from the frame's other eye
     /// where that eye saw it (tinted cyan with `tintsFills`).
     var fillsFromOtherEye = true
+    /// What no view saw takes the far surface's colour from a depth texel
+    /// and two pixels off the silhouette (`pcvrDepthWarpHoleColour`), rather
+    /// than at it, where the near object's rim bleeds in.
+    var fillsOffTheEdge = true
+
+    /// The depth-map width (one eye) the march's steps are counted in: the
+    /// stream's eighth-size depth of a 5184-wide eye, where `stepTexels`,
+    /// `maxSteps` and the fill march were tuned. A finer map takes
+    /// proportionally longer steps (`depthDetail`), so a march covers the same
+    /// angle in as many samples; counted in its own texels, a quarter-size
+    /// map reached a quarter as far and truncated the shifts of near content.
+    static let referenceDepthEyeWidth: Float = 648
+
+    /// A depth map's texels per reference texel, at least 1.
+    static func depthDetail(_ depth: any MTLTexture) -> Float {
+        max(1, Float(depth.width / 2) / referenceDepthEyeWidth)
+    }
 
     /// An earlier frame and its depth, for filling what the frame being
     /// warped did not see (`encode(frame:...fills:)`).
@@ -266,7 +283,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                     outputSize: outputSize, outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye,
                     flags: 32 | UInt32(index) << 8)
                 fill.maxSteps = UInt32(max(fillMaxSteps, 1))
-                fill.stepTexels = max(fillStepTexels, 0.25)
+                fill.stepTexels = max(fillStepTexels, 0.25) * Self.depthDetail(source.depth.texture)
                 uniforms.append(fill)
                 uniforms[eye].flags |= 8
             }
@@ -517,6 +534,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             translation -= excess
             rotation.columns.2 -= excess / plane
         }
+        let detail = depth.map { Self.depthDetail($0.texture) } ?? 1
         return Uniforms(
             rotation: rotation,
             translation: SIMD4(translation, 0),
@@ -538,10 +556,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             // first sample is in front of everything.
             nearInverse: depth.map { 2 / max($0.near, 0.01) } ?? 2 / plane,
             planeInverse: 1 / plane,
-            stepTexels: max(stepTexels, 0.25),
+            stepTexels: max(stepTexels, 0.25) * detail,
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
-            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0))
+            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0))
     }
 
     /// Computed, not stored: a live patch (`inject`) can change a computed
@@ -578,7 +596,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                 // render UV (a display view), not packed by the frame's foveation map;
                                 // 8: fill from the other eye (display views, uniforms 2 and 3), or
                                 // from the fill views (the compute colour pass, uniforms 2 + 2 * eye + slot);
-                                // 32: a fill view in use, its source in bits 8-10 of the fill arrays
+                                // 32: a fill view in use, its source in bits 8-10 of the fill arrays;
+                                // 64: an unseen pixel's colour from off the silhouette (`fillsOffTheEdge`)
     };
 
     struct PCVRDepthWarpHit {
@@ -849,14 +868,26 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float2 track = (uvFar - uvNear) / texel;
         float2 along = length(track) > 1e-3 ? normalize(track) : float2(1, 0);
         float2 across = float2(-along.y, along.x) * texel * 1.5;
+        // Off the silhouette onto the far surface, back along the ray's track:
+        // a depth texel (the depth's edge can sit a texel out from the
+        // picture's, the host takes each texel's nearest depth) and two
+        // colour pixels (the picture's edge is antialiased). At the edge
+        // itself the taps read the near object's rim, and the strip under a
+        // board on a vertical move filled with its dark frame, 0.3 off the
+        // wall it hid (PCVRWarpBenchTests, 2026-11-08).
+        float2 pixel = float2(u.wireX.w, u.wireY.w) / max(u.sourceRect.zw * float2(source.get_width(), source.get_height()), float2(1));
+        float2 back = (u.flags & 64u) ? -normalize(along * texel) * (max(texel.x, texel.y) + 2 * max(pixel.x, pixel.y)) : float2(0);
         float3 sum = float3(0);
         float count = 0;
         for (int k = -2; k <= 2; k++) {
-            float2 p = saturate(hit.uv + across * float(k));
-            if (k != 0 && abs(pcvrDepthWarpScene(p, u, depth, linear) - hit.w) > u.edge) continue;
+            float2 p = saturate(hit.uv + back + across * float(k));
+            if (abs(pcvrDepthWarpScene(p, u, depth, linear) - hit.w) > u.edge) continue;
             sum += source.sample(linear, pcvrEyeTexel(pcvrWireUV(p, u.wireX, u.wireY), u.sourceRect, u.sourceBounds)).rgb;
             count += 1;
         }
+        // Nothing on the far surface back there (a sliver between two near
+        // shapes): the far side at the edge, as before.
+        if (count == 0) return source.sample(linear, pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds)).rgb;
         return sum / count;
     }
 

@@ -234,9 +234,12 @@ final class PCVRDepthWarpTests: XCTestCase {
                     XCTAssertEqual(got.x, u + nearShift, accuracy: 1.5 * texel, "block at \(x),\(y)")
                     fg += 1
                 } else if u > blockEnd + margin, u < uncoveredEnd - margin {
-                    // Filled from the background just right of the block's edge.
+                    // Filled from the background beside the block's edge, a
+                    // depth texel and two pixels clear of it (at the edge the
+                    // pixels can carry the block's rim, `fillsOffTheEdge`).
+                    let clear = 1 / Float(Self.depthWidth) + 2 * texel
                     XCTAssertGreaterThan(got.x, 0.5 - texel, "uncovered at \(x),\(y)")
-                    XCTAssertLessThan(got.x, 0.5 + 2 * margin, "uncovered at \(x),\(y)")
+                    XCTAssertLessThan(got.x, 0.5 + 2 * margin + clear, "uncovered at \(x),\(y)")
                     filled += 1
                 } else if (u > 0.03 && u < blockStart - margin) || (u > uncoveredEnd + margin && u + farShift < 0.97) {
                     XCTAssertEqual(got.x, u + farShift, accuracy: 1.5 * texel, "background at \(x),\(y)")

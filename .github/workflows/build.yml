@@ -418,11 +418,37 @@ jobs:
           { "version": "${VERSION}", "repo": "${{ github.repository }}" }
           EOF
 
+      # What electron-builder downloads from GitHub releases: the Electron zip (about 137 MB), and
+      # winCodeSign and the NSIS tools, which it unpacks even when it signs nothing. A runner
+      # starts with none of them, and a GitHub release-download outage on 8 November 2026
+      # (releases/download URLs answering 504) failed both installers at winCodeSign. With the
+      # cache restored it downloads nothing. Keyed on the lock file, which fixes the Electron and
+      # electron-builder versions; restore-keys takes the nearest older cache. Saved only after a
+      # whole build succeeded (below), so a failed one never leaves half of them under the key.
+      - name: Restore Electron downloads
+        id: electron-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ matrix.arch }}-${{ hashFiles('CompanionWindows/app/package-lock.json') }}
+          restore-keys: electron-${{ matrix.arch }}-
+
       - name: Build installer (Electron + NSIS, ${{ matrix.arch }})
         working-directory: CompanionWindows/app
         run: |
           npm ci
           npm run dist -- --win --${{ matrix.ebarch }}
+
+      - name: Save Electron downloads
+        if: github.ref == 'refs/heads/main' && steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
 
       - name: Name the installer with the release version + arch
         id: win

@@ -79,6 +79,19 @@ enum PCVRShellEndpoints {
                 }
                 return report(session)
             },
+            .untyped("pcvrLink", kind: .query,
+                     "What the Wi-Fi link did to the v3 stream (Shell A's or the overlay's, whichever started last): "
+                     + "gaps between datagrams (stalls of 30 ms and more listed), each frame's age from capture to its "
+                     + "last shard on the host's clock (excess: above the window's lowest), RTT samples, NACKs",
+                     parameters: [
+                        .number("seconds", "how far back (default 10, at most 20)", default: 10, range: 0.1...20),
+                        .boolean("rows", "one row per frame as well"),
+                     ]) { args in
+                guard let remote = PCVRV3Remote.latest else {
+                    throw DebugError.unavailable("no v3 source has run", hint: "open Shell A or start the v3 overlay")
+                }
+                return remote.linkReport(seconds: args.double("seconds") ?? 10, rows: args.bool("rows") ?? false)
+            },
         ])
     }
 

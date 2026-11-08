@@ -166,6 +166,14 @@ nonisolated final class PCVRDepthStore: @unchecked Sendable {
 /// remote runs, so the space can be opened before the PC's host is up.
 nonisolated final class PCVRV3Remote: @unchecked Sendable {
     let status = OSAllocatedUnfairLock(initialState: PCVRV3Status())
+    /// What the link did to each datagram and frame (`PCVRLinkProbe`).
+    let link = OSAllocatedUnfairLock(initialState: PCVRLinkProbe())
+
+    /// The remote started last, for the `pcvrLink` endpoint, whichever
+    /// presenter owns it.
+    static var latest: PCVRV3Remote? { latestBox.withLock { $0.value } }
+    private struct WeakRemote: @unchecked Sendable { weak var value: PCVRV3Remote? }
+    private static let latestBox = OSAllocatedUnfairLock(initialState: WeakRemote())
 
     private let target: PCVRV3Target
     private let psk: StreamPSK
@@ -256,6 +264,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     // MARK: Lifecycle
 
     func start() {
+        Self.latestBox.withLock { $0.value = self }
         queue.async { [self] in
             guard !running else { return }
             running = true
@@ -285,6 +294,14 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             log.notice("v3 PCVR source stopped")
         }
     }
+
+    /// The link probe's summary of the last `seconds`.
+    func linkReport(seconds: Double, rows: Bool = false) -> [String: Any] {
+        let now = NativeV3.now()
+        return link.withLock { $0.report(seconds: seconds, now: now, rows: rows) }
+    }
+
+    func resetLink() { link.withLock { $0.reset() } }
 
     /// The uplink: called on the render thread with every snapshot.
     func receive(_ snapshot: PCVRHeadPoseSnapshot) {
@@ -350,6 +367,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
 
     private func handle(datagram: [UInt8]) {
         let now = NativeV3.now()
+        link.withLock { $0.datagram(at: now) }
         guard session != nil else {
             guard let (opened, ackBytes) = connector?.receive(datagram, now: now) else { return }
             connected(opened, ackBytes: ackBytes, now: now)
@@ -363,6 +381,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             return
         }
         for event in events { handle(event, now: now) }
+        if let rtt = session?.rtt { link.withLock { $0.rtt(latest: rtt.latest, sampleCount: rtt.sampleCount, now: now) } }
         drive()
     }
 
@@ -418,6 +437,11 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
                 handleDepth(depthReceiver.receive(header, data: data, now: now))
                 depthDue = min(depthDue, now + 2_000_000)
             } else {
+                let remoteNow = session?.clock.remoteTime(atLocal: now)
+                link.withLock {
+                    $0.shard(frame: header.frameNumber, captureTime: header.captureTime, key: header.flags.contains(.key),
+                             now: now, remoteNow: remoteNow)
+                }
                 handle(receiver.receive(header, data: data, now: now))
                 receiverDue = min(receiverDue, now + 2_000_000)
             }
@@ -451,8 +475,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             case .frame(let frame):
                 deliver(frame)
             case .nack(let nack):
+                link.withLock { $0.noteNack() }
                 session?.send(nack)
             case .recovery(let request):
+                link.withLock { $0.noteRecovery() }
                 if let body = try? request.encoded() { try? session?.send(.recoveryRequest, body: body, on: .control) }
             }
         }
@@ -462,6 +488,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private func requestKeyFrame() {
         guard session != nil else { return }
         let now = NativeV3.now()
+        link.withLock { $0.noteKeyFrameRequest() }
         handle(receiver.requestKeyFrame(now: now))
         receiverDue = min(receiverDue, receiver.nextWakeTime(now: now) ?? .max)
         drive()

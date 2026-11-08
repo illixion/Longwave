@@ -239,6 +239,10 @@ final class PCVRHost: @unchecked Sendable {
         var stereoLayout: StereoLayout = .sideBySide
         var wirePictureSize: PixelSize { PixelSize(width: wireEye.width * 2, height: wireEye.height) }
         var pictureSize: PixelSize { stereoLayout == .separateAccessUnits ? wireEye : wirePictureSize }
+        /// Separate eyes go to encoded consumers, which take Main10, so they are
+        /// encoded in 10 bits: less banding in dark gradients on the headset's
+        /// OLED. Side by side stays Main for the local VideoToolbox decoder.
+        var bitDepth: UInt8 { stereoLayout == .separateAccessUnits ? 10 : 8 }
     }
 
     // Statistics, under `lock`.
@@ -417,13 +421,14 @@ final class PCVRHost: @unchecked Sendable {
             parameters.multiPass = options.multiPass
             parameters.spatialAQ = options.spatialAQ
             parameters.maxQP = options.maxQP
+            parameters.bitDepth = Int(wanted.bitDepth)
             encoder = nil
             rightEncoder = nil
             encoder = try VideoEncoder(device: device, parameters: parameters)
             if separateEyes { rightEncoder = try VideoEncoder(device: device, parameters: parameters) }
             appliedBitrate = parameters.bitrate * (separateEyes ? 2 : 1)
             parameterSets = []
-            log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s), P\(parameters.preset), "
+            log.line("encoder: \(encoder!.info.name) HEVC \(parameters.bitDepth)-bit \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s), P\(parameters.preset), "
                      + "multipass \(["off", "quarter", "full"][parameters.multiPass]), AQ \(parameters.spatialAQ), max QP \(parameters.maxQP)")
         }
         guard let encoder else { return }
@@ -830,7 +835,7 @@ final class PCVRHost: @unchecked Sendable {
     private static func format(layout: Layout, epoch: UInt32, parameterSets: [UInt8]) -> FormatDescription {
         FormatDescription(
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
-            size: layout.pictureSize, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
+            size: layout.pictureSize, bitDepth: layout.bitDepth, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
             sideDataTypes: layout.warp == nil ? [.renderPose] : [.renderPose, .foveation],
             pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.renderEye, wireSize: layout.wireEye,
                              foveation: FoveationParameters(epoch: epoch, warp: layout.warp.map { .centreEdge($0) } ?? .none)))

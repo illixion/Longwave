@@ -252,6 +252,12 @@ lw_status lw_encoder::open(lw_device *dev, const lw_encoder_params &p) {
     } else {
         auto &hevc = config.encodeCodecConfig.hevcConfig;
         config.profileGUID = NV_ENC_HEVC_PROFILE_MAIN_GUID;
+        if (p.bit_depth == 10) {
+            if (!cap(NV_ENC_CAPS_SUPPORT_10BIT_ENCODE)) return lw::fail(LW_E_ENCODER, "this GPU's NVENC has no 10-bit HEVC");
+            config.profileGUID = NV_ENC_HEVC_PROFILE_MAIN10_GUID;
+            hevc.inputBitDepth = NV_ENC_BIT_DEPTH_8;   // the BGRA texture stays 8-bit
+            hevc.outputBitDepth = NV_ENC_BIT_DEPTH_10; // NVENC quantises in 10 bits
+        }
         describe_colour(hevc.hevcVUIParameters);
         hevc.idrPeriod = NVENC_INFINITE_GOPLENGTH;
         hevc.repeatSPSPPS = 1; // VPS/SPS/PPS before every IDR: a client can join at any key frame

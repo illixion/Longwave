@@ -445,6 +445,8 @@ public final class VideoEncoder: @unchecked Sendable {
         /// 1...51 encodes at that constant QP instead of CBR at `bitrate`
         /// (which then only caps the sender); 0 is CBR.
         public var constantQP = 0
+        /// HEVC only: 10 encodes Main10 from the same 8-bit input; 8 is Main.
+        public var bitDepth = 8
 
         public init(width: Int, height: Int, fps: Int, bitrate: Int) {
             self.width = width
@@ -498,6 +500,7 @@ public final class VideoEncoder: @unchecked Sendable {
         params.slices = UInt32(parameters.slices)
         params.async_mode = parameters.asyncMode ? 1 : 0
         params.const_qp = UInt32(max(0, min(parameters.constantQP, 51)))
+        params.bit_depth = parameters.codec == .hevc && parameters.bitDepth == 10 ? 10 : 8
         var encoder: OpaquePointer?
         try check(lw_encoder_create(device.raw, &params, &encoder), "lw_encoder_create")
         raw = encoder!

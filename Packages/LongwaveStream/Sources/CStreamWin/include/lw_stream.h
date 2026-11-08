@@ -201,6 +201,9 @@ typedef struct lw_encoder_params {
     uint32_t spatial_aq;      /* CBR only: 0 off, 1..15 spatial adaptive quantisation strength */
     uint32_t max_qp;          /* CBR only: 1..51 caps the QP (frames may then overrun
                                  the VBV); 0 = no cap */
+    uint32_t bit_depth;       /* HEVC only: 10 encodes Main10 from the same 8-bit input
+                                 (NVENC converts; less banding in dark gradients);
+                                 0 or 8 = Main */
 } lw_encoder_params;
 
 typedef struct lw_encoder_info {

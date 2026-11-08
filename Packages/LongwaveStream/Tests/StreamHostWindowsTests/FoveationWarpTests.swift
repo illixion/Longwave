@@ -213,4 +213,35 @@ final class FoveationWarpTests: XCTestCase {
         }
         XCTAssertTrue(sizes.allSatisfy { $0 > 0 }, "\(sizes)")
     }
+
+    /// Separate eyes go out as Main10 from the same 8-bit BGRA texture.
+    func testTenBitEncodesMain10FromEightBitInput() throws {
+        let device = try GraphicsDevice(for: nil)
+        var parameters = VideoEncoder.Parameters(width: 1024, height: 1024, fps: 90, bitrate: 20_000_000)
+        parameters.codec = .hevc
+        parameters.asyncMode = true
+        parameters.bitDepth = 10
+        let encoder: VideoEncoder
+        do {
+            encoder = try VideoEncoder(device: device, parameters: parameters)
+        } catch {
+            throw XCTSkip("no 10-bit NVENC here: \(error)")
+        }
+        var pixels = [UInt8](repeating: 0, count: 1024 * 1024 * 4)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            pixels[i] = UInt8((i / 4) % 1024 / 4) // a slow ramp: what 10 bits are for
+            pixels[i + 3] = 255
+        }
+        let texture = try pixels.withUnsafeBytes {
+            try GraphicsTexture(device: device, width: 1024, height: 1024, format: .bgra8, pixels: $0)
+        }
+        let bytes = try encoder.encode(texture, timestamp: 0, forceIDR: true) { Array($0.bytes) }
+        // The SPS (NAL type 33): two header bytes, one byte of ids, then
+        // profile space (2), tier (1) and general_profile_idc (5); Main10 is 2.
+        var profile: UInt8?
+        for i in 0..<(bytes.count - 6) where bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 {
+            if (bytes[i + 3] >> 1) & 0x3f == 33 { profile = bytes[i + 6] & 0x1f; break }
+        }
+        XCTAssertEqual(profile, 2)
+    }
 }

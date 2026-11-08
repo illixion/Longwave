@@ -19,6 +19,8 @@ import RAVEInput
 enum FoveatedGazeDebugEndpoints {
     struct Reply: Encodable {
         var feed: String?
+        var origin: String?
+        var applicationExportAllowed: Bool?
         var sequence: Int?
         var direction: [Float]?
         var distance: Float?
@@ -36,14 +38,18 @@ enum FoveatedGazeDebugEndpoints {
         DebugSurface.shared.register([
             .query("pcvrGaze",
                    "The PCVR session's gaze feed (a plug-in feed, or RAVE's gaze message channel) and its newest "
-                   + "sample: direction in head space (-z ahead), focus distance, age since receipt and since capture "
+                   + "sample (external sensors only; provider gaze is redacted): direction in head space (-z ahead), focus distance, age since receipt and since capture "
                    + "(no capture age: the native uplink won't send it). Empty off the headset "
                    + "or with no session") { _ in
                 #if os(visionOS) && !targetEnvironment(simulator)
                 guard let manager = FoveatedConnectionManager.current else { return Reply() }
-                let s = manager.gazeSample
-                let offsets = (manager.gazeFeed?.gaze as? RAVEHTTPGazeSource)?.lastStampOffsets
-                return Reply(feed: manager.gazeFeed?.name, sequence: s?.sequence,
+                let raw = manager.gazeSample
+                // Debug HTTP is an app-export surface too. Restricted samples
+                // expose policy/status only, never their direction or timing.
+                let s = raw.flatMap { $0.origin.allowsApplicationExport ? $0 : nil }
+                let offsets = s == nil ? nil : (manager.gazeFeed?.gaze as? RAVEHTTPGazeSource)?.lastStampOffsets
+                return Reply(feed: manager.gazeFeed?.name, origin: raw.map { String(describing: $0.origin) },
+                             applicationExportAllowed: raw?.origin.allowsApplicationExport, sequence: s?.sequence,
                              direction: s.map { [$0.direction.x, $0.direction.y, $0.direction.z] },
                              distance: s?.distance, ageSeconds: s.map { Date().timeIntervalSince($0.receivedAt) },
                              captureAgeSeconds: s?.localCaptureTime.map { CACurrentMediaTime() - $0 },

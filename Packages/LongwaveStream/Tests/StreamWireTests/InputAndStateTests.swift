@@ -125,8 +125,30 @@ final class StateSnapshotTests: XCTestCase {
         stale[142] = 1 // a presented frame number without the flag
         XCTAssertWireError(.inconsistent("headPose.presented")) { try StateSnapshot(frameBody: stale) }
         stale = bytes
-        stale[24] = 0x04 // reserved flag
+        stale[24] = 0x08 // reserved flag
         XCTAssertWireError(.invalid("headPose.flags")) { try StateSnapshot(frameBody: stale) }
+    }
+
+    func testGazeExportPermissionSurvivesUplinkAndDefaultsToDenied() throws {
+        for allowed in [false, true] {
+            var pose = Fixtures.headPose
+            pose.gaze?.allowsApplicationExport = allowed
+            let bytes = try StateSnapshot(sequence: 1, hostTime: 0, payload: .headPose(pose)).encoded()
+            XCTAssertEqual(bytes[24] & 4 != 0, allowed)
+            let decoded = try XCTUnwrap(StateSnapshot(frameBody: bytes))
+            guard case .headPose(let roundTrip) = decoded.payload else { return XCTFail("wrong state kind") }
+            XCTAssertEqual(roundTrip.gaze?.allowsApplicationExport, allowed)
+            XCTAssertEqual(roundTrip.gaze?.applicationExportSample != nil, allowed)
+        }
+        XCTAssertNil(Fixtures.headPose.gaze?.applicationExportSample)
+    }
+
+    func testExportFlagWithoutGazeIsRejected() throws {
+        var pose = Fixtures.headPose
+        pose.gaze = nil
+        var bytes = try StateSnapshot(sequence: 1, hostTime: 0, payload: .headPose(pose)).encoded()
+        bytes[24] |= 4
+        XCTAssertWireError(.inconsistent("headPose.gaze")) { try StateSnapshot(frameBody: bytes) }
     }
 
     func testHeadPoseValidation() {

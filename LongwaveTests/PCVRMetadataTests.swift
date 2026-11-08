@@ -9,6 +9,18 @@ final class PCVRMetadataTests: XCTestCase {
     private let sample = PCVRGazeSample(direction: SIMD3(1, 0, -2), distance: 2,
                                       timestamp: 10, isValid: true)
 
+    func testOriginSurvivesSnapshotConversionAndGatesApplicationExport() throws {
+        for origin in [RAVEGazeOrigin.unknown, .foveatedStreamingProvider, .externalSensor] {
+            let source = RAVEGazeSample(sequence: 1, direction: SIMD3(0, 0, -1),
+                                        localCaptureTime: 10, origin: origin)
+            let converted = PCVRGazeSample.from(source, now: 10.01)
+            let wire = try XCTUnwrap(converted.wireSample(now: 10.01, negotiated: true) { _ in 10_000 })
+            XCTAssertEqual(converted.origin, origin)
+            XCTAssertEqual(wire.allowsApplicationExport, origin == .externalSensor)
+            XCTAssertEqual(wire.applicationExportSample != nil, origin == .externalSensor)
+        }
+    }
+
     func testGazeRequiresFreshSampleNegotiationAndClock() {
         func wire(_ sample: PCVRGazeSample, now: Double = 10.05, negotiated: Bool = true) -> GazeSample? {
             sample.wireSample(now: now, negotiated: negotiated) { UInt64($0 * 1e9) + 500 }

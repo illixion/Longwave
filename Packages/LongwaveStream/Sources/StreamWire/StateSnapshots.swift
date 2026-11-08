@@ -222,6 +222,9 @@ public struct GamepadState: Sendable, Hashable {
 
 /// The gaze sample in a head-pose snapshot (valid only with `gaze` negotiated).
 public struct GazeSample: Sendable, Hashable {
+    /// Only a trusted external sensor adapter opts in. Provider and legacy gaze
+    /// remains foveation-only, including after transport to the PC.
+    public var allowsApplicationExport: Bool
     /// Unit vector in head space.
     public var direction: Vector3
     /// Metres to the fixation point; 0 when unknown.
@@ -229,11 +232,16 @@ public struct GazeSample: Sendable, Hashable {
     /// Host ns when the eyes were sampled.
     public var sampleTime: UInt64
 
-    public init(direction: Vector3, distance: Float, sampleTime: UInt64) {
+    public init(direction: Vector3, distance: Float, sampleTime: UInt64, allowsApplicationExport: Bool = false) {
         self.direction = direction
         self.distance = distance
         self.sampleTime = sampleTime
+        self.allowsApplicationExport = allowsApplicationExport
     }
+
+    /// The broker publishes this to other applications, unlike the encoder.
+    /// Use this gate at that boundary; a missing/legacy permission is denied.
+    public var applicationExportSample: Self? { allowsApplicationExport ? self : nil }
 
     func validate() throws(WireError) {
         guard direction.isFinite, abs(direction.lengthSquared - 1) <= 0.01 else { throw .invalid("headPose.gaze.direction") }
@@ -258,7 +266,7 @@ public struct PresentedFrame: Sendable, Hashable {
 /// ```
 ///   0  u64  displayTime        host ns this pose was predicted for
 ///   8  u16  spaceEpoch         bumped on recentre
-///  10  u16  flags              bit 0 gaze valid, bit 1 presented frame valid
+///  10  u16  flags              bit 0 gaze valid, bit 1 presented frame valid, bit 2 external gaze export
 ///  12  28   head               Pose in the immersive space
 ///  40  44   left eye           Pose relative to the head + FieldOfView
 ///  84  44   right eye
@@ -305,7 +313,7 @@ public struct HeadPose: Sendable, Hashable {
         displayTime = try reader.readUInt64()
         spaceEpoch = try reader.readUInt16()
         let flags = try reader.readUInt16()
-        guard flags & ~0x0003 == 0 else { throw .invalid("headPose.flags") }
+        guard flags & ~0x0007 == 0 else { throw .invalid("headPose.flags") }
         head = try reader.readPose()
         leftEye = try reader.readEyeView()
         rightEye = try reader.readEyeView()
@@ -321,11 +329,12 @@ public struct HeadPose: Sendable, Hashable {
         let distance = try reader.readFloat32()
         let sampleTime = try reader.readUInt64()
         if flags & 0x0001 != 0 {
-            gaze = GazeSample(direction: direction, distance: distance, sampleTime: sampleTime)
+            gaze = GazeSample(direction: direction, distance: distance, sampleTime: sampleTime,
+                              allowsApplicationExport: flags & 0x0004 != 0)
         } else {
             // Bit patterns, so -0.0 is rejected and no stale gaze leaks out.
             let floats = [direction.x, direction.y, direction.z, distance]
-            guard floats.allSatisfy({ $0.bitPattern == 0 }), sampleTime == 0 else { throw .inconsistent("headPose.gaze") }
+            guard flags & 0x0004 == 0, floats.allSatisfy({ $0.bitPattern == 0 }), sampleTime == 0 else { throw .inconsistent("headPose.gaze") }
             gaze = nil
         }
         try validate()
@@ -334,7 +343,8 @@ public struct HeadPose: Sendable, Hashable {
     func encode(to writer: inout WireWriter) {
         writer.writeUInt64(displayTime)
         writer.writeUInt16(spaceEpoch)
-        writer.writeUInt16((gaze == nil ? 0 : 0x0001) | (presented == nil ? 0 : 0x0002))
+        writer.writeUInt16((gaze == nil ? 0 : 0x0001) | (presented == nil ? 0 : 0x0002)
+                           | (gaze?.allowsApplicationExport == true ? 0x0004 : 0))
         writer.writePose(head)
         writer.writeEyeView(leftEye)
         writer.writeEyeView(rightEye)

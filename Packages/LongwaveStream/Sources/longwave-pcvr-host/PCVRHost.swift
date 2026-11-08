@@ -918,7 +918,10 @@ final class PCVRHost: @unchecked Sendable {
                 state.head = Self.hostPose(pose.head)
                 state.eyeOffsets = (Self.hostPose(pose.leftEye.pose), Self.hostPose(pose.rightEye.pose))
                 state.eyeFieldsOfView = (Self.hostFOV(pose.leftEye.fieldOfView), Self.hostFOV(pose.rightEye.fieldOfView))
-                if let gaze = pose.gaze {
+                // Broker state feeds OSC and runtime eye tracking. Restricted
+                // gaze stays solely in the stream's foveation calculation above;
+                // publish nil on a source switch to retract any external sample.
+                if let gaze = pose.gaze?.applicationExportSample {
                     state.gaze = (SIMD3(gaze.direction.x, gaze.direction.y, gaze.direction.z), gaze.distance,
                                   Self.ticks(fromNanoseconds: gaze.sampleTime))
                 }

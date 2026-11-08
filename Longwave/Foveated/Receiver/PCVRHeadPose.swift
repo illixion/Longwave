@@ -14,6 +14,7 @@ nonisolated struct PCVRGazeSample: Equatable, Sendable {
     var distance: Float
     var timestamp: TimeInterval
     var isValid: Bool
+    var origin: RAVEGazeOrigin = .unknown
 
     /// Initial safety budget for foveation; tune from measured provider latency.
     static let maximumAge: TimeInterval = 0.1
@@ -28,13 +29,14 @@ nonisolated struct PCVRGazeSample: Equatable, Sendable {
               distance.isFinite, distance >= 0,
               let time = hostTime(timestamp) else { return nil }
         let unit = direction / length
-        return GazeSample(direction: Vector3(unit.x, unit.y, unit.z), distance: distance, sampleTime: time)
+        return GazeSample(direction: Vector3(unit.x, unit.y, unit.z), distance: distance, sampleTime: time,
+                          allowsApplicationExport: origin.allowsApplicationExport)
     }
 
     static func from(_ sample: RAVEGazeSample?, now: TimeInterval) -> Self {
         guard let sample, let capture = sample.localCaptureTime else { return .invalid }
         let gaze = Self(direction: sample.direction, distance: sample.distance ?? 0,
-                        timestamp: capture, isValid: true)
+                        timestamp: capture, isValid: true, origin: sample.origin)
         return gaze.wireSample(now: now, negotiated: true, hostTime: { _ in 0 }) == nil ? .invalid : gaze
     }
 

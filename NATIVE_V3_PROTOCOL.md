@@ -1169,7 +1169,7 @@ negotiated. Hands and controllers keep their existing paths for now.
     ±π/2 with left < right and down < up.
 - **The head-pose snapshot** is 164 bytes after the STATE header:
   - displayTime u64, spaceEpoch u16, flags u16 (bit 0 gaze valid, bit 1
-    presented frame valid);
+    presented frame valid, bit 2 external-sensor gaze may be exported to applications);
   - the head pose;
   - for each eye, its pose relative to the head plus its field of view;
   - presented frameNumber u32 and present time u64;
@@ -1181,6 +1181,17 @@ negotiated. Hands and controllers keep their existing paths for now.
   only when IPD changes. A STATE frame can be lost, and a change sent only
   once would then never arrive. The host also needs the headset's per-eye
   projection to render at all, which the design didn't carry.
+
+  Gaze export is denied unless bit 2 is explicitly set together with bit 0.
+  Official foveated-streaming-provider gaze and unknown/legacy gaze never set
+  bit 2. Their direction remains available to the encoder for foveation, but
+  the native host does not publish it into the broker's gaze state (OSC and
+  runtime eye tracking). An external sensor adapter may opt in; relaying
+  provider gaze through a socket or plug-in does not change its origin.
+  On a source switch, publishing an empty broker gaze state retracts the old
+  external reading. A bit-2 flag without valid gaze is malformed. The packet
+  size stays 164 bytes; older hosts reject the newly defined flag, so update
+  both host and client before enabling external exports.
 
 **Video.** One stream, both eyes side by side, HEVC Main10, 90–120 fps. Its
 `formatDescription` gives the layout, the per-eye render and wire sizes, and

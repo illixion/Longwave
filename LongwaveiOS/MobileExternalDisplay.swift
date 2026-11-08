@@ -58,6 +58,10 @@ final class MobileExternalDisplayAccessoryController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Scene accessories exist only in the version 27 SDK, so an older toolchain (Xcode 26.x is
+        // Swift 6.3 or earlier, Xcode 27 is Swift 6.4) can't compile them even behind `#available`;
+        // there the external display is simply not offered, as on an iPad before iOS 27.
+        #if compiler(>=6.4)
         guard #available(iOS 27.0, *), registration == nil else { return }
         let configuration = UISceneConfiguration()
         configuration.delegateClass = MobileExternalDisplaySceneDelegate.self
@@ -66,13 +70,16 @@ final class MobileExternalDisplayAccessoryController: UIViewController {
             userInfo: displayContext
         )
         registration = registerSceneAccessory(accessory)
+        #endif
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        #if compiler(>=6.4)
         guard #available(iOS 27.0, *), let registration = registration as? UISceneAccessoryRegistration else { return }
         unregisterSceneAccessory(registration)
         self.registration = nil
+        #endif
     }
 }
 
@@ -83,12 +90,16 @@ final class MobileExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         let context: MobileExternalDisplayContext?
+        #if compiler(>=6.4)
         if #available(iOS 27.0, *) {
             context = options.sceneAccessoryUserInfo as? MobileExternalDisplayContext
                 ?? MobileExternalDisplayContext.current
         } else {
             context = MobileExternalDisplayContext.current
         }
+        #else
+        context = MobileExternalDisplayContext.current
+        #endif
         guard let context else { return }
         let window = UIWindow(windowScene: scene)
         window.rootViewController = UIHostingController(rootView: MobileExternalDisplayView(context: context))

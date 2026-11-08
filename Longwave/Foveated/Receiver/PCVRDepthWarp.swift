@@ -143,6 +143,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// of render-time difference: of two views about as close to the eye,
     /// the newer one, since anything moving in the scene has moved since.
     static let fillAgePenalty: Float = 0.1
+    /// A fill view's score, in metres, when it sees none of what the eye's
+    /// move uncovered (`fillPlan`): more than the other eye's distance, so a
+    /// view that sees round the near object beats a nearer one that doesn't.
+    static let fillCoveragePenalty: Float = 0.12
     /// The fill views' march, coarser than the main one: on a hard shake the
     /// strips are a tenth of the picture or more, and two full marches for
     /// each of their pixels took the warp past 20 ms, a skipped refresh in
@@ -397,10 +401,21 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                          otherEye: Bool) -> [[FillView]] {
         (0..<2).map { eye in
             let target = targets[eye].position
+            // What the move from the frame's own eye to the target uncovers is
+            // seen by a view on the target's side of that eye: one at or past
+            // the target along the move sees all of it, one beside or behind
+            // the frame's eye sees the same shadow. Nearness alone picked
+            // earlier frames of the same eye (rendered a few mm away, blind
+            // to the same strip) over the other eye, the view that sees round
+            // the near object when the eye moved toward it.
+            let origin = frame.renderPose.eyes[eye].pose.position
+            let move = target - origin, reach = simd_length(move)
             var views: [FillView] = []
             func score(_ source: PCVRDecodedFrame, _ sourceEye: Int) -> Float {
                 let age = Float(abs(frame.renderPose.displayTime - source.renderPose.displayTime))
-                return simd_distance(source.renderPose.eyes[sourceEye].pose.position, target) + age * fillAgePenalty
+                let position = source.renderPose.eyes[sourceEye].pose.position
+                let coverage = reach > 0.002 ? min(max(simd_dot(position - origin, move) / (reach * reach), 0), 1) : 1
+                return simd_distance(position, target) + age * fillAgePenalty + (1 - coverage) * fillCoveragePenalty
             }
             if otherEye { views.append(FillView(fill: nil, eye: 1 - eye, score: score(frame, 1 - eye))) }
             for (index, fill) in fills.enumerated()

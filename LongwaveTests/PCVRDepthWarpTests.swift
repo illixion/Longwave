@@ -528,32 +528,56 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertEqual(history.cyan, 0)
     }
 
-    /// Fill views go nearest to the target eye first, an older one losing a
-    /// near-tie, and never from another space epoch or the frame itself.
-    func testFillViewsAreRankedByDistanceToTheEye() throws {
+    /// An earlier frame with both eyes `x` metres right of the identity frame's.
+    private func shifted(_ x: Float, time: TimeInterval, epoch: UInt16 = 0) throws -> PCVRDecodedFrame {
+        let made = try gradientFrame(foveation: nil, pose: PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
+                                                                     position: [x, 0, 0]))
+        return PCVRDecodedFrame(streamEpoch: 0, frameNumber: 0, texture: made.texture,
+                                renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: epoch, displayTime: time,
+                                                           eyes: made.renderPose.eyes), arrivalTime: 0)
+    }
+
+    /// Fill views go to those that see what the eye's move uncovered: at or
+    /// past the target along the move, nearest first, an older one losing a
+    /// near tie; one behind the frame's own eye sees none of it. Never from
+    /// another space epoch or the frame itself.
+    func testFillViewsAreRankedByWhatTheySeeOfTheUncoveredStrip() throws {
         let frame = try gradientFrame(foveation: nil, pose: .identity)
-        func shifted(_ x: Float, time: TimeInterval, epoch: UInt16 = 0) throws -> PCVRDecodedFrame {
-            let made = try gradientFrame(foveation: nil, pose: PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
-                                                                         position: [x, 0, 0]))
-            return PCVRDecodedFrame(streamEpoch: 0, frameNumber: 0, texture: made.texture,
-                                    renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: epoch, displayTime: time,
-                                                               eyes: made.renderPose.eyes), arrivalTime: 0)
-        }
         let depth = try slabDepth(leftX: 0)
-        let near = try shifted(0.02, time: -0.05), older = try shifted(0.021, time: -0.1)
+        let near = try shifted(0.025, time: -0.05), older = try shifted(0.026, time: -0.2)
         let elsewhere = try shifted(0.03, time: -0.01, epoch: 1)
         let fills = [older, near, elsewhere].map { PCVRDepthWarper.FillSource(frame: $0, depth: depth) }
             + [PCVRDepthWarper.FillSource(frame: frame, depth: depth)]
         let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.03, 0, 0])
         let plan = PCVRDepthWarper.fillPlan(frame: frame, targets: frame.renderPose.eyes.map { $0.pose * move },
                                             fills: fills, otherEye: true)
-        // Left eye at 3 cm: `near`'s left eye (1 cm off), then `older`'s
-        // (0.9 cm off, but 50 ms older); the other eye (3.4 cm) is third.
-        XCTAssertEqual(plan[0].map(\.fill), [1, 0])
-        XCTAssertEqual(plan[0].map(\.eye), [0, 0])
-        // Right eye at 9.4 cm: `near`'s right eye (8.4 cm), then `older`'s.
+        // Left eye 3 cm toward the right one: `near`'s left eye (2.5 cm along,
+        // 0.5 cm off) sees five sixths of the strip and leads; the other eye
+        // (3.4 cm off, past the target, sees all of it) beats `older` (0.4 cm
+        // off, but 150 ms older).
+        XCTAssertEqual(plan[0].map(\.fill), [1, nil])
+        XCTAssertEqual(plan[0].map(\.eye), [0, 1])
+        // Right eye 3 cm away from the left one, which is behind it and sees
+        // nothing of the strip: `near`'s right eye, then `older`'s.
         XCTAssertEqual(plan[1].map(\.fill), [1, 0])
         XCTAssertEqual(plan[1].map(\.eye), [1, 1])
+    }
+
+    /// With each eye rendered outward of the real one (the overlay's render
+    /// margin), the earlier frames were rendered about where this one was,
+    /// blind to the strip the move back uncovers: the other eye, though
+    /// farther, fills first. By distance alone the earlier frame's own eye
+    /// (1.6 cm off) beat it (4.4 cm off).
+    func testTheOtherEyeBeatsANearerViewBlindToTheStrip() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try slabDepth(leftX: 0)
+        let earlier = try shifted(0.004, time: -0.02)
+        let move = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.02, 0, 0])
+        let plan = PCVRDepthWarper.fillPlan(frame: frame, targets: frame.renderPose.eyes.map { $0.pose * move },
+                                            fills: [PCVRDepthWarper.FillSource(frame: earlier, depth: depth)],
+                                            otherEye: true)
+        XCTAssertEqual(plan[0].map(\.fill), [nil, 0])
+        XCTAssertEqual(plan[0].map(\.eye), [1, 1])
     }
     /// A pitch past the frame's bottom edge: the band the frame never saw is
     /// filled from an earlier frame rendered from the pitched pose, each

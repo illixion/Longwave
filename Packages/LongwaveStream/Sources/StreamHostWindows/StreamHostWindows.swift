@@ -589,6 +589,22 @@ public final class GraphicsTexture: @unchecked Sendable {
 
     deinit { lw_texture_release(raw) }
 
+    /// Queue a GPU crop from a captured SBS picture into this eye-sized texture.
+    public func copy(from frame: CapturedFrame, x: Int, y: Int = 0) throws {
+        try copy(fromRaw: frame.texture, x: x, y: y)
+    }
+
+    public func copy(from source: GraphicsTexture, x: Int, y: Int = 0) throws {
+        try copy(fromRaw: source.raw, x: x, y: y)
+    }
+
+    private func copy(fromRaw source: UnsafeMutableRawPointer, x: Int, y: Int) throws {
+        guard x >= 0, y >= 0, x <= Int(UInt32.max), y <= Int(UInt32.max) else {
+            throw ShimError(operation: "lw_texture_copy_region", status: LW_E_INVALID_ARG, message: "invalid crop origin")
+        }
+        try check(lw_texture_copy_region(device.raw, source, UInt32(x), UInt32(y), raw), "lw_texture_copy_region")
+    }
+
     /// The pixels, tightly packed rows. Waits for the GPU: tests and diagnostics only.
     public func read() throws -> [UInt8] {
         let pitch = width * format.bytesPerPixel

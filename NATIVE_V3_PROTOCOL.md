@@ -1063,18 +1063,18 @@ diagnostics overlay), and `bye` with a reason.
   `hevc10bitHDR`, `av1`, `h264`, `ltrRecovery`, `rfiRecovery`, `nack`,
   `audioOpus`, `audioPCM24`, `audioMultichannel`, `spatialObjects`, `gamepad`,
   `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
-  `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`.
+  `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`, `separateEyeVideo`.
   Unknown capabilities are ignored, never fatal.
   *Encoding (2026-10-12):*
   - **Bit numbers** follow the list order: `windowStreams` = 0 through
-    `foveatedVideo` = 22, append-only.
+    `foveatedVideo` = 22, `separateEyeVideo` = 23, append-only.
   - **Wire form:** `byteCount u8 | bitmap`, where bit n of byte n/8 is
     capability n, up to 256 capabilities. Senders write the shortest bitmap.
     Receivers accept trailing zero bytes and unknown bits.
   - **Negotiation** takes the intersection, restricted to capabilities the
     build knows. It then drops any capability whose requirements didn't
     survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` and
-    `foveatedVideo` need `pcvr`.
+    `foveatedVideo` and `separateEyeVideo` need `pcvr`.
 - **Hello and hello-ack (2026-10-24)** (`StreamWire/Hello.swift`). These are
   the handshake payloads: v2's JSON `Hello` and `HelloAck`, now binary. Each has
   a fixed core followed by items (`type u8 | length u16 | value`, as in side
@@ -1193,9 +1193,12 @@ negotiated. Hands and controllers keep their existing paths for now.
   size stays 164 bytes; older hosts reject the newly defined flag, so update
   both host and client before enabling external exports.
 
-**Video.** One stream, both eyes side by side, HEVC Main10, 90–120 fps. Its
-`formatDescription` gives the layout, the per-eye render and wire sizes, and
-the foveation warp's parameter block. Side data on every frame:
+**Video.** One atomic stereo frame per stream, HEVC with its bit depth declared
+in the format, at the negotiated frame rate. By default both eyes share one
+side-by-side access unit. A consumer may offer `separateEyeVideo` (capability 23)
+to accept independently encoded eyes in the same frame. The host chooses that
+layout only when every viewer offers it. The format gives the layout, per-eye
+render and wire sizes, and foveation parameters. Side data on every frame:
 
 - `renderPose`: the pose sequence number it was rendered from, each eye's
   render pose and field of view, and the display time it was rendered for.
@@ -1209,10 +1212,19 @@ the foveation warp's parameter block. Side data on every frame:
 
 - **PCVR format block:**
   - layout u8 (side by side = 1: left eye in the left half, no gap, so the
-    picture width is exactly twice the per-eye wire width);
+    picture width is exactly twice the per-eye wire width); layout 2 means
+    separate access units, where the format's picture size is one wire eye;
   - per-eye render size and wire size (u16 × 4);
   - foveation epoch u32;
   - warp kind u8 and the warp's parameters.
+- **Separate-eye payload (layout 2).** `leftLength u32 | rightLength u32 |
+  left HEVC AU | right HEVC AU`, little-endian lengths, each nonzero and at most
+  4 MiB. The outer native frame still supplies one capture time, frame number
+  and render pose; the eyes cannot pair with different pose snapshots. Each
+  eye's IDR includes its parameter sets. The host crops on the GPU and encodes
+  each eye separately, so a combined width cannot exceed the encoder's limit.
+  A compressed-video consumer can forward either AU without locally decoding.
+  An encoded consumer may decline `foveatedVideo` to request full-density eyes.
 - **Warp kinds.** Kind 0 is none, where render size must equal wire size.
   Kind 1 is v3's axis-aligned centre-plus-edges warp (sampling equations
   below). Its parameters are four f32: centre size x and y (the

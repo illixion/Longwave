@@ -30,8 +30,11 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
     /// so the host may send warped eye images.
     public static let foveatedVideo = Capability(rawValue: 22)
 
+    /// Independently encoded eyes packed in one atomic native video frame.
+    public static let separateEyeVideo = Capability(rawValue: 23)
+
     /// Every capability this build implements the wire side of.
-    public static let known: [Capability] = (0...22).map { Capability(rawValue: $0) }
+    public static let known: [Capability] = (0...23).map { Capability(rawValue: $0) }
 
     /// Capabilities that are meaningless without others. Negotiation drops a
     /// capability whose requirements didn't survive.
@@ -40,6 +43,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         .pcvr: [.sideData],
         .gaze: [.pcvr],
         .foveatedVideo: [.pcvr],
+        .separateEyeVideo: [.pcvr],
     ]
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
@@ -48,7 +52,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         let names = ["windowStreams", "alphaVideo", "hevc422", "hevc10bitHDR", "av1", "h264", "ltrRecovery",
                      "rfiRecovery", "nack", "audioOpus", "audioPCM24", "audioMultichannel", "spatialObjects",
                      "gamepad", "relativePointer", "clipboard", "virtualDisplay", "localCursor", "sideData",
-                     "depthVideo", "pcvr", "gaze", "foveatedVideo"]
+                     "depthVideo", "pcvr", "gaze", "foveatedVideo", "separateEyeVideo"]
         return Int(rawValue) < names.count ? names[Int(rawValue)] : "capability(\(rawValue))"
     }
 }

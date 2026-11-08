@@ -36,6 +36,22 @@ final class FoveationWarpTests: XCTestCase {
         }
     }
 
+    func testCropKeepsEyesDistinctAndRejectsInvalidExtent() throws {
+        let device = try GraphicsDevice(for: nil)
+        let pixels: [UInt8] = [10,20,30,255, 40,50,60,255, 70,80,90,255, 100,110,120,255]
+        let source = try pixels.withUnsafeBytes {
+            try GraphicsTexture(device: device, width: 4, height: 1, format: .bgra8, pixels: $0)
+        }
+        let left = try GraphicsTexture(device: device, width: 2, height: 1, format: .bgra8)
+        let right = try GraphicsTexture(device: device, width: 2, height: 1, format: .bgra8)
+        try left.copy(from: source, x: 0)
+        try right.copy(from: source, x: 2)
+        XCTAssertEqual(try left.read(), Array(pixels.prefix(8)))
+        XCTAssertEqual(try right.read(), Array(pixels.suffix(8)))
+        XCTAssertThrowsError(try right.copy(from: source, x: 3))
+        XCTAssertThrowsError(try right.copy(from: source, x: -1))
+    }
+
     func testWarpSamplesWhereTheReferenceMapSays() throws {
         let device = try GraphicsDevice(for: nil)
         let warp = try FoveationWarpPass(device: device)

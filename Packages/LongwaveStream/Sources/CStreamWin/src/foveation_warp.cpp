@@ -298,6 +298,32 @@ extern "C" lw_status lw_texture_read(lw_device *device, void *texture, void *out
     });
 }
 
+extern "C" lw_status lw_texture_copy_region(lw_device *device, void *source, uint32_t source_x,
+                                             uint32_t source_y, void *destination) {
+    if (!device || !source || !destination || source == destination)
+        return lw::fail(LW_E_INVALID_ARG, "lw_texture_copy_region: bad argument");
+    return lw::guarded("lw_texture_copy_region", [&]() -> lw_status {
+        auto *src = static_cast<ID3D11Texture2D *>(source);
+        auto *dst = static_cast<ID3D11Texture2D *>(destination);
+        D3D11_TEXTURE2D_DESC a{}, b{};
+        src->GetDesc(&a); dst->GetDesc(&b);
+        if (a.Format != b.Format || a.SampleDesc.Count != 1 || b.SampleDesc.Count != 1 ||
+            source_x > a.Width || b.Width > a.Width - source_x ||
+            source_y > a.Height || b.Height > a.Height - source_y)
+            return lw::fail(LW_E_INVALID_ARG, "lw_texture_copy_region: incompatible extent or format");
+        winrt::com_ptr<ID3D11Device> srcDevice, dstDevice;
+        src->GetDevice(srcDevice.put()); dst->GetDevice(dstDevice.put());
+        if (srcDevice.get() != device->device.get() || dstDevice.get() != device->device.get())
+            return lw::fail(LW_E_INVALID_ARG, "lw_texture_copy_region: different device");
+        const D3D11_BOX box{source_x, source_y, 0, source_x + b.Width, source_y + b.Height, 1};
+        auto multithread = device->device.as<ID3D11Multithread>();
+        multithread->Enter();
+        struct Leave { ID3D11Multithread *m; ~Leave() { m->Leave(); } } leave{multithread.get()};
+        device->context->CopySubresourceRegion(dst, 0, 0, 0, 0, src, 0, &box);
+        return LW_OK;
+    });
+}
+
 extern "C" void lw_texture_release(void *texture) {
     if (texture) static_cast<ID3D11Texture2D *>(texture)->Release();
 }

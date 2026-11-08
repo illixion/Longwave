@@ -15,16 +15,17 @@ public enum PCVRProfile {
     /// What a PCVR client offers: `gaze` with a gaze source that has capture
     /// times, `depthVideo` when it reprojects by depth (it then subscribes to
     /// the eye stream's depth auxiliary, `depthStreamID`).
-    public static func clientCapabilities(gaze: Bool, depth: Bool) -> CapabilitySet {
+    public static func clientCapabilities(gaze: Bool, depth: Bool, separateEyes: Bool = false) -> CapabilitySet {
         var set = gaze ? gazeClientCapabilities : clientCapabilities
         if depth { set.insert(.depthVideo) }
+        if separateEyes { set.insert(.separateEyeVideo) }
         return set
     }
     /// What the PCVR host answers with. It accepts gaze and hands it to the
     /// frame source's host state, where the compositor reads it, warps the eye
     /// images for a viewer that negotiated `foveatedVideo`, and sends depth to
     /// one that negotiated `depthVideo`.
-    public static let hostCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze, .depthVideo])
+    public static let hostCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze, .depthVideo, .separateEyeVideo])
 
     /// The eye stream's depth auxiliary (section 4.8): both eyes' inverse depth
     /// side by side, each in its render frustum, unwarped, at `depthDivisor`

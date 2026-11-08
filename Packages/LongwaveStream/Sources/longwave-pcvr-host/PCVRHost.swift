@@ -180,6 +180,10 @@ final class PCVRHost: @unchecked Sendable {
 
     // Encoder thread only.
     private var encoder: VideoEncoder?
+    private enum EyePairError: Error { case unavailable, keyframeMismatch }
+    private var rightEncoder: VideoEncoder?
+    private var leftEyeTexture: GraphicsTexture?
+    private var rightEyeTexture: GraphicsTexture?
     private var appliedBitrate = 0
     private var parameterSets: [UInt8] = []
     private var layout: Layout?
@@ -232,7 +236,9 @@ final class PCVRHost: @unchecked Sendable {
         var renderEye: PixelSize
         var wireEye: PixelSize
         var warp: CentreEdgeWarp?
-        var pictureSize: PixelSize { PixelSize(width: wireEye.width * 2, height: wireEye.height) }
+        var stereoLayout: StereoLayout = .sideBySide
+        var wirePictureSize: PixelSize { PixelSize(width: wireEye.width * 2, height: wireEye.height) }
+        var pictureSize: PixelSize { stereoLayout == .separateAccessUnits ? wireEye : wirePictureSize }
     }
 
     // Statistics, under `lock`.
@@ -355,8 +361,8 @@ final class PCVRHost: @unchecked Sendable {
     }
 
     private func encode(_ frame: CapturedFrame) throws {
-        let (watched, requestedKey, bitrate, foveate, head, depthWanted) = lock.withLock {
-            () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool) in
+        let (watched, requestedKey, bitrate, foveate, head, depthWanted, separateEyes) = lock.withLock {
+            () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool, Bool) in
             let confirmed = viewers.values.filter(\.confirmed)
             let watched = !confirmed.isEmpty
             if !watched { framesWithoutViewers += 1 }
@@ -365,7 +371,8 @@ final class PCVRHost: @unchecked Sendable {
             let foveate = watched && options.foveation != .off
                 && confirmed.allSatisfy { $0.capabilities.contains(.foveatedVideo) }
                 && (options.foveation == .on || confirmed.allSatisfy { $0.capabilities.contains(.gaze) })
-            return (watched, force, targetBitrate, foveate, headPose?.pose, confirmed.contains { $0.depthSender != nil })
+            return (watched, force, targetBitrate, foveate, headPose?.pose, confirmed.contains { $0.depthSender != nil },
+                    watched && confirmed.allSatisfy { $0.capabilities.contains(.separateEyeVideo) })
         }
         guard watched else { return }
 
@@ -379,7 +386,8 @@ final class PCVRHost: @unchecked Sendable {
                 log.line("foveation unavailable, streaming unwarped: \(error)")
             }
         }
-        let wanted = Self.layout(renderEye: renderEye, warp: foveate && warp != nil ? options.warp : nil)
+        let wanted = Self.layout(renderEye: renderEye, warp: foveate && warp != nil ? options.warp : nil,
+                                 stereoLayout: separateEyes ? .separateAccessUnits : .sideBySide)
         if wanted != layout {
             layout = wanted
             foveationEpoch &+= 1
@@ -396,12 +404,12 @@ final class PCVRHost: @unchecked Sendable {
 
         let fps = Int(lock.withLock { pacedHz }.rounded())
         if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height)
-            || encoder?.parameters.fps != fps {
+            || encoder?.parameters.fps != fps || (separateEyes != (rightEncoder != nil)) {
             // A new rate too: the rate control's per-frame budget is bitrate / fps.
             if encoder != nil { forceKey = true }
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
                                                      fps: fps,
-                                                     bitrate: bitrate ?? options.startMbps * 1_000_000)
+                                                     bitrate: (bitrate ?? options.startMbps * 1_000_000) / (separateEyes ? 2 : 1))
             parameters.codec = .hevc
             parameters.asyncMode = true
             parameters.preset = options.preset
@@ -410,15 +418,18 @@ final class PCVRHost: @unchecked Sendable {
             parameters.spatialAQ = options.spatialAQ
             parameters.maxQP = options.maxQP
             encoder = nil
+            rightEncoder = nil
             encoder = try VideoEncoder(device: device, parameters: parameters)
-            appliedBitrate = parameters.bitrate
+            if separateEyes { rightEncoder = try VideoEncoder(device: device, parameters: parameters) }
+            appliedBitrate = parameters.bitrate * (separateEyes ? 2 : 1)
             parameterSets = []
             log.line("encoder: \(encoder!.info.name) HEVC \(picture.width)x\(picture.height) @ \(parameters.fps) Hz, \(parameters.bitrate / 1_000_000) Mbps, VBV \(parameters.vbvFrames) frame(s), P\(parameters.preset), "
                      + "multipass \(["off", "quarter", "full"][parameters.multiPass]), AQ \(parameters.spatialAQ), max QP \(parameters.maxQP)")
         }
         guard let encoder else { return }
         if let bitrate, abs(bitrate - appliedBitrate) * 100 > appliedBitrate * 3 {
-            try encoder.setBitrate(bitrate)
+            try encoder.setBitrate(bitrate / (separateEyes ? 2 : 1))
+            try rightEncoder?.setBitrate(bitrate / 2)
             appliedBitrate = bitrate
         }
 
@@ -455,8 +466,9 @@ final class PCVRHost: @unchecked Sendable {
                 lock.withLock { badSideData += 1 }
                 return
             }
-            if wireTexture?.width != Int(picture.width) || wireTexture?.height != Int(picture.height) {
-                wireTexture = try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height),
+            let wirePicture = wanted.wirePictureSize
+            if wireTexture?.width != Int(wirePicture.width) || wireTexture?.height != Int(wirePicture.height) {
+                wireTexture = try GraphicsTexture(device: device, width: Int(wirePicture.width), height: Int(wirePicture.height),
                                                   format: .bgra8)
             }
             guard let warp, let wireTexture else { return }
@@ -476,12 +488,20 @@ final class PCVRHost: @unchecked Sendable {
                 }
                 foveationStats.lastCentres = (left, right)
             }
-            encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
-                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+            if separateEyes {
+                encoded = try encodeEyePair(frame: frame, texture: wireTexture, eyeSize: wanted.wireEye, forceIDR: forceKey)
+            } else {
+                encoded = try encoder.encode(wireTexture, timestamp: frame.sequence, forceIDR: forceKey) {
+                    (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+                }
             }
         } else {
-            encoded = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
-                (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+            if separateEyes {
+                encoded = try encodeEyePair(frame: frame, texture: nil, eyeSize: wanted.wireEye, forceIDR: forceKey)
+            } else {
+                encoded = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
+                    (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+                }
             }
         }
         let (accessUnit, isIDR, milliseconds, qp) = encoded
@@ -492,7 +512,7 @@ final class PCVRHost: @unchecked Sendable {
         var colourNumbers: [UInt32: UInt32] = [:]
         var newFormat: FormatDescription?
         if isIDR {
-            let sets = Self.parameterSets(in: accessUnit)
+            let sets = Self.parameterSets(in: separateEyes ? Array(try StereoAccessUnits(decoding: accessUnit).left) : accessUnit)
             if !sets.isEmpty, sets != parameterSets || formatStale {
                 parameterSets = sets
                 formatStale = false
@@ -543,6 +563,39 @@ final class PCVRHost: @unchecked Sendable {
             if dropped { lock.withLock { depthStats.dropped += 1 } }
             depthReady.signal()
         }
+    }
+
+    /// Independent eye encoders avoid a combined image exceeding the encoder's
+    /// width limit. Crop on the GPU; preserve one atomic frame/pose on the wire.
+    private func encodeEyePair(frame: CapturedFrame, texture: GraphicsTexture?, eyeSize: PixelSize,
+                               forceIDR: Bool) throws -> (accessUnit: [UInt8], isIDR: Bool, milliseconds: Double, qp: Int) {
+        let width = Int(eyeSize.width), height = Int(eyeSize.height)
+        if leftEyeTexture?.width != width || leftEyeTexture?.height != height {
+            leftEyeTexture = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+            rightEyeTexture = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+        }
+        guard let leftEyeTexture, let rightEyeTexture, let encoder, let rightEncoder else {
+            throw EyePairError.unavailable
+        }
+        if let texture {
+            try leftEyeTexture.copy(from: texture, x: 0)
+            try rightEyeTexture.copy(from: texture, x: width)
+        } else {
+            try leftEyeTexture.copy(from: frame, x: 0)
+            try rightEyeTexture.copy(from: frame, x: width)
+        }
+        let left = try encoder.encode(leftEyeTexture, timestamp: frame.sequence, forceIDR: forceIDR) {
+            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+        }
+        let right = try rightEncoder.encode(rightEyeTexture, timestamp: frame.sequence, forceIDR: forceIDR) {
+            (Array($0.bytes), $0.isIDR, HostClock.milliseconds($0.doneTicks - $0.submitTicks), $0.averageQP)
+        }
+        // A reference discontinuity in either eye requires a new pair of IDRs.
+        guard left.1 == right.1 else {
+            throw EyePairError.keyframeMismatch
+        }
+        return (try StereoAccessUnits(left: left.0, right: right.0).encoded(), left.1,
+                left.2 + right.2, max(left.3, right.3))
     }
 
     /// The frame's depth into the next of the depth textures: queued on the GPU
@@ -779,17 +832,17 @@ final class PCVRHost: @unchecked Sendable {
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
             size: layout.pictureSize, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
             sideDataTypes: layout.warp == nil ? [.renderPose] : [.renderPose, .foveation],
-            pcvr: PCVRLayout(layout: .sideBySide, renderSize: layout.renderEye, wireSize: layout.wireEye,
+            pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.renderEye, wireSize: layout.wireEye,
                              foveation: FoveationParameters(epoch: epoch, warp: layout.warp.map { .centreEdge($0) } ?? .none)))
     }
 
     /// The layout for eyes rendered at `renderEye`: warped when `warp` is
     /// given and actually makes them smaller, as rendered otherwise.
-    private static func layout(renderEye: PixelSize, warp: CentreEdgeWarp?) -> Layout {
+    private static func layout(renderEye: PixelSize, warp: CentreEdgeWarp?, stereoLayout: StereoLayout = .sideBySide) -> Layout {
         if let warp, let wire = warp.wireSize(forRender: renderEye, alignment: PCVRProfile.wireAlignment), wire != renderEye {
-            return Layout(renderEye: renderEye, wireEye: wire, warp: warp)
+            return Layout(renderEye: renderEye, wireEye: wire, warp: warp, stereoLayout: stereoLayout)
         }
-        return Layout(renderEye: renderEye, wireEye: renderEye, warp: nil)
+        return Layout(renderEye: renderEye, wireEye: renderEye, warp: nil, stereoLayout: stereoLayout)
     }
 
     /// Each eye's warp centre for a frame: where fresh gaze lands in that eye's

@@ -135,6 +135,8 @@ public struct PixelSize: Sendable, Hashable {
 public enum StereoLayout: UInt8, Sendable, CaseIterable {
     /// Left eye in the left half, right eye in the right half, no gap.
     case sideBySide = 1
+    /// Each native frame holds a `StereoAccessUnits` pair; `size` is one eye.
+    case separateAccessUnits = 2
 }
 
 /// Shape of the axis-aligned foveation warp: a full-resolution centre
@@ -348,6 +350,8 @@ public struct FormatDescription: WireCodable, Hashable {
             guard Int(size.width) == 2 * Int(pcvr.wireSize.width), size.height == pcvr.wireSize.height else {
                 throw .inconsistent("format.pcvr.wireSize")
             }
+        case .separateAccessUnits:
+            guard size == pcvr.wireSize else { throw .inconsistent("format.pcvr.wireSize") }
         }
         guard sideDataTypes.contains(.renderPose) else { throw .missing("format.sideDataTypes.renderPose") }
         switch pcvr.foveation.warp {

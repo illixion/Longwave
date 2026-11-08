@@ -331,6 +331,10 @@ lw_status lw_texture_create(lw_device *device, int32_t width, int32_t height, ui
 /* Copies the pixels to `out` (rows `row_pitch` bytes apart), waiting for the
  * GPU: tests and diagnostics only. */
 lw_status lw_texture_read(lw_device *device, void *texture, void *out, uint32_t row_pitch);
+/* GPU-only crop into an equally formatted destination texture; no readback.
+ * The destination extent selects the crop size. Both textures use this device. */
+lw_status lw_texture_copy_region(lw_device *device, void *source, uint32_t source_x,
+                                 uint32_t source_y, void *destination);
 void lw_texture_release(void *texture);
 
 /* ---- Audio (WASAPI loopback) ---------------------------------------------- */

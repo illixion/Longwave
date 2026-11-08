@@ -152,11 +152,18 @@ nonisolated final class PCVRDepthStore: @unchecked Sendable {
 /// Format and frame metadata stay together: a presenter must use the echoed
 /// render pose, not arrival time or the most recent head pose.
 nonisolated protocol PCVREncodedVideoSink: AnyObject, Sendable {
+    var stereoLayout: StereoLayout { get }
+    var acceptsFoveatedVideo: Bool { get }
     func setFormat(_ format: FormatDescription) throws
     func receive(_ frame: AssembledVideoFrame, streamEpoch: UInt32,
                  renderPose: PCVRRenderPose) throws
     /// Retract queued pictures and format state on disconnect/reconnect.
     func reset()
+}
+
+extension PCVREncodedVideoSink {
+    var stereoLayout: StereoLayout { .sideBySide }
+    var acceptsFoveatedVideo: Bool { true }
 }
 
 /// Shell A's real frame source: the client half of Native v3's PCVR profile
@@ -263,7 +270,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             depthStore = nil
             depthDecoder = nil
         }
-        hello = ClientHello(capabilities: PCVRProfile.clientCapabilities(gaze: offersGaze, depth: wantsDepth),
+        var capabilities = PCVRProfile.clientCapabilities(gaze: offersGaze, depth: wantsDepth,
+                                                          separateEyes: encodedSink?.stereoLayout == .separateAccessUnits)
+        if encodedSink?.acceptsFoveatedVideo == false { capabilities.remove(.foveatedVideo) }
+        hello = ClientHello(capabilities: capabilities,
                             platform: .visionOS,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload, intent: [.screen],
                             deviceName: NativeV3.helloName(target.deviceName), software: NativeV3.softwareVersion)
@@ -640,6 +650,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             return
         }
         do {
+            if format.pcvr?.layout == .separateAccessUnits && encodedSink == nil {
+                throw PCVRReceiverError.resourceCreationFailed("separate eye video requires an encoded consumer")
+            }
             if let encodedSink { try encodedSink.setFormat(format) }
             else { try decoder?.setFormat(format) }
         } catch {

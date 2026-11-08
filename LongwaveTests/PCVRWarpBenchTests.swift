@@ -43,13 +43,21 @@ final class PCVRWarpBenchTests: XCTestCase {
         queue = try XCTUnwrap(device.makeCommandQueue())
         let library = try device.makeLibrary(source: Self.sceneSource, options: nil)
         pipeline = try device.makeComputePipelineState(function: try XCTUnwrap(library.makeFunction(name: "benchRender")))
+        depthPipeline = try device.makeComputePipelineState(function: try XCTUnwrap(library.makeFunction(name: "benchDepth")))
+        scorePipeline = try device.makeComputePipelineState(function: try XCTUnwrap(library.makeFunction(name: "benchScore")))
     }
+
+    private var depthPipeline: (any MTLComputePipelineState)!
+    /// The last `scoreGPU`'s pixels outside the source eye's frame: error sum and count.
+    private var lastOutside: (Double, Int) = (0, 0)
+    private var scorePipeline: (any MTLComputePipelineState)!
 
     // MARK: The room
 
     private struct Rendered {
         var colour: any MTLTexture   // both eyes side by side, rgba16Float
         var depth: [Float]           // eye-space distance along -z per pixel, 0 for the sky
+        var depthTexture: (any MTLTexture)? = nil   // the same, r32Float
     }
 
     private struct EyeUniforms {
@@ -61,14 +69,17 @@ final class PCVRWarpBenchTests: XCTestCase {
     }
 
     /// The eyes at `head`, each `margin` metres outward of the real eye (the overlay's render margin).
-    static func eyes(head: PCVRPose, margin: Float = 0) -> PCVRStereo<PCVREyeView> {
+    static func eyes(head: PCVRPose, margin: Float = 0, overscan: Float = 1) -> PCVRStereo<PCVREyeView> {
         let identity = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        let grow = max(overscan, 1) - 1
         return PCVRStereo(
-            left: PCVREyeView(pose: head * PCVRPose(rotation: identity, position: [-ipd / 2 - margin, 0, 0]), fieldOfView: left),
-            right: PCVREyeView(pose: head * PCVRPose(rotation: identity, position: [ipd / 2 + margin, 0, 0]), fieldOfView: right))
+            left: PCVREyeView(pose: head * PCVRPose(rotation: identity, position: [-ipd / 2 - margin, 0, 0]),
+                              fieldOfView: left.expanded(by: grow)),
+            right: PCVREyeView(pose: head * PCVRPose(rotation: identity, position: [ipd / 2 + margin, 0, 0]),
+                               fieldOfView: right.expanded(by: grow)))
     }
 
-    private func render(_ eyes: PCVRStereo<PCVREyeView>) throws -> Rendered {
+    private func render(_ eyes: PCVRStereo<PCVREyeView>, readDepth: Bool = true) throws -> Rendered {
         let w = Self.width, h = Self.height
         let colourDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 2 * w, height: h,
                                                                         mipmapped: false)
@@ -96,11 +107,238 @@ final class PCVRWarpBenchTests: XCTestCase {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+        guard readDepth else { return Rendered(colour: colour, depth: [], depthTexture: depth) }
         var values = [Float](repeating: 0, count: 2 * w * h)
         values.withUnsafeMutableBytes {
             depth.getBytes($0.baseAddress!, bytesPerRow: 2 * w * 4, from: MTLRegionMake2D(0, 0, 2 * w, h), mipmapLevel: 0)
         }
-        return Rendered(colour: colour, depth: values)
+        return Rendered(colour: colour, depth: values, depthTexture: depth)
+    }
+
+    /// `hostDepth` on the GPU: the nearest depth under each output texel, 8-bit inverse depth from 0.25 m.
+    private func hostDepthGPU(_ rendered: Rendered, divisor: Int) throws -> PCVRDepthMap {
+        let w = Self.width, h = Self.height, dw = w / divisor, dh = h / divisor
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: 2 * dw, height: dh, mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+        let out = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        var uniforms = SIMD4<UInt32>(UInt32(divisor), UInt32(w), UInt32(dw), 0)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(depthPipeline)
+        encoder.setTexture(try XCTUnwrap(rendered.depthTexture), index: 0)
+        encoder.setTexture(out, index: 1)
+        encoder.setBytes(&uniforms, length: 16, index: 0)
+        encoder.dispatchThreads(MTLSize(width: 2 * dw, height: dh, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return PCVRDepthMap(texture: out, near: 0.25, far: .infinity)
+    }
+
+    private struct ScoreUniforms {
+        var sourceFromTruth: simd_float4x4
+        var truthTangents: SIMD4<Float>
+        var sourceTangents: SIMD4<Float>
+        /// Only pixels inside this frustum count: what the display shows of the picture.
+        var displayTangents: SIMD4<Float>
+        var size: SIMD2<UInt32>
+        var border: UInt32
+        var pad: UInt32 = 0
+    }
+
+    /// The left eye's score on the GPU: per pixel the error and whether the source eye saw its point.
+    /// Returns (sum of error over seen pixels, seen count, sum over unseen, unseen count).
+    private func scoreGPU(warped: any MTLTexture, truth: Rendered, truthEye: PCVREyeView, source: Rendered,
+                          sourceEye: PCVREyeView, display: PCVRFieldOfView? = nil) throws -> (seen: Double, seenCount: Int, hidden: Double, hiddenCount: Int) {
+        let w = Self.width, h = Self.height
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: w, height: h, mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        let out = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        var uniforms = ScoreUniforms(sourceFromTruth: Self.matrix(sourceEye.pose).inverse * Self.matrix(truthEye.pose),
+                                     truthTangents: truthEye.fieldOfView.tangents, sourceTangents: sourceEye.fieldOfView.tangents,
+                                     displayTangents: (display ?? truthEye.fieldOfView).tangents,
+                                     size: SIMD2(UInt32(w), UInt32(h)), border: display == nil ? UInt32(w / 25) : 0)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(scorePipeline)
+        encoder.setTexture(warped, index: 0)
+        encoder.setTexture(truth.colour, index: 1)
+        encoder.setTexture(try XCTUnwrap(truth.depthTexture), index: 2)
+        encoder.setTexture(try XCTUnwrap(source.depthTexture), index: 3)
+        encoder.setTexture(out, index: 4)
+        encoder.setBytes(&uniforms, length: MemoryLayout<ScoreUniforms>.stride, index: 0)
+        encoder.dispatchThreads(MTLSize(width: w, height: h, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        var values = [Float](repeating: 0, count: w * h * 2)
+        values.withUnsafeMutableBytes {
+            out.getBytes($0.baseAddress!, bytesPerRow: w * 8, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+        }
+        var seen = 0.0, hidden = 0.0, outside = 0.0, seenCount = 0, hiddenCount = 0, outsideCount = 0
+        values.withUnsafeBufferPointer { p in
+            var i = 0
+            while i < p.count {
+                let e = p[i]
+                if e >= 0 {
+                    if p[i + 1] > 1.5 { outside += Double(e); outsideCount += 1 }
+                    else if p[i + 1] > 0.5 { hidden += Double(e); hiddenCount += 1 }
+                    else { seen += Double(e); seenCount += 1 }
+                }
+                i += 2
+            }
+        }
+        lastOutside = (outside, outsideCount)
+        return (seen, seenCount, hidden, hiddenCount)
+    }
+
+    // MARK: A recorded head motion
+
+    /// Measured head poses (`t`, position, quaternion), from the overlay's pose recorder.
+    private struct Trajectory {
+        var times: [Double]
+        var poses: [PCVRPose]
+
+        init(contentsOf url: URL) throws {
+            struct File: Decodable { var rows: [[Double]] }
+            let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: url))
+            times = file.rows.map { $0[0] }
+            poses = file.rows.map { r in
+                PCVRPose(rotation: simd_quatf(ix: Float(r[4]), iy: Float(r[5]), iz: Float(r[6]), r: Float(r[7])).normalized,
+                         position: SIMD3(Float(r[1]), Float(r[2]), Float(r[3])))
+            }
+        }
+
+        func pose(at t: Double) -> PCVRPose {
+            guard let j = times.firstIndex(where: { $0 >= t }), j > 0 else { return t <= times[0] ? poses[0] : poses[poses.count - 1] }
+            let a = Float((t - times[j - 1]) / max(times[j] - times[j - 1], 1e-6))
+            return PCVRPose(rotation: simd_slerp(poses[j - 1].rotation, poses[j].rotation, a),
+                            position: simd_mix(poses[j - 1].position, poses[j].position, SIMD3(repeating: a)))
+        }
+
+        /// The fastest the head turned in `range`, rad/s, sample to sample.
+        func peakRate(over range: ClosedRange<Double>) -> Float {
+            var peak: Float = 0
+            for i in 1..<times.count where range.contains(times[i]) {
+                let dt = Float(times[i] - times[i - 1])
+                guard dt > 1e-4 else { continue }
+                var dq = poses[i].rotation * poses[i - 1].rotation.inverse
+                if dq.real < 0 { dq = simd_quatf(ix: -dq.imag.x, iy: -dq.imag.y, iz: -dq.imag.z, r: -dq.real) }
+                peak = max(peak, dq.angle / dt)
+            }
+            return peak
+        }
+
+        /// The overlay's predictor (`V3HeadPredictor`, linear at `gain`): from the pose at `t`,
+        /// with the velocity over the 30 ms before it, `ahead` seconds on.
+        func predicted(at t: Double, ahead: Double, gain: Float) -> PCVRPose {
+            let now = pose(at: t), before = pose(at: t - 0.03)
+            let velocity = (now.position - before.position) / 0.03
+            var dq = now.rotation * before.rotation.inverse
+            if dq.real < 0 { dq = simd_quatf(ix: -dq.imag.x, iy: -dq.imag.y, iz: -dq.imag.z, r: -dq.real) }
+            let rate = dq.angle / 0.03
+            let rotation = rate > 1e-4 ? simd_quatf(angle: gain * rate * Float(ahead), axis: dq.axis) * now.rotation : now.rotation
+            return PCVRPose(rotation: rotation.normalized, position: now.position + gain * velocity * Float(ahead))
+        }
+    }
+
+    /// The recorded motion replayed against the room: each 60 fps frame rendered for the pose
+    /// predicted `span` ahead (the display lead plus the pose horizon), warped to where the head
+    /// really was then, with the overlay's history of earlier frames as fills or without it; scored
+    /// over the pixels no frame's eye saw. `TEST_RUNNER_PCVR_BENCH_TRAJECTORY=<file>` (rows of
+    /// t, x, y, z, qx, qy, qz, qw); `_SPANS_MS` (85: 120 Hz, 125: 60 Hz once warm), `_START`, `_SECONDS`.
+    func testRecordedMotion() throws {
+        guard let path = ProcessInfo.processInfo.environment["PCVR_BENCH_TRAJECTORY"], !path.isEmpty else {
+            throw XCTSkip("set TEST_RUNNER_PCVR_BENCH_TRAJECTORY to a recorded head motion")
+        }
+        let trajectory = try Trajectory(contentsOf: URL(fileURLWithPath: path))
+        let offset = Double(ProcessInfo.processInfo.environment["PCVR_BENCH_START"] ?? "") ?? 10
+        let start = trajectory.times[0] + offset
+        let seconds = Double(ProcessInfo.processInfo.environment["PCVR_BENCH_SECONDS"] ?? "1.5") ?? 1.5
+        let reference = trajectory.pose(at: start)
+        /// The recorded head, moved so that it starts at the bench's head pose.
+        func head(_ recorded: PCVRPose) -> PCVRPose { Self.head * (reference.inverse * recorded) }
+        let divisor = Int(ProcessInfo.processInfo.environment["PCVR_BENCH_DIVISOR"] ?? "1") ?? 1
+        let adaptive = Float(ProcessInfo.processInfo.environment["PCVR_BENCH_ADAPTIVE"] ?? "") ?? 0
+        let adaptiveCap = Float(ProcessInfo.processInfo.environment["PCVR_BENCH_ADAPTIVE_CAP"] ?? "") ?? 1.3
+        var report = ["span ms | history | frames | unseen pixels (share of the eye, mean error)"]
+        for jitterMm in Self.list("PCVR_BENCH_JITTER_MM", [0]) {
+        for overscan in Self.list("PCVR_BENCH_OVERSCANS", [1.02]) {
+        for spanMs in Self.list("PCVR_BENCH_SPANS_MS", [85, 125]) {
+            for useHistory in [false, true] {
+                var history: [PCVRDepthWarper.FillSource] = []
+                var seen = 0.0, seenCount = 0, hidden = 0.0, hiddenCount = 0, frames = 0
+                var outside = 0.0, outsideCount = 0
+                var overscanSum = 0.0
+                var worst: (share: Double, frame: Int) = (0, -1)
+                let span = Double(spanMs) / 1000
+                var k = 0
+                while Double(k) / 60 < seconds {
+                  // Each frame's textures (about 260 MB) freed before the next: without a
+                  // pool they piled up until the GPU stalled in a render (2026-11-08).
+                  try autoreleasepool {
+                    let sampled = start + Double(k) / 60
+                    let lead = spanMs > 100 ? 0.042 : 0.025
+                    var rendered = head(trajectory.predicted(at: sampled + lead, ahead: span - lead, gain: 0.5))
+                    // Viewpoint jitter: each frame rendered a little off the prediction, in turn
+                    // right, left, up, down, so recent frames have seen round near edges every way.
+                    let pattern: [SIMD3<Float>] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]]
+                    rendered.position += rendered.rotation.act(pattern[k % 4] * jitterMm / 1000)
+                    let actual = head(trajectory.pose(at: sampled + span))
+                    // The truth in the frame's own frustum: the warp writes the picture there (the
+                    // overlay's mesh covers that frustum, and the display shows part of it).
+                    // Adaptive (`PCVR_BENCH_ADAPTIVE` = gain): wider while the head has turned fast lately,
+                    // from the peak rate over the last half second, at least `overscan`.
+                    var frameOverscan = overscan
+                    if adaptive > 0 {
+                        let peak = trajectory.peakRate(over: (sampled + lead - 0.5)...(sampled + lead))
+                        frameOverscan = min(max(overscan, 1 + adaptive * peak * Float(span)), adaptiveCap)
+                    }
+                    overscanSum += Double(frameOverscan)
+                    let renderEyes = Self.eyes(head: rendered, overscan: frameOverscan), truthEyes = Self.eyes(head: actual, overscan: frameOverscan)
+                    let source = try render(renderEyes, readDepth: false)
+                    let truth = try render(truthEyes, readDepth: false)
+                    let depth = try hostDepthGPU(source, divisor: divisor)
+                    let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: UInt32(k + 1), texture: source.colour,
+                                                 renderPose: PCVRRenderPose(poseSequence: UInt32(k + 1), spaceEpoch: 0,
+                                                                            displayTime: sampled + span, eyes: renderEyes),
+                                                 arrivalTime: 0)
+                    let targets = PCVRStereo(left: truthEyes.left.pose, right: truthEyes.right.pose)
+                    let warped = try warp(frame, depth: depth, to: targets, fills: useHistory ? history : [])
+                    let s = try scoreGPU(warped: warped, truth: truth, truthEye: truthEyes.left, source: source, sourceEye: renderEyes.left,
+                                         display: Self.left)
+                    seen += s.seen; seenCount += s.seenCount; hidden += s.hidden; hiddenCount += s.hiddenCount
+                    outside += lastOutside.0; outsideCount += lastOutside.1
+                    let share = Double(s.hiddenCount) / Double(max(s.seenCount + s.hiddenCount + lastOutside.1, 1))
+                    if share > worst.share { worst = (share, k) }
+                    frames += 1
+                    // The presenter's history (`remember`): newest last, at most `fillFrames`, none
+                    // over 0.35 s older than the newest, no two within 5 mm.
+                    let position = renderEyes.left.pose.position
+                    history.removeAll { old in
+                        frame.renderPose.displayTime - old.frame.renderPose.displayTime > 0.35
+                            || simd_distance(old.frame.renderPose.eyes.left.pose.position, position) < 0.005
+                    }
+                    history.append(PCVRDepthWarper.FillSource(frame: frame, depth: depth))
+                    if history.count > PCVRDepthWarper.fillFrames { history.removeFirst(history.count - PCVRDepthWarper.fillFrames) }
+                  }
+                  k += 1
+                }
+                let total = Double(max(seenCount + hiddenCount + outsideCount, 1))
+                report.append(String(format: "jitter %.0f mm | overscan %.2f (mean %.3f) | %.0f | %@ | %d | behind objects %.3f %% err %.4f | past the frame edge %.3f %% err %.4f | visible err %.4f (worst frame %d: %.2f %% behind objects)",
+                                     jitterMm, overscan, overscanSum / Double(max(frames, 1)), spanMs, useHistory ? "on" : "off", frames,
+                                     Double(hiddenCount) / total * 100, hidden / Double(max(hiddenCount, 1)),
+                                     Double(outsideCount) / total * 100, outside / Double(max(outsideCount, 1)),
+                                     seen / Double(max(seenCount, 1)), worst.frame, worst.share * 100))
+            }
+        }
+        }
+        }
+        let text = report.joined(separator: "\n")
+        print(text)
+        try text.write(to: directory.appendingPathComponent("motion-report.txt"), atomically: true, encoding: .utf8)
     }
 
     static func matrix(_ pose: PCVRPose) -> simd_float4x4 {
@@ -206,18 +444,25 @@ final class PCVRWarpBenchTests: XCTestCase {
 
     private func warp(_ source: Rendered, depth: PCVRDepthMap?, from renderEyes: PCVRStereo<PCVREyeView>,
                       to targets: PCVRStereo<PCVRPose>, configure: (PCVRDepthWarper) -> Void = { _ in }) throws -> any MTLTexture {
-        let warper = try PCVRDepthWarper(device: device)
-        configure(warper)
         let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 1, texture: source.colour,
                                      renderPose: PCVRRenderPose(poseSequence: 1, spaceEpoch: 0, displayTime: 0, eyes: renderEyes),
                                      arrivalTime: 0)
+        return try warp(frame, depth: depth, to: targets, configure: configure)
+    }
+
+    private func warp(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, to targets: PCVRStereo<PCVRPose>,
+                      fills: [PCVRDepthWarper.FillSource] = [],
+                      configure: (PCVRDepthWarper) -> Void = { _ in }) throws -> any MTLTexture {
+        let warper = try PCVRDepthWarper(device: device)
+        configure(warper)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 2 * Self.width,
                                                                   height: Self.height, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .shared
         let out = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
-        try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: 50, into: out, commandBuffer: commandBuffer)
+        try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: 50, into: out, fills: fills,
+                          commandBuffer: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
@@ -514,6 +759,84 @@ final class PCVRWarpBenchTests: XCTestCase {
         Hit h = scene(o, normalize(r * e));
         float z = h.t < 1e29 ? h.t / length(e) : 0;
         depth.write(float4(z, 0, 0, 0), gid);
+    }
+
+    // The host's depth picture: the nearest depth under each output texel, 8-bit inverse depth from 0.25 m.
+    struct DepthUniforms { uint divisor; uint eyeWidth; uint outEyeWidth; uint pad; };
+    kernel void benchDepth(texture2d<float, access::read> depth [[texture(0)]],
+                           texture2d<float, access::write> out [[texture(1)]],
+                           constant DepthUniforms &u [[buffer(0)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= out.get_width() || gid.y >= out.get_height()) return;
+        uint eye = gid.x >= u.outEyeWidth ? 1 : 0;
+        uint x0 = eye * u.eyeWidth + (gid.x - eye * u.outEyeWidth) * u.divisor, y0 = gid.y * u.divisor;
+        float nearest = 1e30;
+        for (uint y = 0; y < u.divisor; y++) {
+            for (uint x = 0; x < u.divisor; x++) {
+                float z = depth.read(uint2(x0 + x, y0 + y)).r;
+                if (z > 0) nearest = min(nearest, z);
+            }
+        }
+        float v = nearest < 1e29 ? saturate(0.25 / nearest) : 0;
+        out.write(float4(round(v * 255) / 255, 0, 0, 0), gid);
+    }
+
+    // Per left-eye pixel: the warp's error against the truth, and whether the source eye saw its point.
+    struct ScoreUniforms {
+        float4x4 sourceFromTruth;
+        float4 truthTangents;
+        float4 sourceTangents;
+        float4 displayTangents;
+        uint2 size;
+        uint border;
+        uint pad;
+    };
+    kernel void benchScore(texture2d<float, access::read> warped [[texture(0)]],
+                           texture2d<float, access::read> truth [[texture(1)]],
+                           texture2d<float, access::read> truthDepth [[texture(2)]],
+                           texture2d<float, access::read> sourceDepth [[texture(3)]],
+                           texture2d<float, access::write> out [[texture(4)]],
+                           constant ScoreUniforms &u [[buffer(0)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= u.size.x || gid.y >= u.size.y) return;
+        if (gid.x < u.border || gid.y < u.border || gid.x >= u.size.x - u.border || gid.y >= u.size.y - u.border) {
+            out.write(float4(-1, 0, 0, 0), gid);
+            return;
+        }
+        {
+            float2 uv = (float2(gid) + 0.5) / float2(u.size);
+            float4 t = u.truthTangents, d = u.displayTangents;
+            float tx = t.x + uv.x * (t.y - t.x), ty = t.z - uv.y * (t.z - t.w);
+            if (tx < d.x || tx > d.y || ty > d.z || ty < d.w) { out.write(float4(-1, 0, 0, 0), gid); return; }
+        }
+        float3 a = warped.read(gid).rgb, b = truth.read(gid).rgb;
+        float e = (abs(a.x - b.x) + abs(a.y - b.y) + abs(a.z - b.z)) / 3;
+        float z = truthDepth.read(gid).r;
+        float hidden = 0;
+        if (z > 0) {
+            float2 uv = (float2(gid) + 0.5) / float2(u.size);
+            float4 t = u.truthTangents, s = u.sourceTangents;
+            float4 q = u.sourceFromTruth * float4((t.x + uv.x * (t.y - t.x)) * z, (t.z - uv.y * (t.z - t.w)) * z, -z, 1);
+            float zs = -q.z;
+            if (zs <= 0.01) hidden = 2;
+            else {
+                float su = (q.x / zs - s.x) / (s.y - s.x), sv = (s.z - q.y / zs) / (s.z - s.w);
+                if (su < 0 || su >= 1 || sv < 0 || sv >= 1) hidden = 2;
+                else {
+                    int sx = int(su * float(u.size.x)), sy = int(sv * float(u.size.y));
+                    bool seen = false;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            uint2 c = uint2(clamp(sx + dx, 0, int(u.size.x) - 1), clamp(sy + dy, 0, int(u.size.y) - 1));
+                            float d = sourceDepth.read(c).r;
+                            if (d > 0 && abs(d - zs) < 0.03 * zs) seen = true;
+                        }
+                    }
+                    hidden = seen ? 0 : 1;
+                }
+            }
+        }
+        out.write(float4(e, hidden, 0, 0), gid);
     }
     """
 }

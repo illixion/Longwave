@@ -149,6 +149,18 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// ten at 60 Hz (headset, 2026-11-08).
     var fillMaxSteps = 16
     var fillStepTexels: Float = 2
+    /// The most of the eye's move since the frame was rendered that is
+    /// corrected per pixel by depth, metres; the rest is corrected for the
+    /// plane at the warp's `planeDistance` (`uniforms`). Per-pixel depth gets
+    /// near against far right, but every centimetre of the prediction's miss
+    /// uncovers a strip beside every near edge (a trail on head shakes,
+    /// 60-125 ms spans); a plane opens no holes but leaves everything off its
+    /// depth swimming by the rest. Infinity: all by depth.
+    var depthShiftLimit: Float {
+        get { Self.depthShiftLimitNow }
+        set { Self.depthShiftLimitNow = newValue }
+    }
+    nonisolated(unsafe) static var depthShiftLimitNow: Float = .infinity
 
     init(device: any MTLDevice) throws {
         self.device = device
@@ -476,9 +488,23 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         let depthTexture = depth?.texture ?? noDepth
         let decode = depth?.decode ?? .zero
         let plane = max(planeDistance, 0.01)
+        // The translation corrected per pixel by depth is at most
+        // `depthShiftLimit`; the rest is corrected for the plane at
+        // `planeDistance` (the gaze's depth), which opens no holes. Each
+        // output ray from the target is aimed at where it meets that plane,
+        // from the nearer origin: origin t - e, direction R d + e / plane, the
+        // excess e folded into the matrix's third column since d.z is -1.
+        var rotation = simd_float3x3(sourceFromTarget.rotation)
+        var translation = sourceFromTarget.position
+        let shift = simd_length(translation)
+        if depth != nil, shift > depthShiftLimit {
+            let excess = translation * (1 - depthShiftLimit / shift)
+            translation -= excess
+            rotation.columns.2 -= excess / plane
+        }
         return Uniforms(
-            rotation: simd_float3x3(sourceFromTarget.rotation),
-            translation: SIMD4(sourceFromTarget.position, 0),
+            rotation: rotation,
+            translation: SIMD4(translation, 0),
             sourceTangents: source.fieldOfView.tangents,
             targetTangents: targetTangents,
             wireX: wire.x, wireY: wire.y,

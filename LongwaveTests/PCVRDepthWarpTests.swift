@@ -598,5 +598,24 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertGreaterThan(checked, 500)
         XCTAssertLessThan(worst, 1.5, "worst fill error in texels")
     }
+    /// With no shift corrected by depth, a scene with a near block warps as
+    /// the gaze plane's homography, depth or not: rays leave the source eye
+    /// itself, so nothing it saw can be uncovered.
+    func testWithNoDepthShiftTheWarpIsThePlaneHomographyAndOpensNoHoles() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try depthMap { x, y in (16..<32).contains(x) && (8..<24).contains(y) ? 0.5 : 2 }
+        let move = PCVRPose(rotation: simd_quatf(angle: 0.03, axis: [0, 1, 0]), position: [0.04, 0.01, 0])
+        let targets = frame.renderPose.eyes.map { $0.pose * move }
+        let saved = PCVRDepthWarper.depthShiftLimitNow
+        defer { PCVRDepthWarper.depthShiftLimitNow = saved }
+        PCVRDepthWarper.depthShiftLimitNow = 0
+        let out = try warp(frame, depth: depth, targets: targets, planeDistance: 2)
+        for eye in 0..<2 {
+            let display = PCVREyeView(pose: targets[eye], fieldOfView: Self.fov)
+            let h = PCVRReprojection.sourceFromDisplay(render: frame.renderPose.eyes[eye], display: display,
+                                                       mode: .rotationAndTranslation(planeDistance: 2))
+            assertMatches(out, eye: eye, homography: h, texels: 0.6)
+        }
+    }
 }
 #endif

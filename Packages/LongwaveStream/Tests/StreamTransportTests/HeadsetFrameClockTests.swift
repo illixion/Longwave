@@ -10,6 +10,8 @@ import Testing
         var slots: [Int64] = []
         /// The display time of the latest pose at each frame.
         var poseDisplays: [Int64] = []
+        /// Each frame's wake minus the arrival of its slot's pose (nil: that pose had not arrived).
+        var wakeAfterArrival: [Int64?] = []
         var clock: HeadsetFrameClock
     }
 
@@ -19,7 +21,8 @@ import Testing
     ///   - drift: the host crystal's error (1.001 runs 0.1% fast).
     ///   - jitter: uplink jitter, nanoseconds, deterministic pseudo-random in 0..<jitter.
     static func simulate(headsetHz: Double, streamHz: Double, drift: Double, jitter: Int64, seconds: Double,
-                         startPhase: Int64 = 3_000_000, horizonTicks: (Int64) -> Int64 = { _ in 6 }) -> Run {
+                         startPhase: Int64 = 3_000_000, horizonTicks: (Int64) -> Int64 = { _ in 6 },
+                         margin: ((HeadsetFrameClock) -> Int64?)? = nil) -> Run {
         let tick = Int64(1e9 / headsetHz)
         let interval = Int64(1e9 / streamHz)
         var clock = HeadsetFrameClock(streamInterval: interval)
@@ -39,6 +42,8 @@ import Testing
             n += 1
         }
         poses.sort { $0.arrival < $1.arrival }
+        var arrivals: [Int64: Int64] = [:]
+        for pose in poses where arrivals[pose.display] == nil { arrivals[pose.display] = pose.arrival }
         var delivered = 0
         var next = startPhase
         let hostInterval = Int64(Double(interval) / drift)
@@ -47,8 +52,10 @@ import Testing
                 clock.pose(displayTime: poses[delivered].display, arrival: poses[delivered].arrival)
                 delivered += 1
             }
+            if let margin { clock.wakeMargin = margin(clock) }
             if let frame = clock.frame(now: next) {
                 run.slots.append(frame.displayTime)
+                run.wakeAfterArrival.append(arrivals[frame.displayTime].flatMap { $0 <= next ? next - $0 : nil })
                 run.poseDisplays.append(poses[delivered - 1].display)
                 let correction = frame.phaseError.map { max(min($0 / 10, interval / 8), -interval / 8) } ?? 0
                 next += hostInterval - correction
@@ -134,6 +141,48 @@ import Testing
         }
         let mismatched = settled.filter { $0.element.0 != $0.element.1 }.count
         #expect(mismatched <= 3, "\(mismatched) of \(settled.count)")
+    }
+
+    /// With a margin from the measured jitter (as the host's `--wake-margin
+    /// auto` sets it), the wake comes a couple of milliseconds after its
+    /// slot's pose instead of half a tick (4.2 ms at 120 Hz, 8.3 at 60), and
+    /// the cadence holds.
+    @Test func aMeasuredMarginWakesSoonerAfterThePose() {
+        let tick = Int64(1e9 / 60)
+        let run = Self.simulate(headsetHz: 60, streamHz: 60, drift: 1.0005, jitter: 1_000_000, seconds: 20,
+                                margin: { clock in clock.arrivalSpread.map { $0 + 1_000_000 } })
+        #expect(Self.spacings(run, tick: tick, skip: 120).keys.sorted() == [1])
+        let settled = run.wakeAfterArrival.dropFirst(600)
+        let missed = settled.filter { $0 == nil }.count
+        let waits = settled.compactMap { $0 }.map { Double($0) / 1e6 }.sorted()
+        #expect(missed <= settled.count / 50, "\(missed) of \(settled.count) woke before their pose")
+        let median = waits[waits.count / 2]
+        #expect(median > 0.8 && median < 2.5, "median wait \(median) ms after the pose")
+        #expect(run.clock.arrivalSpread.map { $0 < 1_100_000 } == true)
+    }
+
+    @Test func halfATickAfterThePoseWithoutAMargin() {
+        let run = Self.simulate(headsetHz: 60, streamHz: 60, drift: 1.0005, jitter: 1_000_000, seconds: 20)
+        let waits = run.wakeAfterArrival.dropFirst(600).compactMap { $0 }.map { Double($0) / 1e6 }.sorted()
+        let median = waits[waits.count / 2]
+        #expect(median > 7.5 && median < 9, "median wait \(median) ms after the pose")
+    }
+
+    @Test func theStreamRateIsTheDisplaysOrHalf() {
+        // 9.7 ms encodes: 60 on 60, half on 90 and 120.
+        #expect(StreamRate.choose(display: 60, encodeMilliseconds: 9.7, current: nil) == 60)
+        #expect(StreamRate.choose(display: 90, encodeMilliseconds: 9.7, current: 90) == 45)
+        #expect(StreamRate.choose(display: 120, encodeMilliseconds: 9.7, current: 60) == 60)
+        // Hysteresis: 6 ms holds 120 once there (under 85% of 8.3 ms) but
+        // does not step up to it (over 70%).
+        #expect(StreamRate.choose(display: 120, encodeMilliseconds: 6.5, current: 120) == 120)
+        #expect(StreamRate.choose(display: 120, encodeMilliseconds: 6.5, current: 60) == 60)
+        #expect(StreamRate.choose(display: 120, encodeMilliseconds: 5.5, current: 60) == 120)
+        // No measure yet: half, unless already at the display's rate.
+        #expect(StreamRate.choose(display: 90, encodeMilliseconds: nil, current: nil) == 45)
+        #expect(StreamRate.choose(display: 90, encodeMilliseconds: nil, current: 90) == 90)
+        // A ceiling below the display's rate: half.
+        #expect(StreamRate.choose(display: 120, encodeMilliseconds: 3, current: 120, ceiling: 100) == 60)
     }
 
     @Test func noPeriodYetUsesTheLatestPose() {

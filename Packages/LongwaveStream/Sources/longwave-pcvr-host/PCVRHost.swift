@@ -21,12 +21,24 @@ struct HostOptions {
     var maxMbps = 150
     /// The rate estimate's starting point.
     var startMbps = 30
-    /// The frame clock's rate, and whether it follows the headset's display:
-    /// `--refresh auto` (the default) paces at the rate the headset's poses
-    /// arrive, one per display tick, so a producer may render as often as the
-    /// headset can show and no more; a number fixes it.
+    /// The frame clock's rate, and whether it follows the headset's display
+    /// (its rate measured from the poses, which arrive one per display tick):
+    /// `--refresh auto` (the default) paces at that rate when the encoder
+    /// has the headroom, else at half of it (`StreamRate`), so a frame is
+    /// always held a whole number of display slots, as the display drops for
+    /// heat or the Mac Virtual Display; `--refresh display` always at the
+    /// display's own rate; a number fixes it.
     var refreshHz = 90.0
     var followsHeadset = true
+    var halvesForEncoder = true
+    /// The most the frame clock follows the headset up to (`--max-stream-hz`).
+    var maxStreamHz = Double.infinity
+    /// How long after a pose usually arrives the frame clock wakes
+    /// (`HeadsetFrameClock.wakeMargin`): `auto` (the default) the uplink's
+    /// measured jitter plus a millisecond, `half` half a display period, or
+    /// a fixed number of milliseconds.
+    enum WakeMargin: Equatable { case auto, half, milliseconds(Double) }
+    var wakeMargin = WakeMargin.auto
     /// Lock the frame clock's phase to the headset's display (`HeadsetFrameClock`):
     /// each frame for the display slot one frame interval after the last, the
     /// wake corrected toward its pose's arrival. Off (`--frame-lock off`), the
@@ -156,6 +168,8 @@ final class PCVRHost: @unchecked Sendable {
     private var frameClock = HeadsetFrameClock(streamInterval: 11_111_111)
     /// Frame-lock counters since the last statistics line.
     private var frameLockStats = (frames: 0, corrections: 0.0, maxCorrection: 0.0)
+    /// The encode thread's time per frame (warp, encode, send), ms, the most recent last (under `lock`).
+    private var encodeTimes: [Double] = []
     private var lastDeviceReload: UInt64 = 0
 
     // Frames waiting for the encoder: only the newest is kept.
@@ -326,7 +340,13 @@ final class PCVRHost: @unchecked Sendable {
                 return pendingFrame
             }) else { continue }
             do {
+                let started = HostClock.now()
                 try encode(frame)
+                let took = HostClock.milliseconds(HostClock.now() - started)
+                lock.withLock {
+                    encodeTimes.append(took)
+                    if encodeTimes.count > 240 { encodeTimes.removeFirst(encodeTimes.count - 240) }
+                }
             } catch {
                 log.line("encode failed: \(error)")
                 encoder = nil
@@ -374,9 +394,13 @@ final class PCVRHost: @unchecked Sendable {
         }
         let picture = wanted.pictureSize
 
-        if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height) {
+        let fps = Int(lock.withLock { pacedHz }.rounded())
+        if encoder == nil || encoder?.parameters.width != Int(picture.width) || encoder?.parameters.height != Int(picture.height)
+            || encoder?.parameters.fps != fps {
+            // A new rate too: the rate control's per-frame budget is bitrate / fps.
+            if encoder != nil { forceKey = true }
             var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
-                                                     fps: Int(lock.withLock { pacedHz }.rounded()),
+                                                     fps: fps,
                                                      bitrate: bitrate ?? options.startMbps * 1_000_000)
             parameters.codec = .hevc
             parameters.asyncMode = true
@@ -829,13 +853,24 @@ final class PCVRHost: @unchecked Sendable {
             if options.followsHeadset, next - measuredSince >= 2 * HostClock.ticksPerSecond {
                 let seconds = Double(next - measuredSince) / Double(HostClock.ticksPerSecond)
                 measuredSince = next
-                let (poses, current) = lock.withLock { () -> (Int, Double) in
+                let (poses, current, encodes) = lock.withLock { () -> (Int, Double, [Double]) in
                     defer { posesForRate = 0 }
-                    return (posesForRate, pacedHz)
+                    return (posesForRate, pacedHz, encodeTimes)
                 }
-                if let rate = Self.displayRate(forPoseRate: Double(poses) / seconds), rate != current {
-                    lock.withLock { pacedHz = rate }
-                    log.line("frame clock: \(Int(rate)) Hz, following the headset (\(String(format: "%.1f", Double(poses) / seconds)) poses/s)")
+                // The encoder's 95th percentile over the last second or two.
+                let recent = encodes.suffix(Int(current * 2)).sorted()
+                let encodeP95 = recent.count >= 20 ? recent[(recent.count - 1) * 95 / 100] : nil
+                if let display = Self.displayRate(forPoseRate: Double(poses) / seconds) {
+                    let rate = options.halvesForEncoder
+                        ? StreamRate.choose(display: display, encodeMilliseconds: encodeP95, current: current,
+                                            ceiling: options.maxStreamHz)
+                        : min(display, options.maxStreamHz)
+                    if rate != current {
+                        lock.withLock { pacedHz = rate }
+                        log.line("frame clock: \(String(format: "%g", rate)) Hz for the headset's \(Int(display)) Hz"
+                                 + " (\(String(format: "%.1f", Double(poses) / seconds)) poses/s"
+                                 + (encodeP95.map { String(format: ", encode p95 %.1f ms", $0) } ?? "") + ")")
+                    }
                 }
             }
             let wait = HostClock.milliseconds(next - HostClock.now())
@@ -847,6 +882,16 @@ final class PCVRHost: @unchecked Sendable {
             let woke = Self.now()
             let (posed, frame) = lock.withLock { () -> ((UInt32, HeadPose)?, HeadsetFrameClock.Frame?) in
                 frameClock.streamInterval = Int64(1e9 / hz)
+                switch options.wakeMargin {
+                case .half: frameClock.wakeMargin = nil
+                case .milliseconds(let ms): frameClock.wakeMargin = Int64(ms * 1e6)
+                case .auto:
+                    // At least 1.5 ms, at most half a period (the old target).
+                    frameClock.wakeMargin = frameClock.arrivalSpread.map { spread in
+                        let half = (frameClock.headsetPeriod ?? Int64(1e9 / hz)) / 2
+                        return min(max(spread + 1_000_000, 1_500_000), half)
+                    }
+                }
                 return (headPose, options.locksToHeadset ? frameClock.frame(now: Int64(clamping: woke)) : nil)
             }
             var correction: Int64 = 0
@@ -1138,9 +1183,11 @@ final class PCVRHost: @unchecked Sendable {
             let c = frameClock, f = frameLockStats
             frameLockStats = (0, 0, 0)
             log.line(String(format: "  frame lock: headset %@, %d locked, %d early, %d retargeted in total; "
-                                + "correction %.3f ms avg, error %.2f ms max",
+                                + "correction %.3f ms avg, error %.2f ms max; wake %@ after the pose (arrival spread %@)",
                             c.headsetPeriod.map { String(format: "%.2f Hz", 1e9 / Double($0)) } ?? "unknown",
-                            c.locked, c.early, c.retargets, f.frames > 0 ? f.corrections / Double(f.frames) : 0, f.maxCorrection))
+                            c.locked, c.early, c.retargets, f.frames > 0 ? f.corrections / Double(f.frames) : 0, f.maxCorrection,
+                            c.wakeMargin.map { String(format: "%.1f ms", Double($0) / 1e6) } ?? "half a period",
+                            c.arrivalSpread.map { String(format: "%.1f ms", Double($0) / 1e6) } ?? "unknown"))
         }
         if let layout = foveationStats.layout {
             let f = foveationStats

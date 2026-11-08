@@ -14,6 +14,14 @@
 // from halfway between the arrival of that slot's pose and the next tick's,
 // where the uplink's jitter is least likely to cross it.
 //
+// Where in that gap: half a tick after the pose, by default, or `wakeMargin`
+// after it arrives as the uplink usually delivers it (`arrivalSpread` says how
+// much later than that it can be). Half a tick is 8 ms at 60 Hz, and grows as
+// the display slows; the uplink's jitter, measured, was under 2 ms
+// (2026-11-08). Every millisecond the wake comes sooner is one off the time
+// from pose to photon, and a whole tick of it can come off the headset's
+// prediction horizon.
+//
 // Units: nanoseconds on the host's monotonic clock, for display times and
 // arrivals alike.
 
@@ -30,6 +38,17 @@ public struct HeadsetFrameClock: Sendable {
     /// Frames started one tick before their slot's pose arrived.
     public private(set) var early = 0
     public private(set) var locked = 0
+    /// How long after its slot's pose usually arrives the host aims to wake;
+    /// nil, or until arrivals are measured: half a period after the pose.
+    /// Kept under three quarters of a period.
+    public var wakeMargin: Int64?
+    /// How much later than usual (the 5th percentile of recent arrivals,
+    /// against their display times) a pose arrives at the 95th percentile;
+    /// nil until 16 are in since the horizon last changed.
+    public private(set) var arrivalSpread: Int64?
+    private var latencies: [Int64] = []
+    /// The usual arrival, as a pose's arrival minus its display time.
+    private var baseLatency: Int64?
 
     private var lastPose: (display: Int64, arrival: Int64)?
     private var gaps: [Int64] = []
@@ -62,6 +81,29 @@ public struct HeadsetFrameClock: Sendable {
             }
         }
         lastPose = (displayTime, arrival)
+        // Arrival against display time: constant but for the uplink's jitter,
+        // until the horizon steps (a whole period), which starts it over.
+        let latency = arrival - displayTime
+        if let last = latencies.last, abs(latency - last) > (headsetPeriod ?? 8_000_000) / 2 {
+            latencies.removeAll()
+            baseLatency = nil
+            arrivalSpread = nil
+        }
+        latencies.append(latency)
+        if latencies.count > 64 { latencies.removeFirst(latencies.count - 64) }
+        if latencies.count >= 16 {
+            let sorted = latencies.sorted()
+            let base = sorted[sorted.count / 20]
+            baseLatency = base
+            arrivalSpread = sorted[(sorted.count - 1) * 95 / 100] - base
+        }
+    }
+
+    /// How late `now` is for a wake aimed at `wakeMargin` after the usual
+    /// arrival of the pose for `display`; nil without a margin or a measure.
+    private func marginError(now: Int64, display: Int64, period: Int64) -> Int64? {
+        guard let margin = wakeMargin, let base = baseLatency else { return nil }
+        return now - (display + base) - min(max(margin, 0), period * 3 / 4)
     }
 
     /// The frame the host starts at `now`; nil without a pose yet.
@@ -78,18 +120,19 @@ public struct HeadsetFrameClock: Sendable {
         var next = planned
         if ticks == 0 {
             locked += 1
-            error = (now - pose.arrival) - period / 2
+            error = marginError(now: now, display: pose.display, period: period) ?? (now - pose.arrival) - period / 2
         } else if ticks < 0 {
             // Behind: the latest pose is already for a later slot. Render it for
             // its own slot and plan from there.
             retargets += 1
             display = pose.display
             next = pose.display
-            error = (now - pose.arrival) - period / 2
+            error = marginError(now: now, display: pose.display, period: period) ?? (now - pose.arrival) - period / 2
         } else if ticks == 1 {
             // One tick early: its pose is due one period after the latest's.
             early += 1
-            error = (now - (pose.arrival + period)) - period / 2
+            error = marginError(now: now, display: display, period: period)
+                ?? (now - (pose.arrival + period)) - period / 2
         } else {
             // Two or more ticks ahead of every pose: the headset's horizon
             // stepped down (or the uplink is stalled). Waiting it out would
@@ -108,5 +151,34 @@ public struct HeadsetFrameClock: Sendable {
     /// `value / unit` to the nearest whole number.
     static func rounded(_ value: Int64, _ unit: Int64) -> Int64 {
         value >= 0 ? (value + unit / 2) / unit : -((-value + unit / 2) / unit)
+    }
+}
+
+/// The rate the host renders at for a headset display rate: the display's
+/// own, when the encoder has the headroom for it, else half of it, so every
+/// frame is held a whole number of display slots (a third rate, 60 on 90, is
+/// a 3:2 cadence and judders by construction). The headset re-places the
+/// picture by head pose every display slot either way, so only the scene's
+/// own animation runs at the lower rate.
+public enum StreamRate {
+    /// The encoder's 95th-percentile time per frame may fill this much of a
+    /// period at the display's own rate, stepping down past `stepDown` and
+    /// back up only under `stepUp`.
+    public static let stepDown = 0.85
+    public static let stepUp = 0.7
+
+    /// - Parameters:
+    ///   - display: the headset's display rate, Hz.
+    ///   - encodeMilliseconds: the encoder's 95th percentile per frame, recently; nil if unknown.
+    ///   - current: the rate now.
+    ///   - ceiling: the most the host may run at (the headset's decoder, a setting).
+    public static func choose(display: Double, encodeMilliseconds: Double?, current: Double?,
+                              ceiling: Double = .infinity) -> Double {
+        let full = display, half = display / 2
+        guard full <= ceiling else { return half }
+        guard let encode = encodeMilliseconds else { return current.map { $0 == full ? full : half } ?? half }
+        let period = 1000 / full
+        if current == full { return encode <= period * stepDown ? full : half }
+        return encode <= period * stepUp ? full : half
     }
 }

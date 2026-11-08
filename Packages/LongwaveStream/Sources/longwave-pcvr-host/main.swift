@@ -1,7 +1,8 @@
 // longwave-pcvr-host: the v3 PCVR host (NATIVE_V3_PROTOCOL.md section 4.7).
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
-//                      [--start-mbps 30] [--refresh auto|Hz] [--frame-lock on|off] [--log FILE] [--seconds N]
+//                      [--start-mbps 30] [--refresh auto|display|Hz] [--max-stream-hz Hz] [--frame-lock on|off]
+//                      [--wake-margin auto|half|ms] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
 //                      [--foveation-ratio 3.5] [--depth off|auto|stereo]
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
@@ -40,13 +41,14 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
         case "--start-mbps": options.startMbps = Int(value(argument)) ?? options.startMbps
         case "--refresh":
             let rate = value(argument)
-            if rate == "auto" {
+            if rate == "auto" || rate == "display" {
                 options.followsHeadset = true
+                options.halvesForEncoder = rate == "auto"
             } else if let hz = Double(rate), hz >= 30, hz <= 240 {
                 options.refreshHz = hz
                 options.followsHeadset = false
             } else {
-                print("--refresh takes auto or a rate in Hz (30-240)")
+                print("--refresh takes auto (the display's rate or half, as the encoder keeps up), display, or a rate in Hz (30-240)")
                 exit(2)
             }
         case "--frame-lock":
@@ -55,6 +57,24 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
             case "off": options.locksToHeadset = false
             default:
                 print("--frame-lock takes on or off")
+                exit(2)
+            }
+        case "--max-stream-hz":
+            guard let hz = Double(value(argument)), hz >= 30 else {
+                print("--max-stream-hz takes a rate in Hz, at least 30")
+                exit(2)
+            }
+            options.maxStreamHz = hz
+        case "--wake-margin":
+            let margin = value(argument)
+            if margin == "auto" {
+                options.wakeMargin = .auto
+            } else if margin == "half" {
+                options.wakeMargin = .half
+            } else if let ms = Double(margin), ms >= 0, ms <= 20 {
+                options.wakeMargin = .milliseconds(ms)
+            } else {
+                print("--wake-margin takes auto, half or milliseconds (0-20)")
                 exit(2)
             }
         case "--log": options.logPath = value(argument)

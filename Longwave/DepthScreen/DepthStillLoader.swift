@@ -16,7 +16,7 @@ nonisolated enum DepthStillEncoding: String, Codable, Sendable {
 /// The optional JSON beside a still pair: `{"near": 0.1, "far": 1000,
 /// "convergence": 3, "encoding": "linear", "reversed": false}`. Every key is
 /// optional.
-nonisolated struct DepthStillSidecar: Codable, Equatable, Sendable {
+nonisolated struct DepthStillSettings: Codable, Equatable, Sendable {
     var near: Float?
     var far: Float?
     var convergence: Float?
@@ -50,7 +50,7 @@ nonisolated enum DepthStillConversion {
 /// Loads a still picture and its depth map from disk, so real captures (a
 /// game through ReShade on the PC) can be looked at on the depth screen before
 /// any host streams depth. Pick the files together: the image whose name
-/// contains "depth" is the depth map, any `.json` is the sidecar, the other
+/// contains "depth" is the depth map, any `.json` is the settings file, the other
 /// image is the picture. A 16-bit greyscale PNG keeps the most depth
 /// precision; 8-bit works.
 nonisolated enum DepthStillLoader {
@@ -73,13 +73,13 @@ nonisolated enum DepthStillLoader {
         }
     }
 
-    /// Sorts picked files into picture, depth and sidecar.
-    static func classify(_ urls: [URL]) -> (colour: URL, depth: URL, sidecar: URL?)? {
-        let sidecar = urls.first { $0.pathExtension.lowercased() == "json" }
+    /// Sorts picked files into picture, depth and settings file.
+    static func classify(_ urls: [URL]) -> (colour: URL, depth: URL, settings: URL?)? {
+        let settings = urls.first { $0.pathExtension.lowercased() == "json" }
         let images = urls.filter { $0.pathExtension.lowercased() != "json" }
         guard let depth = images.first(where: { $0.lastPathComponent.lowercased().contains("depth") }),
               let colour = images.first(where: { $0 != depth }) else { return nil }
-        return (colour, depth, sidecar)
+        return (colour, depth, settings)
     }
 
     static func load(_ urls: [URL]) throws -> Still {
@@ -87,22 +87,22 @@ nonisolated enum DepthStillLoader {
         let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
 
-        var sidecar = DepthStillSidecar()
-        if let url = files.sidecar {
+        var settings = DepthStillSettings()
+        if let url = files.settings {
             guard let data = try? Data(contentsOf: url),
-                  let decoded = try? JSONDecoder().decode(DepthStillSidecar.self, from: data) else {
+                  let decoded = try? JSONDecoder().decode(DepthStillSettings.self, from: data) else {
                 throw LoadError.unreadable(url.lastPathComponent)
             }
-            sidecar = decoded
+            settings = decoded
         }
         guard let colourImage = image(at: files.colour) else { throw LoadError.unreadable(files.colour.lastPathComponent) }
         guard let depthImage = image(at: files.depth),
               let grey = greyLevels(depthImage) else { throw LoadError.unreadable(files.depth.lastPathComponent) }
-        let range = sidecar.range
+        let range = settings.range
         let values = DepthStillConversion.inverseDepth(
             samples: grey.values,
-            encoding: sidecar.encoding ?? .inverse,
-            reversed: sidecar.reversed ?? false,
+            encoding: settings.encoding ?? .inverse,
+            reversed: settings.reversed ?? false,
             range: range
         )
         guard let colour = bgraBuffer(colourImage),

@@ -385,7 +385,7 @@ final class DepthScreenTests: XCTestCase {
         let files = DepthStillLoader.classify(urls)
         XCTAssertEqual(files?.colour.lastPathComponent, "shot.png")
         XCTAssertEqual(files?.depth.lastPathComponent, "shot-depth.png")
-        XCTAssertEqual(files?.sidecar?.lastPathComponent, "shot.json")
+        XCTAssertEqual(files?.settings?.lastPathComponent, "shot.json")
         XCTAssertNil(DepthStillLoader.classify([URL(fileURLWithPath: "/tmp/a.png")]))
     }
 

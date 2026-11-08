@@ -772,6 +772,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float4 w4 = map.gather(linear, at, int2(0), component::z);
         float spread = max(max(w4.x, w4.y), max(w4.z, w4.w)) - min(min(w4.x, w4.y), min(w4.z, w4.w));
         if (spread > u.edge) return pcvrDepthWarpMarch(render, u, depth, linear);
+        // The rim of a hidden strip, where some of the four were hidden and
+        // some seen: marched per pixel, or the strip's outline steps by map
+        // texels (four pixels; a staircase along the strip, headset 2026-11-08).
+        float4 hidden = map.gather(linear, at, int2(0), component::w);
+        if (max(max(hidden.x, hidden.y), max(hidden.z, hidden.w)) > 0.5
+            && min(min(hidden.x, hidden.y), min(hidden.z, hidden.w)) < 0.5) {
+            return pcvrDepthWarpMarch(render, u, depth, linear);
+        }
         float4 m = map.sample(linear, at);
         return PCVRDepthWarpHit{render + m.xy, m.z, m.w};
     }
@@ -782,9 +790,13 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     // spot a little different for every pixel, drew the strip as a comb of
     // streaks of whatever texture the far surface had (the wall's grid under
     // the whiteboard on a vertical shake, headset 2026-11-08); a blend along
-    // the edge reads as a smudge of the right colour.
+    // the edge reads as a smudge of the right colour. Only taps on that
+    // farther surface count (its depth within an edge of the hit's): a tap on
+    // the near object's rim put dark blobs of the whiteboard's frame into the
+    // wall under it (headset, 2026-11-08).
     static float3 pcvrDepthWarpHoleColour(float2 render, PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u,
-                                          texture2d<float, access::sample> source, sampler linear) {
+                                          texture2d<float, access::sample> source,
+                                          texture2d<float, access::sample> depth, sampler linear) {
         float4 tt = u.targetTangents;
         float3 d = float3(tt.x + render.x * (tt.y - tt.x), tt.z - render.y * (tt.z - tt.w), -1);
         float3 D = u.rotation * d;
@@ -797,11 +809,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float2 along = length(track) > 1e-3 ? normalize(track) : float2(1, 0);
         float2 across = float2(-along.y, along.x) * texel * 1.5;
         float3 sum = float3(0);
+        float count = 0;
         for (int k = -2; k <= 2; k++) {
             float2 p = saturate(hit.uv + across * float(k));
+            if (k != 0 && abs(pcvrDepthWarpScene(p, u, depth, linear) - hit.w) > u.edge) continue;
             sum += source.sample(linear, pcvrEyeTexel(pcvrWireUV(p, u.wireX, u.wireY), u.sourceRect, u.sourceBounds)).rgb;
+            count += 1;
         }
-        return sum / 5;
+        return sum / count;
     }
 
     // Pass two, every output pixel (`pcvrDepthWarpLookup`). A pixel its own
@@ -849,7 +864,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             return;
         }
         if (hit.filled > 0.5 && (u.flags & 1u)) {
-            output.write(float4(pcvrDepthWarpHoleColour(render, hit, u, source, linear), 1), gid);
+            output.write(float4(pcvrDepthWarpHoleColour(render, hit, u, source, depth, linear), 1), gid);
             return;
         }
         float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);

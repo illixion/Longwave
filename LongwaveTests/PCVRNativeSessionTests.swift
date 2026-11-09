@@ -23,11 +23,11 @@ final class PCVRNativeSessionTests: XCTestCase {
         }
         let session = PCVRNativeSession()
         session.quality = .balanced
-        session.frameRate = .cap90
-        XCTAssertEqual(session.preferences, PCVRPreferences(quality: .balanced, frameRate: .cap90))
+        session.frameRate = .halfDisplay
+        XCTAssertEqual(session.preferences, PCVRPreferences(quality: .balanced, frameRate: .halfDisplay))
         let reloaded = PCVRNativeSession()
         XCTAssertEqual(reloaded.quality, .balanced)
-        XCTAssertEqual(reloaded.frameRate, .cap90)
+        XCTAssertEqual(reloaded.frameRate, .halfDisplay)
         XCTAssertFalse(reloaded.isActive)
     }
 

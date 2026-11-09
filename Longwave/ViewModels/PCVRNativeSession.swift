@@ -72,10 +72,13 @@ final class PCVRNativeSession {
     init() {
         let defaults = UserDefaults.standard
         quality = PCVRQualityPreset(rawValue: UInt8(clamping: defaults.integer(forKey: Self.qualityKey))) ?? .quality
-        frameRate = PCVRFrameRatePreset(rawValue: UInt8(clamping: defaults.integer(forKey: Self.frameRateKey))) ?? .matchDisplay
+        let saved = PCVRFrameRatePreset(rawValue: UInt8(clamping: defaults.integer(forKey: Self.frameRateKey)))
+        frameRate = saved.flatMap { PCVRFrameRatePreset.offered.contains($0) ? $0 : nil } ?? .matchDisplay
     }
 
-    var preferences: PCVRPreferences { PCVRPreferences(quality: quality, frameRate: frameRate) }
+    /// The presets as sent: the frame-rate cap worked out for the display now.
+    var preferences: PCVRPreferences { PCVRPreferences(quality: quality, frameRate: frameRate, displayHertz: display?.hertz) }
+    @ObservationIgnored private var appliedCap: UInt32?
 
     var isActive: Bool {
         switch state {
@@ -100,6 +103,7 @@ final class PCVRNativeSession {
         events.ended = { [weak self] reason in
             Task { @MainActor in await self?.presenterEnded(reason) }
         }
+        appliedCap = nil
         do {
             try await presenter.start(target: target, events: events)
             state = .streaming
@@ -170,10 +174,16 @@ final class PCVRNativeSession {
         display = rate
         remote?.setDisplay(rate)
         log.notice("display \(rate.hertz, privacy: .public) Hz reported to the PC")
+        sendPreferences()   // a half-rate cap follows the display
     }
 
     private func sendPreferences() {
+        let preferences = preferences
         remote?.setPreferences(preferences)
+        let cap = preferences.maxStreamMillihertz
+        guard cap != appliedCap, isActive, let presenter else { return }
+        appliedCap = cap
+        Task { await presenter.frameRateCapChanged(cap) }
     }
 
     // MARK: Controller and library bridge

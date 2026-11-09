@@ -23,6 +23,14 @@ protocol PCVRNativePresenter: AnyObject {
     func pause() async
     func resume() async throws
     func stop() async
+    /// The stream's frame-rate cap changed (millihertz, 0 = follow the display).
+    /// A presenter that can make the display or its receiver run at that rate
+    /// does, so frames meet refreshes evenly; one that can't ignores it.
+    func frameRateCapChanged(_ millihertz: UInt32) async
+}
+
+extension PCVRNativePresenter {
+    func frameRateCapChanged(_ millihertz: UInt32) async {}
 }
 
 /// What a presenter tells the session controller (`PCVRNativeSession`).

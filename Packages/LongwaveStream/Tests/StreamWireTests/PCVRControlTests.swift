@@ -35,6 +35,17 @@ final class PCVRControlTests: XCTestCase {
         XCTAssertEqual(PCVRPreferences.default.maxStreamMillihertz, 0)
     }
 
+    func testHalfDisplayIsHalfTheRefreshAndNeverBelow45() {
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 120), 60_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 96), 48_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 90), 45_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 72), 45_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: nil), 0)
+        XCTAssertEqual(PCVRFrameRatePreset.matchDisplay.capMillihertz(displayHertz: 120), 0)
+        XCTAssertEqual(PCVRPreferences(quality: .quality, frameRate: .halfDisplay, displayHertz: 120).maxStreamMillihertz, 60_000)
+        XCTAssertEqual(PCVRFrameRatePreset.cap60.capMillihertz(displayHertz: 120), 60_000)
+    }
+
     func testPreferencesRejectAbsurdScale() {
         XCTAssertThrowsError(try PCVRPreferences(renderScalePermille: 50, maxStreamMillihertz: 0).encoded())
         XCTAssertThrowsError(try PCVRPreferences(decoding: hex("0a00", "00000000", "00", "00")))

@@ -1043,10 +1043,14 @@ final class PCVRHost: @unchecked Sendable {
                 // What the headset says beats what its pose rate suggests.
                 if let display = reported ?? Self.displayRate(forPoseRate: Double(poses) / seconds) {
                     let ceiling = min(options.maxStreamHz, cap)
-                    let rate = options.halvesForEncoder
+                    let chosen = options.halvesForEncoder
                         ? StreamRate.choose(display: display, encodeMilliseconds: encodeP95, current: current,
                                             ceiling: ceiling)
                         : min(display, ceiling)
+                    // Never below the floor, the encoder's step-down included (a halved
+                    // 60 Hz display would otherwise stream 30): judder past it costs more
+                    // than the frames it saves. A display slower than the floor sets the rate.
+                    let rate = max(chosen, min(display, PCVRFrameRatePreset.minimumStreamHertz))
                     if rate != current {
                         lock.withLock { pacedHz = rate }
                         log.line("frame clock: \(String(format: "%g", rate)) Hz for the headset's \(Int(display)) Hz"

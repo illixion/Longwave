@@ -79,14 +79,35 @@ public enum PCVRQualityPreset: UInt8, CaseIterable, Sendable, Codable {
 }
 
 /// What a PCVR stream's frame rate follows. `matchDisplay` keeps one stream
-/// frame per display refresh, stepping down when the PC can't keep up; the
-/// others cap the stream (and with it the game) whatever the display runs.
+/// frame per display refresh, stepping down when the PC can't keep up;
+/// `halfDisplay` shows each frame for exactly two refreshes (60 at 120 Hz, 45
+/// at 90), an even cadence, recomputed by the client as the display changes.
+/// The fixed caps don't divide every display rate (90 on a 120 Hz display
+/// repeats every third frame) and are for clients that set the display rate.
+/// No stream runs below `minimumStreamHertz`.
 public enum PCVRFrameRatePreset: UInt8, CaseIterable, Sendable, Codable {
     case matchDisplay = 0
     case cap60 = 1
     case cap72 = 2
     case cap90 = 3
     case cap120 = 4
+    case halfDisplay = 5
+
+    /// The slowest stream a preset or the host's own step-down may choose.
+    public static let minimumStreamHertz = 45.0
+
+    /// The cap to send for a display at `displayHertz` (nil when unknown), in
+    /// millihertz: 0 follows the display, never below `minimumStreamHertz`.
+    public func capMillihertz(displayHertz: Double?) -> UInt32 {
+        let floor = UInt32(Self.minimumStreamHertz * 1000)
+        switch self {
+        case .matchDisplay: return 0
+        case .halfDisplay:
+            guard let displayHertz, displayHertz > 0 else { return 0 }
+            return max(UInt32((displayHertz * 500).rounded()), floor)
+        default: return max(capMillihertz, floor)
+        }
+    }
 
     /// The cap in millihertz; 0 for `matchDisplay`.
     public var capMillihertz: UInt32 {
@@ -96,6 +117,7 @@ public enum PCVRFrameRatePreset: UInt8, CaseIterable, Sendable, Codable {
         case .cap72: 72_000
         case .cap90: 90_000
         case .cap120: 120_000
+        case .halfDisplay: 0
         }
     }
 }
@@ -125,8 +147,9 @@ public struct PCVRPreferences: WireCodable, Hashable {
         self.frameRatePreset = frameRatePreset
     }
 
-    public init(quality: PCVRQualityPreset, frameRate: PCVRFrameRatePreset) {
-        self.init(renderScalePermille: quality.renderScalePermille, maxStreamMillihertz: frameRate.capMillihertz,
+    public init(quality: PCVRQualityPreset, frameRate: PCVRFrameRatePreset, displayHertz: Double? = nil) {
+        self.init(renderScalePermille: quality.renderScalePermille,
+                  maxStreamMillihertz: frameRate.capMillihertz(displayHertz: displayHertz),
                   qualityPreset: quality.rawValue, frameRatePreset: frameRate.rawValue)
     }
 

@@ -339,7 +339,9 @@ function createWindow({ show = true } = {}) {
   pcvrClient.on('connected', () => send('pcvr-connection', true));
   pcvrClient.on('disconnected', () => send('pcvr-connection', false));
   pcvrClient.on('notify', (event, data) => {
-    if (event === 'foveated') {
+    // In native mode the CloudXR host is idle and its pushes say 'off'; the session's
+    // state comes from the broker instead (refreshFoveatedStatus).
+    if (event === 'foveated' && !nativeStackActive()) {
       lastFoveatedStatus = data;
       syncPairingWindow(data);
     }
@@ -589,7 +591,7 @@ async function waitForBackend(targetClient = client, timeoutMs = 10000) {
 async function waitForFoveatedConnected(timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
-    const status = await pcvrClient.rpc('FoveatedStatus');
+    const status = nativeStackActive() ? await nativeFoveatedStatus() : await pcvrClient.rpc('FoveatedStatus');
     if (status.clientConnected && status.sessionStatus === 'CONNECTED') return status;
     if (status.state === 'error') {
       throw new Error(`foveated host entered error state: ${status.detail || 'unknown error'}`);
@@ -710,6 +712,7 @@ function sendLauncherMode() {
 
 /** 'on', 'starting' or 'off', from the PCVR host's last status. */
 function pcvrSessionState() {
+  if (nativeStackActive()) return lastFoveatedStatus?.native ? 'on' : 'starting';
   if (!pcvrClient.connected || !lastFoveatedStatus) return 'off';
   return lastFoveatedStatus.state === 'on' || lastFoveatedStatus.state === 'starting'
     ? lastFoveatedStatus.state : 'off';
@@ -724,7 +727,31 @@ async function waitForLaunchPipes() {
   await Promise.all(waits);
 }
 
+/** Whether the PCVR stack running now is the native (v3) one, not CloudXR. */
+function nativeStackActive() {
+  return Boolean(supervisor && supervisor.stackMode === 'native' && supervisor.status().broker.running);
+}
+
+/**
+ * A native session in the shape the launcher and panel read from FoveatedStatus: 'on' while
+ * the broker answers, the headset connected while its poses reach the broker.
+ */
+async function nativeFoveatedStatus() {
+  const native = await supervisor.sessionStatus().catch(() => null);
+  return {
+    state: native ? 'on' : 'starting',
+    mode: 'native',
+    clientConnected: Boolean(native && native.headset),
+    sessionStatus: native && native.headset ? 'CONNECTED' : 'NONE',
+    native,
+  };
+}
+
 async function refreshFoveatedStatus() {
+  if (nativeStackActive()) {
+    lastFoveatedStatus = await nativeFoveatedStatus();
+    return lastFoveatedStatus;
+  }
   if (!pcvrClient.connected) return null;
   try {
     lastFoveatedStatus = await withTimeout(pcvrClient.rpc('FoveatedStatus'), 3000, 'FoveatedStatus');
@@ -804,7 +831,7 @@ async function launchLibraryTitle(id) {
   const title = await libraryRpc('LibraryGet', { id });
   if (!title) throw new Error('That game is no longer in the library.');
   await refreshFoveatedStatus();
-  let mode = gameLauncher.launchModeFor(pcvrClient.connected, lastFoveatedStatus, title.kind);
+  let mode = gameLauncher.launchModeFor(pcvrClient.connected || nativeStackActive(), lastFoveatedStatus, title.kind);
   let fellBack = false;
   if (mode === 'wait') {
     try {
@@ -849,7 +876,7 @@ async function resolveFile(filePath, { addToLibrary = null } = {}) {
       // picked, as that Steam app.
       const title = match.title;
       await refreshFoveatedStatus();
-      const mode = gameLauncher.launchModeFor(pcvrClient.connected, lastFoveatedStatus, title.kind);
+      const mode = gameLauncher.launchModeFor(pcvrClient.connected || nativeStackActive(), lastFoveatedStatus, title.kind);
       const usesVrEntry = mode !== 'flat' || title.kind === 'vr';
       if (usesVrEntry ? match.vrEntry : match.desktopEntry) {
         return { kind: 'title', id: title.id, name: title.name };

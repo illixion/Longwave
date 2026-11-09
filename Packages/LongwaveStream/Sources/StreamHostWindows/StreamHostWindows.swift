@@ -286,6 +286,8 @@ public struct ExternalHostState: Sendable {
     public var gaze: (direction: SIMD3<Float>, distance: Float, ticks: Int64)?
     public var refreshMillihertz: UInt32 = 0
     public var nextFrameStartTicks: Int64 = 0
+    /// The render size per eye the client asked for; nil = the producer chooses.
+    public var requestedEye: (width: UInt32, height: UInt32)?
     public init() {}
 
     var raw: lw_fs_host_state {
@@ -313,6 +315,10 @@ public struct ExternalHostState: Sendable {
             s.gaze_qpc = gaze.ticks
         }
         s.refresh_millihz = refreshMillihertz
+        if let requestedEye {
+            s.requested_eye_width = requestedEye.width & ~1
+            s.requested_eye_height = requestedEye.height & ~1
+        }
         s.next_frame_start_qpc = nextFrameStartTicks
         s.written_qpc = HostClock.now()
         return s

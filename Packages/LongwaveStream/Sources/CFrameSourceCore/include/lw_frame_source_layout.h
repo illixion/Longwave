@@ -133,7 +133,13 @@ typedef struct lw_fs_host_state {
     uint32_t reserved0;
     int64_t next_frame_start_qpc; /* when the producer should start its next frame; 0 = unpaced */
     int64_t written_qpc;        /* when the host published this state */
-    uint32_t reserved[16];
+    /* The render size per eye the client asked for (its preferences and field of view),
+       even; 0 = the producer chooses. A producer that honours it re-attaches at this size
+       when it changes, which may wait for its next title. Version 2 addition: older hosts
+       leave it 0, older producers ignore it. */
+    uint32_t requested_eye_width;
+    uint32_t requested_eye_height;
+    uint32_t reserved[14];
 } lw_fs_host_state;
 
 /* ---- Slots -------------------------------------------------------------------
@@ -240,6 +246,7 @@ LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, head) == 24, "lw_fs_host_state la
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, gaze_valid) == 140, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, gaze_qpc) == 160, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, next_frame_start_qpc) == 176, "lw_fs_host_state layout");
+LW_FS_STATIC_ASSERT(offsetof(lw_fs_host_state, requested_eye_width) == 192, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(sizeof(lw_fs_host_state) == 256, "lw_fs_host_state layout");
 LW_FS_STATIC_ASSERT(offsetof(lw_fs_slot, side_data) == 48, "lw_fs_slot layout");
 LW_FS_STATIC_ASSERT(sizeof(lw_fs_slot) == 48 + LW_FS_MAX_SIDE_DATA, "lw_fs_slot layout");

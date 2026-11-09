@@ -91,6 +91,9 @@ struct HostOptions {
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
+    /// The headset's display density at its centre, pixels per unit tangent:
+    /// a preference's render scale multiplies this (`PCVRProfile.renderEye`).
+    var nativePixelsPerTangent = PCVRProfile.visionProPixelsPerTangent
 }
 
 /// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
@@ -135,6 +138,11 @@ final class PCVRHost: @unchecked Sendable {
         var lastPose: UInt32?
         var posesReceived = 0
         var lastPresented: PresentedFrame?
+        /// What the viewer said about its display (`pcvrDisplay`) and wants (`pcvrPreferences`).
+        var display: PCVRDisplayRate?
+        var preferences: PCVRPreferences?
+        /// The last `pcvrSessionState` sent, so only changes go out.
+        var sentSessionState: PCVRSessionState?
 
         init(index: UInt32, deviceID: String, name: String, grants: SessionGrants, capabilities: CapabilitySet,
              configuration: VideoStreamSender.Configuration) {
@@ -179,6 +187,13 @@ final class PCVRHost: @unchecked Sendable {
     private var pacedHz: Double
     /// Poses accepted since the rate was last measured.
     private var posesForRate = 0
+    /// The render size per eye the viewers' preferences ask for (under `lock`).
+    private var requestedEye: PixelSize?
+    /// The render eye the encoder last laid out, for `pcvrSessionState` (under `lock`).
+    private var currentRenderEye: PixelSize?
+    /// When the producer last delivered a frame (host ns), for `pcvrSessionState`.
+    private var lastProducerFrame: UInt64 = 0
+    private var lastSessionStateCheck: UInt64 = 0
     /// The frame clock's phase lock to the headset's display (under `lock`).
     private var frameClock = HeadsetFrameClock(streamInterval: 11_111_111)
     /// Frame-lock counters since the last statistics line.
@@ -405,6 +420,7 @@ final class PCVRHost: @unchecked Sendable {
             () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool, Bool) in
             let confirmed = viewers.values.filter(\.confirmed)
             let watched = !confirmed.isEmpty
+            lastProducerFrame = Self.now()
             if !watched { framesWithoutViewers += 1 }
             let force = watched && wantsKeyFrame
             if force { wantsKeyFrame = false }
@@ -433,6 +449,7 @@ final class PCVRHost: @unchecked Sendable {
                                  maxWireEye: warp != nil ? options.maxWireEye : nil)
         if wanted != layout {
             layout = wanted
+            lock.withLock { currentRenderEye = wanted.renderEye }
             foveationEpoch &+= 1
             formatStale = true
             forceKey = true
@@ -919,7 +936,8 @@ final class PCVRHost: @unchecked Sendable {
         FormatDescription(
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
             size: layout.pictureSize, bitDepth: layout.bitDepth, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
-            sideDataTypes: layout.warp == nil ? [.renderPose] : [.renderPose, .foveation],
+            // inputBridge: the producer's rendezvous, passed through when it sends one.
+            sideDataTypes: layout.warp == nil ? [.renderPose, .inputBridge] : [.renderPose, .foveation, .inputBridge],
             // A uniformly scaled eye has nothing to unwarp: to the viewer it was rendered at the wire size.
             pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.warp == nil ? layout.wireEye : layout.renderEye,
                              wireSize: layout.wireEye,
@@ -1015,18 +1033,20 @@ final class PCVRHost: @unchecked Sendable {
             if options.followsHeadset, next - measuredSince >= 2 * HostClock.ticksPerSecond {
                 let seconds = Double(next - measuredSince) / Double(HostClock.ticksPerSecond)
                 measuredSince = next
-                let (poses, current, encodes) = lock.withLock { () -> (Int, Double, [Double]) in
+                let (poses, current, encodes, reported, cap) = lock.withLock { () -> (Int, Double, [Double], Double?, Double) in
                     defer { posesForRate = 0 }
-                    return (posesForRate, pacedHz, encodeTimes)
+                    return (posesForRate, pacedHz, encodeTimes, reportedDisplayHz, streamCapHz)
                 }
                 // The encoder's 95th percentile over the last second or two.
                 let recent = encodes.suffix(Int(current * 2)).sorted()
                 let encodeP95 = recent.count >= 20 ? recent[(recent.count - 1) * 95 / 100] : nil
-                if let display = Self.displayRate(forPoseRate: Double(poses) / seconds) {
+                // What the headset says beats what its pose rate suggests.
+                if let display = reported ?? Self.displayRate(forPoseRate: Double(poses) / seconds) {
+                    let ceiling = min(options.maxStreamHz, cap)
                     let rate = options.halvesForEncoder
                         ? StreamRate.choose(display: display, encodeMilliseconds: encodeP95, current: current,
-                                            ceiling: options.maxStreamHz)
-                        : min(display, options.maxStreamHz)
+                                            ceiling: ceiling)
+                        : min(display, ceiling)
                     if rate != current {
                         lock.withLock { pacedHz = rate }
                         log.line("frame clock: \(String(format: "%g", rate)) Hz for the headset's \(Int(display)) Hz"
@@ -1072,6 +1092,9 @@ final class PCVRHost: @unchecked Sendable {
 
             var state = ExternalHostState()
             state.refreshMillihertz = UInt32(hz * 1000)
+            if let eye = lock.withLock({ requestedEye }) {
+                state.requestedEye = (UInt32(eye.width), UInt32(eye.height))
+            }
             state.nextFrameStartTicks = next + Self.ticks(fromNanoseconds: UInt64(Self.producerStartLead))
             if let (sequence, pose) = posed {
                 state.poseSequence = sequence
@@ -1209,6 +1232,8 @@ final class PCVRHost: @unchecked Sendable {
                 posesForRate += 1
                 if let presented = pose.presented { viewer.lastPresented = presented }
                 headPose = (snapshot.sequence, pose)
+                // Fields of view settle after connect; re-derive the asked-for size now and then.
+                if viewer.preferences != nil, viewer.posesReceived % 60 == 1 { updateRequestedEye() }
                 frameClock.pose(displayTime: Int64(clamping: pose.displayTime), arrival: Int64(clamping: now))
             case .message(.control, let message):
                 switch message.type {
@@ -1224,6 +1249,23 @@ final class PCVRHost: @unchecked Sendable {
                 case .bye:
                     endpoint.remove(viewer.index)
                     removeViewer(viewer, reason: "viewer said goodbye")
+                case .pcvrDisplay:
+                    guard let display = try? PCVRDisplayRate(decoding: message.body) else { continue }
+                    if viewer.display != display {
+                        log.line("viewer '\(viewer.name)' display: \(String(format: "%g", display.hertz)) Hz"
+                                 + (display.supportedMillihertz.isEmpty ? "" : " (can run "
+                                    + display.supportedMillihertz.map { String(format: "%g", Double($0) / 1000) }.joined(separator: ", ") + ")"))
+                    }
+                    viewer.display = display
+                case .pcvrPreferences:
+                    guard let preferences = try? PCVRPreferences(decoding: message.body) else { continue }
+                    if viewer.preferences != preferences {
+                        log.line("viewer '\(viewer.name)' prefers \(Int(preferences.renderScalePermille))\u{2030} density, "
+                                 + (preferences.maxStreamMillihertz == 0 ? "the display's rate"
+                                    : String(format: "at most %g Hz", Double(preferences.maxStreamMillihertz) / 1000)))
+                    }
+                    viewer.preferences = preferences
+                    updateRequestedEye()
                 default:
                     continue
                 }
@@ -1273,6 +1315,68 @@ final class PCVRHost: @unchecked Sendable {
         removeViewer(viewer, reason: "ended by the host")
     }
 
+    // MARK: Display rate and preferences (under `lock`)
+
+    /// The display rate the confirmed viewers report: the slowest, so one
+    /// stream fits them all. nil while none has said.
+    private var reportedDisplayHz: Double? {
+        viewers.values.filter(\.confirmed).compactMap { v -> Double? in
+            guard let d = v.display, d.refreshMillihertz > 0 else { return nil }
+            return d.hertz
+        }.min()
+    }
+
+    /// The tightest frame-rate cap the viewers ask for; infinity without one.
+    private var streamCapHz: Double {
+        viewers.values.filter(\.confirmed).compactMap { v -> Double? in
+            guard let cap = v.preferences?.maxStreamMillihertz, cap > 0 else { return nil }
+            return Double(cap) / 1000
+        }.min() ?? .infinity
+    }
+
+    /// The render eye the preferences and the newest pose's fields of view ask
+    /// for; nil without preferences (the producer keeps choosing). Moves only
+    /// on a change of more than 2%, so field-of-view jitter never re-attaches.
+    private func updateRequestedEye() {
+        guard let preferences = viewers.values.filter(\.confirmed).compactMap(\.preferences).first,
+              let pose = headPose?.pose else {
+            if requestedEye != nil, viewers.values.allSatisfy({ $0.preferences == nil }) { requestedEye = nil }
+            return
+        }
+        func eye(_ f: FieldOfView) -> PixelSize {
+            PCVRProfile.renderEye(fov: (f.angleLeft, f.angleRight, f.angleUp, f.angleDown),
+                                  scale: preferences.renderScale, nativePixelsPerTangent: options.nativePixelsPerTangent)
+        }
+        let l = eye(pose.leftEye.fieldOfView), r = eye(pose.rightEye.fieldOfView)
+        let wanted = PixelSize(width: max(l.width, r.width), height: max(l.height, r.height))
+        if let current = requestedEye {
+            let dw = abs(Double(wanted.width) - Double(current.width)) / Double(current.width)
+            let dh = abs(Double(wanted.height) - Double(current.height)) / Double(current.height)
+            if dw <= 0.02 && dh <= 0.02 { return }
+        }
+        requestedEye = wanted
+        log.line("render eye asked of the producer: \(wanted.width)x\(wanted.height) "
+                 + "(\(Int(preferences.renderScalePermille))\u{2030} of native density)")
+    }
+
+    /// Sends each viewer the session state when it changed.
+    private func sendSessionStates(now: UInt64) {
+        let display = reportedDisplayHz
+        let ceiling = min(min(options.maxStreamHz, streamCapHz), display ?? .infinity)
+        let producing = lastProducerFrame != 0 && now &- lastProducerFrame < 1_000_000_000
+        var flags = PCVRSessionState.Flags()
+        if ceiling.isFinite, pacedHz < ceiling - 0.5 { flags.insert(.rateLimitedByHost) }
+        if let requestedEye, let currentRenderEye, requestedEye != currentRenderEye { flags.insert(.renderSizePending) }
+        let state = PCVRSessionState(renderEye: currentRenderEye ?? PixelSize(width: 0, height: 0),
+                                     streamMillihertz: UInt32(pacedHz * 1000),
+                                     producer: producing ? .title : .none, flags: flags)
+        for viewer in viewers.values where viewer.confirmed && viewer.sentSessionState != state {
+            guard let body = try? state.encoded() else { continue }
+            let sent = endpoint.withSession(viewer.index) { (try? $0.send(.pcvrSessionState, body: body, on: .control)) != nil }
+            if sent == true { viewer.sentSessionState = state }
+        }
+    }
+
     private func removeViewer(_ viewer: Viewer, reason: String) {
         guard viewers.removeValue(forKey: viewer.index) != nil else { return }
         log.line("viewer '\(viewer.name)' left: \(reason)")
@@ -1317,6 +1421,10 @@ final class PCVRHost: @unchecked Sendable {
         targetBitrate = bitrates.min().map { min($0, options.maxMbps * 1_000_000) }
         if now - lastDeviceReload > 10_000_000_000 { reloadDevices(now: now) }
         if now - lastStats > 5_000_000_000 { logStatistics(now: now) }
+        if now &- lastSessionStateCheck > 500_000_000 {
+            lastSessionStateCheck = now
+            sendSessionStates(now: now)
+        }
     }
 
     /// A colour shard of `frame` left: the first marks the end of its wait

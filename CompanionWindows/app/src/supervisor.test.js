@@ -63,12 +63,30 @@ test('entries that could spawn something else, or clash, are skipped', () => {
   assert.strictEqual(logs.length, 9);
 });
 
-test('the supervisor knows only the broker without a descriptor file', () => {
+test('the supervisor knows only its built-in services without a descriptor file', () => {
   const bridge = tempBridge();
   const sup = new Supervisor({ appRoot: path.join(bridge, 'app'), backendExe: null, bridgeRoot: bridge });
-  assert.deepStrictEqual(sup.names, ['broker']);
+  assert.deepStrictEqual(sup.names, ['streamHost', 'broker']);
   assert.deepStrictEqual(sup.extraServiceNames, []);
-  assert.deepStrictEqual(Object.keys(sup.status()), ['broker']);
+  assert.deepStrictEqual(Object.keys(sup.status()), ['streamHost', 'broker']);
+});
+
+test('native mode gives the broker a native environment and the host the bundle arguments', () => {
+  const bridge = tempBridge();
+  fs.writeFileSync(path.join(bridge, 'stream-host.args'), '# tuning\n--max-mbps 100\n\n--preset 1\n');
+  const sup = new Supervisor({ appRoot: path.join(bridge, 'app'), backendExe: null, bridgeRoot: bridge });
+  const cloudxr = sup.definitions.broker.env();
+  assert.strictEqual(cloudxr.LONGWAVE_BROKER_OUTPUT, undefined);
+  assert.strictEqual(cloudxr.LONGWAVE_BROKER_TIMEWARP, process.env.LONGWAVE_BROKER_TIMEWARP ?? '1');
+  sup.stackMode = 'native';
+  const native = sup.definitions.broker.env();
+  assert.strictEqual(native.LONGWAVE_BROKER_OUTPUT, 'native');
+  assert.strictEqual(native.LONGWAVE_NATIVE_CHANNEL, 'pcvr');
+  assert.strictEqual(native.LONGWAVE_BROKER_TIMEWARP, '0');
+  assert.strictEqual(native.XR_RUNTIME_JSON, undefined);
+  const args = sup.definitions.streamHost.args();
+  assert.deepStrictEqual(args.slice(0, 2), ['--channel', 'pcvr']);
+  assert.deepStrictEqual(args.slice(-4), ['--max-mbps', '100', '--preset', '1']);
 });
 
 test('declared services join after the broker, in file order, and resolve in the bridge', () => {
@@ -80,7 +98,7 @@ test('declared services join after the broker, in file order, and resolve in the
   });
   fs.writeFileSync(path.join(bridge, 'one.exe'), '');
   const sup = new Supervisor({ appRoot: path.join(bridge, 'app'), backendExe: null, bridgeRoot: bridge });
-  assert.deepStrictEqual(sup.names, ['broker', 'one', 'two']);
+  assert.deepStrictEqual(sup.names, ['streamHost', 'broker', 'one', 'two']);
   assert.deepStrictEqual(sup.extraServiceNames, ['one', 'two']);
   const status = sup.status();
   assert.strictEqual(status.one.title, 'One');
@@ -91,5 +109,5 @@ test('declared services join after the broker, in file order, and resolve in the
   // Re-resolving after an install picks the file up (or drops it) without a restart.
   fs.unlinkSync(path.join(bridge, 'services.json'));
   sup.refreshPaths(null, bridge);
-  assert.deepStrictEqual(sup.names, ['broker']);
+  assert.deepStrictEqual(sup.names, ['streamHost', 'broker']);
 });

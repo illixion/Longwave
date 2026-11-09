@@ -265,6 +265,10 @@ class Supervisor extends EventEmitter {
        here so a broker restarted outside startStack() — the crash path, which has
        restart:true — still finds an object rather than throwing on a missing field. */
     this.brokerOptions = { desktopQuad: false };
+    /* Which stack startStack() brought up: 'cloudxr' (the CloudXR host and runtime) or
+       'native' (the v3 stream host fed by the broker, no CloudXR at all). Read when the
+       broker is spawned, so a crash restart comes back in the same mode. */
+    this.stackMode = 'cloudxr';
     /** @type {Map<string, {proc: import('child_process').ChildProcess, stopping: boolean, restarts: number, startedAt: number}>} */
     this.running = new Map();
     /** @type {Map<string, NodeJS.Timeout>} */
@@ -375,13 +379,48 @@ class Supervisor extends EventEmitter {
   #defineServices() {
     const bridge = this.bridgeRoot;
     const bin = (name) => (bridge ? [path.join(bridge, name)] : []);
+    /* The v3 stream host's extra arguments: one per line in stream-host.args beside the
+       bundle's binaries (blank lines and # comments skipped), so a bundle can tune the host
+       without this file knowing its options. */
+    const streamHostArgs = () => {
+      if (!bridge) return [];
+      try {
+        return fs.readFileSync(path.join(bridge, 'stream-host.args'), 'utf8')
+          .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+          .flatMap((l) => l.split(/\s+/));
+      } catch { return []; }
+    };
+    const native = () => this.stackMode === 'native';
     const services = {
+      /* Native mode's stream host: takes the broker's frames over the frame source and
+         streams them to the headset over v3, pacing and sizing from what it reports. */
+      streamHost: {
+        title: 'PCVR stream host',
+        image: 'longwave-pcvr-host.exe',
+        exe: () => firstExisting([
+          ...(process.env.LONGWAVE_PCVR_STREAM_HOST ? [process.env.LONGWAVE_PCVR_STREAM_HOST] : []),
+          ...bin('longwave-pcvr-host.exe'),
+        ]),
+        args: () => ['--channel', 'pcvr', '--log', path.join(this.logDirectory, 'stream-host.log'),
+          ...streamHostArgs()],
+        env: () => ({}),
+        restart: true,
+      },
       broker: {
         title: 'Session broker',
         image: 'LongwaveSessionBroker.exe',
         exe: () => firstExisting(bin('LongwaveSessionBroker.exe')),
         args: [],
-        env: () => ({
+        env: () => (native() ? {
+          LONGWAVE_CB_LAYER_LOG: path.join(this.logDirectory, 'cb_broker.log'),
+          // No CloudXR: composite into the stream host's ring (broker/native_output.h). The
+          // headset's preferences set the render size through the host.
+          LONGWAVE_BROKER_OUTPUT: 'native',
+          LONGWAVE_NATIVE_CHANNEL: 'pcvr',
+          LONGWAVE_BROKER_RENDER_SCALE: '1.0',
+          LONGWAVE_BROKER_TIMEWARP: '0',
+          ...(this.brokerOptions.desktopQuad ? { LONGWAVE_BROKER_TEST_QUAD: '1' } : {}),
+        } : {
           LONGWAVE_CB_LAYER_LOG: path.join(this.logDirectory, 'cb_broker.log'),
           // Pushes the composited layer far enough away that it reads as a world rather
           // than a screen; matches the value the old start-broker.bat set.
@@ -523,7 +562,8 @@ class Supervisor extends EventEmitter {
       logStream = null;
     }
 
-    const proc = spawn(exe, definition.args, {
+    const args = typeof definition.args === 'function' ? definition.args() : definition.args;
+    const proc = spawn(exe, args, {
       cwd: path.dirname(exe),
       windowsHide: true,
       env: { ...process.env, ...definition.env() },
@@ -643,14 +683,17 @@ class Supervisor extends EventEmitter {
     /* Broker-only options ride in the same object the panel already builds, but they are
        none of the foveated host's business — take them out before the RPC so an unknown
        field can never reach its deserializer. */
-    const { desktopQuad, ...forHost } = hostParams || {};
+    const { desktopQuad, mode, ...forHost } = hostParams || {};
     this.brokerOptions = { desktopQuad: Boolean(desktopQuad) };
     hostParams = hostParams ? forHost : null;
+    this.stackMode = mode === 'native' ? 'native' : 'cloudxr';
 
     const steps = [];
     const claim = this.claimRuntime();
     steps.push({ step: 'OpenXR runtime', ok: claim.ok, detail: claim.detail });
     if (!claim.ok) return { ok: false, steps };
+
+    if (this.stackMode === 'native') return this.#startNativeStack(rpc, steps);
 
     const fail = async () => {
       await this.stopStack(rpc);
@@ -693,6 +736,36 @@ class Supervisor extends EventEmitter {
       steps.push({ step: this.definitions[name].title, ok: extra.ok, detail: extra.detail });
     }
     return { ok: true, steps };
+  }
+
+  /** Native mode: the stream host first (the broker attaches to its channel), then the broker. */
+  async #startNativeStack(rpc, steps) {
+    const fail = async () => {
+      await this.stopStack(rpc);
+      return { ok: false, steps };
+    };
+    const host = await this.startChecked('streamHost');
+    steps.push({ step: 'stream host', ok: host.ok, detail: host.detail });
+    if (!host.ok) return fail();
+    const broker = await this.startChecked('broker');
+    steps.push({ step: 'session broker', ok: broker.ok, detail: broker.detail });
+    if (!broker.ok) return fail();
+    for (const name of this.extraServiceNames) {
+      const extra = await this.startChecked(name).catch((e) => ({ ok: false, detail: e.message }));
+      steps.push({ step: this.definitions[name].title, ok: extra.ok, detail: extra.detail });
+    }
+    return { ok: true, steps };
+  }
+
+  /**
+   * What the broker says about a running session (its control pipe's `status`): output,
+   * whether a stream host takes its frames, whether a title renders, eye size, refresh,
+   * desktop. Null while no broker runs or it predates the verb.
+   */
+  async sessionStatus() {
+    if (!this.status().broker.running) return null;
+    const reply = await requestBrokerControl('status', 1500).catch(() => null);
+    return reply && reply.ok ? { mode: this.stackMode, ...reply } : null;
   }
 
   /**
@@ -768,12 +841,15 @@ class Supervisor extends EventEmitter {
 
     for (const name of [...this.extraServiceNames].reverse()) await this.stopAndWait(name);
     await this.stopAndWait('broker');
+    await this.stopAndWait('streamHost');
     // A one-shot's recorded success must not outlive the stack it was part of, or the UI
     // keeps reporting it done after CloudXR has gone away.
     for (const [name, definition] of Object.entries(this.definitions)) {
       if (definition.oneShot) this.exits.delete(name);
     }
-    await rpc('FoveatedStop', { restarting: Boolean(options.restarting) }).catch(() => null);
+    if (this.stackMode !== 'native') {
+      await rpc('FoveatedStop', { restarting: Boolean(options.restarting) }).catch(() => null);
+    }
     this.releaseRuntime();
     const gameStopError =
       launchedGameStopError && !brokerStoppedGame

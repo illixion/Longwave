@@ -31,6 +31,8 @@ struct FoveatedHUDView: View {
     /// so 10 Hz is also the fastest useful redraw — polling rather than observing the
     /// history array keeps a 180-element append from invalidating the view mid-batch.
     @State private var tick = 0
+    /// Rates and ages of the gaze chain, fed from the redraw clock (see PCVRGazeHealth).
+    @State private var gazeWatch = PCVRGazeWatch()
 
     private var bridge: ControllerBridgeSender? { manager.controllerBridge }
 
@@ -79,6 +81,8 @@ struct FoveatedHUDView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            gazeSection
+            Divider()
             RAVEFrameTimeGraph(
                 periodsMs: history.map(Double.init),
                 slots: ControllerBridgeSender.framePeriodHistoryLength,
@@ -105,7 +109,57 @@ struct FoveatedHUDView: View {
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
+                gazeWatch.observe(sequence: manager.gazeLiveness.sequence,
+                                  centres: PCVRGazeUplinkRegistry.current?()?.centres,
+                                  now: CACurrentMediaTime())
                 tick &+= 1
+            }
+        }
+    }
+
+    // MARK: Gaze
+
+    /// Whether the wearer's eyes are reaching the PC's picture, hop by hop. A dead
+    /// feed leaves the sharp spot straight ahead and nothing else looks wrong, so
+    /// this says so in words. Liveness only: counters, never a direction.
+    private var gazeHealth: PCVRGazeHealth {
+        let now = CACurrentMediaTime()
+        return PCVRGazeHealth.evaluate(hasFeed: manager.gazeLiveness.hasFeed,
+                                       sinceNewSample: gazeWatch.sinceNewSample(now: now),
+                                       feedRate: gazeWatch.sampleRate(),
+                                       uplink: PCVRGazeUplinkRegistry.current?(),
+                                       sinceCentreMoved: gazeWatch.sinceCentreMoved(now: now))
+    }
+
+    private func gazeTint(_ level: PCVRGazeHealth.Level) -> Color? {
+        switch level {
+        case .broken: .red
+        case .warning: .orange
+        case .ok: .green
+        case .idle: nil
+        }
+    }
+
+    @ViewBuilder
+    private var gazeSection: some View {
+        let health = gazeHealth
+        let _ = tick // redraw on the clock
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Eye tracking").font(.subheadline.weight(.semibold))
+                Spacer()
+                Image(systemName: health.level == .ok ? "eye" : "eye.slash")
+                    .foregroundStyle(gazeTint(health.level) ?? .secondary)
+            }
+            Text(health.verdict)
+                .font(.caption)
+                .foregroundStyle(gazeTint(health.level) ?? .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 18) {
+                ForEach(health.hops) { hop in
+                    stat(hop.name, value: hop.detail, tint: gazeTint(hop.level))
+                }
+                Spacer()
             }
         }
     }

@@ -526,6 +526,9 @@ final class FoveatedConnectionManager {
     private(set) var gazeFeed: (any RAVEFoveatedGazeFeed)?
     /// The newest gaze sample, head space; nil when no feed has one.
     var gazeSample: RAVEGazeSample? { gazeFeed?.gaze.latest }
+    /// Liveness only, for the wrist HUD: whether a feed is attached and its newest
+    /// sample's counter. Never a direction.
+    var gazeLiveness: (hasFeed: Bool, sequence: Int?) { (gazeFeed != nil, gazeSample?.sequence) }
 
     private func startGazeFeed(for connection: SavedConnection) {
         gazeFeed?.detach()
@@ -540,6 +543,7 @@ final class FoveatedConnectionManager {
         gazeFeed = nil
     }
     #else
+    var gazeLiveness: (hasFeed: Bool, sequence: Int?) { (false, nil) }
     private func startGazeFeed(for connection: SavedConnection) {}
     private func stopGazeFeed() {}
     #endif

@@ -114,7 +114,9 @@ final class PCVRShellPresenter: PCVRNativePresenter {
         guard let status = shell.v3Status, let rate = PCVRDisplayRateEstimator.display(forPosesPerSecond: status.posesPerSecond),
               rate != lastRate else { return }
         lastRate = rate
-        events?.displayChanged(PCVRDisplayRate(hertz: rate, supported: [90, 96, 100]))
+        // Only what was measured: the rates a display can run differ by model
+        // (the M5 Vision Pro reaches 120 Hz, the M2 stops at 100), and no API says.
+        events?.displayChanged(PCVRDisplayRate(hertz: rate))
     }
 
     func pause() async {

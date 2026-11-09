@@ -116,7 +116,8 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 - The Windows `longwave-pcvr-host` and headset `PCVRV3Remote` exist. The
   broker supplies side-by-side frames and render-pose side data; Shell A
   receives and decodes them. The development path is not a completed product.
-- Refresh negotiation, audio on the PCVR profile, and sustained end-to-end
+- Refresh reporting and presets are specified (§4.7 "Pacing", "Presets",
+  2026-11-10). Audio on the PCVR profile, and sustained end-to-end
   performance verification remain open. The matched host warp/headset unwarp
   exists since 2026-11-07 (below, "Gaze-driven foveation").
   The current host format is 8-bit HEVC, not the Main10 goal below.
@@ -1289,10 +1290,33 @@ the encoder, the transport and audio are all in the public host. The warp is
 half of a matched pair with the headset's unwarp, so both halves sit in public
 code and share one parameter block and one set of tests.
 
-**Pacing.** The client reports its display refresh in the handshake and on
-every change. In game-mode playout (§5) a frame that misses its display slot is
+**Pacing.** The client reports its display refresh after the hello and on
+every change (`pcvrDisplay`, 0x29: the refresh now and the rates the display
+can run, in millihertz), so the host paces from what the headset says instead
+of inferring the rate from the pose uplink; a client that never sends one gets
+the inference. In game-mode playout (§5) a frame that misses its display slot is
 dropped, never queued: in VR a late frame is worse than a repeated one, which
 the compositor's reprojection covers.
+
+**Presets.** The client sends what the wearer chose (`pcvrPreferences`, 0x2A):
+a render density as per mille of the headset's native density over its whole
+view, and a stream-rate cap (0 = follow the display). The named presets
+(`PCVRQualityPreset` performance 0.70, balanced 0.85, quality 1.00, maximum
+1.15; `PCVRFrameRatePreset` match display, or a cap of 60, 72, 90 or 120) live
+in StreamWire so every client means the same thing by them. The host derives
+each eye's render size from the density and the eye's field of view
+(`PCVRProfile.renderEye`), hands it to the VR compositor, follows the display
+up to the cap, and steps the stream rate down by itself when the PC can't keep
+up. It reports what it settled on (`pcvrSessionState`, 0x2B: render eye, stream
+rate, whether a title or the compositor's home view renders, and whether the
+rate is held down by the PC or a size change waits for the next title). A
+client shows that; nothing depends on it.
+
+**Input bridge.** The PC's controller and library bridge needs its addresses
+and a session token. The VR compositor puts its rendezvous in frame side data
+(`inputBridge`, type 4, opaque, at most 512 bytes) about once a second, so it
+travels inside the encrypted stream and a PCVR client finds the bridge without
+another channel.
 
 **What the entitlement adds later.** The gaze sample becomes valid, the warp
 centre follows it, and the system's QR pairing can replace v3's own enrollment

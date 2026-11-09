@@ -10,6 +10,11 @@ public struct SideDataType: RawRepresentable, Hashable, Comparable, Sendable, Cu
     public static let renderPose = SideDataType(rawValue: 1)
     public static let foveation = SideDataType(rawValue: 2)
     public static let depthRange = SideDataType(rawValue: 3)
+    /// The PC's input bridge rendezvous (its addresses, ports and session
+    /// token), opaque here, from the VR compositor about once a second. It
+    /// rides the encrypted stream so a PCVR client finds the bridge without a
+    /// side channel.
+    public static let inputBridge = SideDataType(rawValue: 4)
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
     public var description: String { "sideData(\(rawValue))" }
@@ -182,11 +187,16 @@ public struct SideData: Sendable, Hashable {
     public var renderPose: RenderPose?
     public var foveation: FoveationSideData?
     public var depthRange: DepthRange?
+    /// Opaque (`SideDataType.inputBridge`), at most `maxInputBridge` bytes.
+    public var inputBridge: [UInt8]?
+    public static let maxInputBridge = 512
 
-    public init(renderPose: RenderPose? = nil, foveation: FoveationSideData? = nil, depthRange: DepthRange? = nil) {
+    public init(renderPose: RenderPose? = nil, foveation: FoveationSideData? = nil, depthRange: DepthRange? = nil,
+                inputBridge: [UInt8]? = nil) {
         self.renderPose = renderPose
         self.foveation = foveation
         self.depthRange = depthRange
+        self.inputBridge = inputBridge
     }
 
     public static let none = SideData()
@@ -198,6 +208,7 @@ public struct SideData: Sendable, Hashable {
         if renderPose != nil { types.insert(.renderPose) }
         if foveation != nil { types.insert(.foveation) }
         if depthRange != nil { types.insert(.depthRange) }
+        if inputBridge != nil { types.insert(.inputBridge) }
         return types
     }
 
@@ -205,6 +216,9 @@ public struct SideData: Sendable, Hashable {
         try renderPose?.validate()
         try foveation?.validate()
         try depthRange?.validate()
+        if let inputBridge, inputBridge.isEmpty || inputBridge.count > Self.maxInputBridge {
+            throw .invalid("sideData.inputBridge")
+        }
     }
 
     /// Decodes items until the reader is exhausted.
@@ -224,6 +238,10 @@ public struct SideData: Sendable, Hashable {
             case .depthRange:
                 guard depthRange == nil else { throw .duplicate("sideData.depthRange") }
                 depthRange = try DepthRange(from: &value)
+            case .inputBridge:
+                guard inputBridge == nil else { throw .duplicate("sideData.inputBridge") }
+                guard length > 0, length <= Self.maxInputBridge else { throw .invalid("sideData.inputBridge") }
+                inputBridge = Array(try value.readBytes(length))
             default:
                 break // unknown: skipped by length
             }
@@ -241,6 +259,9 @@ public struct SideData: Sendable, Hashable {
         if let depthRange {
             writeItem(.depthRange, length: DepthRange.wireSize, to: &writer) { depthRange.encode(to: &$0) }
         }
+        if let inputBridge {
+            writeItem(.inputBridge, length: inputBridge.count, to: &writer) { $0.writeBytes(inputBridge) }
+        }
     }
 
     private func writeItem(_ type: SideDataType, length: Int, to writer: inout WireWriter,
@@ -255,6 +276,7 @@ public struct SideData: Sendable, Hashable {
         (renderPose == nil ? 0 : 3 + RenderPose.wireSize)
             + (foveation == nil ? 0 : 3 + FoveationSideData.wireSize)
             + (depthRange == nil ? 0 : 3 + DepthRange.wireSize)
+            + (inputBridge.map { 3 + $0.count } ?? 0)
     }
 }
 

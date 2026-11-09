@@ -28,6 +28,12 @@ public struct MessageType: RawRepresentable, Hashable, Sendable, CustomStringCon
     /// client's Screen toggle the same way.
     public static let streamStart = MessageType(rawValue: 0x27)
     public static let streamStop = MessageType(rawValue: 0x28)
+    /// Client -> host, PCVR: the display's refresh and the rates it can run (`PCVRDisplayRate`).
+    public static let pcvrDisplay = MessageType(rawValue: 0x29)
+    /// Client -> host, PCVR: render density and frame-rate cap (`PCVRPreferences`).
+    public static let pcvrPreferences = MessageType(rawValue: 0x2A)
+    /// Host -> client, PCVR: the render size and stream rate in use (`PCVRSessionState`).
+    public static let pcvrSessionState = MessageType(rawValue: 0x2B)
 
     // Input events, client -> host, channel 1 (0x40...0x5F). See `InputEvent`.
     public static let keyDown = MessageType(rawValue: 0x40)

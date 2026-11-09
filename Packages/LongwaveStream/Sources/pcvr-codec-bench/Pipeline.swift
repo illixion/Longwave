@@ -27,7 +27,7 @@ struct EncoderSettings {
     /// A foveal QP map (`FovealQPMap`, the host's defaults): `foveaQP` at the warp
     /// centre out to `foveaRadius` degrees, ramping to `edgeQP` at `edgeRadius`. 0/0 is off.
     var foveaQP = -10
-    var edgeQP = 10
+    var edgeQP = 3
     var foveaRadius = 8.0
     var edgeRadius = 30.0
     /// Warp parameters (`--warp centre,ratio`): the host's default 0.3 at 3.5.
@@ -53,6 +53,9 @@ struct ViewerSettings {
     var ipd: Float = 0.064
     /// The side of the measured box round the gaze, render pixels.
     var box = 384
+    /// A second box this far from the gaze (render pixels): the periphery, where the
+    /// warp's compressed edges and the coarse QP land. About 40 px a degree.
+    var sideOffset = (dx: -1000, dy: 0)
 
     var rightTangents: [Float] { [-leftTangents[1], -leftTangents[0], leftTangents[2], leftTangents[3]] }
 }
@@ -220,6 +223,10 @@ final class Pipeline: BenchEncoder {
             gazePSNR: fovea.gazePSNR, gazeSSIM: fovea.gazeSSIM, gazeWarpPSNR: fovea.warpPSNR, gazeDetail: fovea.detail,
             centrePSNR: fovea.centrePSNR, centreSSIM: fovea.centreSSIM, edgePSNR: fovea.edgePSNR, blockiness: fovea.blockiness,
             turnRate: viewer.trajectory.turnRate(at: time) * 180 / .pi)
+        qualities[request.index]!.sidePSNR = fovea.sidePSNR
+        qualities[request.index]!.sideSSIM = fovea.sideSSIM
+        qualities[request.index]!.sideDetail = fovea.sideDetail
+        qualities[request.index]!.edgeBlockiness = fovea.edgeBlockiness
         let gazeUV = GazeProjection.centre(direction: vector(actualGaze), distance: 0, deviceFromEye: eyePose(0),
                                            fieldOfView: fovs[0]) ?? .centre
         qualities[request.index]!.gazeUV = [Double(gazeUV.x), Double(gazeUV.y)]
@@ -244,6 +251,7 @@ final class Pipeline: BenchEncoder {
 
     private struct Fovea {
         var gazePSNR, gazeSSIM, warpPSNR, detail, centrePSNR, centreSSIM, edgePSNR, blockiness: Double
+        var sidePSNR, sideSSIM, sideDetail, edgeBlockiness: Double
     }
 
     private func eyes(_ wire: PixelSize) -> lw_quality_eyes {
@@ -251,13 +259,15 @@ final class Pipeline: BenchEncoder {
                         wire_eye_width: Int32(wire.width), wire_eye_height: Int32(wire.height))
     }
 
-    private func boxes(maps: StereoCentreEdgeMapping, actualGaze: [Double], fovs: [FieldOfView]) -> [lw_quality_box] {
+    private func boxes(maps: StereoCentreEdgeMapping, actualGaze: [Double], fovs: [FieldOfView],
+                       offset: (dx: Int, dy: Int) = (0, 0)) -> [lw_quality_box] {
         (0..<2).map { e in
             let uv = GazeProjection.centre(direction: vector(actualGaze), distance: 0, deviceFromEye: eyePose(e),
                                            fieldOfView: fovs[e]) ?? .centre
             let side = viewer.box
-            let x = min(max(Int(uv.x * Float(viewer.renderEye.width)) - side / 2, 0), Int(viewer.renderEye.width) - side)
-            let y = min(max(Int(uv.y * Float(viewer.renderEye.height)) - side / 2, 0), Int(viewer.renderEye.height) - side)
+            // The offset points the same way in both eyes, towards the wearer's left (-dx).
+            let x = min(max(Int(uv.x * Float(viewer.renderEye.width)) + offset.dx - side / 2, 0), Int(viewer.renderEye.width) - side)
+            let y = min(max(Int(uv.y * Float(viewer.renderEye.height)) + offset.dy - side / 2, 0), Int(viewer.renderEye.height) - side)
             let m = e == 0 ? maps.left : maps.right
             return lw_quality_box(eye: Int32(e), x: Int32(x), y: Int32(y), size: Int32(side),
                                   axis_x: (m.x.constants.x, m.x.constants.y, m.x.constants.z, m.x.constants.w),
@@ -287,7 +297,7 @@ final class Pipeline: BenchEncoder {
         }
         let ranges = [maps.left, maps.right].map { (x: centreRange($0.x, Int(wire.width)), y: centreRange($0.y, Int(wire.height))) }
         var centreSSE = 0.0, centreCount = 0.0, centreSSIM = 0.0, centreTiles = 0.0, blocky = 0.0
-        var edgeSSE = 0.0, edgeCount = 0.0
+        var edgeSSE = 0.0, edgeCount = 0.0, edgeBlocky = 0.0, edgeTiles = 0.0
         for ty in 0..<down {
             for tx in 0..<across {
                 let i = (ty * across + tx) * 4
@@ -306,39 +316,50 @@ final class Pipeline: BenchEncoder {
                 } else {
                     edgeSSE += Double(wireTiles[i])
                     edgeCount += pixels
+                    edgeBlocky += Double(wireTiles[i + 2])
+                    edgeTiles += 1
                 }
             }
         }
 
-        var boxList = boxes(maps: maps, actualGaze: actualGaze, fovs: fovs)
         let tilesPerBox = (viewer.box / 16) * (viewer.box / 16)
         if gazeTiles.count != tilesPerBox * 2 * 8 { gazeTiles = [Float](repeating: 0, count: tilesPerBox * 2 * 8) }
         var e = eyes(wire)
-        try gazeTiles.withUnsafeMutableBufferPointer { out in
-            try boxList.withUnsafeMutableBufferPointer { b in
-                try Self.check(lw_quality_gaze(quality, render.raw, wireTexture.raw, reconTexture.raw, &e, b.baseAddress, 2,
-                                               out.baseAddress, UInt32(out.count)), "lw_quality_gaze")
+        /// Shown-vs-truth for a box in each eye: PSNR, SSIM, the warp's share, detail kept.
+        func probe(offset: (dx: Int, dy: Int)) throws -> (psnr: Double, ssim: Double, warp: Double, detail: Double) {
+            var boxList = boxes(maps: maps, actualGaze: actualGaze, fovs: fovs, offset: offset)
+            try gazeTiles.withUnsafeMutableBufferPointer { out in
+                try boxList.withUnsafeMutableBufferPointer { b in
+                    try Self.check(lw_quality_gaze(quality, render.raw, wireTexture.raw, reconTexture.raw, &e, b.baseAddress, 2,
+                                                   out.baseAddress, UInt32(out.count)), "lw_quality_gaze")
+                }
             }
+            var shownSSE = 0.0, wireSSE = 0.0, ssim = 0.0, lapTruth = 0.0, lapShown = 0.0
+            for t in 0..<(tilesPerBox * 2) {
+                shownSSE += Double(gazeTiles[t * 8])
+                wireSSE += Double(gazeTiles[t * 8 + 1])
+                ssim += Double(gazeTiles[t * 8 + 2])
+                lapTruth += Double(gazeTiles[t * 8 + 4])
+                lapShown += Double(gazeTiles[t * 8 + 5])
+            }
+            let pixels = Double(viewer.box * viewer.box * 2)
+            return (Self.psnr(shownSSE, pixels), ssim / Double(tilesPerBox * 2), Self.psnr(wireSSE, pixels),
+                    lapTruth > 0 ? lapShown / lapTruth : .nan)
         }
-        var shownSSE = 0.0, wireSSE = 0.0, ssim = 0.0, lapTruth = 0.0, lapShown = 0.0
-        for t in 0..<(tilesPerBox * 2) {
-            shownSSE += Double(gazeTiles[t * 8])
-            wireSSE += Double(gazeTiles[t * 8 + 1])
-            ssim += Double(gazeTiles[t * 8 + 2])
-            lapTruth += Double(gazeTiles[t * 8 + 4])
-            lapShown += Double(gazeTiles[t * 8 + 5])
-        }
-        let gazePixels = Double(viewer.box * viewer.box * 2)
-        return Fovea(gazePSNR: Self.psnr(shownSSE, gazePixels), gazeSSIM: ssim / Double(tilesPerBox * 2),
-                     warpPSNR: Self.psnr(wireSSE, gazePixels), detail: lapTruth > 0 ? lapShown / lapTruth : .nan,
+        let gaze = try probe(offset: (0, 0))
+        let side = try probe(offset: viewer.sideOffset)
+        return Fovea(gazePSNR: gaze.psnr, gazeSSIM: gaze.ssim, warpPSNR: gaze.warp, detail: gaze.detail,
                      centrePSNR: Self.psnr(centreSSE, centreCount), centreSSIM: centreTiles > 0 ? centreSSIM / centreTiles : .nan,
-                     edgePSNR: Self.psnr(edgeSSE, edgeCount), blockiness: centreTiles > 0 ? blocky / centreTiles : .nan)
+                     edgePSNR: Self.psnr(edgeSSE, edgeCount), blockiness: centreTiles > 0 ? blocky / centreTiles : .nan,
+                     sidePSNR: side.psnr, sideSSIM: side.ssim, sideDetail: side.detail,
+                     edgeBlockiness: edgeTiles > 0 ? edgeBlocky / edgeTiles : .nan)
     }
 
     private func crop(maps: StereoCentreEdgeMapping, actualGaze: [Double], fovs: [FieldOfView], wire: PixelSize, time: Double,
                       qp: Int, quality q: FrameQuality) throws {
         guard let directory = cropDirectory, let reconTexture else { return }
-        var box = boxes(maps: maps, actualGaze: actualGaze, fovs: fovs)[0]
+        for (suffix, offset) in [("", (dx: 0, dy: 0)), ("-side", viewer.sideOffset)] {
+        var box = boxes(maps: maps, actualGaze: actualGaze, fovs: fovs, offset: offset)[0]
         var e = eyes(wire)
         let side = Int(box.size)
         var truth = [UInt8](repeating: 0, count: side * side * 4), shown = truth
@@ -354,8 +375,9 @@ final class Pipeline: BenchEncoder {
             pair.replaceSubrange((y * side * 8)..<(y * side * 8 + side * 4), with: truth[(y * side * 4)..<((y + 1) * side * 4)])
             pair.replaceSubrange((y * side * 8 + side * 4)..<((y + 1) * side * 8), with: shown[(y * side * 4)..<((y + 1) * side * 4)])
         }
-        let name = String(format: "%@-t%06.2f-qp%02d-%.1fdB-%.0fdps.bmp", label, time, qp, q.gazePSNR, q.turnRate)
+        let name = String(format: "%@-t%06.2f-qp%02d-%.1fdB-%.0fdps%@.bmp", label, time, qp, q.gazePSNR, q.turnRate, suffix)
         try BMP.write(pair, width: side * 2, height: side, to: directory.appendingPathComponent(name))
+        }
     }
 }
 

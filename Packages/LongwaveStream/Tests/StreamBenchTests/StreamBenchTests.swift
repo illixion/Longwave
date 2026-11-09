@@ -169,10 +169,10 @@ final class FovealQPMapTests: XCTestCase {
         // The left eye's centre in wire pixels.
         let w = try XCTUnwrap(maps.left.wireUV(forRender: centre))
         let cx = Int(w.x * Float(wire.width) / 32), cy = Int(w.y * Float(wire.height) / 32)
-        XCTAssertEqual(map[cy * size.width + cx], -10)
-        XCTAssertEqual(map[0], 10)
-        XCTAssertEqual(map[map.count - 1], 10)
-        XCTAssertTrue(map.allSatisfy { (-10...10).contains($0) })
+        XCTAssertEqual(map[cy * size.width + cx], Int8(qp.foveaQP))
+        XCTAssertEqual(map[0], Int8(qp.edgeQP))
+        XCTAssertEqual(map[map.count - 1], Int8(qp.edgeQP))
+        XCTAssertTrue(map.allSatisfy { (qp.foveaQP...qp.edgeQP).contains(Int($0)) })
         XCTAssertFalse(FovealQPMap(foveaQP: 0, edgeQP: 0).isEnabled)
     }
 }

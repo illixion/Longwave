@@ -19,6 +19,12 @@ struct HostOptions {
     var port = PCVRProfile.port
     /// The encoder's ceiling and the rate estimate's cap.
     var maxMbps = 150
+    /// A floor under the colour bitrate while the link shows no loss (0 = off). GCC's
+    /// delay estimate swings with Wi-Fi jitter (observed 70 to 200 Mbit/s on a link
+    /// that carried 137 with no loss and a 3 ms queue), and every dip is a block-ridden
+    /// picture until it recovers; an encoder sending above a dip also feeds the
+    /// estimate's acknowledged rate, which is what lets it climb back.
+    var minMbps = 0
     /// The rate estimate's starting point.
     var startMbps = 30
     /// The frame clock's rate, and whether it follows the headset's display
@@ -1302,7 +1308,11 @@ final class PCVRHost: @unchecked Sendable {
             guard let session = endpoint.sessions[viewer.index]?.session else { return nil }
             // The depth stream's share comes out of the colour budget.
             let depth = viewer.depthSender == nil ? 0 : options.depthMbps * 1_000_000
-            return max(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) - depth, 1_000_000)
+            var colour = max(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) - depth, 1_000_000)
+            if options.minMbps > 0, viewer.sender.controller.smoothedLoss < 0.02 {
+                colour = max(colour, options.minMbps * 1_000_000)
+            }
+            return colour
         }
         targetBitrate = bitrates.min().map { min($0, options.maxMbps * 1_000_000) }
         if now - lastDeviceReload > 10_000_000_000 { reloadDevices(now: now) }

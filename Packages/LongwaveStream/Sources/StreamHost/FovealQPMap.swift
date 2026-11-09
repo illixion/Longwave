@@ -9,14 +9,18 @@ import StreamWire
 ///
 /// Measured on pcvr-codec-bench (2026-11-09, a recorded head shake, 100
 /// Mbit/s): -10/+10 at 8°/30° took the gaze from 32.5 to 40.4 dB (SSIM 0.973
-/// to 0.993), and the encode got faster.
+/// to 0.993), and the encode got faster. The edge side of it is a trade: the
+/// periphery is also seen (a side box 25° off the gaze), and +10 there doubled the
+/// block-edge excess of the compressed edges against no map at all (1.07 against
+/// 0.59 at 70 Mbit/s; the wearer saw blocky sides). -10/+3 keeps the gaze within
+/// 0.6 dB of +10 on a good link and takes 24 % of the blockiness back.
 public struct FovealQPMap: Sendable, Equatable {
     public var foveaQP: Int
     public var edgeQP: Int
     public var foveaRadius: Double
     public var edgeRadius: Double
 
-    public init(foveaQP: Int = -10, edgeQP: Int = 10, foveaRadius: Double = 8, edgeRadius: Double = 30) {
+    public init(foveaQP: Int = -10, edgeQP: Int = 3, foveaRadius: Double = 8, edgeRadius: Double = 30) {
         self.foveaQP = foveaQP
         self.edgeQP = edgeQP
         self.foveaRadius = foveaRadius

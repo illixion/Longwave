@@ -29,6 +29,7 @@ struct Config {
     var maxMbps = 120
     var startMbps = 100
     var depthReserve = 40
+    var minMbps = 0
     var depthLoad = 4.0
     var trajectoryPath: String?
     var start = 0.0
@@ -36,6 +37,7 @@ struct Config {
     var followGaze = true
     var gazeLag = 0.03
     var box = 384
+    var sideOffset = (dx: -1000, dy: 0)
     var crops: String?
     var cropAt: [Double] = []
     var out: String?
@@ -94,6 +96,7 @@ func apply(_ arguments: [String], to config: inout Config) {
         case "--max-mbps": config.maxMbps = int(1...1000)
         case "--start-mbps": config.startMbps = int(1...1000)
         case "--depth-mbps": config.depthReserve = int(0...200)
+        case "--min-mbps": config.minMbps = int(0...1000)
         case "--depth-load": config.depthLoad = double()
         case "--trajectory": config.trajectoryPath = value()
         case "--start": config.start = double()
@@ -103,6 +106,10 @@ func apply(_ arguments: [String], to config: inout Config) {
         case "--follow-gaze": config.followGaze = flag()
         case "--gaze-lag": config.gazeLag = double() / 1000
         case "--box": config.box = int(32...1024) / 16 * 16
+        case "--side":
+            let parts = value().split(separator: ",").compactMap { Int($0) }
+            guard parts.count == 2 else { fail("--side takes dx,dy in render pixels (-1000,0)") }
+            config.sideOffset = (parts[0], parts[1])
         case "--crops": config.crops = value()
         case "--crop-at": config.cropAt = value().split(separator: ",").compactMap { Double($0) }.sorted()
         case "--out": config.out = value()
@@ -243,6 +250,7 @@ for variant in variants {
             viewer.followGaze = config.followGaze
             viewer.gazeLag = config.gazeLag
             viewer.box = config.box
+            viewer.sideOffset = config.sideOffset
             let pipeline = try Pipeline(device: device, settings: config.encoder, viewer: viewer)
             pipeline.label = label.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "@", with: "")
             if let crops = config.crops {
@@ -277,6 +285,7 @@ for variant in variants {
                 configuration.maxMbps = config.maxMbps
                 configuration.startMbps = config.startMbps
                 configuration.depthReserveMbps = config.depthReserve
+                configuration.minMbps = config.minMbps
                 configuration.depthLoadMbps = config.depthLoad
                 configuration.seed = config.seed
                 result = try StreamRun(configuration: configuration, encoder: pipeline).run()

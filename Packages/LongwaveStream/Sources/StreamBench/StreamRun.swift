@@ -107,6 +107,9 @@ public struct StreamRunConfiguration: Sendable {
     /// The colour encoder's ceiling and the rate estimate's start (`--max-mbps`, `--start-mbps`).
     public var maxMbps: Int = 120
     public var startMbps: Int = 100
+    /// A floor under the colour bitrate while the link shows no loss (`--min-mbps`,
+    /// the host's option of the same name); 0 follows the rate estimate alone.
+    public var minMbps: Int = 0
     /// The depth stream: the host reserves `depthReserveMbps` of the budget
     /// for it (`--depth-mbps`); the bench sends `depthLoadMbps` of real traffic.
     public var depthReserveMbps: Int = 40
@@ -275,8 +278,11 @@ public final class StreamRun {
                 continue
             }
             let depthShare = configuration.depthReserveMbps * 1_000_000
-            let target = min(max(sender.encoderBitrate(udpPayload: udpPayload) - depthShare, 1_000_000),
-                             configuration.maxMbps * 1_000_000)
+            var colour = max(sender.encoderBitrate(udpPayload: udpPayload) - depthShare, 1_000_000)
+            if configuration.minMbps > 0, sender.controller.smoothedLoss < 0.02 {
+                colour = max(colour, configuration.minMbps * 1_000_000)
+            }
+            let target = min(colour, configuration.maxMbps * 1_000_000)
             result.bitrates.append((time, target))
             let forceKey = wantsKey || sender.awaitingKeyFrame
             if forceKey { wantsKey = false }

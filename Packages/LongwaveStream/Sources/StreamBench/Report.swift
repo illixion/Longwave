@@ -24,6 +24,12 @@ public struct FrameQuality: Sendable, Equatable, Codable {
     public var turnRate: Double
     /// Left eye, render UV (top-left origin): where the eyes looked, and where
     /// the warp's full-density centre was.
+    /// The same, in a box off to the side of the gaze (the periphery).
+    public var sidePSNR: Double = .nan
+    public var sideSSIM: Double = .nan
+    public var sideDetail: Double = .nan
+    /// Block-edge excess over the compressed edge tiles of the wire picture (0 = none).
+    public var edgeBlockiness: Double = .nan
     public var gazeUV: [Double] = []
     public var centreUV: [Double] = []
 
@@ -82,6 +88,9 @@ public struct RunSummary: Sendable, Codable {
     public var gazePSNR: [Double]
     public var gazeSSIM: [Double]
     public var gazeDetail: [Double]
+    public var sidePSNR: [Double]
+    public var sideDetail: [Double]
+    public var edgeBlockiness: [Double]
     public var centrePSNR: [Double]
     public var blockiness: [Double]
 
@@ -132,11 +141,14 @@ public struct RunSummary: Sendable, Codable {
         gazePSNR = three(\.gazePSNR)
         gazeSSIM = three(\.gazeSSIM)
         gazeDetail = three(\.gazeDetail)
+        sidePSNR = three(\.sidePSNR)
+        sideDetail = three(\.sideDetail)
+        edgeBlockiness = three(\.edgeBlockiness, worstIsLow: false)
         centrePSNR = three(\.centrePSNR)
         blockiness = three(\.blockiness, worstIsLow: false)
     }
 
-    public static let header = "label                           |  fps   Mbps  QP(all/mov/max) | key rec und held | lat p50/p95/p99 ms | age p50/p95 | rep%  frz | gaze dB all/mov/worst | SSIM mov | detail mov | centre dB mov | block mov/worst"
+    public static let header = "label                           |  fps   Mbps  QP(all/mov/max) | key rec und held | lat p50/p95/p99 ms | age p50/p95 | rep%  frz | gaze dB all/mov/worst | SSIM mov | detail mov | centre dB mov | block mov/worst | side dB mov/worst | side detail | edge block mov/worst"
 
     public var line: String {
         func f(_ v: Double, _ digits: Int = 1) -> String { v.isFinite ? String(format: "%.\(digits)f", v) : "-" }
@@ -147,7 +159,8 @@ public struct RunSummary: Sendable, Codable {
             + "| \(f(age[0]).leftPad(5)) \(f(age[1]).leftPad(5)) | \(f(repeats).leftPad(4)) \(String(freezes).leftPad(4)) "
             + "| \(f(gazePSNR[0]).leftPad(5)) \(f(gazePSNR[1]).leftPad(5)) \(f(gazePSNR[2]).leftPad(5)) "
             + "| \(f(gazeSSIM[1], 3)) | \(f(gazeDetail[1], 2).leftPad(5)) | \(f(centrePSNR[1]).leftPad(5)) "
-            + "| \(f(blockiness[1], 2)) \(f(blockiness[2], 2))"
+            + "| \(f(blockiness[1], 2)) \(f(blockiness[2], 2)) "
+            + "| \(f(sidePSNR[1]).leftPad(5)) \(f(sidePSNR[2]).leftPad(5)) | \(f(sideDetail[1], 2).leftPad(5)) | \(f(edgeBlockiness[1], 2)) \(f(edgeBlockiness[2], 2))"
     }
 }
 

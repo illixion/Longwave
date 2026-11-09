@@ -1,6 +1,6 @@
 // longwave-pcvr-host: the v3 PCVR host (NATIVE_V3_PROTOCOL.md section 4.7).
 //
-//   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150]
+//   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150] [--min-mbps 0]
 //                      [--start-mbps 30] [--refresh auto|display|Hz] [--max-stream-hz Hz] [--frame-lock on|off]
 //                      [--wake-margin auto|half|ms] [--log FILE] [--seconds N]
 //                      [--foveation off|auto|on] [--foveation-centre 0.3]
@@ -49,6 +49,7 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
         case "--channel": options.channel = value(argument)
         case "--port": options.port = UInt16(value(argument)) ?? options.port
         case "--max-mbps": options.maxMbps = Int(value(argument)) ?? options.maxMbps
+        case "--min-mbps": options.minMbps = Int(value(argument)) ?? options.minMbps
         case "--start-mbps": options.startMbps = Int(value(argument)) ?? options.startMbps
         case "--refresh":
             let rate = value(argument)

@@ -122,7 +122,14 @@ python3 scripts/pcvr-residuals/run.py --out /private/tmp/pcvr-default \
 ```
 
 Values are `PCVRDepthWarper.Resampling`'s raw values (`bilinear`,
-`catmull-rom`, `catmull-rom-dering`); unset uses the warper's default.
+`catmull-rom`, `catmull-rom-dering`); unset uses the warper's default
+(bilinear).
+
+**Headset check, 2026-11-09:** de-ringed Catmull-Rom in both the warp and the
+RealityKit material (the harness's -26% circle error, -15% temporal change)
+made no difference the wearer could see, and the headset reached serious
+thermal state quickly. A harness gain of this size is not a visible one;
+weigh GPU cost first.
 
 `TEST_RUNNER_PCVR_RESIDUAL_MESH_FILTER=catmull-rom-dering` makes the late-mesh
 proxy's material read with the same de-ringed Catmull-Rom, to estimate what a

@@ -140,12 +140,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         /// Catmull-Rom kept within the four nearest texels: no overshoot halo.
         case catmullRomDeRinged = "catmull-rom-dering"
     }
-    /// De-ringed Catmull-Rom: on the residual harness's host-matched fixture
-    /// (docs/PCVR_RESIDUAL_HARNESS.md, 2026-11-09) it took 17% of the warp's
-    /// error off the circle at the gaze and 12% of its frame-to-frame change,
-    /// and 6-8% off the wall grids, at no measurable GPU cost; plain
-    /// Catmull-Rom sharpened as much but its halo raised the temporal error.
-    var resampling: Resampling = .catmullRomDeRinged
+    /// Bilinear. De-ringed Catmull-Rom took 17% of the warp's error off the
+    /// circle at the gaze and 12% of its frame-to-frame change on the residual
+    /// harness's host-matched fixture (docs/PCVR_RESIDUAL_HARNESS.md,
+    /// 2026-11-09), but on the headset, with a matching RealityKit read, the
+    /// wearer saw no difference and the headset went to serious thermal state
+    /// quickly. Kept selectable for A/B runs; the harness numbers alone are not
+    /// a reason to turn it on.
+    var resampling: Resampling = .bilinear
 
     /// The depth-map width (one eye) the march's steps are counted in: the
     /// stream's eighth-size depth of a 5184-wide eye, where `stepTexels`,

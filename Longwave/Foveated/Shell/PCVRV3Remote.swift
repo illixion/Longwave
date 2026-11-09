@@ -50,6 +50,9 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     var depthFramesDecoded = 0
     var depthFramesLost = 0
     var depthPicture = "—"
+    /// What the host settled on (`pcvrSessionState`): the render size per eye,
+    /// the stream rate, whether a title renders, and why it might be held back.
+    var hostSession: PCVRSessionState?
 }
 
 /// The depth stream's decoded pictures (NATIVE_V3_PROTOCOL.md §4.8, PCVR), kept
@@ -234,6 +237,12 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var counters = Counters()
     private var lastStats: UInt64 = 0
     private var lastCentres: [Float]?
+    /// What this client reports and asks for (on `queue`); sent after every connect.
+    private var display: PCVRDisplayRate?
+    private var preferences: PCVRPreferences?
+    private var lastInputBridge: [UInt8]?
+    /// The PC's input-bridge rendezvous, each time it changes (on `queue`).
+    var onInputBridge: (@Sendable (Data) -> Void)?
 
     private struct Counters {
         var framesAssembled = 0
@@ -284,6 +293,36 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         depthDecoder?.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestDepthKeyFrame() }
         }
+    }
+
+    // MARK: Display and preferences
+
+    /// The display's refresh now and the rates it can run; sent at once and after every connect.
+    func setDisplay(_ rate: PCVRDisplayRate) {
+        queue.async { [self] in
+            guard rate != display else { return }
+            display = rate
+            sendDisplay()
+        }
+    }
+
+    /// The wearer's quality and frame-rate choice; sent at once and after every connect.
+    func setPreferences(_ wanted: PCVRPreferences) {
+        queue.async { [self] in
+            guard wanted != preferences else { return }
+            preferences = wanted
+            sendPreferences()
+        }
+    }
+
+    private func sendDisplay() {
+        guard let display, let body = try? display.encoded() else { return }
+        try? session?.send(.pcvrDisplay, body: body, on: .control)
+    }
+
+    private func sendPreferences() {
+        guard let preferences, let body = try? preferences.encoded() else { return }
+        try? session?.send(.pcvrPreferences, body: body, on: .control)
     }
 
     // MARK: Lifecycle
@@ -447,6 +486,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         attempts = 0
         setState("Connected, waiting for the picture")
         log.notice("v3 PCVR session up (\(ack.platform.description, privacy: .public), datagrams up to \(ack.maxUDPPayload, privacy: .public) bytes)")
+        lastInputBridge = nil
+        sendDisplay()
+        sendPreferences()
         drive()
     }
 
@@ -490,6 +532,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         case .bye:
             let reason = (try? TextBody.decode(message.body)) ?? ""
             lost(reason.isEmpty ? "the PC ended the session" : "the PC ended the session: \(reason)")
+        case .pcvrSessionState:
+            guard let state = try? PCVRSessionState(decoding: message.body) else { return }
+            status.withLock { $0.hostSession = state }
         default:
             break
         }
@@ -576,6 +621,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
 
     private func deliver(_ frame: AssembledVideoFrame) {
         counters.framesAssembled += 1
+        if let bridge = frame.payload.sideData.inputBridge, bridge != lastInputBridge {
+            lastInputBridge = bridge
+            onInputBridge?(Data(bridge))
+        }
         while let next = pendingFormats.first, !SerialNumber.isNewer(next.firstFrameNumber, than: frame.frameNumber) {
             pendingFormats.removeFirst()
             apply(next)

@@ -89,6 +89,10 @@ private struct PCVRSessionForm: View {
 
     // Live in-session preferences rather than new-connection defaults, so they
     // stay where the immersive view reads them from.
+    /// Which stream the tab starts: Apple's foveated streaming (CloudXR) or
+    /// Longwave's own (Native, `PCVRNativeSession`).
+    @AppStorage("pcvr.engine") private var engine = "cloudxr"
+    @Environment(PCVRNativeSession.self) private var nativeSession
     @AppStorage("foveatedWristHUD") private var wristHUD = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
     #if LONGWAVE_INTERNAL
@@ -122,7 +126,19 @@ private struct PCVRSessionForm: View {
         ScrollView {
             VStack(spacing: 20) {
                 header
-                sessionPanel
+                if manager.isDisconnected && !nativeSession.isActive {
+                    Picker("Streaming", selection: $engine) {
+                        Text("Foveated streaming").tag("cloudxr")
+                        Text("Native").tag("native")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 420)
+                }
+                if engine == "native" {
+                    PCVRNativeSessionPanel(connection: connection)
+                } else {
+                    sessionPanel
+                }
                 connectionPanel
                 immersionPanel
                 controlsPanel

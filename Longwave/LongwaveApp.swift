@@ -24,6 +24,7 @@ struct LongwaveApp: App {
     @State private var pcvrLimiter = PCVRSessionLimiter()
     @State private var pcvrBandwidth = PCVRBandwidthMonitor()
     @State private var pcvrShell = PCVRShellSession()
+    @State private var pcvrNative = PCVRNativeSession()
 
     /// Bridges the manager's style to the scene's existential binding.
     ///
@@ -82,6 +83,8 @@ struct LongwaveApp: App {
                 .environment(pcvrStore)
                 .environment(pcvrLimiter)
                 .environment(pcvrBandwidth)
+                .environment(pcvrShell)
+                .environment(pcvrNative)
                 .pcvrShellSpaceControl(pcvrShell)
                 #if DEBUG
                 .pcvrShellDemo()

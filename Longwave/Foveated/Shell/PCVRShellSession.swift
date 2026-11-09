@@ -41,6 +41,9 @@ final class PCVRShellSession {
     @ObservationIgnored var gazeSource: (any RAVEGazeSource & Sendable)?
     private(set) var v3Status: PCVRV3Status?
     @ObservationIgnored private var v3Remote: PCVRV3Remote?
+    /// Called with each run's v3 client once it starts, so a session controller
+    /// can report the display and preferences and hear the input bridge.
+    @ObservationIgnored var onRemoteStarted: ((PCVRV3Remote) -> Void)?
 
     #if DEBUG
     var remoteSettings = PCVRFakeRemoteSettings() {
@@ -119,6 +122,7 @@ final class PCVRShellSession {
                     poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
                     remote.start()
                     v3Remote = remote
+                    onRemoteStarted?(remote)
                 } else {
                     log.error("The v3 source has no per-device credential for this PC; pair the headset with its Companion")
                 }

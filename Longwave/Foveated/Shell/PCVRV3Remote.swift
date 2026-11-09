@@ -325,6 +325,25 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         try? session?.send(.pcvrPreferences, body: body, on: .control)
     }
 
+    /// The PCVR stream's start, sent after the display and preferences on every
+    /// connect: a host that runs the PC's PCVR stack on demand starts it now,
+    /// already knowing the render size and rates (NATIVE_V3_PROTOCOL.md §4.7).
+    private func sendStreamStart() {
+        guard let body = try? StreamSubscription(streamID: PCVRProfile.streamID).encoded() else { return }
+        try? session?.send(.streamStart, body: body, on: .control)
+    }
+
+    /// The wearer is done with PCVR: the host may stop the PC's stack at once
+    /// rather than wait for this headset to come back. A dropped link or a
+    /// pause sends nothing, so the stack outlives them.
+    func endPCVR() {
+        queue.async { [self] in
+            guard session != nil, let body = try? StreamSubscription(streamID: PCVRProfile.streamID).encoded() else { return }
+            try? session?.send(.streamStop, body: body, on: .control)
+            flush(now: NativeV3.now())
+        }
+    }
+
     // MARK: Lifecycle
 
     func start() {
@@ -489,6 +508,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         lastInputBridge = nil
         sendDisplay()
         sendPreferences()
+        sendStreamStart()
         drive()
     }
 

@@ -140,6 +140,8 @@ final class PCVRHost: @unchecked Sendable {
         var preferences: PCVRPreferences?
         /// The last `pcvrSessionState` sent, so only changes go out.
         var sentSessionState: PCVRSessionState?
+        /// It started the PCVR stream (`streamStart`): the stack runs for it.
+        var startedStack = false
 
         init(index: UInt32, deviceID: String, name: String, grants: SessionGrants, capabilities: CapabilitySet,
              configuration: VideoStreamSender.Configuration) {
@@ -160,16 +162,31 @@ final class PCVRHost: @unchecked Sendable {
     private static let centreHold: UInt64 = 500_000_000
 
     private let options: HostOptions
-    private let log: HostLog
-    private let lock = NSLock()
+    let log: HostLog
+    let lock = NSLock()
     private var running = true
 
-    private let socket: UDPSocket
+    let socket: UDPSocket
     private let device: GraphicsDevice
     private var source: ExternalFrameSource?
 
     // Under `lock`.
-    private var endpoint = HostEndpoint<UDPAddress>(devices: [])
+    var endpoint = HostEndpoint<UDPAddress>(devices: [])
+    /// The desktop stream's viewers and state (PCVRHost+Desktop.swift).
+    let desktop = DesktopSessions()
+    lazy var desktopCapture = DesktopCapture(log: log, canSend: { [unowned self] in desktop.canSend },
+                                             onFrame: { [unowned self] in desktopFrame($0) })
+    let companion = CompanionLink()
+    /// The PCVR stack, as this host asked the Companion for it (under `lock`):
+    /// asked to start, when to ask it to stop, and why it last couldn't start.
+    private var stackRequested = false
+    private var stackStopDue: UInt64?
+    private var stackFailure: (detail: String, at: UInt64)?
+    /// A headset that started PCVR and left without stopping it (a pause, a
+    /// dropped link) gets this long to come back before the stack stops.
+    private static let stackGrace: UInt64 = 600_000_000_000
+    /// After a failed start, a new one waits this long.
+    private static let stackRetry: UInt64 = 30_000_000_000
     private var pairedDevices: [PairedDevice] = []
     private var viewers: [UInt32: Viewer] = [:]
     private var answered: [String: (hello: ClientHello, grants: SessionGrants, capabilities: CapabilitySet)] = [:]
@@ -325,7 +342,7 @@ final class PCVRHost: @unchecked Sendable {
         try StreamHostRuntime.initialize()
         socket = try UDPSocket(port: options.port)
         device = try GraphicsDevice(for: nil)
-        log.line("device: \(device.adapterName); v3 PCVR on UDP \(options.port); frame source channel '\(options.channel)'")
+        log.line("device: \(device.adapterName); v3 desktop and PCVR on UDP \(options.port); frame source channel '\(options.channel)'")
         reloadDevices(now: Self.now())
     }
 
@@ -350,6 +367,11 @@ final class PCVRHost: @unchecked Sendable {
         let depthThread = Thread { [self] in depthLoop() }
         depthThread.name = "depth"
         depthThread.start()
+        companion.onStackState = { [weak self] state in
+            guard let self else { return }
+            lock.withLock { stackStateChanged(state) }
+        }
+        companion.startReading()
 
         let end = options.seconds.map { Self.now() + UInt64($0 * 1e9) }
         var buffer = [UInt8](repeating: 0, count: 2048)
@@ -369,7 +391,9 @@ final class PCVRHost: @unchecked Sendable {
         }
         lock.withLock {
             for viewer in Array(viewers.values) { endSession(viewer, reason: "The PC stopped streaming.") }
+            for viewer in Array(desktop.viewers.values) { endDesktopSession(viewer, reason: "The PC stopped streaming.") }
         }
+        desktopCapture.stop()
         frameReady.signal()
         depthReady.signal()
         source?.stop()
@@ -1137,6 +1161,7 @@ final class PCVRHost: @unchecked Sendable {
 
     private func reloadDevices(now: UInt64) {
         lastDeviceReload = now
+        applyDesktopSettings(CompanionSettings.load())
         do {
             let loaded = try PairedDevices.load()
             guard loaded != pairedDevices else { return }
@@ -1144,6 +1169,11 @@ final class PCVRHost: @unchecked Sendable {
             let removed = endpoint.setDevices(loaded.map { .init(psk: $0.psk, deviceID: $0.id) })
             for index in removed {
                 if let viewer = viewers[index] { removeViewer(viewer, reason: "device removed") }
+                if let viewer = desktop.viewers[index] { removeDesktopViewer(viewer, reason: "device removed") }
+            }
+            for viewer in Array(desktop.viewers.values)
+            where loaded.first(where: { $0.id == viewer.deviceID }).map({ desktopGrants(device: $0.sessionGrants) }) != viewer.grants {
+                endDesktopSession(viewer, reason: "This device's access to this PC changed. Connect again.")
             }
             log.line("paired devices: \(loaded.count) (\(loaded.filter { $0.sessionGrants.contains(.screen) }.count) with the screen grant)")
         } catch {
@@ -1153,30 +1183,38 @@ final class PCVRHost: @unchecked Sendable {
 
     private func handle(_ datagram: [UInt8], from address: UDPAddress) {
         let now = Self.now()
-        let events = endpoint.receive(datagram, from: address, now: now) { deviceID, hello in
+        let events = endpoint.receive(datagram, from: address, now: now, answerInSlot: { deviceID, hello in
             answer(deviceID: deviceID, hello: hello)
-        }
+        })
         for event in events { handle(event, now: now) }
     }
 
-    private func answer(deviceID: String, hello bytes: [UInt8]) -> [UInt8]? {
+    private func answer(deviceID: String, hello bytes: [UInt8]) -> (ack: [UInt8], slot: UInt8)? {
         guard let hello = try? ClientHello(decoding: bytes) else { return nil }
         var grants = pairedDevices.first { $0.id == deviceID }?.sessionGrants ?? []
-        // This host streams only PCVR: a client that can't take it is refused.
-        if !hello.capabilities.contains(.pcvr) || !grants.contains(.screen) { grants = [] }
+        guard Self.slot(of: hello) == Self.pcvrSlot else {
+            grants = desktopGrants(device: grants)
+            desktop.answered[deviceID] = (hello, grants)
+            return (try? desktopAck(answering: hello, grants: grants).encoded()).map { ($0, Self.desktopSlot) }
+        }
+        if !grants.contains(.screen) { grants = [] }
         let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.hostCapabilities, platform: .windows,
                                keyCodeSpace: .hidUsage, grants: grants, maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
                                hostName: String(ProcessInfo.processInfo.hostName.prefix(HelloLimits.maxNameBytes)),
                                software: "Longwave PCVR host")
         answered[deviceID] = (hello, grants, hello.sessionCapabilities(from: ack))
-        return try? ack.encoded()
+        return (try? ack.encoded()).map { ($0, Self.pcvrSlot) }
     }
 
     private func handle(_ event: HostEndpoint<UDPAddress>.Event, now: UInt64) {
         switch event {
         case .send(let bytes, let address):
             socket.send(bytes, to: address)
-        case .connected(let index, let deviceID, _):
+        case .connected(let index, let deviceID, let helloBytes):
+            if let hello = try? ClientHello(decoding: helloBytes), Self.slot(of: hello) == Self.desktopSlot {
+                desktopConnected(index: index, deviceID: deviceID, now: now)
+                return
+            }
             guard let (hello, grants, capabilities) = answered.removeValue(forKey: deviceID) else { return }
             guard !grants.isEmpty, capabilities.contains(.pcvr) else {
                 log.line("refused a session: \(hello.capabilities.contains(.pcvr) ? "no screen grant" : "not a PCVR client")")
@@ -1201,6 +1239,10 @@ final class PCVRHost: @unchecked Sendable {
                 viewer.depthSender?.setEncoderCeiling(options.depthMbps * 2 * 1_000_000, udpPayload: udpPayload)
             }
         case .confirmed(let index):
+            if let viewer = desktop.viewers[index] {
+                desktopConfirmed(viewer, now: now)
+                return
+            }
             guard let viewer = viewers[index], !viewer.confirmed else { return }
             viewer.confirmed = true
             log.line("viewer '\(viewer.name)' connected from \(endpoint.sessions[index]?.address.description ?? "?")"
@@ -1216,10 +1258,13 @@ final class PCVRHost: @unchecked Sendable {
             requestKeyFrame(now: now)
         case .events(let index, let events):
             if let viewer = viewers[index] { handle(events, from: viewer, now: now) }
+            if let viewer = desktop.viewers[index] { desktopHandle(events, from: viewer, now: now) }
         case .superseded(let index, _):
             if let viewer = viewers[index] { removeViewer(viewer, reason: "superseded by a newer session") }
+            if let viewer = desktop.viewers[index] { removeDesktopViewer(viewer, reason: "superseded by a newer session") }
         case .closed(let index, let closure):
             if let viewer = viewers[index] { removeViewer(viewer, reason: "session closed: \(closure)") }
+            if let viewer = desktop.viewers[index] { removeDesktopViewer(viewer, reason: "session closed: \(closure)") }
         }
     }
 
@@ -1271,6 +1316,16 @@ final class PCVRHost: @unchecked Sendable {
                     }
                     viewer.preferences = preferences
                     updateRequestedEye()
+                case .streamStart:
+                    guard let subscription = try? StreamSubscription(decoding: message.body),
+                          subscription.streamID == PCVRProfile.streamID else { continue }
+                    startStack(for: viewer, now: now)
+                case .streamStop:
+                    guard let subscription = try? StreamSubscription(decoding: message.body),
+                          subscription.streamID == PCVRProfile.streamID, viewer.startedStack else { continue }
+                    viewer.startedStack = false
+                    log.line("viewer '\(viewer.name)' stopped PCVR")
+                    if !viewers.values.contains(where: \.startedStack) { stopStack() }
                 default:
                     continue
                 }
@@ -1378,11 +1433,63 @@ final class PCVRHost: @unchecked Sendable {
         guard viewers.removeValue(forKey: viewer.index) != nil else { return }
         log.line("viewer '\(viewer.name)' left: \(reason)")
         if viewers.isEmpty { headPose = nil }
+        if viewer.startedStack, stackRequested, !viewers.values.contains(where: \.startedStack) {
+            stackStopDue = Self.now() + Self.stackGrace
+            log.line("PCVR stops in \(Self.stackGrace / 60_000_000_000) min unless a headset starts it again")
+        }
+    }
+
+    // MARK: The PCVR stack (under `lock`)
+
+    /// A headset started the PCVR stream: the Companion brings the stack up
+    /// (the frame source then delivers), unless it is already asked for.
+    private func startStack(for viewer: Viewer, now: UInt64) {
+        viewer.startedStack = true
+        stackStopDue = nil
+        if let failure = stackFailure, now &- failure.at < Self.stackRetry {
+            endSession(viewer, reason: "The PC couldn't start PCVR: \(failure.detail)")
+            return
+        }
+        guard !stackRequested else { return }
+        stackRequested = true
+        stackFailure = nil
+        log.line("viewer '\(viewer.name)' started PCVR: asking the Companion for the stack")
+        companion.request("pcvr-start")
+    }
+
+    private func stopStack() {
+        stackStopDue = nil
+        guard stackRequested else { return }
+        stackRequested = false
+        log.line("no headset wants PCVR: asking the Companion to stop the stack")
+        companion.request("pcvr-stop")
+    }
+
+    private func stackStateChanged(_ state: CompanionLink.StackState) {
+        switch state {
+        case .running:
+            stackFailure = nil
+            log.line("the Companion says the PCVR stack is running")
+        case .stopped:
+            stackRequested = false
+            stackStopDue = nil
+            log.line("the Companion says the PCVR stack stopped")
+        case .failed(let detail):
+            stackRequested = false
+            stackStopDue = nil
+            stackFailure = (detail, Self.now())
+            log.line("the Companion couldn't start the PCVR stack: \(detail)")
+            for viewer in Array(viewers.values) where viewer.startedStack {
+                endSession(viewer, reason: "The PC couldn't start PCVR: \(detail)")
+            }
+        }
     }
 
     /// Sends what's due: each viewer's paced media, then the sessions' own datagrams.
-    private func pump() {
+    func pump() {
         let now = Self.now()
+        desktopPump(now: now)
+        if let due = stackStopDue, now >= due { stopStack() }
         for viewer in viewers.values where viewer.confirmed {
             guard let address = endpoint.sessions[viewer.index]?.address else { continue }
             func drain(_ next: () -> VideoStreamSender.Output?) {
@@ -1440,17 +1547,19 @@ final class PCVRHost: @unchecked Sendable {
         }
     }
 
-    private func flush(now: UInt64) {
+    func flush(now: UInt64) {
         let (datagrams, closed) = endpoint.poll(now: now)
         for datagram in datagrams { socket.send(datagram.bytes, to: datagram.to) }
         for (index, closure) in closed {
             if let viewer = viewers[index] { removeViewer(viewer, reason: "session closed: \(closure)") }
+            if let viewer = desktop.viewers[index] { removeDesktopViewer(viewer, reason: "session closed: \(closure)") }
         }
     }
 
     private func pollTimeout(now: UInt64) -> Int32 {
         var wake = now + 100_000_000
         if let next = endpoint.nextWakeTime(now: now) { wake = min(wake, next) }
+        if let next = desktopNextWake(now: now) { wake = min(wake, next) }
         for viewer in viewers.values where viewer.confirmed {
             if let next = viewer.sender.nextWakeTime(now: now) { wake = min(wake, next) }
             if let next = viewer.depthSender?.nextWakeTime(now: now) { wake = min(wake, next) }

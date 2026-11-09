@@ -126,7 +126,7 @@ targets += [
     .executableTarget(
         name: "longwave-pcvr-host",
         dependencies: ["StreamHostWindows", "StreamHost", "StreamTransport", "StreamWire", "StreamCrypto"],
-        linkerSettings: [.linkedLibrary("ws2_32"), .linkedLibrary("crypt32"), .linkedLibrary("advapi32")]
+        linkerSettings: [.linkedLibrary("ws2_32"), .linkedLibrary("crypt32"), .linkedLibrary("advapi32"), .linkedLibrary("user32")]
     ),
     // The codec bench: the test scene along a recorded head trajectory, through
     // the host's warp and NVENC, scored against the truth, over StreamBench's links.

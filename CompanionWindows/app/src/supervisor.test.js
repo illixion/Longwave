@@ -111,3 +111,30 @@ test('declared services join after the broker, in file order, and resolve in the
   sup.refreshPaths(null, bridge);
   assert.deepStrictEqual(sup.names, ['streamHost', 'broker']);
 });
+
+test('the stream host talks to the app over its stdio: requests out, answers in', async () => {
+  const bridge = tempBridge();
+  const sup = new Supervisor({ appRoot: path.join(bridge, 'app'), backendExe: null, bridgeRoot: bridge,
+    logDirectory: bridge });
+  // A stand-in host: one request, plain log noise, then an echo of each answer as a request.
+  sup.definitions.streamHost.exe = () => process.execPath;
+  sup.definitions.streamHost.args = ['-e', `
+    process.stdout.write('log line\\n@longwave {"request":"pcvr-start"}\\n@longwave not json\\n');
+    process.stdin.on('data', (d) => {
+      for (const line of d.toString().split('\\n').filter(Boolean)) {
+        process.stdout.write('@longwave ' + JSON.stringify({ request: 'echo ' + line }) + '\\n');
+      }
+    });`];
+  assert.strictEqual(sup.tellStreamHost({ pcvr: 'running' }), false, 'nothing to tell while it is down');
+  const requests = [];
+  sup.on('stream-host-request', (request) => requests.push(request));
+  assert.ok(sup.start('streamHost').ok);
+  const until = async (done) => {
+    for (let i = 0; i < 200 && !done(); i += 1) await new Promise((r) => setTimeout(r, 10));
+  };
+  await until(() => requests.length >= 1);
+  assert.ok(sup.tellStreamHost({ pcvr: 'running' }));
+  await until(() => requests.length >= 2);
+  assert.deepStrictEqual(requests, ['pcvr-start', 'echo {"pcvr":"running"}']);
+  await sup.stopAndWait('streamHost');
+});

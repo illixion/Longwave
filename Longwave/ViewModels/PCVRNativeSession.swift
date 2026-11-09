@@ -133,7 +133,10 @@ final class PCVRNativeSession {
         }
     }
 
-    func stop() async {
+    /// Ends the session. `endingPCVR`: the wearer stopped, so the PC may stop
+    /// its stack now; a session that dropped leaves it running for a while.
+    func stop(endingPCVR: Bool = true) async {
+        if endingPCVR { remote?.endPCVR() }
         statusTask?.cancel()
         statusTask = nil
         stopControllerBridge()
@@ -147,7 +150,7 @@ final class PCVRNativeSession {
 
     private func presenterEnded(_ reason: String?) async {
         guard isActive else { return }
-        await stop()
+        await stop(endingPCVR: false)
         if let reason { state = .failed(reason) }
     }
 

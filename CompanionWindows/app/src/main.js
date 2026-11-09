@@ -727,6 +727,42 @@ async function waitForLaunchPipes() {
   await Promise.all(waits);
 }
 
+/**
+ * A headset started or stopped PCVR over Native v3, and the stream host relayed it
+ * (supervisor.js, CompanionLink.swift). Starting brings up the native stack; the host is
+ * told how that went, so the headset can say why when it can't.
+ */
+function handleStreamHostRequest(request) {
+  const rpc = (m, p) => routeClientFor(m).rpc(m, p);
+  if (request === 'pcvr-start') {
+    runStackOperation(async () => {
+      if (pcvrInstaller.needsRefresh()) {
+        return { ok: false, detail: 'the installed PCVR component doesn\'t match this app; update it from the PCVR tab on the PC' };
+      }
+      if (supervisor.status().broker.running) {
+        return supervisor.stackMode === 'native'
+          ? { ok: true, already: true }
+          : { ok: false, detail: 'PCVR is running through CloudXR on this PC; stop it there first' };
+      }
+      return supervisor.startStack(rpc, { mode: 'native', desktopQuad: supervisor.brokerOptions.desktopQuad });
+    }).then((result) => {
+      if (result && result.ok) {
+        if (result.already) supervisor.tellStreamHost({ pcvr: 'running' });
+        return;
+      }
+      const failed = result && result.steps && result.steps.find((step) => !step.ok);
+      const detail = (result && result.detail)
+        || (failed ? `${failed.step}${failed.detail ? `: ${failed.detail}` : ' failed'}` : 'the stack did not start');
+      supervisor.tellStreamHost({ pcvr: 'failed', detail });
+    }).catch((e) => supervisor.tellStreamHost({ pcvr: 'failed', detail: e.message }));
+  } else if (request === 'pcvr-stop') {
+    runStackOperation(async () => {
+      if (supervisor.stackMode !== 'native' || !supervisor.status().broker.running) return { ok: true };
+      return supervisor.stopStack(rpc);
+    }).catch((e) => console.log('[services]', `PCVR stop from the headset: ${e.message}`));
+  }
+}
+
 /** Whether the PCVR stack running now is the native (v3) one, not CloudXR. */
 function nativeStackActive() {
   return Boolean(supervisor && supervisor.stackMode === 'native' && supervisor.status().broker.running);
@@ -1318,7 +1354,10 @@ ipcMain.handle('pcvr-download-install', async (event) => {
   // Both paths were resolved once at startup against an install that did not exist yet;
   // push the now-discoverable paths into the running Supervisor and (re)spawn the host
   // instead of requiring an app restart to notice its own download.
-  if (supervisor) supervisor.refreshPaths(resolvePcvrHostExe() || resolveBackendExe(), resolveBridgeRoot());
+  if (supervisor) {
+    supervisor.refreshPaths(resolvePcvrHostExe() || resolveBackendExe(), resolveBridgeRoot());
+    supervisor.startStreamHost().catch(() => null);
+  }
   startPcvrHost();
   return result;
 });
@@ -1537,6 +1576,9 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
   supervisor.on('changed', (status) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('services', status);
   });
+  supervisor.on('stream-host-request', handleStreamHostRequest);
+  // Serves the desktop over Native v3 and takes headsets' PCVR starts; idle otherwise.
+  supervisor.startStreamHost().catch((e) => console.log('[services]', `stream host: ${e.message}`));
   client.start();
   pcvrClient.start();
   controlServer = new ControlServer(

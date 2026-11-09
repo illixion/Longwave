@@ -301,6 +301,31 @@ final class SimulatedSessionTests: XCTestCase {
         XCTAssertEqual(Array(harness.host.sessions.keys), [second])
     }
 
+    func testSessionsInOtherSlotsSurviveANewOne() throws {
+        let harness = Harness()
+        harness.answer = { _, hello in Array("ack".utf8) }
+        harness.slot = { $0 == Array("pcvr".utf8) ? 1 : 0 }
+        harness.run(for: 50 * ms)
+        let desktop = try XCTUnwrap(harness.hostIndex)
+
+        // The same device opens a second session for something else: both stay.
+        harness.client = nil
+        harness.connector = ClientConnector(psk: harness.psk, hello: Array("pcvr".utf8))
+        harness.run(for: 100 * ms)
+        XCTAssertEqual(harness.host.sessions.count, 2)
+        let pcvr = try XCTUnwrap(harness.host.sessions.keys.first { $0 != desktop })
+        XCTAssertEqual(harness.host.sessions[pcvr]?.slot, 1)
+
+        // Reconnecting in that slot replaces only its own session.
+        harness.client = nil
+        harness.connector = ClientConnector(psk: harness.psk, hello: Array("pcvr".utf8))
+        harness.hostEvents.removeAll()
+        harness.run(for: 100 * ms)
+        let renewed = try XCTUnwrap(harness.host.sessions.keys.first { $0 != desktop && $0 != pcvr })
+        XCTAssertTrue(harness.hostEvents.contains(.superseded(index: pcvr, by: renewed)))
+        XCTAssertEqual(Set(harness.host.sessions.keys), [desktop, renewed])
+    }
+
     func testReplayedInitiationGetsTheCachedResponseOnly() throws {
         let harness = Harness()
         // Capture the first initiation as an attacker would.

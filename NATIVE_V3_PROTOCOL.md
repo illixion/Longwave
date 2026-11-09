@@ -67,7 +67,10 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
     generation with the sender's packet log. `TransportSession` ties them to
     `StreamCrypto`. A client connector retries with backoff, and a host
     endpoint accepts, routes, follows roaming clients, and supersedes a
-    device's session only after key confirmation.
+    device's session only after key confirmation. A host may keep one session
+    per device per *slot* (what the session is for, named in its answer to the
+    hello): a newer session supersedes only its own slot's, so a headset can
+    watch the desktop and run PCVR on one host at once (2026-11-10).
   - **`StreamSim`:** links with delay, jitter, a bottleneck queue, random and
     Gilbert–Elliott loss, and the headset's Wi-Fi stalls.
   - **Simulated tests:**
@@ -1316,6 +1319,23 @@ and a session token. The VR compositor puts its rendezvous in frame side data
 (`inputBridge`, type 4, opaque, at most 512 bytes) about once a second, so it
 travels inside the encrypted stream and a PCVR client finds the bridge without
 another channel.
+
+**Starting and stopping.** A PCVR session is a slot of its own beside the
+desktop's (§3's host endpoint), and its stream is started like any other: after
+the display and preferences, the client sends `streamStart` for the PCVR stream
+(stream ID 1), on every connect. A host whose PC starts its PCVR stack on demand
+starts it then, already knowing the render size and rates; one whose stack
+always runs ignores it. `streamStop` says the wearer is done, so the stack may
+stop at once. A session that ends without one (a pause, a dropped link) leaves
+the stack running for a grace period (the Windows host: 10 minutes) so the
+headset can come back to a running game. A stack that can't start ends the
+session with a `bye` that says why. Older clients never send either message,
+and a stack started some other way streams to them as before.
+
+On Windows the host is `longwave-pcvr-host`, which the Companion keeps running:
+it serves the desktop (primary monitor, HEVC, HID input, following the
+Companion's Native-stream switches) and PCVR on UDP 4857, and asks the
+Companion to start or stop the stack (`CompanionLink.swift`, `supervisor.js`).
 
 **What the entitlement adds later.** The gaze sample becomes valid, the warp
 centre follows it, and the system's QR pairing can replace v3's own enrollment

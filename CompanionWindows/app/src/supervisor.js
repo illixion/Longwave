@@ -33,6 +33,8 @@ const { spawn, execFile, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const net = require('net');
 
+/* A line a talking service prints for this app rather than its log (CompanionLink.swift). */
+const SERVICE_MESSAGE_PREFIX = '@longwave ';
 const BROKER_CONTROL_PIPE = '\\\\.\\pipe\\Longwave.SessionBroker.Control';
 
 function requestBrokerControl(command, timeoutMs = 5000) {
@@ -180,7 +182,7 @@ function firstExisting(candidates) {
  * anywhere else), and the name must not collide with a built-in service.
  */
 const SERVICES_FILE = 'services.json';
-const BUILTIN_SERVICES = new Set(['broker']);
+const BUILTIN_SERVICES = new Set(['broker', 'streamHost']);
 
 function loadExtraServices(bridgeRoot, log = () => {}) {
   if (!bridgeRoot) return [];
@@ -392,10 +394,13 @@ class Supervisor extends EventEmitter {
     };
     const native = () => this.stackMode === 'native';
     const services = {
-      /* Native mode's stream host: takes the broker's frames over the frame source and
-         streams them to the headset over v3, pacing and sizing from what it reports. */
+      /* The v3 stream host: the desktop over Native v3, and native mode's PCVR (the broker's
+         frames over the frame source, paced and sized from what the headset reports). Kept
+         running while this app runs (startStreamHost), not with the stack: a headset starts
+         PCVR through it, which needs something listening before the stack exists. Its stdin
+         and stdout carry that conversation (see #streamHostLine). */
       streamHost: {
-        title: 'PCVR stream host',
+        title: 'Stream host',
         image: 'longwave-pcvr-host.exe',
         exe: () => firstExisting([
           ...(process.env.LONGWAVE_PCVR_STREAM_HOST ? [process.env.LONGWAVE_PCVR_STREAM_HOST] : []),
@@ -405,6 +410,7 @@ class Supervisor extends EventEmitter {
           ...streamHostArgs()],
         env: () => ({}),
         restart: true,
+        talks: true,
       },
       broker: {
         title: 'Session broker',
@@ -567,12 +573,21 @@ class Supervisor extends EventEmitter {
       cwd: path.dirname(exe),
       windowsHide: true,
       env: { ...process.env, ...definition.env() },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [definition.talks ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
     // Written by hand rather than with pipe(), because the destination can go away
     // mid-run and a chatty service whose output is never read blocks on a full pipe.
     for (const stream of [proc.stdout, proc.stderr]) {
       stream.on('data', (chunk) => { if (logStream) logStream.write(chunk); });
+    }
+    if (definition.talks) {
+      proc.stdin.on('error', () => { /* it exited; its exit handler reports that */ });
+      let partial = '';
+      proc.stdout.on('data', (chunk) => {
+        const lines = (partial + chunk.toString('utf8')).split(/\r?\n/);
+        partial = lines.pop();
+        for (const line of lines) this.#serviceLine(name, line);
+      });
     }
 
     const entry = { proc, stopping: false, restarts, startedAt: Date.now() };
@@ -615,6 +630,38 @@ class Supervisor extends EventEmitter {
     });
 
     return { ok: true, pid: proc.pid };
+  }
+
+  /** A line a talking service printed: `@longwave {json}` is meant for us. */
+  #serviceLine(name, line) {
+    if (!line.startsWith(SERVICE_MESSAGE_PREFIX)) return;
+    let message;
+    try { message = JSON.parse(line.slice(SERVICE_MESSAGE_PREFIX.length)); } catch { return; }
+    if (name === 'streamHost' && message && typeof message.request === 'string') {
+      /* The host relays what a headset asked over v3: 'pcvr-start' (it started the PCVR
+         stream) or 'pcvr-stop'. main.js decides, since starting needs the backend's rpc. */
+      this.emit('stream-host-request', message.request);
+    }
+  }
+
+  /** Tells the stream host something (one JSON line on its stdin); false while it isn't running. */
+  tellStreamHost(message) {
+    const live = this.running.get('streamHost');
+    if (!live || live.proc.exitCode !== null || !live.proc.stdin) return false;
+    try {
+      live.proc.stdin.write(`${JSON.stringify(message)}\n`);
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * Starts the stream host if it's installed and not already up. Called when the app starts
+   * and after the PCVR bundle installs: it serves the desktop over v3 by itself, and is what a
+   * headset asks to start PCVR.
+   */
+  async startStreamHost() {
+    if (!this.definitions.streamHost.exe()) return { ok: false, detail: 'not installed' };
+    return this.startChecked('streamHost');
   }
 
   stop(name) {
@@ -754,6 +801,7 @@ class Supervisor extends EventEmitter {
       const extra = await this.startChecked(name).catch((e) => ({ ok: false, detail: e.message }));
       steps.push({ step: this.definitions[name].title, ok: extra.ok, detail: extra.detail });
     }
+    this.tellStreamHost({ pcvr: 'running' });
     return { ok: true, steps };
   }
 
@@ -841,7 +889,8 @@ class Supervisor extends EventEmitter {
 
     for (const name of [...this.extraServiceNames].reverse()) await this.stopAndWait(name);
     await this.stopAndWait('broker');
-    await this.stopAndWait('streamHost');
+    // The stream host stays: it serves the desktop and waits for the next headset.
+    this.tellStreamHost({ pcvr: 'stopped' });
     // A one-shot's recorded success must not outlive the stack it was part of, or the UI
     // keeps reporting it done after CloudXR has gone away.
     for (const [name, definition] of Object.entries(this.definitions)) {

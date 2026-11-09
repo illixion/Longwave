@@ -1,4 +1,7 @@
-// longwave-pcvr-host: the v3 PCVR host (NATIVE_V3_PROTOCOL.md section 4.7).
+// longwave-pcvr-host: the Windows v3 host (NATIVE_V3_PROTOCOL.md): the desktop
+// (PCVRHost+Desktop.swift, as the Mac Companion serves it) and PCVR (section 4.7)
+// on one UDP port. The Windows Companion keeps it running and starts the PCVR
+// stack when a headset starts the PCVR stream (CompanionLink.swift).
 //
 //   longwave-pcvr-host [--channel pcvr] [--port 4857] [--max-mbps 150] [--min-mbps 0]
 //                      [--start-mbps 30] [--refresh auto|display|Hz] [--max-stream-hz Hz] [--frame-lock on|off]

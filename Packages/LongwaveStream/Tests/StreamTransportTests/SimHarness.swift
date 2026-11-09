@@ -31,6 +31,8 @@ final class Harness {
     var answer: (_ deviceID: String, _ hello: [UInt8]) -> [UInt8]? = { _, hello in
         hello == Array("hello".utf8) ? Array("ack".utf8) : nil
     }
+    /// The slot the host puts a hello's session in.
+    var slot: (_ hello: [UInt8]) -> UInt8 = { _ in 0 }
 
     init(up: LinkModel = .lan, down: LinkModel = .lan, seed: UInt64 = 1) {
         connector = ClientConnector(psk: psk, hello: Array("hello".utf8))
@@ -50,7 +52,9 @@ final class Harness {
     func step() {
         while let delivery = network.popDue(now: now) {
             if delivery.to == .host {
-                let events = host.receive(delivery.bytes, from: delivery.from, now: hostNow, answer: answer)
+                let events = host.receive(delivery.bytes, from: delivery.from, now: hostNow, answerInSlot: { device, hello in
+                    self.answer(device, hello).map { ($0, self.slot(hello)) }
+                })
                 for event in events {
                     if case .send(let bytes, let to) = event {
                         network.send(bytes, from: .host, to: to, now: now)

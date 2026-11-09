@@ -72,6 +72,33 @@ enum PairedDevices {
     }
 }
 
+/// The Windows Companion's Native-stream switches (NativeStreamingService.cs),
+/// beside the paired devices: whether the desktop is streamed at all, and
+/// whether a viewer may move the pointer and type.
+struct CompanionSettings: Equatable {
+    var desktopEnabled = false
+    var mouseControl = true
+    var keyboardControl = true
+
+    static func load() -> CompanionSettings {
+        CompanionSettings(desktopEnabled: (readDWORD("NativeStreamEnabled") ?? 0) != 0,
+                          mouseControl: (readDWORD("NativeStreamMouseControl") ?? 1) != 0,
+                          keyboardControl: (readDWORD("NativeStreamKeyboardControl") ?? 1) != 0)
+    }
+
+    private static func readDWORD(_ name: String) -> DWORD? {
+        let currentUser = HKEY(bitPattern: Int(Int32(bitPattern: 0x8000_0001)))
+        let flags = DWORD(0x0000_0010) // RRF_RT_REG_DWORD
+        return "SOFTWARE\\Longwave\\Companion".withCString(encodedAs: UTF16.self) { path in
+            name.withCString(encodedAs: UTF16.self) { value in
+                var data: DWORD = 0
+                var size = DWORD(MemoryLayout<DWORD>.size)
+                return RegGetValueW(currentUser, path, value, flags, nil, &data, &size) == ERROR_SUCCESS ? data : nil
+            }
+        }
+    }
+}
+
 struct HostError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }

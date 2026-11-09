@@ -104,7 +104,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
         /// The session's first transport packet authenticated: the client is real.
         case confirmed(index: UInt32)
         case events(index: UInt32, [SessionEvent])
-        /// An older session of the same device, ended because a newer one confirmed.
+        /// An older session of the same device and slot, ended because a newer one confirmed.
         case superseded(index: UInt32, by: UInt32)
         case closed(index: UInt32, SessionClosure)
     }
@@ -113,6 +113,9 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
         public var session: TransportSession
         public var address: Address
         public let deviceID: String
+        /// What the session is for, as the host's answer said: a device keeps
+        /// one session per slot, so a newer one replaces only its own kind.
+        public let slot: UInt8
         public var confirmed: Bool
         public let createdAt: UInt64
     }
@@ -150,6 +153,17 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
     /// and returns the hello-ack, or nil to refuse.
     public mutating func receive(_ datagram: [UInt8], from address: Address, now: UInt64,
                                  answer: (_ deviceID: String, _ hello: [UInt8]) -> [UInt8]?) -> [Event] {
+        receive(datagram, from: address, now: now, answerInSlot: { deviceID, hello in
+            answer(deviceID, hello).map { ($0, 0) }
+        })
+    }
+
+    /// `receive(_:from:now:answer:)` for a host that keeps several sessions per
+    /// device: `answerInSlot` also names the session's slot (what it is for, say
+    /// the desktop or PCVR), and a session supersedes only older ones in its slot.
+    public mutating func receive(_ datagram: [UInt8], from address: Address, now: UInt64,
+                                 answerInSlot answer: (_ deviceID: String, _ hello: [UInt8]) -> (ack: [UInt8], slot: UInt8)?)
+        -> [Event] {
         switch PacketKind.of(datagram) {
         case .initiation:
             return accept(datagram, from: address, now: now, answer: answer)
@@ -162,7 +176,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
     }
 
     private mutating func accept(_ datagram: [UInt8], from address: Address, now: UInt64,
-                                 answer: (String, [UInt8]) -> [UInt8]?) -> [Event] {
+                                 answer: (String, [UInt8]) -> (ack: [UInt8], slot: UInt8)?) -> [Event] {
         let devices = devices
         guard let responder = try? StreamResponder(initiation: datagram, lookup: { devices[$0]?.psk }),
               let device = devices[responder.keyID] else {
@@ -173,7 +187,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
             // A repeat of an answered initiation: the same response, no new session.
             return sessions[cached.index] == nil ? [] : [.send(cached.response, to: address)]
         }
-        guard let cipher = responder.choose(from: preferredCiphers), let helloAck = answer(device.deviceID, responder.payload)
+        guard let cipher = responder.choose(from: preferredCiphers), let (helloAck, slot) = answer(device.deviceID, responder.payload)
         else {
             dropped += 1
             return []
@@ -182,7 +196,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
         // its last three still completes it, so keep that many unproven
         // sessions per device and no more.
         var output: [Event] = []
-        let unproven = sessions.filter { $0.value.deviceID == device.deviceID && !$0.value.confirmed }
+        let unproven = sessions.filter { $0.value.deviceID == device.deviceID && $0.value.slot == slot && !$0.value.confirmed }
             .sorted { $0.value.createdAt < $1.value.createdAt }
         for (stale, _) in unproven.dropLast(Self.unprovenPerDevice - 1) {
             sessions[stale] = nil
@@ -196,7 +210,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
             return []
         }
         sessions[index] = Entry(session: TransportSession(secure: secure, configuration: sessionConfiguration, now: now),
-                                address: address, deviceID: device.deviceID, confirmed: false, createdAt: now)
+                                address: address, deviceID: device.deviceID, slot: slot, confirmed: false, createdAt: now)
         replayFilter.remember(responder.initiatorEphemeral, response: (response, index), now: now)
         return output + [.send(response, to: address),
                          .connected(index: index, deviceID: device.deviceID, hello: responder.payload)]
@@ -222,7 +236,7 @@ public struct HostEndpoint<Address: Hashable & Sendable> {
                 if !entry.confirmed {
                     entry.confirmed = true
                     output.append(.confirmed(index: index))
-                    for (other, old) in sessions where other != index && old.deviceID == entry.deviceID {
+                    for (other, old) in sessions where other != index && old.deviceID == entry.deviceID && old.slot == entry.slot {
                         sessions[other] = nil
                         output.append(.superseded(index: other, by: index))
                     }

@@ -1036,20 +1036,16 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         }
     }
 
-    /// The luma plane's bytes, rows packed: a depth picture is small (168 KB
-    /// at native density), and the presenter reads points of it on the CPU.
+    /// The luma plane's bytes, rows packed, for CPU point sampling. At high
+    /// depth resolutions this is several MB per frame: don't initialize a
+    /// full Swift array only to overwrite every byte immediately afterwards.
     private static func lumaCopy(_ buffer: CVPixelBuffer) -> (values: [UInt8], width: Int, height: Int) {
         guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return ([], 0, 0) }
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         let width = CVPixelBufferGetWidthOfPlane(buffer, 0), height = CVPixelBufferGetHeightOfPlane(buffer, 0)
         let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
         guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0), width > 0, height > 0 else { return ([], 0, 0) }
-        var values = [UInt8](repeating: 0, count: width * height)
-        values.withUnsafeMutableBytes { out in
-            for y in 0..<height {
-                memcpy(out.baseAddress! + y * width, base + y * stride, width)
-            }
-        }
+        let values = PCVRLumaPlane.copy(base: base, width: width, height: height, stride: stride)
         return (values, width, height)
     }
 

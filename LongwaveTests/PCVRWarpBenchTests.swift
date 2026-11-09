@@ -28,10 +28,10 @@ final class PCVRWarpBenchTests: XCTestCase {
     /// The head: 1.4 m up, half a metre in front of the room's centre, looking down -z.
     static let head = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [0.1, 1.45, 0.4])
 
-    private var device: (any MTLDevice)!
-    private var queue: (any MTLCommandQueue)!
+    var device: (any MTLDevice)!
+    var queue: (any MTLCommandQueue)!
     private var pipeline: (any MTLComputePipelineState)!
-    private var directory: URL!
+    var directory: URL!
 
     override func setUpWithError() throws {
         guard let path = ProcessInfo.processInfo.environment["PCVR_BENCH"], !path.isEmpty else {
@@ -50,11 +50,12 @@ final class PCVRWarpBenchTests: XCTestCase {
     private var depthPipeline: (any MTLComputePipelineState)!
     /// The last `scoreGPU`'s pixels outside the source eye's frame: error sum and count.
     private var lastOutside: (Double, Int) = (0, 0)
+    var lastScoreMap: (any MTLTexture)?
     private var scorePipeline: (any MTLComputePipelineState)!
 
     // MARK: The room
 
-    private struct Rendered {
+    struct Rendered {
         var colour: any MTLTexture   // both eyes side by side, rgba16Float
         var depth: [Float]           // eye-space distance along -z per pixel, 0 for the sky
         var depthTexture: (any MTLTexture)? = nil   // the same, r32Float
@@ -79,7 +80,7 @@ final class PCVRWarpBenchTests: XCTestCase {
                                fieldOfView: right.expanded(by: grow)))
     }
 
-    private func render(_ eyes: PCVRStereo<PCVREyeView>, readDepth: Bool = true) throws -> Rendered {
+    func render(_ eyes: PCVRStereo<PCVREyeView>, readDepth: Bool = true) throws -> Rendered {
         let w = Self.width, h = Self.height
         let colourDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 2 * w, height: h,
                                                                         mipmapped: false)
@@ -116,13 +117,13 @@ final class PCVRWarpBenchTests: XCTestCase {
     }
 
     /// `hostDepth` on the GPU: the nearest depth under each output texel, 8-bit inverse depth from 0.25 m.
-    private func hostDepthGPU(_ rendered: Rendered, divisor: Int) throws -> PCVRDepthMap {
+    func hostDepthGPU(_ rendered: Rendered, divisor: Int, bits: Int = 8, noise: Int = 0) throws -> PCVRDepthMap {
         let w = Self.width, h = Self.height, dw = w / divisor, dh = h / divisor
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: 2 * dw, height: dh, mipmapped: false)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: bits == 8 ? .r8Unorm : .r32Float, width: 2 * dw, height: dh, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .private
         let out = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
-        var uniforms = SIMD4<UInt32>(UInt32(divisor), UInt32(w), UInt32(dw), 0)
+        var uniforms = SIMD4<UInt32>(UInt32(divisor), UInt32(w), UInt32(dw), UInt32(bits) | (UInt32(noise) << 8))
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(depthPipeline)
@@ -149,8 +150,8 @@ final class PCVRWarpBenchTests: XCTestCase {
 
     /// The left eye's score on the GPU: per pixel the error and whether the source eye saw its point.
     /// Returns (sum of error over seen pixels, seen count, sum over unseen, unseen count).
-    private func scoreGPU(warped: any MTLTexture, truth: Rendered, truthEye: PCVREyeView, source: Rendered,
-                          sourceEye: PCVREyeView, display: PCVRFieldOfView? = nil) throws -> (seen: Double, seenCount: Int, hidden: Double, hiddenCount: Int) {
+    func scoreGPU(warped: any MTLTexture, truth: Rendered, truthEye: PCVREyeView, source: Rendered,
+                          sourceEye: PCVREyeView, display: PCVRFieldOfView? = nil, readSummary: Bool = true) throws -> (seen: Double, seenCount: Int, hidden: Double, hiddenCount: Int) {
         let w = Self.width, h = Self.height
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rg32Float, width: w, height: h, mipmapped: false)
         descriptor.usage = [.shaderRead, .shaderWrite]
@@ -173,6 +174,8 @@ final class PCVRWarpBenchTests: XCTestCase {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        lastScoreMap = out
+        if !readSummary { return (0, 0, 0, 0) }
         var values = [Float](repeating: 0, count: w * h * 2)
         values.withUnsafeMutableBytes {
             out.getBytes($0.baseAddress!, bytesPerRow: w * 8, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
@@ -197,13 +200,17 @@ final class PCVRWarpBenchTests: XCTestCase {
     // MARK: A recorded head motion
 
     /// Measured head poses (`t`, position, quaternion), from the overlay's pose recorder.
-    private struct Trajectory {
+    struct Trajectory {
         var times: [Double]
         var poses: [PCVRPose]
 
         init(contentsOf url: URL) throws {
             struct File: Decodable { var rows: [[Double]] }
             let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: url))
+            guard file.rows.count >= 2, file.rows.allSatisfy({ $0.count >= 8 && $0.allSatisfy(\.isFinite) }),
+                  zip(file.rows, file.rows.dropFirst()).allSatisfy({ $0[0] < $1[0] }) else {
+                throw NSError(domain: "PCVRWarpBench", code: 1, userInfo: [NSLocalizedDescriptionKey: "motion requires two or more finite, ordered pose rows"])
+            }
             times = file.rows.map { $0[0] }
             poses = file.rows.map { r in
                 PCVRPose(rotation: simd_quatf(ix: Float(r[4]), iy: Float(r[5]), iz: Float(r[6]), r: Float(r[7])).normalized,
@@ -762,7 +769,7 @@ final class PCVRWarpBenchTests: XCTestCase {
     }
 
     // The host's depth picture: the nearest depth under each output texel, 8-bit inverse depth from 0.25 m.
-    struct DepthUniforms { uint divisor; uint eyeWidth; uint outEyeWidth; uint pad; };
+    struct DepthUniforms { uint divisor; uint eyeWidth; uint outEyeWidth; uint controls; };
     kernel void benchDepth(texture2d<float, access::read> depth [[texture(0)]],
                            texture2d<float, access::write> out [[texture(1)]],
                            constant DepthUniforms &u [[buffer(0)]],
@@ -778,7 +785,16 @@ final class PCVRWarpBenchTests: XCTestCase {
             }
         }
         float v = nearest < 1e29 ? saturate(0.25 / nearest) : 0;
-        out.write(float4(round(v * 255) / 255, 0, 0, 0), gid);
+        uint bits = u.controls & 255u;
+        float levels = bits == 0 ? 0 : float((1u << bits) - 1u);
+        float code = bits == 0 ? v : round(v * levels) / levels;
+        uint noise = u.controls >> 8;
+        if (noise > 0) {
+            // Synthetic codec-like blocks, deliberately NOT a real HEVC model.
+            uint h = (gid.x / 8u) * 73856093u ^ (gid.y / 8u) * 19349663u;
+            code += (float(h % (2u * noise + 1u)) - float(noise)) / 255.0;
+        }
+        out.write(float4(saturate(code), 0, 0, 0), gid);
     }
 
     // Per left-eye pixel: the warp's error against the truth, and whether the source eye saw its point.

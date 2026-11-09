@@ -89,6 +89,46 @@ nonisolated enum PCVRFoveationShader {
     static float2 pcvrEyeTexel(float2 uv, float4 rect, float4 bounds) {
         return clamp(rect.xy + uv * rect.zw, bounds.xy, bounds.zw);
     }
+
+    // A Catmull-Rom (bicubic) read of `t` at normalized `uv`, from nine bilinear
+    // taps, each kept inside `bounds` like `pcvrEyeTexel`. A bilinear read at a
+    // fractional texel position averages two texels: a reprojection lands
+    // nearly every pixel between texels, by an amount that changes every frame,
+    // so a 1:1 resample comes out softened by up to half a pixel and shimmers as
+    // the head moves. Catmull-Rom passes a texel through unchanged at a texel
+    // centre and keeps an edge's contrast in between.
+    static float4 pcvrSampleCatmullRom(texture2d<float, access::sample> t, sampler s, float2 uv, float4 bounds,
+                                       bool deRing) {
+        float2 size = float2(t.get_width(), t.get_height());
+        float2 pos = uv * size;
+        float2 tc = floor(pos - 0.5) + 0.5;
+        float2 f = pos - tc;
+        float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+        float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+        float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+        float2 w3 = f * f * (-0.5 + 0.5 * f);
+        float2 w12 = w1 + w2;
+        float2 a = clamp((tc - 1.0) / size, bounds.xy, bounds.zw);
+        float2 b = clamp((tc + w2 / w12) / size, bounds.xy, bounds.zw);
+        float2 c = clamp((tc + 2.0) / size, bounds.xy, bounds.zw);
+        float4 r = t.sample(s, float2(a.x, a.y)) * (w0.x * w0.y)
+                 + t.sample(s, float2(b.x, a.y)) * (w12.x * w0.y)
+                 + t.sample(s, float2(c.x, a.y)) * (w3.x * w0.y)
+                 + t.sample(s, float2(a.x, b.y)) * (w0.x * w12.y)
+                 + t.sample(s, float2(b.x, b.y)) * (w12.x * w12.y)
+                 + t.sample(s, float2(c.x, b.y)) * (w3.x * w12.y)
+                 + t.sample(s, float2(a.x, c.y)) * (w0.x * w3.y)
+                 + t.sample(s, float2(b.x, c.y)) * (w12.x * w3.y)
+                 + t.sample(s, float2(c.x, c.y)) * (w3.x * w3.y);
+        if (!deRing) return max(r, 0.0);
+        // Never outside the four texels around the point: Catmull-Rom's
+        // negative lobes overshoot beside a hard edge, a halo that moves with
+        // the sub-pixel phase from frame to frame.
+        float2 n0 = clamp(tc / size, bounds.xy, bounds.zw), n1 = clamp((tc + 1.0) / size, bounds.xy, bounds.zw);
+        float4 p0 = t.sample(s, n0), p1 = t.sample(s, float2(n1.x, n0.y));
+        float4 p2 = t.sample(s, float2(n0.x, n1.y)), p3 = t.sample(s, n1);
+        return clamp(r, min(min(p0, p1), min(p2, p3)), max(max(p0, p1), max(p2, p3)));
+    }
     """
 }
 

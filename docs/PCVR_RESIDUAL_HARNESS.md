@@ -102,3 +102,24 @@ python3 -m unittest discover -s scripts/pcvr-residuals -p 'test_*.py'
 
 `PCVRResidualMetricTests` also verifies zero truth error, camera-motion cancellation
 in the defined temporal metric, and separation of visible/hidden/outside regions.
+
+## Fixture version and receiver A/B
+
+Reports carry `fixture` (`host-v2`: gaze centres snapped with
+`CentreEdgeWarp.pixelAlignedCentre` and packed with the host's four-tap box
+prefilter from `foveation_warp.cpp`, as the PC does). `--compare` refuses a
+report from another fixture version; v1 reports (one unsnapped tap per wire
+pixel) blurred the fovea by up to half a pixel in the sampling stage, an
+artefact the host never produces.
+
+The depth warper's colour filter is selectable for A/B runs without changing
+the fixture, and is recorded as `warpFilter`:
+
+```sh
+TEST_RUNNER_PCVR_RESIDUAL_WARP_FILTER=bilinear python3 scripts/pcvr-residuals/run.py --out /private/tmp/pcvr-bilinear
+python3 scripts/pcvr-residuals/run.py --out /private/tmp/pcvr-default \
+  --compare /private/tmp/pcvr-bilinear/residual-report.json
+```
+
+Values are `PCVRDepthWarper.Resampling`'s raw values (`bilinear`,
+`catmull-rom`, `catmull-rom-dering`); unset uses the warper's default.

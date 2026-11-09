@@ -50,7 +50,7 @@ def build_report(out, baseline=None):
     comparison = []
     if baseline:
         old = json.loads(Path(baseline).read_text())
-        for field in ["schema", "width", "height", "sourceHz", "scenarios", "traces", "motion", "motionSHA256"]:
+        for field in ["schema", "fixture", "width", "height", "sourceHz", "scenarios", "traces", "motion", "motionSHA256"]:
             if report.get(field) != old.get(field):
                 raise ValueError(f"baseline differs in {field}; use matching fixture settings")
         old_summary = summarize(old)

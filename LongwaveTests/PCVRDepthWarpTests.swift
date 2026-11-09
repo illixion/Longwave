@@ -92,8 +92,9 @@ final class PCVRDepthWarpTests: XCTestCase {
     }
 
     private func warp(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>,
-                      planeDistance: Float = 2) throws -> Output {
+                      planeDistance: Float = 2, resampling: PCVRDepthWarper.Resampling? = nil) throws -> Output {
         let warper = try PCVRDepthWarper(device: device)
+        if let resampling { warper.resampling = resampling }
         // These scenes' right eyes are flat (`depthMap`), not what that eye saw.
         warper.fillsFromOtherEye = false
         let width = 2 * Self.eyeWidth, height = Self.eyeHeight
@@ -161,6 +162,60 @@ final class PCVRDepthWarpTests: XCTestCase {
         for y in 0..<Self.depthHeight { XCTAssertEqual(out.warpedDepth(eye: 0, x: 10, y: y), 2, accuracy: 0.02) }
     }
 
+    /// Every filter reads a linear ramp back exactly, so the geometry is the
+    /// same whichever one the warper uses.
+    func testEveryResamplingKeepsTheRotationHomography() throws {
+        let pose = PCVRPose(rotation: simd_quatf(angle: 0.3, axis: [0, 1, 0]), position: [0.2, 1.5, -0.4])
+        let frame = try gradientFrame(foveation: nil, pose: pose)
+        let depth = try depthMap { _, _ in 2 }
+        let turn = PCVRPose(rotation: simd_quatf(angle: 0.05, axis: simd_normalize(SIMD3<Float>(0.3, 1, 0.1))), position: .zero)
+        let targets = frame.renderPose.eyes.map { $0.pose * turn }
+        for resampling in PCVRDepthWarper.Resampling.allCases {
+            let out = try warp(frame, depth: depth, targets: targets, resampling: resampling)
+            let render = frame.renderPose.eyes[0]
+            let display = PCVREyeView(pose: targets[0], fieldOfView: Self.fov)
+            assertMatches(out, eye: 0, homography: PCVRReprojection.sourceFromDisplay(render: render, display: display, mode: .rotation),
+                          texels: 0.6)
+        }
+    }
+
+    /// One-texel stripes moved by a quarter texel: bilinear averages
+    /// neighbouring texels and loses contrast, Catmull-Rom keeps most of it, and
+    /// the de-ringed form never leaves the stripes' own range.
+    func testCatmullRomKeepsStripesSharperThanBilinear() throws {
+        let width = 2 * Self.eyeWidth, height = Self.eyeHeight
+        let colour = try texture(.rgba16Float, width: width, height: height)
+        var pixels = [Float16](repeating: 1, count: width * height * 4)
+        for y in 0..<height { for x in 0..<width { for c in 0..<3 { pixels[(y * width + x) * 4 + c] = x % 2 == 0 ? 0.1 : 0.9 } } }
+        pixels.withUnsafeBytes {
+            colour.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: width * 8)
+        }
+        let striped = try gradientFrame(foveation: nil, pose: .identity)
+        let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 1, texture: colour, renderPose: striped.renderPose,
+                                     foveation: nil, arrivalTime: 0)
+        // About a quarter of a texel near the centre of the view.
+        let turn = PCVRPose(rotation: simd_quatf(angle: 0.0013, axis: [0, 1, 0]), position: .zero)
+        let targets = frame.renderPose.eyes.map { $0.pose * turn }
+        func contrast(_ resampling: PCVRDepthWarper.Resampling) throws -> (mean: Float, low: Float, high: Float) {
+            let out = try warp(frame, depth: nil, targets: targets, resampling: resampling)
+            var swing: Float = 0, low: Float = 1, high: Float = 0, rows = 0
+            for y in stride(from: 100, to: 156, by: 4) {
+                var lo: Float = 1, hi: Float = 0
+                for x in 200..<312 {
+                    let v = Float(out.colour[(y * width + x) * 4])
+                    lo = min(lo, v); hi = max(hi, v)
+                }
+                swing += hi - lo; low = min(low, lo); high = max(high, hi); rows += 1
+            }
+            return (swing / Float(rows), low, high)
+        }
+        let bilinear = try contrast(.bilinear), sharp = try contrast(.catmullRom), deRinged = try contrast(.catmullRomDeRinged)
+        XCTAssertGreaterThan(sharp.mean, bilinear.mean + 0.05)
+        XCTAssertGreaterThan(deRinged.mean, bilinear.mean + 0.05)
+        XCTAssertGreaterThanOrEqual(deRinged.low, 0.1 - 0.002)
+        XCTAssertLessThanOrEqual(deRinged.high, 0.9 + 0.002)
+    }
+
     func testAFlatSceneIsThePlaneHomographyWithAndWithoutADepthMap() throws {
         let frame = try gradientFrame(foveation: nil, pose: .identity)
         let depth = try depthMap { _, _ in 2 }
@@ -180,6 +235,10 @@ final class PCVRDepthWarpTests: XCTestCase {
 
     /// Through a foveation map, standing still, every output pixel reads its
     /// own wire position: the shader's inverse map undoes its forward map.
+    /// Bilinear reads the texel back exactly. Catmull-Rom's nine-tap sum can
+    /// land a hair under it and the half-float output then drops one step
+    /// (1/2048 of UV here, 0.125 texel on this fixture's ramp): rounding, not
+    /// a misplaced read.
     func testStandingStillThroughTheFoveationMapIsTheIdentity() throws {
         let shape = CentreEdgeWarp(centreSizeX: 0.3, centreSizeY: 0.3, edgeRatioX: 3.5, edgeRatioY: 3.5)
         let parameters = FoveationParameters(epoch: 2, warp: .centreEdge(shape))
@@ -189,18 +248,21 @@ final class PCVRDepthWarpTests: XCTestCase {
                                      rightCentre: NormalizedPoint(x: 0.1, y: 0.8)),
             renderEye: PixelSize(width: 1600, height: 1200)))
         let frame = try gradientFrame(foveation: foveation, pose: .identity)
-        let out = try warp(frame, depth: nil, targets: frame.renderPose.eyes.map(\.pose))
-        var worst: Float = 0
-        for eye in 0..<2 {
-            for y in stride(from: 1, to: Self.eyeHeight - 1, by: 5) {
-                for x in stride(from: 1, to: Self.eyeWidth - 1, by: 5) {
-                    let got = out.sourceUV(eye: eye, x: x, y: y)
-                    worst = max(worst, abs(got.x * Float(Self.eyeWidth) - Float(x) - 0.5),
-                                abs(got.y * Float(Self.eyeHeight) - Float(y) - 0.5))
+        for resampling in PCVRDepthWarper.Resampling.allCases {
+            let out = try warp(frame, depth: nil, targets: frame.renderPose.eyes.map(\.pose), resampling: resampling)
+            var worst: Float = 0
+            for eye in 0..<2 {
+                for y in stride(from: 1, to: Self.eyeHeight - 1, by: 5) {
+                    for x in stride(from: 1, to: Self.eyeWidth - 1, by: 5) {
+                        let got = out.sourceUV(eye: eye, x: x, y: y)
+                        worst = max(worst, abs(got.x * Float(Self.eyeWidth) - Float(x) - 0.5),
+                                    abs(got.y * Float(Self.eyeHeight) - Float(y) - 0.5))
+                    }
                 }
             }
+            let halfStep = Float(Self.eyeHeight) / 2048 + 0.001
+            XCTAssertLessThan(worst, resampling == .bilinear ? 0.1 : halfStep, "\(resampling.rawValue): wire texels")
         }
-        XCTAssertLessThan(worst, 0.1, "wire texels")
     }
 
     /// Left eye: a block at 0.5 m over a background at 2 m, the eye moved

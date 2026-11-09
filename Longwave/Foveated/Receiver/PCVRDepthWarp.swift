@@ -131,6 +131,21 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// and two pixels off the silhouette (`pcvrDepthWarpHoleColour`), rather
     /// than at it, where the near object's rim bleeds in.
     var fillsOffTheEdge = true
+    /// How a pixel that shows what its eye saw reads the picture. Fills stay
+    /// bilinear whatever this says: they are a smudge on purpose.
+    enum Resampling: String, CaseIterable, Sendable {
+        case bilinear
+        /// `pcvrSampleCatmullRom`, as is.
+        case catmullRom = "catmull-rom"
+        /// Catmull-Rom kept within the four nearest texels: no overshoot halo.
+        case catmullRomDeRinged = "catmull-rom-dering"
+    }
+    /// De-ringed Catmull-Rom: on the residual harness's host-matched fixture
+    /// (docs/PCVR_RESIDUAL_HARNESS.md, 2026-11-09) it took 17% of the warp's
+    /// error off the circle at the gaze and 12% of its frame-to-frame change,
+    /// and 6-8% off the wall grids, at no measurable GPU cost; plain
+    /// Catmull-Rom sharpened as much but its halo raised the temporal error.
+    var resampling: Resampling = .catmullRomDeRinged
 
     /// The depth-map width (one eye) the march's steps are counted in: the
     /// stream's eighth-size depth of a 5184-wide eye, where `stepTexels`,
@@ -559,7 +574,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             stepTexels: max(stepTexels, 0.25) * detail,
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
-            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0))
+            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0) | (resampling == .bilinear ? 0 : 128) | (resampling == .catmullRomDeRinged ? 2048 : 0))
     }
 
     /// Computed, not stored: a live patch (`inject`) can change a computed
@@ -597,7 +612,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                 // 8: fill from the other eye (display views, uniforms 2 and 3), or
                                 // from the fill views (the compute colour pass, uniforms 2 + 2 * eye + slot);
                                 // 32: a fill view in use, its source in bits 8-10 of the fill arrays;
-                                // 64: an unseen pixel's colour from off the silhouette (`fillsOffTheEdge`)
+                                // 64: an unseen pixel's colour from off the silhouette (`fillsOffTheEdge`);
+                                // 128: seen pixels read with Catmull-Rom (`resampling`), 2048: de-ringed (bit 11; bits 8-10 are the fill index)
     };
 
     struct PCVRDepthWarpHit {
@@ -940,7 +956,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             return;
         }
         float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
-        output.write(float4(source.sample(linear, uv).rgb, 1), gid);
+        float3 colour = (u.flags & 128u) ? pcvrSampleCatmullRom(source, linear, uv, u.sourceBounds, u.flags & 2048u).rgb
+                                         : source.sample(linear, uv).rgb;
+        output.write(float4(colour, 1), gid);
     }
 
     // The warped depth, at the output's size, encoded as the source map is.
@@ -1005,6 +1023,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     static float3 pcvrDepthWarpSample(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u,
                                       texture2d<float, access::sample> source, sampler linear) {
         float2 uv = pcvrEyeTexel(pcvrWireUV(saturate(hit.uv), u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
+        if (u.flags & 128u) return pcvrSampleCatmullRom(source, linear, uv, u.sourceBounds, u.flags & 2048u).rgb;
         return source.sample(linear, uv).rgb;
     }
 

@@ -20,6 +20,11 @@ extension PCVRWarpBenchTests {
     }
     struct ResidualReport: Codable {
         var schema = 1
+        /// host-v2: snapped centres and the host's box-prefiltered pack. Reports
+        /// from v1 (one unsnapped tap) don't compare.
+        var fixture = "host-v2"
+        /// The receiver setting under test; comparisons may differ in it.
+        var warpFilter: String
         var width = PCVRWarpBenchTests.width
         var height = PCVRWarpBenchTests.height
         var sourceHz = 60
@@ -114,6 +119,11 @@ extension PCVRWarpBenchTests {
         let sampler = try XCTUnwrap(device.makeSamplerState(descriptor: samplerDescriptor))
         let unwarper = try PCVRUnwarp(device: device)
         let warper = try PCVRDepthWarper(device: device)
+        let filter = ProcessInfo.processInfo.environment["PCVR_RESIDUAL_WARP_FILTER"] ?? warper.resampling.rawValue
+        guard let resampling = PCVRDepthWarper.Resampling(rawValue: filter) else {
+            throw XCTSkip("PCVR_RESIDUAL_WARP_FILTER: one of " + PCVRDepthWarper.Resampling.allCases.map(\.rawValue).joined(separator: ", "))
+        }
+        warper.resampling = resampling
         let builder = try PCVREyeMeshBuilder(device: device)
         let grid = PCVREyeMesh.Grid(columns: 256, rows: 200)
         let indices = grid.indices
@@ -146,7 +156,12 @@ extension PCVRWarpBenchTests {
                         let shape = CentreEdgeWarp(centreSizeX: 0.3, centreSizeY: 0.3, edgeRatioX: 3.5, edgeRatioY: 3.5)
                         let renderSize = PixelSize(width: UInt16(Self.width), height: UInt16(Self.height))
                         let wire = try XCTUnwrap(shape.wireSize(forRender: renderSize, alignment: 16))
-                        let centres = renderEyes.map { Self.residualUV([0.75, 1.55, -1.8], in: $0) }
+                        // Snapped to whole wire pixels, as the host does (CentreEdgeWarp.pixelAlignedCentre).
+                        let centres = renderEyes.map { eye -> SIMD2<Float> in
+                            let gaze = Self.residualUV([0.75, 1.55, -1.8], in: eye)
+                            let snapped = shape.pixelAlignedCentre(NormalizedPoint(x: gaze.x, y: gaze.y), renderEye: renderSize, wireEye: wire)
+                            return SIMD2(snapped.x, snapped.y)
+                        }
                         let mapping = try XCTUnwrap(PCVRFoveation(parameters: FoveationParameters(epoch: 1, warp: .centreEdge(shape)),
                             frame: FoveationSideData(parameterEpoch: 1,
                                 leftCentre: NormalizedPoint(x: centres.left.x, y: centres.left.y),
@@ -227,7 +242,7 @@ extension PCVRWarpBenchTests {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(ResidualReport(samples: samples, scenarios: cases, traces: traces, peakMetalBytes: peakAllocated, motion: trajectory == nil ? "synthetic-sine-v1" : "recorded")).write(to: directory.appendingPathComponent("residual-report.json"))
+        try encoder.encode(ResidualReport(warpFilter: filter, samples: samples, scenarios: cases, traces: traces, peakMetalBytes: peakAllocated, motion: trajectory == nil ? "synthetic-sine-v1" : "recorded")).write(to: directory.appendingPathComponent("residual-report.json"))
         print("Residual harness: \(samples.count) region samples; peak tracked Metal allocation \(peakAllocated) bytes")
     }
 
@@ -336,13 +351,29 @@ extension PCVRWarpBenchTests {
                              constant float4 *maps [[buffer(0)]], sampler s [[sampler(0)]],
                              uint2 p [[thread_position_in_grid]]) {
         if (p.x >= out.get_width() || p.y >= out.get_height()) return;
+        // CStreamWin's foveation_warp.cpp ps_main, line for line: the host's
+        // render coordinate, then four bilinear taps spread over the wire
+        // pixel's footprint (a box prefilter; one exact tap in the centre).
         uint w = out.get_width() / 2, eye = p.x / w;
-        float2 wire = (float2(p.x - eye * w, p.y) + 0.5) / float2(w, out.get_height());
-        float2 uv = pcvrRenderUV(wire, maps[eye * 2], maps[eye * 2 + 1]);
-        float2 size = float2(source.get_width(), source.get_height());
-        float2 at = float2((uv.x + eye) * 0.5, uv.y);
-        at = clamp(at, float2(eye * 0.5 + 0.5 / size.x, 0.5 / size.y), float2((eye + 1) * 0.5 - 0.5 / size.x, 1 - 0.5 / size.y));
-        out.write(source.sample(s, at), p);
+        float2 wireEye = float2(w, out.get_height());
+        float2 renderEye = float2(source.get_width() / 2, source.get_height());
+        float2 wire = (float2(p.x - eye * w, p.y) + 0.5) / wireEye;
+        float4 mx = maps[eye * 2], my = maps[eye * 2 + 1];
+        float2 uv = pcvrRenderUV(wire, mx, my);
+        float lx = mx.x / mx.z, ly = my.x / my.z;
+        float2 packed = wire * float2(mx.w, my.w);
+        float2 slope = float2(packed.x < lx || packed.x > lx + mx.y - mx.x ? mx.z * mx.w : mx.w,
+                              packed.y < ly || packed.y > ly + my.y - my.x ? my.z * my.w : my.w);
+        float2 spread = max(slope * renderEye / wireEye - 1, 0) * 0.25;
+        float2 centre = float2(eye * renderEye.x, 0) + uv * renderEye;
+        float2 lo = float2(eye * renderEye.x + 0.5, 0.5), hi = float2((eye + 1) * renderEye.x - 0.5, renderEye.y - 0.5);
+        float2 texel = 1 / float2(source.get_width(), source.get_height());
+        float4 sum = 0;
+        for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+            float2 offset = float2(i == 0 ? -spread.x : spread.x, j == 0 ? -spread.y : spread.y);
+            sum += source.sample(s, clamp(centre + offset, lo, hi) * texel);
+        }
+        out.write(sum * 0.25, p);
     }
     struct MeshVertex { packed_float3 position; packed_float2 uv; packed_float2 depth; };
     struct MeshOut { float4 position [[position]]; float2 uv; float depth; };

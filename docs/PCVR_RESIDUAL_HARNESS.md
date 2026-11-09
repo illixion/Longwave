@@ -123,3 +123,10 @@ python3 scripts/pcvr-residuals/run.py --out /private/tmp/pcvr-default \
 
 Values are `PCVRDepthWarper.Resampling`'s raw values (`bilinear`,
 `catmull-rom`, `catmull-rom-dering`); unset uses the warper's default.
+
+`TEST_RUNNER_PCVR_RESIDUAL_MESH_FILTER=catmull-rom-dering` makes the late-mesh
+proxy's material read with the same de-ringed Catmull-Rom, to estimate what a
+sharper RealityKit material would add (RK's Image 2D node offers only linear
+and nearest). The zero-late-miss control then no longer applies and is skipped.
+On host-v2 (2026-11-09) it took a further 17.5% off the late-mesh circle error,
+10% off its frame-to-frame change and 11-28% off the grids and floor.

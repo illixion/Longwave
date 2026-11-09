@@ -25,6 +25,8 @@ extension PCVRWarpBenchTests {
         var fixture = "host-v2"
         /// The receiver setting under test; comparisons may differ in it.
         var warpFilter: String
+        /// The late-mesh proxy's material filter (RK's own is bilinear).
+        var meshFilter: String
         var width = PCVRWarpBenchTests.width
         var height = PCVRWarpBenchTests.height
         var sourceHz = 60
@@ -124,6 +126,11 @@ extension PCVRWarpBenchTests {
             throw XCTSkip("PCVR_RESIDUAL_WARP_FILTER: one of " + PCVRDepthWarper.Resampling.allCases.map(\.rawValue).joined(separator: ", "))
         }
         warper.resampling = resampling
+        // What the late-mesh proxy's material reads with (RK's is bilinear).
+        let meshFilter = ProcessInfo.processInfo.environment["PCVR_RESIDUAL_MESH_FILTER"] ?? "bilinear"
+        guard ["bilinear", "catmull-rom-dering"].contains(meshFilter) else {
+            throw XCTSkip("PCVR_RESIDUAL_MESH_FILTER: bilinear or catmull-rom-dering")
+        }
         let builder = try PCVREyeMeshBuilder(device: device)
         let grid = PCVREyeMesh.Grid(columns: 256, rows: 200)
         let indices = grid.indices
@@ -199,7 +206,8 @@ extension PCVRWarpBenchTests {
                         let expanded = try residualUnpack(warpedFrame, using: unwarper)
                         let meshResult = try residualMesh(frame: warpedFrame, depth: PCVRDepthMap(texture: warpedDepth, near: depth.near, far: depth.far),
                             display: displayEyes, builder: builder, grid: grid, indices: indexBuffer,
-                            indexCount: indices.count, pipeline: meshPipeline, depthState: depthState, sampler: sampler)
+                            indexCount: indices.count, pipeline: meshPipeline, depthState: depthState, sampler: sampler,
+                            meshFilter: meshFilter)
                         let stages: [(String, any MTLTexture, Rendered, PCVRStereo<PCVREyeView>, Double?)] = [
                             ("sampling", sampled, source, renderEyes, Self.residualMs(packBuffer)),
                             ("warp", expanded, warpTruth, warpEyes, Self.residualMs(warpBuffer)),
@@ -224,7 +232,9 @@ extension PCVRWarpBenchTests {
                                     classification: stride(from: 1, to: labels.count, by: 2).map { labels[$0] }, previousError: previous[key])
                                 previous[key] = errors
                                 if stage == "warp" { warpMetrics[region.name] = metric }
-                                if config.lagMs == 0, stage == "late-mesh-proxy", let before = warpMetrics[region.name] {
+                                // The control holds for RK's bilinear material, which reads as the
+                                // analysis unwarp does; a different mesh filter differs by design.
+                                if config.lagMs == 0, meshFilter == "bilinear", stage == "late-mesh-proxy", let before = warpMetrics[region.name] {
                                     XCTAssertLessThan(abs(metric.mae - before.mae), 0.002, "zero late miss must reproduce the warped image")
                                 }
                                 XCTAssertTrue(metric.mae.isFinite && metric.p95.isFinite)
@@ -242,7 +252,7 @@ extension PCVRWarpBenchTests {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(ResidualReport(warpFilter: filter, samples: samples, scenarios: cases, traces: traces, peakMetalBytes: peakAllocated, motion: trajectory == nil ? "synthetic-sine-v1" : "recorded")).write(to: directory.appendingPathComponent("residual-report.json"))
+        try encoder.encode(ResidualReport(warpFilter: filter, meshFilter: meshFilter, samples: samples, scenarios: cases, traces: traces, peakMetalBytes: peakAllocated, motion: trajectory == nil ? "synthetic-sine-v1" : "recorded")).write(to: directory.appendingPathComponent("residual-report.json"))
         print("Residual harness: \(samples.count) region samples; peak tracked Metal allocation \(peakAllocated) bytes")
     }
 
@@ -280,7 +290,7 @@ extension PCVRWarpBenchTests {
     func residualMesh(frame: PCVRDecodedFrame, depth: PCVRDepthMap, display: PCVRStereo<PCVREyeView>,
                       builder: PCVREyeMeshBuilder, grid: PCVREyeMesh.Grid, indices: any MTLBuffer, indexCount: Int,
                       pipeline: any MTLRenderPipelineState, depthState: any MTLDepthStencilState,
-                      sampler: any MTLSamplerState) throws -> (any MTLTexture, Double?) {
+                      sampler: any MTLSamplerState, meshFilter: String) throws -> (any MTLTexture, Double?) {
         let out = try residualTexture(.rgba16Float, width: 2 * Self.width, height: Self.height)
         let z = try residualTexture(.depth32Float, width: out.width, height: out.height)
         let b = try XCTUnwrap(queue.makeCommandBuffer())
@@ -308,6 +318,10 @@ extension PCVRWarpBenchTests {
             var matrix = display[eye].fieldOfView.projectionMatrix(near: 0.01, far: 100) * display[eye].pose.matrix.inverse
             e.setVertexBuffer(vertices[eye], offset: 0, index: 0)
             e.setVertexBytes(&matrix, length: MemoryLayout<simd_float4x4>.stride, index: 1)
+            var bounds = PCVRReceiver.eyeBounds(eye: eye, texture: frame.texture)
+            var mode: UInt32 = meshFilter == "catmull-rom-dering" ? 1 : 0
+            e.setFragmentBytes(&bounds, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+            e.setFragmentBytes(&mode, length: MemoryLayout<UInt32>.stride, index: 1)
             e.setViewport(MTLViewport(originX: Double(eye * Self.width), originY: 0, width: Double(Self.width),
                                       height: Double(Self.height), znear: 0, zfar: 1))
             e.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32, indexBuffer: indices, indexBufferOffset: 0)
@@ -380,8 +394,12 @@ extension PCVRWarpBenchTests {
     vertex MeshOut residualMeshVertex(uint id [[vertex_id]], device const MeshVertex *v [[buffer(0)]], constant float4x4 &m [[buffer(1)]]) {
         MeshOut o; o.position = m * float4(float3(v[id].position), 1); o.uv = v[id].uv; o.depth = v[id].depth.x; return o;
     }
-    fragment float4 residualMeshFragment(MeshOut in [[stage_in]], texture2d<float> image [[texture(0)]], sampler s [[sampler(0)]]) {
-        return image.sample(s, in.uv / in.depth);
+    // The RK material's read (V3Overlay.usda: bilinear), or with mode 1 a
+    // de-ringed Catmull-Rom, to measure what a sharper material would add.
+    fragment float4 residualMeshFragment(MeshOut in [[stage_in]], texture2d<float> image [[texture(0)]], sampler s [[sampler(0)]],
+                                         constant float4 &bounds [[buffer(0)]], constant uint &mode [[buffer(1)]]) {
+        float2 uv = clamp(in.uv / in.depth, bounds.xy, bounds.zw);
+        return mode == 1 ? pcvrSampleCatmullRom(image, s, uv, bounds, true) : image.sample(s, uv);
     }
     """
 }

@@ -31,7 +31,7 @@ struct PCVRNativeSessionPanel: View {
                     ForEach(PCVRQualityPreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 Picker("Frame rate", selection: $session.frameRate) {
-                    ForEach(PCVRFrameRatePreset.offered, id: \.self) { Text($0.label).tag($0) }
+                    ForEach(PCVRFrameRatePreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 Text("Quality sets how many pixels the game renders. Match display follows the headset's refresh as visionOS changes it; Half display rate shows every frame for two refreshes (60 fps at 120 Hz, 45 at 90), easier on the PC with an even cadence. Never below 45 fps. Changes apply while you play; a new render size reaches a game when it next starts.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -133,30 +133,4 @@ struct PCVRNativeSessionPanel: View {
     }
 }
 
-extension PCVRQualityPreset {
-    var label: String {
-        switch self {
-        case .performance: "Performance — 70%, the lightest"
-        case .balanced: "Balanced — 85%"
-        case .quality: "Quality — native density"
-        case .maximum: "Maximum — 115%, supersampled"
-        }
-    }
-}
-
-extension PCVRFrameRatePreset {
-    /// What the tab offers: fixed caps don't divide every display rate, so they'd judder.
-    static let offered: [PCVRFrameRatePreset] = [.matchDisplay, .halfDisplay]
-
-    var label: String {
-        switch self {
-        case .halfDisplay: "Half display rate"
-        case .matchDisplay: "Match display"
-        case .cap60: "At most 60 fps"
-        case .cap72: "At most 72 fps"
-        case .cap90: "At most 90 fps"
-        case .cap120: "At most 120 fps"
-        }
-    }
-}
 #endif

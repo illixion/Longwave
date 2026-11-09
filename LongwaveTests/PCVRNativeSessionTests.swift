@@ -24,11 +24,24 @@ final class PCVRNativeSessionTests: XCTestCase {
         let session = PCVRNativeSession()
         session.quality = .balanced
         session.frameRate = .halfDisplay
-        XCTAssertEqual(session.preferences, PCVRPreferences(quality: .balanced, frameRate: .halfDisplay))
+        XCTAssertEqual(session.preferences.renderEye, PCVRPlatformProfile.renderEye(scale: 0.85))
+        XCTAssertEqual(session.preferences.minStreamMillihertz, 45_000)
         let reloaded = PCVRNativeSession()
         XCTAssertEqual(reloaded.quality, .balanced)
         XCTAssertEqual(reloaded.frameRate, .halfDisplay)
         XCTAssertFalse(reloaded.isActive)
+    }
+
+    func testPlatformPresetsAreEvenAndFloored() {
+        XCTAssertEqual(PCVRPlatformProfile.renderEye(scale: 1), PixelSize(width: 5184, height: 4160))
+        let balanced = PCVRPlatformProfile.renderEye(scale: 0.85)
+        XCTAssertEqual(Int(balanced.width) % 16, 0)
+        XCTAssertEqual(Int(balanced.height) % 16, 0)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 120), 60_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 96), 48_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 72), 45_000)
+        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: nil), 0)
+        XCTAssertEqual(PCVRFrameRatePreset.matchDisplay.capMillihertz(displayHertz: 120), 0)
     }
 
     func testWithoutAPluginTheShellPresents() {

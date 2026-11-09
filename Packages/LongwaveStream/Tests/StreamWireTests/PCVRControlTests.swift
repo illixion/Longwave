@@ -23,32 +23,28 @@ final class PCVRControlTests: XCTestCase {
         XCTAssertThrowsError(try PCVRDisplayRate(decoding: bytes))
     }
 
-    func testPreferencesGoldenAndPresets() throws {
-        let prefs = PCVRPreferences(quality: .balanced, frameRate: .cap90)
-        let bytes = hex("5203", "905f0100", "02", "03")
+    func testPreferencesGolden() throws {
+        let prefs = PCVRPreferences(renderEye: PixelSize(width: 4400, height: 3536),
+                                    maxStreamMillihertz: 60_000, minStreamMillihertz: 45_000)
+        let bytes = hex("3011", "d00d", "60ea0000", "c8af0000")
         XCTAssertEqual(try prefs.encoded(), bytes)
-        let decoded = try PCVRPreferences(decoding: bytes)
-        XCTAssertEqual(decoded, prefs)
-        XCTAssertEqual(decoded.quality, .balanced)
-        XCTAssertEqual(decoded.frameRate, .cap90)
-        XCTAssertEqual(decoded.renderScale, 0.85, accuracy: 1e-9)
-        XCTAssertEqual(PCVRPreferences.default.maxStreamMillihertz, 0)
+        XCTAssertEqual(try PCVRPreferences(decoding: bytes), prefs)
+        XCTAssertTrue(prefs.asksForRenderEye)
     }
 
-    func testHalfDisplayIsHalfTheRefreshAndNeverBelow45() {
-        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 120), 60_000)
-        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 96), 48_000)
-        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 90), 45_000)
-        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: 72), 45_000)
-        XCTAssertEqual(PCVRFrameRatePreset.halfDisplay.capMillihertz(displayHertz: nil), 0)
-        XCTAssertEqual(PCVRFrameRatePreset.matchDisplay.capMillihertz(displayHertz: 120), 0)
-        XCTAssertEqual(PCVRPreferences(quality: .quality, frameRate: .halfDisplay, displayHertz: 120).maxStreamMillihertz, 60_000)
-        XCTAssertEqual(PCVRFrameRatePreset.cap60.capMillihertz(displayHertz: 120), 60_000)
+    func testPreferencesCanLeaveTheSizeToThePC() throws {
+        let prefs = PCVRPreferences(renderEye: PixelSize(width: 0, height: 0), maxStreamMillihertz: 0, minStreamMillihertz: 0)
+        XCTAssertFalse(try PCVRPreferences(decoding: try prefs.encoded()).asksForRenderEye)
     }
 
-    func testPreferencesRejectAbsurdScale() {
-        XCTAssertThrowsError(try PCVRPreferences(renderScalePermille: 50, maxStreamMillihertz: 0).encoded())
-        XCTAssertThrowsError(try PCVRPreferences(decoding: hex("0a00", "00000000", "00", "00")))
+    func testPreferencesRejectBadValues() {
+        XCTAssertThrowsError(try PCVRPreferences(renderEye: PixelSize(width: 100, height: 100),
+                                                 maxStreamMillihertz: 0, minStreamMillihertz: 0).encoded())
+        XCTAssertThrowsError(try PCVRPreferences(renderEye: PixelSize(width: 4400, height: 0),
+                                                 maxStreamMillihertz: 0, minStreamMillihertz: 0).encoded())
+        XCTAssertThrowsError(try PCVRPreferences(renderEye: PixelSize(width: 0, height: 0),
+                                                 maxStreamMillihertz: 45_000, minStreamMillihertz: 60_000).encoded())
+        XCTAssertThrowsError(try PCVRPreferences(decoding: hex("6500", "6500", "00000000", "00000000")))
     }
 
     func testSessionStateGolden() throws {
@@ -57,18 +53,6 @@ final class PCVRControlTests: XCTestCase {
         let bytes = hex("3011", "d00d", "905f0100", "02", "01")
         XCTAssertEqual(try state.encoded(), bytes)
         XCTAssertEqual(try PCVRSessionState(decoding: bytes), state)
-    }
-
-    func testRenderEyeAtNativeDensityMatchesTheVisionProSize() {
-        // The receiver's left eye frustum, radians (2% overscan included in the density).
-        let fov = (left: Float(-0.9512), right: Float(0.9512), up: Float(0.8727), down: Float(-0.8727))
-        let eye = PCVRProfile.renderEye(fov: fov, scale: 1, nativePixelsPerTangent: PCVRProfile.visionProPixelsPerTangent)
-        XCTAssertEqual(Double(eye.width), 5184, accuracy: 120)
-        XCTAssertEqual(Double(eye.height), 4460, accuracy: 400)
-        XCTAssertEqual(Int(eye.width) % PCVRProfile.wireAlignment, 0)
-        let lower = PCVRProfile.renderEye(fov: fov, scale: 0.7, nativePixelsPerTangent: PCVRProfile.visionProPixelsPerTangent)
-        XCTAssertLessThan(lower.width, eye.width)
-        XCTAssertEqual(Int(lower.height) % PCVRProfile.wireAlignment, 0)
     }
 
     func testInputBridgeSideDataRoundTripsOpaque() throws {

@@ -47,13 +47,13 @@ final class PCVRNativeSession {
 
     var quality: PCVRQualityPreset {
         didSet {
-            UserDefaults.standard.set(Int(quality.rawValue), forKey: Self.qualityKey)
+            UserDefaults.standard.set(quality.rawValue, forKey: Self.qualityKey)
             sendPreferences()
         }
     }
     var frameRate: PCVRFrameRatePreset {
         didSet {
-            UserDefaults.standard.set(Int(frameRate.rawValue), forKey: Self.frameRateKey)
+            UserDefaults.standard.set(frameRate.rawValue, forKey: Self.frameRateKey)
             sendPreferences()
         }
     }
@@ -71,13 +71,14 @@ final class PCVRNativeSession {
 
     init() {
         let defaults = UserDefaults.standard
-        quality = PCVRQualityPreset(rawValue: UInt8(clamping: defaults.integer(forKey: Self.qualityKey))) ?? .quality
-        let saved = PCVRFrameRatePreset(rawValue: UInt8(clamping: defaults.integer(forKey: Self.frameRateKey)))
-        frameRate = saved.flatMap { PCVRFrameRatePreset.offered.contains($0) ? $0 : nil } ?? .matchDisplay
+        quality = PCVRQualityPreset(rawValue: defaults.integer(forKey: Self.qualityKey)) ?? .quality
+        frameRate = PCVRFrameRatePreset(rawValue: defaults.integer(forKey: Self.frameRateKey)) ?? .matchDisplay
     }
 
     /// The presets as sent: the frame-rate cap worked out for the display now.
-    var preferences: PCVRPreferences { PCVRPreferences(quality: quality, frameRate: frameRate, displayHertz: display?.hertz) }
+    var preferences: PCVRPreferences {
+        PCVRPlatformProfile.preferences(quality: quality, frameRate: frameRate, displayHertz: display?.hertz)
+    }
     @ObservationIgnored private var appliedCap: UInt32?
 
     var isActive: Bool {

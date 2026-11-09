@@ -1,15 +1,7 @@
 // The PCVR profile's session control (NATIVE_V3_PROTOCOL.md section 4.7,
 // "Pacing" and "Presets"): what a headset tells the host about its display and
-// what it wants, and what the host settled on. Shared by every PCVR client
-// (visionOS today, others later) so presets mean the same thing everywhere.
-
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#elseif canImport(ucrt)
-import ucrt
-#endif
+// what it wants, and what the host settled on. Plain numbers only: each
+// platform's client owns its presets, because only it knows its display.
 
 /// Client -> host (`pcvrDisplay`): the display's refresh now, and the rates it
 /// can run. Sent after the hello and again on every change, so the host paces
@@ -57,122 +49,57 @@ public struct PCVRDisplayRate: WireCodable, Hashable {
     }
 }
 
-/// How much picture a PCVR game renders: a scale of the headset's native
-/// density over its whole view (1.0 renders as many pixels per degree as the
-/// display shows at its centre). The host derives each eye's render size from
-/// it and the eye's field of view.
-public enum PCVRQualityPreset: UInt8, CaseIterable, Sendable, Codable {
-    case performance = 1
-    case balanced = 2
-    case quality = 3
-    case maximum = 4
-
-    /// Per mille of native density.
-    public var renderScalePermille: UInt16 {
-        switch self {
-        case .performance: 700
-        case .balanced: 850
-        case .quality: 1000
-        case .maximum: 1150
-        }
-    }
-}
-
-/// What a PCVR stream's frame rate follows. `matchDisplay` keeps one stream
-/// frame per display refresh, stepping down when the PC can't keep up;
-/// `halfDisplay` shows each frame for exactly two refreshes (60 at 120 Hz, 45
-/// at 90), an even cadence, recomputed by the client as the display changes.
-/// The fixed caps don't divide every display rate (90 on a 120 Hz display
-/// repeats every third frame) and are for clients that set the display rate.
-/// No stream runs below `minimumStreamHertz`.
-public enum PCVRFrameRatePreset: UInt8, CaseIterable, Sendable, Codable {
-    case matchDisplay = 0
-    case cap60 = 1
-    case cap72 = 2
-    case cap90 = 3
-    case cap120 = 4
-    case halfDisplay = 5
-
-    /// The slowest stream a preset or the host's own step-down may choose.
-    public static let minimumStreamHertz = 45.0
-
-    /// The cap to send for a display at `displayHertz` (nil when unknown), in
-    /// millihertz: 0 follows the display, never below `minimumStreamHertz`.
-    public func capMillihertz(displayHertz: Double?) -> UInt32 {
-        let floor = UInt32(Self.minimumStreamHertz * 1000)
-        switch self {
-        case .matchDisplay: return 0
-        case .halfDisplay:
-            guard let displayHertz, displayHertz > 0 else { return 0 }
-            return max(UInt32((displayHertz * 500).rounded()), floor)
-        default: return max(capMillihertz, floor)
-        }
-    }
-
-    /// The cap in millihertz; 0 for `matchDisplay`.
-    public var capMillihertz: UInt32 {
-        switch self {
-        case .matchDisplay: 0
-        case .cap60: 60_000
-        case .cap72: 72_000
-        case .cap90: 90_000
-        case .cap120: 120_000
-        case .halfDisplay: 0
-        }
-    }
-}
-
-/// Client -> host (`pcvrPreferences`): what the wearer chose. Sent after the
-/// hello and on every change; the host applies it as soon as it can (a render
-/// size change restarts the game's swapchain, so it may wait for the next
-/// title). Explicit values, so a client can offer settings between presets.
+/// Client -> host (`pcvrPreferences`): what this headset wants the PC to do,
+/// in plain numbers the client worked out for itself. Presets, densities and
+/// which rates make an even cadence belong to each platform's client (it knows
+/// its display); the host only obeys. Sent after the hello and on every change;
+/// the host applies it as soon as it can (a render size change restarts the
+/// game's swapchain, so it may wait for the next title).
 ///
-/// Body: `renderScalePermille u16 | maxStreamMillihertz u32 | quality u8 | frameRate u8` (8).
+/// Body: `renderEye PixelSize (4) | maxStreamMillihertz u32 | minStreamMillihertz u32` (12).
 public struct PCVRPreferences: WireCodable, Hashable {
-    public static let wireSize = 8
-    public static let scaleRange: ClosedRange<UInt16> = 300...1500
+    public static let wireSize = 12
 
-    /// Render density, per mille of native (`PCVRQualityPreset`).
-    public var renderScalePermille: UInt16
+    /// The size to render each eye at; 0x0 = the PC chooses.
+    public var renderEye: PixelSize
     /// The stream's rate cap; 0 = follow the display.
     public var maxStreamMillihertz: UInt32
-    /// The presets these values came from, for display on the host; 0 = custom.
-    public var qualityPreset: UInt8
-    public var frameRatePreset: UInt8
+    /// The slowest stream the host may step down to when it can't keep up; 0 = no floor.
+    public var minStreamMillihertz: UInt32
 
-    public init(renderScalePermille: UInt16, maxStreamMillihertz: UInt32, qualityPreset: UInt8 = 0, frameRatePreset: UInt8 = 0) {
-        self.renderScalePermille = renderScalePermille
+    public init(renderEye: PixelSize, maxStreamMillihertz: UInt32, minStreamMillihertz: UInt32) {
+        self.renderEye = renderEye
         self.maxStreamMillihertz = maxStreamMillihertz
-        self.qualityPreset = qualityPreset
-        self.frameRatePreset = frameRatePreset
+        self.minStreamMillihertz = minStreamMillihertz
     }
 
-    public init(quality: PCVRQualityPreset, frameRate: PCVRFrameRatePreset, displayHertz: Double? = nil) {
-        self.init(renderScalePermille: quality.renderScalePermille,
-                  maxStreamMillihertz: frameRate.capMillihertz(displayHertz: displayHertz),
-                  qualityPreset: quality.rawValue, frameRatePreset: frameRate.rawValue)
-    }
-
-    public static let `default` = PCVRPreferences(quality: .quality, frameRate: .matchDisplay)
-
-    public var quality: PCVRQualityPreset? { PCVRQualityPreset(rawValue: qualityPreset) }
-    public var frameRate: PCVRFrameRatePreset? { PCVRFrameRatePreset(rawValue: frameRatePreset) }
-    public var renderScale: Double { Double(renderScalePermille) / 1000 }
+    public var asksForRenderEye: Bool { renderEye.width > 0 && renderEye.height > 0 }
 
     public init(from reader: inout WireReader) throws(WireError) {
-        renderScalePermille = try reader.readUInt16()
+        renderEye = PixelSize(width: try reader.readUInt16(), height: try reader.readUInt16())
         maxStreamMillihertz = try reader.readUInt32()
-        qualityPreset = try reader.readUInt8()
-        frameRatePreset = try reader.readUInt8()
-        guard Self.scaleRange.contains(renderScalePermille) else { throw .invalid("pcvrPreferences.renderScale") }
+        minStreamMillihertz = try reader.readUInt32()
+        try validate()
     }
 
     public func encode(to writer: inout WireWriter) throws(WireError) {
-        guard Self.scaleRange.contains(renderScalePermille) else { throw .invalid("pcvrPreferences.renderScale") }
-        writer.writeUInt16(renderScalePermille)
+        try validate()
+        writer.writeUInt16(renderEye.width)
+        writer.writeUInt16(renderEye.height)
         writer.writeUInt32(maxStreamMillihertz)
-        writer.writeUInt8(qualityPreset)
-        writer.writeUInt8(frameRatePreset)
+        writer.writeUInt32(minStreamMillihertz)
+    }
+
+    private func validate() throws(WireError) {
+        if asksForRenderEye {
+            guard (256...8192).contains(renderEye.width), (256...8192).contains(renderEye.height),
+                  renderEye.width % 2 == 0, renderEye.height % 2 == 0 else { throw .invalid("pcvrPreferences.renderEye") }
+        } else if renderEye.width != 0 || renderEye.height != 0 {
+            throw .invalid("pcvrPreferences.renderEye")
+        }
+        if maxStreamMillihertz != 0, minStreamMillihertz > maxStreamMillihertz {
+            throw .inconsistent("pcvrPreferences.minStream")
+        }
     }
 }
 
@@ -228,24 +155,4 @@ public struct PCVRSessionState: WireCodable, Hashable {
         writer.writeUInt8(producer.rawValue)
         writer.writeUInt8(flags.rawValue)
     }
-}
-
-public extension PCVRProfile {
-    /// The render eye for `fov` at `scale` of `nativePixelsPerTangent` (pixels
-    /// per unit tangent at the display centre), even and wire-aligned. The
-    /// Vision Pro's is about 1860 (`visionProPixelsPerTangent`).
-    static func renderEye(fov: (left: Float, right: Float, up: Float, down: Float),
-                          scale: Double, nativePixelsPerTangent: Double) -> PixelSize {
-        func span(_ a: Float, _ b: Float) -> Double { tan(Double(b)) - tan(Double(a)) }
-        let s = max(scale, 0.1) * nativePixelsPerTangent
-        func aligned(_ v: Double) -> UInt16 {
-            let a = Double(wireAlignment)
-            return UInt16(min(max((v / a).rounded() * a, a), 8192))
-        }
-        return PixelSize(width: aligned(span(fov.left, fov.right) * s), height: aligned(span(fov.down, fov.up) * s))
-    }
-
-    /// The Vision Pro's display density at its centre, pixels per unit tangent:
-    /// 5184 px across its ±~54.5 deg rendered frustum with 2% overscan.
-    static let visionProPixelsPerTangent = 1860.0
 }

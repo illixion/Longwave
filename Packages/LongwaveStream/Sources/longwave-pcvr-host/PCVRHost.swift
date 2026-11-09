@@ -91,9 +91,6 @@ struct HostOptions {
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
-    /// The headset's display density at its centre, pixels per unit tangent:
-    /// a preference's render scale multiplies this (`PCVRProfile.renderEye`).
-    var nativePixelsPerTangent = PCVRProfile.visionProPixelsPerTangent
 }
 
 /// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
@@ -1033,9 +1030,10 @@ final class PCVRHost: @unchecked Sendable {
             if options.followsHeadset, next - measuredSince >= 2 * HostClock.ticksPerSecond {
                 let seconds = Double(next - measuredSince) / Double(HostClock.ticksPerSecond)
                 measuredSince = next
-                let (poses, current, encodes, reported, cap) = lock.withLock { () -> (Int, Double, [Double], Double?, Double) in
+                let (poses, current, encodes, reported, cap, floor) = lock.withLock {
+                    () -> (Int, Double, [Double], Double?, Double, Double) in
                     defer { posesForRate = 0 }
-                    return (posesForRate, pacedHz, encodeTimes, reportedDisplayHz, streamCapHz)
+                    return (posesForRate, pacedHz, encodeTimes, reportedDisplayHz, streamCapHz, streamFloorHz)
                 }
                 // The encoder's 95th percentile over the last second or two.
                 let recent = encodes.suffix(Int(current * 2)).sorted()
@@ -1047,10 +1045,10 @@ final class PCVRHost: @unchecked Sendable {
                         ? StreamRate.choose(display: display, encodeMilliseconds: encodeP95, current: current,
                                             ceiling: ceiling)
                         : min(display, ceiling)
-                    // Never below the floor, the encoder's step-down included (a halved
-                    // 60 Hz display would otherwise stream 30): judder past it costs more
-                    // than the frames it saves. A display slower than the floor sets the rate.
-                    let rate = max(chosen, min(display, PCVRFrameRatePreset.minimumStreamHertz))
+                    // Never below the client's floor, the encoder's step-down included (a
+                    // halved 60 Hz display would otherwise stream 30). A display slower than
+                    // the floor sets the rate.
+                    let rate = max(chosen, min(display, floor))
                     if rate != current {
                         lock.withLock { pacedHz = rate }
                         log.line("frame clock: \(String(format: "%g", rate)) Hz for the headset's \(Int(display)) Hz"
@@ -1237,7 +1235,6 @@ final class PCVRHost: @unchecked Sendable {
                 if let presented = pose.presented { viewer.lastPresented = presented }
                 headPose = (snapshot.sequence, pose)
                 // Fields of view settle after connect; re-derive the asked-for size now and then.
-                if viewer.preferences != nil, viewer.posesReceived % 60 == 1 { updateRequestedEye() }
                 frameClock.pose(displayTime: Int64(clamping: pose.displayTime), arrival: Int64(clamping: now))
             case .message(.control, let message):
                 switch message.type {
@@ -1264,9 +1261,13 @@ final class PCVRHost: @unchecked Sendable {
                 case .pcvrPreferences:
                     guard let preferences = try? PCVRPreferences(decoding: message.body) else { continue }
                     if viewer.preferences != preferences {
-                        log.line("viewer '\(viewer.name)' prefers \(Int(preferences.renderScalePermille))\u{2030} density, "
+                        log.line("viewer '\(viewer.name)' asks for "
+                                 + (preferences.asksForRenderEye ? "\(preferences.renderEye.width)x\(preferences.renderEye.height) per eye, "
+                                    : "the PC's render size, ")
                                  + (preferences.maxStreamMillihertz == 0 ? "the display's rate"
-                                    : String(format: "at most %g Hz", Double(preferences.maxStreamMillihertz) / 1000)))
+                                    : String(format: "at most %g Hz", Double(preferences.maxStreamMillihertz) / 1000))
+                                 + (preferences.minStreamMillihertz == 0 ? ""
+                                    : String(format: ", never below %g Hz", Double(preferences.minStreamMillihertz) / 1000)))
                     }
                     viewer.preferences = preferences
                     updateRequestedEye()
@@ -1338,29 +1339,21 @@ final class PCVRHost: @unchecked Sendable {
         }.min() ?? .infinity
     }
 
-    /// The render eye the preferences and the newest pose's fields of view ask
-    /// for; nil without preferences (the producer keeps choosing). Moves only
-    /// on a change of more than 2%, so field-of-view jitter never re-attaches.
+    /// The render eye the viewers ask for (the first that names one); nil leaves
+    /// it to the producer. The client works it out: only it knows its display.
     private func updateRequestedEye() {
-        guard let preferences = viewers.values.filter(\.confirmed).compactMap(\.preferences).first,
-              let pose = headPose?.pose else {
-            if requestedEye != nil, viewers.values.allSatisfy({ $0.preferences == nil }) { requestedEye = nil }
-            return
-        }
-        func eye(_ f: FieldOfView) -> PixelSize {
-            PCVRProfile.renderEye(fov: (f.angleLeft, f.angleRight, f.angleUp, f.angleDown),
-                                  scale: preferences.renderScale, nativePixelsPerTangent: options.nativePixelsPerTangent)
-        }
-        let l = eye(pose.leftEye.fieldOfView), r = eye(pose.rightEye.fieldOfView)
-        let wanted = PixelSize(width: max(l.width, r.width), height: max(l.height, r.height))
-        if let current = requestedEye {
-            let dw = abs(Double(wanted.width) - Double(current.width)) / Double(current.width)
-            let dh = abs(Double(wanted.height) - Double(current.height)) / Double(current.height)
-            if dw <= 0.02 && dh <= 0.02 { return }
-        }
+        let wanted = viewers.values.filter(\.confirmed).compactMap(\.preferences).first(where: \.asksForRenderEye)?.renderEye
+        guard wanted != requestedEye else { return }
         requestedEye = wanted
-        log.line("render eye asked of the producer: \(wanted.width)x\(wanted.height) "
-                 + "(\(Int(preferences.renderScalePermille))\u{2030} of native density)")
+        if let wanted { log.line("render eye asked of the producer: \(wanted.width)x\(wanted.height)") }
+    }
+
+    /// The highest floor the viewers ask for (Hz); 0 without one.
+    private var streamFloorHz: Double {
+        viewers.values.filter(\.confirmed).compactMap { v -> Double? in
+            guard let floor = v.preferences?.minStreamMillihertz, floor > 0 else { return nil }
+            return Double(floor) / 1000
+        }.max() ?? 0
     }
 
     /// Sends each viewer the session state when it changed.

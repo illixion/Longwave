@@ -1298,19 +1298,18 @@ the inference. In game-mode playout (§5) a frame that misses its display slot i
 dropped, never queued: in VR a late frame is worse than a repeated one, which
 the compositor's reprojection covers.
 
-**Presets.** The client sends what the wearer chose (`pcvrPreferences`, 0x2A):
-a render density as per mille of the headset's native density over its whole
-view, and a stream-rate cap (0 = follow the display). The named presets
-(`PCVRQualityPreset` performance 0.70, balanced 0.85, quality 1.00, maximum
-1.15; `PCVRFrameRatePreset` match display, or a cap of 60, 72, 90 or 120) live
-in StreamWire so every client means the same thing by them. The host derives
-each eye's render size from the density and the eye's field of view
-(`PCVRProfile.renderEye`), hands it to the VR compositor, follows the display
-up to the cap, and steps the stream rate down by itself when the PC can't keep
-up. It reports what it settled on (`pcvrSessionState`, 0x2B: render eye, stream
-rate, whether a title or the compositor's home view renders, and whether the
-rate is held down by the PC or a size change waits for the next title). A
-client shows that; nothing depends on it.
+**Preferences.** The client sends plain numbers (`pcvrPreferences`, 0x2A):
+the render size per eye, a stream-rate cap (0 = follow the display) and a floor
+the host's own step-down may not go below. Presets, densities and which rates
+meet the display's refreshes evenly belong to each platform's client, which is
+the only one that knows its display (visionOS: `PCVRPlatformProfile`, native
+5184x4160, a half-display-rate option, a 45 fps floor). The host hands the size
+to the VR compositor, follows the display between floor and cap, and steps the
+rate down by itself when the PC can't keep up. It reports what it settled on
+(`pcvrSessionState`, 0x2B: render eye, stream rate, whether a title or the
+compositor's home view renders, and whether the rate is held down by the PC or
+a size change waits for the next title). A client shows that; nothing depends
+on it.
 
 **Input bridge.** The PC's controller and library bridge needs its addresses
 and a session token. The VR compositor puts its rendezvous in frame side data

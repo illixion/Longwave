@@ -310,8 +310,12 @@ public sealed class PairingService : IDisposable
             var headsetPublic = Convert.FromBase64String(reveal["publicKey"]?.GetValue<string>() ?? "");
             var headsetNonce = Convert.FromBase64String(reveal["nonce"]?.GetValue<string>() ?? "");
             var agreement = PairingExchange.Agree(exchangeKey, commitment, headsetPublic, headsetNonce, hostPublic, hostNonce,
-                    hostId, hostName, headsetId, committedDeviceName, requestedRaw, sshPublicKey)
-                ?? throw new InvalidDataException("reveal didn't match its commitment");
+                    hostId, hostName, headsetId, committedDeviceName, requestedRaw, sshPublicKey);
+            if (agreement is null)
+            {
+                outcome = "incompatible";
+                throw new InvalidDataException("reveal didn't match its commitment");
+            }
 
             if (!RegisterPrompt())
             {
@@ -389,6 +393,7 @@ public sealed class PairingService : IDisposable
             {
                 "paired" => $"Paired “{deviceName}”.",
                 "declined" => $"Declined; ignoring pairing requests for {(int)pause.TotalMinutes} min.",
+                "incompatible" => "Pairing could not be completed. Make sure both apps are up to date and try again.",
                 _ => "Pairing didn't finish.",
             });
         }

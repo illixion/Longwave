@@ -244,6 +244,8 @@ final class AudioStreamerController {
         case .silenced:
             pausedUntil = now + Self.maxDeclinePause
             pairingStatus = "Ignoring pairing requests for an hour."
+        case .incompatible:
+            pairingStatus = "Pairing couldn't be completed. Make sure both apps are up to date and try again."
         case .abandoned:
             break
         }

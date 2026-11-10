@@ -434,6 +434,14 @@ The Windows companion is a separate codebase with its own dependencies and its o
 see [CompanionWindows/THIRD_PARTY_NOTICES.md](CompanionWindows/THIRD_PARTY_NOTICES.md), which
 also records what the optional PCVR download contains and what it deliberately does not.
 
+## Support
+
+I'm Ixion. I make Longwave, and everything else I publish, as free and open-source software, and I don't expect anything in return. If it's useful to you and you'd like to help me keep building, you can [sponsor me on GitHub](https://github.com/sponsors/illixion). If not, I hope you enjoy it all the same. 💖
+
+<!-- Pose art slot: once https://illixion.com/images/support/synth-wave.png exists, uncomment:
+<p align="center"><img src="https://illixion.com/images/support/synth-wave.png" width="220" alt="Ixion's Synth character waving"></p>
+-->
+
 ## License
 
 This project is licensed under the **MIT License** — see [LICENSE.txt](LICENSE.txt) for details.

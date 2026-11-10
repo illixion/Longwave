@@ -69,6 +69,7 @@ struct LongwaveApp: App {
                 .environment(moonlightSessions)
                 #endif
                 .trackMainWindow()
+                .longwaveSupportWelcome()
                 // Hides behind a session window it opened until that closes.
                 .sessionWindowPushHost(sceneID: "main", value: MainWindowID.shared)
                 .debugApprovalPrompts()

@@ -103,6 +103,9 @@
 		F8A70081F839F9E06B341A4E /* Opus in Frameworks */ = {isa = PBXBuildFile; productRef = BCF95F097C7D2DFE3EF72400 /* Opus */; };
 		F9FA1B082AAA447181E762A3 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 2400FFE83ED88B2946B909F6 /* DebugTraceServer */; };
 		FE838EE08EFCE9B95BDA28D2 /* DebugTraceServer in Frameworks */ = {isa = PBXBuildFile; productRef = 5AA06485057FFDC64EA7AB06 /* DebugTraceServer */; };
+		AA09A0000000000000000001 /* RAVESupport in Frameworks */ = {isa = PBXBuildFile; productRef = AA09A0000000000000000002 /* RAVESupport */; };
+		AA09A0000000000000000003 /* RAVESupport in Frameworks */ = {isa = PBXBuildFile; productRef = AA09A0000000000000000004 /* RAVESupport */; };
+		AA09A0000000000000000005 /* RAVESupport in Frameworks */ = {isa = PBXBuildFile; productRef = AA09A0000000000000000006 /* RAVESupport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -354,6 +357,7 @@
 				AA07000000000000000000E9 /* RAVEBrowser in Frameworks */,
 				AA03000000000000000000B3 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D3 /* RAVEUI in Frameworks */,
+				AA09A0000000000000000001 /* RAVESupport in Frameworks */,
 				AA07000000000000000000D5 /* RAVEConsole in Frameworks */,
 				AC0C00000000000000000001 /* RAVECompanion in Frameworks */,
 				AA07000000000000000000DB /* RAVEMedia in Frameworks */,
@@ -433,6 +437,7 @@
 				DD1010000000000000000029 /* RAVEDiagnostics in Frameworks */,
 				DD101000000000000000002B /* RAVEMedia in Frameworks */,
 				DD101000000000000000002D /* RAVEUI in Frameworks */,
+				AA09A0000000000000000005 /* RAVESupport in Frameworks */,
 				AA07000000000000000000F5 /* RAVESpatialAudio in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -461,6 +466,7 @@
 				AA03000000000000000000A5 /* RAVEInput in Frameworks */,
 				AA03000000000000000000B5 /* RAVEDiagnostics in Frameworks */,
 				AA07000000000000000000D7 /* RAVEUI in Frameworks */,
+				AA09A0000000000000000003 /* RAVESupport in Frameworks */,
 				AA07000000000000000000D9 /* RAVEConsole in Frameworks */,
 				AC0C00000000000000000003 /* RAVECompanion in Frameworks */,
 				AA07000000000000000000DD /* RAVEMedia in Frameworks */,
@@ -620,6 +626,7 @@
 				AA07000000000000000000E8 /* RAVEBrowser */,
 				AA03000000000000000000B2 /* RAVEDiagnostics */,
 				AA07000000000000000000D2 /* RAVEUI */,
+				AA09A0000000000000000002 /* RAVESupport */,
 				AA07000000000000000000D4 /* RAVEConsole */,
 				AC0C00000000000000000002 /* RAVECompanion */,
 				AA07000000000000000000DA /* RAVEMedia */,
@@ -668,6 +675,7 @@
 				AA03000000000000000000A4 /* RAVEInput */,
 				AA03000000000000000000B4 /* RAVEDiagnostics */,
 				AA07000000000000000000D6 /* RAVEUI */,
+				AA09A0000000000000000004 /* RAVESupport */,
 				AA07000000000000000000D8 /* RAVEConsole */,
 				AC0C00000000000000000004 /* RAVECompanion */,
 				AA07000000000000000000DC /* RAVEMedia */,
@@ -823,6 +831,7 @@
 				DD1010000000000000000017 /* RAVEConsole */,
 				AC0C00000000000000000008 /* RAVECompanion */,
 				DD101000000000000000002C /* RAVEUI */,
+				AA09A0000000000000000006 /* RAVESupport */,
 				DD1010000000000000000018 /* RAVEInput */,
 				DD1010000000000000000019 /* RAVEDiagnostics */,
 				DD101000000000000000002A /* RAVEMedia */,
@@ -2339,6 +2348,21 @@
 		FEC92747F5953D917428BFA0 /* RoyalVNCKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RoyalVNCKit;
+		};
+		AA09A0000000000000000002 /* RAVESupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESupport;
+		};
+		AA09A0000000000000000004 /* RAVESupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESupport;
+		};
+		AA09A0000000000000000006 /* RAVESupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA07000000000000000000D1 /* XCLocalSwiftPackageReference "../RAVESDK" */;
+			productName = RAVESupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

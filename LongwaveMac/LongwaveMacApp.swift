@@ -36,6 +36,7 @@ struct LongwaveMacApp: App {
                 .environment(moonlightSessions)
                 #endif
                 .frame(minWidth: 720, minHeight: 480)
+                .longwaveSupportWelcome()
                 .task { connectionManager.audioManager = audioManager }
         } defaultValue: {
             .shared

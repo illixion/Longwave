@@ -1,5 +1,6 @@
 import SwiftUI
 import RAVEUI
+import RAVESupport
 import SwiftData
 import UniformTypeIdentifiers
 
@@ -228,6 +229,9 @@ struct SettingsView: View {
                     }
                 }
                 #endif
+                Section {
+                    RAVESupportCard(.longwave)
+                }
                 Section("About") {
                     LabeledContent("Version", value: appVersionString)
                 }

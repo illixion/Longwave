@@ -62,6 +62,7 @@ struct LongwaveMobileApp: App {
     var body: some Scene {
         WindowGroup {
             MobileRootView()
+                .longwaveSupportWelcome()
                 .environment(connectionManager)
                 .environment(audioManager)
                 .environment(macNativeSessions)

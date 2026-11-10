@@ -156,9 +156,9 @@ final class AudioStreamerController {
     private(set) var pairingStatus: String?
 
     // A pairing request is free to make — the protocol is public, and a tool
-    // that runs it correctly reaches the prompt — so prompts are rationed:
-    // one at a time, `pairingGap` apart, at most `pairingsPerHour`, and a
-    // decline pauses all requests for a while, doubling each time.
+    // that runs it correctly reaches the prompt — so verified prompts are
+    // rationed: one at a time, `pairingGap` apart, at most `pairingsPerHour`,
+    // and a decline pauses all requests for a while, doubling each time.
     private static let pairingGap: Duration = .seconds(20)
     private static let pairingsPerHour = 5
     private static let firstDeclinePause: Duration = .seconds(120)
@@ -167,15 +167,14 @@ final class AudioStreamerController {
     private var lastPairingEnded: ContinuousClock.Instant?
     private var pausedUntil: ContinuousClock.Instant?
     private var declinePause = AudioStreamerController.firstDeclinePause
+    private var activePairingShowedPrompt = false
 
     private func answerPairRequest(_ request: CompanionPresence.PairRequest) {
-        let now = ContinuousClock.now
         guard mayPromptForPairing() else { return }
         let server = makePairingServer(headsetID: request.headsetID, name: request.name)
         do {
             try server.start()
             pairing = server
-            promptTimes.append(now)
         } catch {
             pairingStatus = "Couldn't answer a pairing request: \(error.localizedDescription)"
         }
@@ -187,13 +186,16 @@ final class AudioStreamerController {
         guard mayPromptForPairing() else { connection.cancel(); return }
         let server = makePairingServer(headsetID: nil, name: "A device")
         pairing = server
-        promptTimes.append(.now)
         server.start(accepting: connection)
     }
 
     private func mayPromptForPairing() -> Bool {
-        let now = ContinuousClock.now
         guard pairing == nil else { return false }
+        return promptLimitAllows()
+    }
+
+    private func promptLimitAllows() -> Bool {
+        let now = ContinuousClock.now
         if let pausedUntil, now < pausedUntil { return false }
         if let lastPairingEnded, now - lastPairingEnded < Self.pairingGap { return false }
         promptTimes.removeAll { now - $0 > .seconds(3600) }
@@ -201,6 +203,15 @@ final class AudioStreamerController {
             pairingStatus = "Too many pairing requests; ignoring them for now."
             return false
         }
+        return true
+    }
+
+    /// Called only after the peer's commitment and reveal verify. Unauthenticated
+    /// connects therefore cannot burn the hourly user-prompt allowance.
+    private func recordVerifiedPairingPrompt() -> Bool {
+        guard promptLimitAllows() else { return false }
+        promptTimes.append(.now)
+        activePairingShowedPrompt = true
         return true
     }
 
@@ -213,13 +224,15 @@ final class AudioStreamerController {
         server.onFinish = { [weak self] outcome, name in
             self?.pairingFinished(outcome, name: name)
         }
+        server.approvalGate = { [weak self] in self?.recordVerifiedPairingPrompt() ?? false }
         return server
     }
 
     private func pairingFinished(_ outcome: PairingServer.Outcome, name: String) {
         pairing = nil
         let now = ContinuousClock.now
-        lastPairingEnded = now
+        if activePairingShowedPrompt { lastPairingEnded = now }
+        activePairingShowedPrompt = false
         switch outcome {
         case .paired:
             pairingStatus = "Paired “\(name)”."

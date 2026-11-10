@@ -31,6 +31,7 @@ final class PairingServer {
     }
 
     private let server: RAVEPairingServer<CompanionGrant>
+    var approvalGate: (() -> Bool)?
 
     init(context: Context) {
         server = RAVEPairingServer(context: .init(
@@ -42,7 +43,10 @@ final class PairingServer {
             acceptsPublicKey: { AuthorizedKeysManager.parse($0) != nil },
             enroll: context.enroll
         ))
-        server.approve = { request in Self.approve(request) }
+        server.approve = { [weak self] request in
+            guard self?.approvalGate?() ?? true else { return .abandon }
+            return Self.approve(request)
+        }
         server.onApprovalCancelled = { NSApp.abortModal() }
     }
 

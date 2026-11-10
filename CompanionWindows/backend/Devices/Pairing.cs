@@ -29,7 +29,23 @@ public static class PairingExchange
 {
     public const int MaxMessageBytes = 16 * 1024;
 
-    public static byte[] Commitment(byte[] publicKey, byte[] nonce) => SHA256.HashData(Concat(publicKey, nonce));
+    public static byte[] Commitment(byte[] publicKey, byte[] nonce, string deviceId, string deviceName,
+        IEnumerable<string>? requested, string? sshPublicKey)
+    {
+        using var transcript = new MemoryStream();
+        transcript.Write(Encoding.UTF8.GetBytes("RAVECompanionPairCommit-v2"));
+        WriteField(transcript, Encoding.UTF8.GetBytes("Longwave-Pair-v2"));
+        WriteField(transcript, publicKey);
+        WriteField(transcript, nonce);
+        WriteField(transcript, Encoding.UTF8.GetBytes(deviceId));
+        WriteField(transcript, Encoding.UTF8.GetBytes(deviceName));
+        var grants = (requested ?? []).Distinct(StringComparer.Ordinal).OrderBy(g => g, StringComparer.Ordinal).ToArray();
+        WriteLength(transcript, checked((uint)grants.Length));
+        foreach (var grant in grants) WriteField(transcript, Encoding.UTF8.GetBytes(grant));
+        transcript.WriteByte(sshPublicKey is null ? (byte)0 : (byte)1);
+        if (sshPublicKey is not null) WriteField(transcript, Encoding.UTF8.GetBytes(sshPublicKey));
+        return SHA256.HashData(transcript.ToArray());
+    }
 
     public sealed record Agreement(string Code, byte[] Key);
 
@@ -39,9 +55,12 @@ public static class PairingExchange
         X25519PrivateKeyParameters mine,
         byte[] commitment,
         byte[] headsetPublicKey, byte[] headsetNonce,
-        byte[] hostPublicKey, byte[] hostNonce)
+        byte[] hostPublicKey, byte[] hostNonce,
+        string hostId, string hostName,
+        string deviceId, string deviceName, IEnumerable<string>? requested, string? sshPublicKey)
     {
-        if (!CryptographicOperations.FixedTimeEquals(Commitment(headsetPublicKey, headsetNonce), commitment)) return null;
+        if (commitment.Length != 32 || !CryptographicOperations.FixedTimeEquals(
+                Commitment(headsetPublicKey, headsetNonce, deviceId, deviceName, requested, sshPublicKey), commitment)) return null;
         if (headsetPublicKey.Length != 32) return null;
         var shared = new byte[32];
         try
@@ -53,8 +72,17 @@ public static class PairingExchange
         catch { return null; }
         // CryptoKit rejects an all-zero shared secret (a small-order point).
         if (shared.All(b => b == 0)) return null;
-        var transcript = SHA256.HashData(Concat(commitment, hostPublicKey, hostNonce, headsetPublicKey, headsetNonce));
-        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, shared, 32, transcript, Encoding.UTF8.GetBytes("Longwave-Pair-v1"));
+        using var transcriptInput = new MemoryStream();
+        transcriptInput.Write(Encoding.UTF8.GetBytes("RAVECompanionPairTranscript-v2"));
+        WriteField(transcriptInput, commitment);
+        WriteField(transcriptInput, hostPublicKey);
+        WriteField(transcriptInput, hostNonce);
+        WriteField(transcriptInput, headsetPublicKey);
+        WriteField(transcriptInput, headsetNonce);
+        WriteField(transcriptInput, Encoding.UTF8.GetBytes(hostId));
+        WriteField(transcriptInput, Encoding.UTF8.GetBytes(hostName));
+        var transcript = SHA256.HashData(transcriptInput.ToArray());
+        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, shared, 32, transcript, Encoding.UTF8.GetBytes("Longwave-Pair-v2"));
         var number = BinaryPrimitives.ReadUInt32BigEndian(transcript) % 1_000_000;
         return new Agreement(number.ToString("D6"), key);
     }
@@ -77,6 +105,7 @@ public static class PairingExchange
     public static byte[] Frame(JsonNode message)
     {
         var body = Encoding.UTF8.GetBytes(message.ToJsonString());
+        if (body.Length is 0 or > MaxMessageBytes) throw new InvalidDataException("pairing message too large");
         var frame = new byte[4 + body.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(frame, (uint)body.Length);
         body.CopyTo(frame, 4);
@@ -89,6 +118,19 @@ public static class PairingExchange
         var offset = 0;
         foreach (var part in parts) { part.CopyTo(result, offset); offset += part.Length; }
         return result;
+    }
+
+    private static void WriteField(Stream stream, byte[] value)
+    {
+        WriteLength(stream, checked((uint)value.Length));
+        stream.Write(value);
+    }
+
+    private static void WriteLength(Stream stream, uint length)
+    {
+        Span<byte> bytes = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, length);
+        stream.Write(bytes);
     }
 }
 
@@ -120,6 +162,7 @@ public sealed class PairingService : IDisposable
     private CancellationTokenSource? _cancel;
     private readonly object _gate = new();
     private Pending? _pending;
+    private bool _pairingActive;
     private readonly List<DateTimeOffset> _promptTimes = new();
     private DateTimeOffset _lastEnded = DateTimeOffset.MinValue;
     private DateTimeOffset _pausedUntil = DateTimeOffset.MinValue;
@@ -191,13 +234,30 @@ public sealed class PairingService : IDisposable
         lock (_gate)
         {
             var now = DateTimeOffset.UtcNow;
-            if (_pending is not null || now < _pausedUntil || now - _lastEnded < TimeSpan.FromSeconds(20)) return false;
+            if (_pairingActive || _pending is not null || now < _pausedUntil || now - _lastEnded < TimeSpan.FromSeconds(20)) return false;
             _promptTimes.RemoveAll(t => now - t > TimeSpan.FromHours(1));
             if (_promptTimes.Count >= 5)
             {
                 Status?.Invoke("Too many pairing requests; ignoring them for now.");
                 return false;
             }
+            // Reserve the single exchange slot before starting its task. The
+            // slot is released in RunAsync.finally; without this reservation,
+            // simultaneous accepts could all pass this check and race to
+            // replace _pending after showing multiple approval dialogs.
+            _pairingActive = true;
+            return true;
+        }
+    }
+
+    private bool RegisterPrompt()
+    {
+        lock (_gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now < _pausedUntil || now - _lastEnded < TimeSpan.FromSeconds(20)) return false;
+            _promptTimes.RemoveAll(t => now - t > TimeSpan.FromHours(1));
+            if (_promptTimes.Count >= 5) return false;
             _promptTimes.Add(now);
             return true;
         }
@@ -207,7 +267,9 @@ public sealed class PairingService : IDisposable
     {
         using var _ = tcp;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(120));
+        // A random LAN client gets only a short window to send a commit and
+        // reveal. The full approval timeout starts after the proof is valid.
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
         var stream = tcp.GetStream();
         var exchangeKey = new X25519PrivateKeyParameters(new SecureRandom());
         var hostPublic = exchangeKey.GeneratePublicKey().GetEncoded();
@@ -221,18 +283,23 @@ public sealed class PairingService : IDisposable
             var commit = (await ReadAsync(stream, timeout.Token))?["commit"] as JsonObject
                 ?? throw new InvalidDataException("expected commit");
             var headsetId = commit["headsetID"]?.GetValue<string>() ?? "";
-            deviceName = Truncate(commit["headsetName"]?.GetValue<string>() ?? "A device", 80);
+            var committedDeviceName = commit["headsetName"]?.GetValue<string>() ?? "A device";
+            deviceName = Truncate(committedDeviceName, 80);
             var commitment = Convert.FromBase64String(commit["commitment"]?.GetValue<string>() ?? "");
-            var requested = (commit["requested"] as JsonArray)?.Select(n => n?.GetValue<string>() ?? "").ToArray()
-                ?? Grant.Defaults;
+            var requestedRaw = (commit["requested"] as JsonArray)?.Select(n => n?.GetValue<string>() ?? "").ToArray();
+            var requested = requestedRaw ?? Grant.Defaults;
+            var sshPublicKey = commit["sshPublicKey"]?.GetValue<string>();
             if (headsetId.Length is 0 or > 64 || commitment.Length != 32) throw new InvalidDataException("bad commit");
 
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            var hostId = _devices.HostId;
+            var hostName = _hostName();
             await WriteAsync(stream, new JsonObject
             {
                 ["macHello"] = new JsonObject
                 {
-                    ["macID"] = _devices.HostId,
-                    ["macName"] = _hostName(),
+                    ["macID"] = hostId,
+                    ["macName"] = hostName,
                     ["publicKey"] = Convert.ToBase64String(hostPublic),
                     ["nonce"] = Convert.ToBase64String(hostNonce),
                 },
@@ -242,8 +309,16 @@ public sealed class PairingService : IDisposable
                 ?? throw new InvalidDataException("expected reveal");
             var headsetPublic = Convert.FromBase64String(reveal["publicKey"]?.GetValue<string>() ?? "");
             var headsetNonce = Convert.FromBase64String(reveal["nonce"]?.GetValue<string>() ?? "");
-            var agreement = PairingExchange.Agree(exchangeKey, commitment, headsetPublic, headsetNonce, hostPublic, hostNonce)
+            var agreement = PairingExchange.Agree(exchangeKey, commitment, headsetPublic, headsetNonce, hostPublic, hostNonce,
+                    hostId, hostName, headsetId, committedDeviceName, requestedRaw, sshPublicKey)
                 ?? throw new InvalidDataException("reveal didn't match its commitment");
+
+            if (!RegisterPrompt())
+            {
+                outcome = "ignored";
+                return;
+            }
+            timeout.CancelAfter(TimeSpan.FromSeconds(120));
 
             pending = new Pending
             {
@@ -268,8 +343,8 @@ public sealed class PairingService : IDisposable
             var grant = new JsonObject
             {
                 ["token"] = token,
-                ["macID"] = _devices.HostId,
-                ["macName"] = _hostName(),
+                ["macID"] = hostId,
+                ["macName"] = hostName,
                 ["addresses"] = new JsonArray(HostAddresses.Lan().Select(a => (JsonNode)a).ToArray()),
                 ["grants"] = new JsonArray(grants.Where(g => Grant.Offered.Contains(g)).Distinct().Select(g => (JsonNode)g).ToArray()),
             };
@@ -296,7 +371,8 @@ public sealed class PairingService : IDisposable
             lock (_gate)
             {
                 if (_pending == pending) _pending = null;
-                _lastEnded = DateTimeOffset.UtcNow;
+                _pairingActive = false;
+                if (pending is not null) _lastEnded = DateTimeOffset.UtcNow;
                 if (outcome == "declined")
                 {
                     pause = _declinePause;
@@ -325,7 +401,7 @@ public sealed class PairingService : IDisposable
         var header = new byte[4];
         await stream.ReadExactlyAsync(header, ct);
         var length = BinaryPrimitives.ReadUInt32LittleEndian(header);
-        if (length > PairingExchange.MaxMessageBytes) throw new InvalidDataException("pairing message too large");
+        if (length is 0 or > PairingExchange.MaxMessageBytes) throw new InvalidDataException("pairing message too large");
         var body = new byte[length];
         await stream.ReadExactlyAsync(body, ct);
         return JsonNode.Parse(body);
@@ -341,7 +417,10 @@ public sealed class PairingService : IDisposable
         var buffer = new byte[256];
         try
         {
-            while (await stream.ReadAsync(buffer, ct) > 0) { }
+            // The device has sent its only post-hello message (reveal). Any
+            // further bytes while approval is pending are unexpected; stop
+            // the exchange instead of draining an attacker-controlled stream.
+            if (await stream.ReadAsync(buffer, ct) > 0) return;
         }
         catch { }
     }

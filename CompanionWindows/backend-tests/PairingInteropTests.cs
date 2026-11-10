@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using Longwave.WindowsCompanion.Backend.Devices;
 using Longwave.WindowsCompanion.Backend.NativeStream;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -25,14 +26,16 @@ public sealed class PairingInteropTests
         var headsetPublic = new X25519PrivateKeyParameters(Fill(0x11), 0).GeneratePublicKey().GetEncoded();
         Assert.Equal(B64("e06Qm75//kTEZaIgA31gjuNYl9Me+XLwf3SJLLD3PxM="), headsetPublic);
 
-        var commitment = PairingExchange.Commitment(headsetPublic, Fill(0x33));
-        Assert.Equal(B64("SQk2NS3hqeZ0sucpBIhKFZQzc1PsrGH/MzseF0/qDeg="), commitment);
+        var commitment = PairingExchange.Commitment(headsetPublic, Fill(0x33), "device-1", "Vision Pro",
+            ["audio", "screen"], null);
+        Assert.Equal(B64("Ni6WbVw1LAGznglnCCJfERJgsi+eWN4maBEbkXUqznY="), commitment);
 
         var agreement = PairingExchange.Agree(host, commitment, headsetPublic, Fill(0x33),
-            host.GeneratePublicKey().GetEncoded(), Fill(0x44));
+            host.GeneratePublicKey().GetEncoded(), Fill(0x44), "MAC-1", "Studio",
+            "device-1", "Vision Pro", ["audio", "screen"], null);
         Assert.NotNull(agreement);
-        Assert.Equal("741941", agreement!.Code);
-        Assert.Equal(B64("G+LIwDHwlWEQTwGJQ5NfBMEsXeZM08jiEihcVQWyy0A="), agreement.Key);
+        Assert.Equal("339511", agreement!.Code);
+        Assert.Equal(B64("6jf5lr3rWMle35LUVQE+1+0GQ2jkAkL+hvvNW+P43lk="), agreement.Key);
     }
 
     [Fact]
@@ -40,9 +43,23 @@ public sealed class PairingInteropTests
     {
         var host = new X25519PrivateKeyParameters(Fill(0x22), 0);
         var headsetPublic = new X25519PrivateKeyParameters(Fill(0x11), 0).GeneratePublicKey().GetEncoded();
-        var commitment = PairingExchange.Commitment(headsetPublic, Fill(0x33));
+        var commitment = PairingExchange.Commitment(headsetPublic, Fill(0x33), "device-1", "Vision Pro",
+            ["audio", "screen"], null);
         Assert.Null(PairingExchange.Agree(host, commitment, headsetPublic, Fill(0x34),
-            host.GeneratePublicKey().GetEncoded(), Fill(0x44)));
+            host.GeneratePublicKey().GetEncoded(), Fill(0x44), "MAC-1", "Studio",
+            "device-1", "Vision Pro", ["audio", "screen"], null));
+        Assert.Null(PairingExchange.Agree(host, commitment, headsetPublic, Fill(0x33),
+            host.GeneratePublicKey().GetEncoded(), Fill(0x44), "MAC-1", "Studio",
+            "other-device", "Vision Pro", ["audio", "screen"], null));
+        var correctHost = PairingExchange.Agree(host, commitment, headsetPublic, Fill(0x33),
+            host.GeneratePublicKey().GetEncoded(), Fill(0x44), "MAC-1", "Studio",
+            "device-1", "Vision Pro", ["audio", "screen"], null);
+        var spoofedHost = PairingExchange.Agree(host, commitment, headsetPublic, Fill(0x33),
+            host.GeneratePublicKey().GetEncoded(), Fill(0x44), "spoofed-mac", "Studio",
+            "device-1", "Vision Pro", ["audio", "screen"], null);
+        Assert.NotNull(correctHost);
+        Assert.NotNull(spoofedHost);
+        Assert.NotEqual(correctHost!.Code, spoofedHost!.Code);
     }
 
     [Fact]
@@ -70,6 +87,13 @@ public sealed class PairingInteropTests
         Assert.True(NativeStreamCrypto.ParseIdentity(Encoding.UTF8.GetBytes("LongwaveMacNative/v1/HS-1"), out var device));
         Assert.Equal("HS-1", device);
         Assert.False(NativeStreamCrypto.ParseIdentity(Encoding.UTF8.GetBytes("LongwaveAudio/v5/HS-1"), out _));
+    }
+
+    [Fact]
+    public void PairingFramesRejectOversizedOutboundMessages()
+    {
+        var message = new JsonObject { ["payload"] = new string('x', PairingExchange.MaxMessageBytes) };
+        Assert.Throws<InvalidDataException>(() => PairingExchange.Frame(message));
     }
 
     private static byte[] Open(byte[] combined, byte[] key)

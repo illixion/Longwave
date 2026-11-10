@@ -36,13 +36,23 @@ final class CompanionPairingTests: XCTestCase {
     private struct Run {
         let headset = PairingExchange()
         let mac = PairingExchange()
-        var commitment: Data { PairingExchange.commitment(publicKey: headset.publicKey, nonce: headset.nonce) }
+        let headsetID = "headset-1"
+        let headsetName = "Vision Pro"
+        let requested = ["audio", "screen"]
+        let sshPublicKey: String? = nil
+        var commitment: Data {
+            PairingExchange.commitment(CompanionDiscovery.namespace, publicKey: headset.publicKey, nonce: headset.nonce,
+                                       deviceID: headsetID, deviceName: headsetName,
+                                       requested: requested, sshPublicKey: sshPublicKey)
+        }
 
         func headsetSide(macPublicKey: Data? = nil) -> PairingExchange.Agreement? {
             PairingExchange.agree(
                 CompanionDiscovery.namespace, mine: headset, theirPublicKey: macPublicKey ?? mac.publicKey,
                 commitment: commitment, devicePublicKey: headset.publicKey, deviceNonce: headset.nonce,
-                hostPublicKey: macPublicKey ?? mac.publicKey, hostNonce: mac.nonce
+                hostPublicKey: macPublicKey ?? mac.publicKey, hostNonce: mac.nonce,
+                hostID: "mac", hostName: "Studio Mac", deviceID: headsetID, deviceName: headsetName,
+                requested: requested, sshPublicKey: sshPublicKey
             )
         }
 
@@ -50,7 +60,9 @@ final class CompanionPairingTests: XCTestCase {
             PairingExchange.agree(
                 CompanionDiscovery.namespace, mine: mac, theirPublicKey: revealedKey ?? headset.publicKey,
                 commitment: commitment, devicePublicKey: revealedKey ?? headset.publicKey,
-                deviceNonce: revealedNonce ?? headset.nonce, hostPublicKey: mac.publicKey, hostNonce: mac.nonce
+                deviceNonce: revealedNonce ?? headset.nonce, hostPublicKey: mac.publicKey, hostNonce: mac.nonce,
+                hostID: "mac", hostName: "Studio Mac", deviceID: headsetID, deviceName: headsetName,
+                requested: requested, sshPublicKey: sshPublicKey
             )
         }
     }
@@ -79,13 +91,44 @@ final class CompanionPairingTests: XCTestCase {
         let impostor = PairingExchange()
         let headsetCode = try XCTUnwrap(run.headsetSide(macPublicKey: impostor.publicKey)).code
         let fakeHeadset = PairingExchange()
-        let fakeCommitment = PairingExchange.commitment(publicKey: fakeHeadset.publicKey, nonce: fakeHeadset.nonce)
+        let fakeCommitment = PairingExchange.commitment(
+            CompanionDiscovery.namespace, publicKey: fakeHeadset.publicKey, nonce: fakeHeadset.nonce,
+            deviceID: "fake", deviceName: "Fake device", requested: nil, sshPublicKey: nil
+        )
         let macCode = try XCTUnwrap(PairingExchange.agree(
             CompanionDiscovery.namespace, mine: run.mac, theirPublicKey: fakeHeadset.publicKey,
             commitment: fakeCommitment, devicePublicKey: fakeHeadset.publicKey, deviceNonce: fakeHeadset.nonce,
-            hostPublicKey: run.mac.publicKey, hostNonce: run.mac.nonce
+            hostPublicKey: run.mac.publicKey, hostNonce: run.mac.nonce,
+            hostID: "mac", hostName: "Studio Mac", deviceID: "fake", deviceName: "Fake device",
+            requested: nil, sshPublicKey: nil
         )).code
         XCTAssertNotEqual(headsetCode, macCode)
+    }
+
+    func testCommitmentRejectsOnPathCapabilityIdentityAndSSHKeyEdits() throws {
+        let run = Run()
+        let offered = try XCTUnwrap(run.macSide())
+        for (deviceID, requested, sshKey) in [
+            ("other-device", run.requested, run.sshPublicKey),
+            (run.headsetID, ["audio", "projects", "screen"], run.sshPublicKey),
+            (run.headsetID, run.requested, "ssh-ed25519 AAAA attacker"),
+        ] {
+            XCTAssertNil(PairingExchange.agree(
+                CompanionDiscovery.namespace, mine: run.mac, theirPublicKey: run.headset.publicKey,
+                commitment: run.commitment, devicePublicKey: run.headset.publicKey, deviceNonce: run.headset.nonce,
+                hostPublicKey: run.mac.publicKey, hostNonce: run.mac.nonce,
+                hostID: "mac", hostName: "Studio Mac", deviceID: deviceID, deviceName: run.headsetName,
+                requested: requested, sshPublicKey: sshKey
+            ))
+        }
+        let spoofedHost = PairingExchange.agree(
+            CompanionDiscovery.namespace, mine: run.headset, theirPublicKey: run.mac.publicKey,
+            commitment: run.commitment, devicePublicKey: run.headset.publicKey, deviceNonce: run.headset.nonce,
+            hostPublicKey: run.mac.publicKey, hostNonce: run.mac.nonce,
+            hostID: "spoofed-mac", hostName: "Studio Mac", deviceID: run.headsetID,
+            deviceName: run.headsetName, requested: run.requested, sshPublicKey: run.sshPublicKey
+        )
+        XCTAssertNotEqual(offered.code, spoofedHost?.code)
     }
 
     func testGrantSealedForOneKeyWontOpenWithAnother() throws {

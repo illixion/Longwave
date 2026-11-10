@@ -30,6 +30,9 @@ struct MobileNativeStreamView: View {
     @State private var typing = false
     @State private var showingAudioPanel = false
     @State private var showsChrome = true
+    /// The HDMI scene is the presentation. The on-device preview is optional
+    /// so the phone or tablet can stay a clean input surface by default.
+    @State private var showsLocalPreview = false
     /// Where the current one-finger drag last was, so relative mode can measure
     /// deltas and absolute mode can hold the button down across the move.
     @State private var lastDragPoint: CGPoint?
@@ -50,7 +53,17 @@ struct MobileNativeStreamView: View {
                     .frame(width: 1, height: 1)
                     .opacity(0)
 
-                video(in: geometry.size)
+                if showsLocalPreview {
+                    video(in: geometry.size)
+                } else {
+                    Label("Trackpad", systemImage: "rectangle.and.hand.point.up.left")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: .capsule)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .padding(.top, 18)
+                        .allowsHitTesting(false)
+                }
 
                 if screenManager.touchMode == .relative, content.width > 0 {
                     cursorOverlay(in: geometry.size)
@@ -277,6 +290,13 @@ struct MobileNativeStreamView: View {
                       ? "hand.tap" : "rectangle.and.hand.point.up.left")
             }
             .accessibilityLabel(screenManager.touchMode == .absolute ? "Direct touch" : "Touchpad")
+
+            Button {
+                showsLocalPreview.toggle()
+            } label: {
+                Image(systemName: showsLocalPreview ? "rectangle.on.rectangle" : "rectangle.on.rectangle.slash")
+            }
+            .accessibilityLabel(showsLocalPreview ? "Hide local preview" : "Show local preview")
 
             Button(action: screenManager.rightClickAtDesktopCursor) {
                 Image(systemName: "cursorarrow.click.2")

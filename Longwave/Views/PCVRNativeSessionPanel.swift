@@ -1,6 +1,7 @@
 #if FOVEATED_ENABLED && os(visionOS)
 import SwiftData
 import SwiftUI
+import RAVECompanion
 import StreamWire
 
 /// The PCVR tab's session panel in Native mode: presets, start and stop, pause,

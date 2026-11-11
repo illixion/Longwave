@@ -128,6 +128,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
+                self.v2Connected = true
                 self.send(MacNativeStreamProtocol.encodeHello(
                     deviceName: self.config.deviceName,
                     wantsScreen: self.config.wantsScreen,
@@ -147,7 +148,17 @@ final class MacNativeStreamClient: @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
+        // A host that never answers (a stale address, a firewall) leaves the connection waiting for
+        // good; say so instead.
+        queue.asyncAfter(deadline: .now() + Self.v2ConnectTimeout) { [weak self, weak connection] in
+            guard let self, let connection, self.connection === connection, !self.v2Connected else { return }
+            self.emitClosed("Couldn't reach \(self.config.host). Check the address in this connection's settings, and that Longwave Companion is running there.")
+        }
     }
+
+    /// How long a v2 connection gets to complete its TCP and TLS handshake.
+    private static let v2ConnectTimeout: TimeInterval = 8
+    private var v2Connected = false
 
     func close() {
         queue.async { [self] in

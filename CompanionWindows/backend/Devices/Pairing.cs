@@ -431,14 +431,22 @@ public sealed class PairingService : IDisposable
     }
 }
 
-/// <summary>This PC's IPv4 addresses, physical links first.</summary>
+/// <summary>
+/// This PC's IPv4 addresses, the ones a device on the LAN can reach first. A headset takes the
+/// first address of an announcement (older ones the only one it tries), so the order is the
+/// choice: links with a default gateway (the LAN) come before those without (Tailscale, VPNs,
+/// Hyper-V's Default Switch and WSL, which exist only inside this PC), then Ethernet before
+/// Wi-Fi. Hyper-V's own switches are left out entirely.
+/// </summary>
 public static class HostAddresses
 {
+    public readonly record struct Candidate(string Name, bool HasGateway, int TypeRank, string Address);
+
     public static IReadOnlyList<string> Lan()
     {
         try
         {
-            var found = new List<(int Rank, string Address)>();
+            var found = new List<Candidate>();
             foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
@@ -449,16 +457,30 @@ public static class HostAddresses
                     System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 => 1,
                     _ => 2,
                 };
-                foreach (var ip in ni.GetIPProperties().UnicastAddresses)
+                var properties = ni.GetIPProperties();
+                var hasGateway = properties.GatewayAddresses.Any(g =>
+                    g.Address.AddressFamily == AddressFamily.InterNetwork && !g.Address.Equals(System.Net.IPAddress.Any));
+                foreach (var ip in properties.UnicastAddresses)
                 {
                     if (ip.Address.AddressFamily != AddressFamily.InterNetwork) continue;
-                    var text = ip.Address.ToString();
-                    if (text.StartsWith("169.254.")) continue;
-                    found.Add((rank, text));
+                    found.Add(new Candidate(ni.Name, hasGateway, rank, ip.Address.ToString()));
                 }
             }
-            return found.OrderBy(x => x.Rank).Select(x => x.Address).Distinct().ToList();
+            return Order(found);
         }
         catch { return Array.Empty<string>(); }
     }
+
+    public static IReadOnlyList<string> Order(IEnumerable<Candidate> found) => found
+        .Where(c => !c.Address.StartsWith("169.254.") && !IsInternalSwitch(c))
+        .OrderBy(c => c.HasGateway ? 0 : 1)
+        .ThenBy(c => c.TypeRank)
+        .Select(c => c.Address)
+        .Distinct()
+        .ToList();
+
+    /// <summary>Hyper-V's "Default Switch" and WSL's switch: NAT networks only this PC and its VMs are on.</summary>
+    private static bool IsInternalSwitch(Candidate c) =>
+        !c.HasGateway && (c.Name.Contains("Default Switch", StringComparison.OrdinalIgnoreCase)
+                          || c.Name.Contains("WSL", StringComparison.OrdinalIgnoreCase));
 }

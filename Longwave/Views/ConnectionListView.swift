@@ -299,7 +299,7 @@ struct ConnectionListView: View {
         if let macID = connection.companionMacID, let token = connection.companionCredential?.token {
             Task {
                 connection.resolvedCompanionHost = await CompanionLocator.shared.locate(
-                    macID: macID, token: token
+                    macID: macID, token: token, probePort: MacNativeStreamProtocol.defaultPort
                 )
                 openNativeSession(connection)
             }

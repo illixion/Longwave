@@ -107,3 +107,47 @@ public sealed class PairingInteropTests
         return output[..length];
     }
 }
+
+/// <summary>The address a headset dials first is the first one announced.</summary>
+public sealed class HostAddressOrderTests
+{
+    private static HostAddresses.Candidate C(string name, bool gateway, int type, string address) => new(name, gateway, type, address);
+
+    [Fact]
+    public void LanLinkBeatsHyperVDefaultSwitch()
+    {
+        // The PC that announced 192.168.80.1 first: two Hyper-V "Ethernet" adapters, one the LAN bridge.
+        var order = HostAddresses.Order(new[]
+        {
+            C("vEthernet (Default Switch)", false, 0, "192.168.80.1"),
+            C("vEthernet (LAN Bridge)", true, 0, "172.20.48.233"),
+            C("Tailscale", false, 2, "100.120.197.67"),
+        });
+        Assert.Equal(new[] { "172.20.48.233", "100.120.197.67" }, order);
+    }
+
+    [Fact]
+    public void GatewayBeatsLinkTypeAndEthernetBeatsWifi()
+    {
+        var order = HostAddresses.Order(new[]
+        {
+            C("Tailscale", false, 2, "100.1.1.1"),
+            C("Wi-Fi", true, 1, "10.0.0.8"),
+            C("Ethernet", true, 0, "10.0.0.7"),
+            C("Docker", false, 0, "172.17.0.1"),
+        });
+        Assert.Equal(new[] { "10.0.0.7", "10.0.0.8", "172.17.0.1", "100.1.1.1" }, order);
+    }
+
+    [Fact]
+    public void LinkLocalAndDuplicatesAreDropped()
+    {
+        var order = HostAddresses.Order(new[]
+        {
+            C("Ethernet", true, 0, "169.254.3.4"),
+            C("Ethernet", true, 0, "10.0.0.7"),
+            C("Wi-Fi", true, 1, "10.0.0.7"),
+        });
+        Assert.Equal(new[] { "10.0.0.7" }, order);
+    }
+}

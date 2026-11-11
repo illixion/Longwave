@@ -53,6 +53,10 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     /// What the host settled on (`pcvrSessionState`): the render size per eye,
     /// the stream rate, whether a title renders, and why it might be held back.
     var hostSession: PCVRSessionState?
+    /// Whether the PC takes the headset's microphone (it has a virtual cable to
+    /// play it into), and how many 5 ms packets a second went up.
+    var microphoneNegotiated = false
+    var microphonePacketsPerSecond: Double = 0
 }
 
 /// The depth stream's decoded pictures (NATIVE_V3_PROTOCOL.md §4.8, PCVR), kept
@@ -218,6 +222,13 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var timer: NativeV3Timer?
     private var session: TransportSession?
     private var gazeNegotiated = false
+    /// The headset's microphone (capability `microphone`): whether the PC takes
+    /// it, the format the uplink last announced (or `.stopped`), the format the
+    /// host was last told this session, and the shard counter.
+    private var microphoneNegotiated = false
+    private var microphoneFormat = MicrophoneFormat.stopped
+    private var microphoneFormatSent: MicrophoneFormat?
+    private var microphoneSequence: UInt32 = 0
     private var needsTimedKeyFrame = true
     private var receiver = VideoStreamReceiver(streamID: PCVRProfile.streamID)
     private var receiverDue: UInt64 = 0
@@ -253,6 +264,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         var gazeSent = 0
         var posesUnsynced = 0
         var depthAssembled = 0
+        var microphonePackets = 0
     }
 
     private static let retryInterval: UInt64 = 2_000_000_000
@@ -282,6 +294,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         var capabilities = PCVRProfile.clientCapabilities(gaze: offersGaze, depth: wantsDepth,
                                                           separateEyes: encodedSink?.stereoLayout == .separateAccessUnits)
         if encodedSink?.acceptsFoveatedVideo == false { capabilities.remove(.foveatedVideo) }
+        // Offered always: the host takes it only when it has somewhere to play it.
+        capabilities.insert(.microphone)
         hello = ClientHello(capabilities: capabilities,
                             platform: .visionOS,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload, intent: [.screen],
@@ -313,6 +327,44 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             preferences = wanted
             sendPreferences()
         }
+    }
+
+    // MARK: Microphone
+
+    /// The microphone's format as capture (re)starts, or `.stopped`; told to the
+    /// PC at once and again after every connect.
+    func setMicrophone(_ format: MicrophoneFormat) {
+        queue.async { [self] in
+            guard format != microphoneFormat else { return }
+            microphoneFormat = format
+            if format.isStopped { microphoneSequence = 0 }
+            sendMicrophoneFormat()
+            flush(now: NativeV3.now())
+        }
+    }
+
+    /// One 5 ms packet from `MicrophoneUplink` (mono PCM24, little-endian, the
+    /// v3 packing as it is). Dropped while the PC doesn't take the microphone.
+    func sendMicrophone(firstSample: UInt64, resumed: Bool, samples: Data) {
+        queue.async { [self] in
+            guard microphoneNegotiated, !microphoneFormat.isStopped, let connection, session != nil else { return }
+            if microphoneFormatSent != microphoneFormat { sendMicrophoneFormat() }
+            let frames = samples.count / MicrophoneAudio.bytesPerSample
+            guard frames > 0 else { return }
+            let header = MicrophoneAudio.header(firstSample: firstSample, frames: frames,
+                                                sequence: microphoneSequence, discontinuity: resumed)
+            microphoneSequence &+= 1
+            let now = NativeV3.now()
+            guard let datagram = try? session?.sealAudio(header, packet: samples, now: now) else { return }
+            NativeV3.send([datagram], on: connection)
+            counters.microphonePackets += 1
+        }
+    }
+
+    private func sendMicrophoneFormat() {
+        guard microphoneNegotiated, let body = try? microphoneFormat.encoded() else { return }
+        try? session?.send(.microphoneFormat, body: body, on: .control)
+        microphoneFormatSent = microphoneFormat
     }
 
     private func sendDisplay() {
@@ -429,6 +481,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         session = nil
         gazeNegotiated = false
         depthNegotiated = false
+        microphoneNegotiated = false
+        microphoneFormatSent = nil
     }
 
     /// The session ended or never started: try again shortly while running.
@@ -493,7 +547,13 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             log.notice("v3 PCVR depth \(self.depthNegotiated ? "negotiated" : "not offered by the PC", privacy: .public)")
         }
         let depthNegotiated = depthNegotiated
-        status.withLock { $0.depthNegotiated = depthNegotiated }
+        microphoneNegotiated = capabilities.contains(.microphone)
+        log.notice("v3 PCVR microphone \(self.microphoneNegotiated ? "taken by the PC" : "not taken by the PC (no virtual cable)", privacy: .public)")
+        let microphoneNegotiated = microphoneNegotiated
+        status.withLock {
+            $0.depthNegotiated = depthNegotiated
+            $0.microphoneNegotiated = microphoneNegotiated
+        }
         var session = opened
         session.setPathCeiling(ack.maxUDPPayload, now: now)
         self.session = session
@@ -509,6 +569,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         sendDisplay()
         sendPreferences()
         sendStreamStart()
+        if !microphoneFormat.isStopped { sendMicrophoneFormat() }
         drive()
     }
 
@@ -847,6 +908,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let lost = receiver.statistics.framesLost
         let withoutFoveation = counters.framesWithoutFoveation
         let centres = lastCentres
+        let microphoneRate = Double(counters.microphonePackets) / elapsed
         status.withLock {
             $0.framesWithoutFoveation += withoutFoveation
             $0.foveationCentres = centres
@@ -861,6 +923,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             $0.gazePerSecond = gazeRate
             $0.depthFramesDecoded += depthDecoded?.frames ?? 0
             $0.depthFramesLost = depthLost
+            $0.microphonePacketsPerSecond = microphoneRate
         }
         log.notice("v3 PCVR: \(Double(self.counters.framesAssembled) / elapsed, format: .fixed(precision: 1), privacy: .public) fps received, \(Double(decoded.frames) / elapsed, format: .fixed(precision: 1), privacy: .public) decoded, \(decoded.errors, privacy: .public) decode errors, \(lost, privacy: .public) lost in total, \(self.counters.framesWithoutPose, privacy: .public) without a render pose, \(self.counters.framesWithoutFoveation, privacy: .public) without matching foveation; \(mbps, format: .fixed(precision: 1), privacy: .public) Mbps, RTT \(rtt ?? -1, format: .fixed(precision: 1), privacy: .public) ms, decode \(decodeMs ?? -1, format: .fixed(precision: 2), privacy: .public) ms; poses \(poseRate, format: .fixed(precision: 1), privacy: .public)/s sent (gaze in \(gazeRate, format: .fixed(precision: 1), privacy: .public)/s), \(self.counters.posesUnsynced, privacy: .public) held for clock sync")
         if depthNegotiated, let depthDecoded {

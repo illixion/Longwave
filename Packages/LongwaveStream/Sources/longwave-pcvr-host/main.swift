@@ -11,7 +11,12 @@
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8] [--multipass off|quarter|full] [--aq 0-15] [--max-qp 0-51]
 //                      [--max-eye WxH] [--fovea-qp -10] [--edge-qp 10] [--fovea-radius 8] [--edge-radius 30]
-//                      [--rate-change reconfigure|rebuild]
+//                      [--rate-change reconfigure|rebuild] [--mic-device NAME|off]
+//
+// --mic-device names the render endpoint the headset's microphone plays into
+// (any part of its name, e.g. "Line 1"); by default the first installed virtual
+// cable ("Virtual Audio Cable", "CABLE Input"). Games then pick that cable's
+// capture side as their microphone. "off" offers headsets no microphone.
 //
 // --fovea-qp/--edge-qp shift the colour encoder's QP per 32x32 block by angle
 // from the warp centre (FovealQPMap; 0 and 0 turn it off). --rate-change says
@@ -51,6 +56,7 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
         switch argument {
         case "--channel": options.channel = value(argument)
         case "--port": options.port = UInt16(value(argument)) ?? options.port
+        case "--mic-device": options.micDevice = value(argument)
         case "--max-mbps": options.maxMbps = Int(value(argument)) ?? options.maxMbps
         case "--min-mbps": options.minMbps = Int(value(argument)) ?? options.minMbps
         case "--start-mbps": options.startMbps = Int(value(argument)) ?? options.startMbps

@@ -3,8 +3,10 @@ import AVFoundation
 import DebugTrace
 import Foundation
 
-/// Captures this device's microphone and hands it on as `microphone` frames,
-/// for the Companion to play into a virtual input device on the Mac.
+/// Captures this device's microphone and hands it on in 5 ms packets: as
+/// `microphone` frames for the Mac Companion to play into a virtual input
+/// device, or as packets for the native PCVR stream to carry to the PC
+/// (`PCVRV3Remote.sendMicrophone`).
 ///
 /// Capture uses an `AVAudioSinkNode` on the input, so audio leaves at the
 /// device's IO cadence (a few milliseconds) rather than the ~100 ms chunks an
@@ -29,7 +31,7 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
         }
     }
 
-    private let send: @Sendable (Data) -> Void
+    private let send: @Sendable (MicrophonePacket) -> Void
     private let engine = AVAudioEngine()
     private var ring: AudioFrameRing?
     private var running = false
@@ -38,10 +40,18 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
     private var nextIndex: UInt64 = 0
     private var resumedPending = true
     private var configurationObserver: NSObjectProtocol?
+    /// Told the input's sample rate each time capture (re)starts, before its
+    /// first packet: a route change can change the rate.
+    var onStart: ((Double) -> Void)?
 
     /// - Parameter send: receives each finished frame, on the ring's thread.
-    init(send: @escaping @Sendable (Data) -> Void) {
-        self.send = send
+    convenience init(send: @escaping @Sendable (Data) -> Void) {
+        self.init(packets: { send($0.encodedFrame()) })
+    }
+
+    /// - Parameter packets: receives each finished packet, on the ring's thread.
+    init(packets: @escaping @Sendable (MicrophonePacket) -> Void) {
+        self.send = packets
     }
 
     func start() throws {
@@ -99,7 +109,8 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
                 AppLog.audioStream.log("Microphone restart failed: \(error.localizedDescription)")
             }
         }
-        AppLog.audioStream.log("Microphone to Mac started: \(Int(sampleRate)) Hz, \(format.channelCount) input channel(s)")
+        AppLog.audioStream.log("Microphone uplink started: \(Int(sampleRate)) Hz, \(format.channelCount) input channel(s)")
+        onStart?(sampleRate)
     }
 
     func stop() {
@@ -116,7 +127,7 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
         ring?.stop()
         ring = nil
         AudioSessionCoordinator.shared.endRecording(self)
-        AppLog.audioStream.log("Microphone to Mac stopped")
+        AppLog.audioStream.log("Microphone uplink stopped")
     }
 
     // MARK: - Realtime thread
@@ -156,7 +167,7 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
 
     // MARK: - Ring thread
 
-    private static func packetize(_ slot: Data, sampleRate: Double, send: @Sendable (Data) -> Void) {
+    private static func packetize(_ slot: Data, sampleRate: Double, send: @Sendable (MicrophonePacket) -> Void) {
         guard let stamp = PCMStamp(parsing: slot) else { return }
         let samples = slot.dropFirst(PCMStamp.size)
         let bytesPerFrame = AudioStreamProtocol.bytesPerSample
@@ -174,7 +185,7 @@ nonisolated final class MicrophoneUplink: @unchecked Sendable {
                 channelCount: 1,
                 samples: Data(samples[offset..<end])
             )
-            send(packet.encodedFrame())
+            send(packet)
             offset = end
         }
     }

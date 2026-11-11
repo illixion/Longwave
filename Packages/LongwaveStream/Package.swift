@@ -125,7 +125,7 @@ targets += [
     // The v3 PCVR host: the session broker's frames -> NVENC -> v3 (section 4.7).
     .executableTarget(
         name: "longwave-pcvr-host",
-        dependencies: ["StreamHostWindows", "StreamHost", "StreamTransport", "StreamWire", "StreamCrypto"],
+        dependencies: ["StreamHostWindows", "StreamHost", "StreamPlayout", "StreamTransport", "StreamWire", "StreamCrypto"],
         linkerSettings: [.linkedLibrary("ws2_32"), .linkedLibrary("crypt32"), .linkedLibrary("advapi32"), .linkedLibrary("user32")]
     ),
     // The codec bench: the test scene along a recorded head trajectory, through

@@ -1036,6 +1036,21 @@ through Longwave (§7.6); every other game gets WASAPI process loopback, at most
 Moonlight-side `MoonlightSoundStage` work already proves the client can place
 channel beds as virtual speakers.
 
+**The client's microphone (capability `microphone`, 2026-11-11).** The same
+audio frames run the other way: the client sends its microphone as PCM24 mono
+shards on channel 0 (`StreamWire/Microphone.swift`: 5 ms packets, `firstSample`
+the client's capture index, `discontinuity` when capture restarted, no FEC,
+`fecIndex` counting 0–3 so the header stays valid). Before the first shard, and
+again after every connect and on any change, `microphoneFormat` (0x2C, control
+channel, client to host: `sampleRate u32 | channels u8`, rate 0 = stopped) says
+the rate. The host offers `microphone` only when it has somewhere to play it:
+the Windows host plays it through a jitter cushion (`StreamPlayout`'s
+`MicrophonePlayout`, the macOS Companion's rules) into a virtual audio cable's
+render endpoint (`--mic-device`, by default the first "Virtual Audio Cable" /
+"CABLE Input"), and games pick the cable's capture side as their microphone.
+One client's microphone plays at a time, the newest to send a format. This
+replaces what CloudXR's virtual audio driver did for CloudXR sessions.
+
 ### 4.5 Control, clipboard, inventory
 
 Reliable channel 0, binary-framed messages with a type byte. The v2 JSON bodies
@@ -1067,11 +1082,12 @@ diagnostics overlay), and `bye` with a reason.
   `hevc10bitHDR`, `av1`, `h264`, `ltrRecovery`, `rfiRecovery`, `nack`,
   `audioOpus`, `audioPCM24`, `audioMultichannel`, `spatialObjects`, `gamepad`,
   `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
-  `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`, `separateEyeVideo`.
+  `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`, `separateEyeVideo`,
+  `microphone`.
   Unknown capabilities are ignored, never fatal.
   *Encoding (2026-10-12):*
   - **Bit numbers** follow the list order: `windowStreams` = 0 through
-    `foveatedVideo` = 22, `separateEyeVideo` = 23, append-only.
+    `foveatedVideo` = 22, `separateEyeVideo` = 23, `microphone` = 24, append-only.
   - **Wire form:** `byteCount u8 | bitmap`, where bit n of byte n/8 is
     capability n, up to 256 capabilities. Senders write the shortest bitmap.
     Receivers accept trailing zero bytes and unknown bits.

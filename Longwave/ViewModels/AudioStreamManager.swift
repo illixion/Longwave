@@ -292,7 +292,7 @@ final class AudioStreamManager {
             return
         }
         let route = microphoneRoute
-        let uplink = MicrophoneUplink { frame in route.send(frame) }
+        let uplink = MicrophoneUplink(send: { frame in route.send(frame) })
         do {
             try uplink.start()
         } catch {

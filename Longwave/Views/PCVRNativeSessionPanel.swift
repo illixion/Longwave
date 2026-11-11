@@ -33,6 +33,9 @@ struct PCVRNativeSessionPanel: View {
                 Picker("Frame rate", selection: $session.frameRate) {
                     ForEach(PCVRFrameRatePreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
+                Toggle("Microphone to PC", isOn: $session.microphoneEnabled)
+                Text(microphoneLine)
+                    .font(.caption).foregroundStyle(session.microphoneMessage == nil ? Color.secondary : Color.red)
                 if session.availableChoices.count > 1 {
                     Picker("Renderer", selection: $session.presenterChoice) {
                         ForEach(session.availableChoices) { Text($0.label).tag($0) }
@@ -106,6 +109,16 @@ struct PCVRNativeSessionPanel: View {
                 Task { await session.stop() }
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    private var microphoneLine: String {
+        if let message = session.microphoneMessage { return message }
+        guard session.microphoneEnabled else { return "Games on the PC don't hear you." }
+        switch session.microphoneTakenByPC {
+        case true?: return "Your voice plays into the PC's virtual cable: choose its microphone (\u{201C}Line 1\u{201D}) in the game, or make it Windows' default recording device."
+        case false?: return "The PC has no virtual audio cable to play your voice into, so games can't hear you. Install one (Virtual Audio Cable or VB-CABLE) and restart the stream."
+        case nil: return "Your voice goes to the PC while you stream, into its virtual audio cable for games to use as a microphone."
         }
     }
 

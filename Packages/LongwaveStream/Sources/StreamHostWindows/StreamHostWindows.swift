@@ -915,6 +915,62 @@ public final class AudioLoopback: @unchecked Sendable {
     deinit { stop() }
 }
 
+/// A mono float32 stream played into a render endpoint (lw_audio_render): the
+/// headset's microphone into a virtual cable, so PC apps hear it as a
+/// microphone. Windows converts it to the endpoint's mix format and rate.
+public final class AudioRender: @unchecked Sendable {
+    private final class Source {
+        let fill: (UnsafeMutableBufferPointer<Float>) -> Void
+        init(_ fill: @escaping (UnsafeMutableBufferPointer<Float>) -> Void) { self.fill = fill }
+    }
+
+    /// The first active render endpoint whose name contains any of `names`
+    /// (case-insensitive), in the order `names` lists them.
+    public static func endpoint(matching names: [String]) -> AudioLoopback.Endpoint? {
+        let endpoints = AudioLoopback.endpoints()
+        for name in names {
+            if let match = endpoints.first(where: { $0.name.lowercased().contains(name.lowercased()) }) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    private var raw: OpaquePointer?
+    private let source: Unmanaged<Source>
+    public let sampleRate: Int
+
+    /// `fill` runs on the shim's MMCSS audio thread every few milliseconds and
+    /// must fill the whole buffer without blocking.
+    public init(endpointID: String?, sampleRate: Int, fill: @escaping (UnsafeMutableBufferPointer<Float>) -> Void) throws {
+        let source = Unmanaged.passRetained(Source(fill))
+        var render: OpaquePointer?
+        let status = lw_audio_render_start(endpointID, UInt32(sampleRate), { context, out, frames in
+            guard let context, let out else { return }
+            let source = Unmanaged<Source>.fromOpaque(context).takeUnretainedValue()
+            source.fill(UnsafeMutableBufferPointer(start: out, count: Int(frames)))
+        }, source.toOpaque(), &render)
+        do {
+            try check(status, "lw_audio_render_start")
+        } catch {
+            source.release()
+            throw error
+        }
+        self.source = source
+        self.sampleRate = sampleRate
+        raw = render
+    }
+
+    public func stop() {
+        guard let raw else { return }
+        self.raw = nil
+        lw_audio_render_stop(raw)
+        source.release()
+    }
+
+    deinit { stop() }
+}
+
 // MARK: - Spike helpers
 
 /// SPIKE ONLY: GPU busy-work standing in for a game (lw_spike_gpu_load_start).

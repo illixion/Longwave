@@ -1,5 +1,6 @@
 #if FOVEATED_ENABLED && os(visionOS)
 import DebugTrace
+import AVFoundation
 import Foundation
 import Observation
 import StreamWire
@@ -68,6 +69,24 @@ final class PCVRNativeSession {
         }
     }
 
+    /// The headset's microphone to the PC (capability `microphone`), on by
+    /// default as CloudXR's was: the PC plays it into a virtual cable that
+    /// games choose as their microphone.
+    var microphoneEnabled: Bool = UserDefaults.standard.object(forKey: PCVRNativeSession.microphoneKey) as? Bool ?? true {
+        didSet {
+            guard microphoneEnabled != oldValue else { return }
+            UserDefaults.standard.set(microphoneEnabled, forKey: Self.microphoneKey)
+            Task { await updateMicrophone() }
+        }
+    }
+    /// Why the microphone isn't reaching the PC, when it isn't; nil when it is
+    /// (or off by choice).
+    private(set) var microphoneMessage: String?
+    /// Whether the PC takes the microphone (it has a virtual cable to play it
+    /// into), as the stream last said; nil before it has.
+    private(set) var microphoneTakenByPC: Bool?
+    static let microphoneKey = "pcvr.native.microphone"
+
     /// What the wearer can pick between in this build.
     var availableChoices: [PCVRNativePresenterChoice] { PCVRNativePresenters.availableChoices }
 
@@ -84,6 +103,9 @@ final class PCVRNativeSession {
     @ObservationIgnored private var activeTarget: PCVRV3Target?
     @ObservationIgnored private weak var activeShell: PCVRShellSession?
     @ObservationIgnored private var isSwitching = false
+    @ObservationIgnored private var microphone: MicrophoneUplink?
+    /// The remote the running uplink feeds.
+    @ObservationIgnored private weak var microphoneRemote: PCVRV3Remote?
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRNative")
 
     init() {
@@ -142,6 +164,7 @@ final class PCVRNativeSession {
 
     func pause() async {
         guard state == .streaming, let presenter else { return }
+        stopMicrophone()
         await presenter.pause()
         state = .paused
     }
@@ -162,11 +185,13 @@ final class PCVRNativeSession {
         if endingPCVR { remote?.endPCVR() }
         statusTask?.cancel()
         statusTask = nil
+        stopMicrophone()
         stopControllerBridge()
         await presenter?.stop()
         presenter = nil
         remote = nil
         hostSession = nil
+        microphoneTakenByPC = nil
         presenterName = nil
         state = .idle
     }
@@ -194,6 +219,7 @@ final class PCVRNativeSession {
 
     private func adopt(_ remote: PCVRV3Remote) {
         self.remote = remote
+        Task { await updateMicrophone() }
         remote.setPreferences(preferences)
         if let display { remote.setDisplay(display) }
         remote.onInputBridge = { [weak self] bytes in
@@ -202,12 +228,61 @@ final class PCVRNativeSession {
         statusTask?.cancel()
         statusTask = Task { [weak self, weak remote] in
             while !Task.isCancelled, let remote {
-                let session = remote.status.withLock { $0.hostSession }
+                let (session, microphone) = remote.status.withLock {
+                    ($0.hostSession, $0.state.hasPrefix("Connected") || $0.state == "Streaming" ? $0.microphoneNegotiated : nil)
+                }
                 if self?.hostSession != session { self?.hostSession = session }
+                if let microphone, self?.microphoneTakenByPC != microphone { self?.microphoneTakenByPC = microphone }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
     }
+
+    // MARK: The microphone
+
+    /// Runs the uplink into the current stream while the setting is on and a
+    /// stream exists; a new stream (a reconnect through the presenter, a
+    /// switch) gets a fresh uplink bound to it.
+    private func updateMicrophone() async {
+        guard microphoneEnabled, isActive, state != .paused, let remote else {
+            stopMicrophone()
+            microphoneMessage = nil
+            return
+        }
+        if microphone != nil, microphoneRemote === remote { return }
+        stopMicrophone()
+        guard await AVAudioApplication.requestRecordPermission() else {
+            microphoneMessage = "Allow microphone access for Longwave in Settings."
+            return
+        }
+        guard microphoneEnabled, isActive, self.remote === remote else { return }
+        let uplink = MicrophoneUplink(packets: { [weak remote] packet in
+            remote?.sendMicrophone(firstSample: packet.stamp.sampleIndex, resumed: packet.stamp.flags.contains(.resumed),
+                                   samples: packet.samples)
+        })
+        uplink.onStart = { [weak remote] rate in
+            remote?.setMicrophone(MicrophoneFormat(sampleRate: UInt32(rate.rounded())))
+        }
+        do {
+            try uplink.start()
+        } catch {
+            microphoneMessage = error.localizedDescription
+            log.error("PCVR microphone could not start: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        microphone = uplink
+        microphoneRemote = remote
+        microphoneMessage = nil
+    }
+
+    private func stopMicrophone() {
+        guard let microphone else { return }
+        microphone.stop()
+        self.microphone = nil
+        microphoneRemote?.setMicrophone(.stopped)
+        microphoneRemote = nil
+    }
+
 
     private func displayChanged(_ rate: PCVRDisplayRate) {
         guard rate != display else { return }

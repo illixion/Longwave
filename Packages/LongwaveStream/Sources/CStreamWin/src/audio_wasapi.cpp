@@ -17,6 +17,7 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <ksmedia.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <thread>
@@ -222,6 +223,115 @@ extern "C" void lw_audio_loopback_stop(lw_audio_loopback *loopback) {
     loopback->quit.store(true);
     if (loopback->thread.joinable()) loopback->thread.join();
     delete loopback;
+}
+
+// ---- Render: a stream we generate (the headset's microphone) -----------------
+
+struct lw_audio_render {
+    std::thread thread;
+    std::atomic<bool> quit{false};
+};
+
+extern "C" lw_status lw_audio_render_start(const char *endpoint_id, uint32_t sample_rate,
+                                           lw_audio_render_callback callback, void *context,
+                                           lw_audio_render **out) {
+    if (!callback || !out) return lw::fail(LW_E_INVALID_ARG, "lw_audio_render_start: NULL argument");
+    if (sample_rate < 8000 || sample_rate > 192000)
+        return lw::fail(LW_E_INVALID_ARG, "lw_audio_render_start: sample rate %u", sample_rate);
+    *out = nullptr;
+    std::string id = endpoint_id ? endpoint_id : "";
+    auto render = std::make_unique<lw_audio_render>();
+
+    std::atomic<int> ready{0}; // 0 pending, 1 ok, -1 failed
+    lw_status start_status = LW_OK;
+    std::string start_error;
+    HANDLE started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+    auto *raw = render.get();
+    render->thread = std::thread([=, &ready, &start_status, &start_error]() {
+        ComScope com;
+        winrt::com_ptr<IAudioClient> client;
+        winrt::com_ptr<IAudioRenderClient> renderer;
+        UINT32 buffer_frames = 0;
+        lw_status status = lw::guarded("WASAPI render", [&]() -> lw_status {
+            auto device = find_endpoint(id.c_str());
+            winrt::check_hresult(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, client.put_void()));
+            // Our own format, mono float32 at the source's rate: AUTOCONVERTPCM
+            // has the engine convert channels, rate and sample type to the
+            // endpoint's mix format, so nothing here resamples.
+            WAVEFORMATEXTENSIBLE format{};
+            format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+            format.Format.nChannels = 1;
+            format.Format.nSamplesPerSec = sample_rate;
+            format.Format.wBitsPerSample = 32;
+            format.Format.nBlockAlign = 4;
+            format.Format.nAvgBytesPerSec = sample_rate * 4;
+            format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+            format.Samples.wValidBitsPerSample = 32;
+            format.dwChannelMask = SPEAKER_FRONT_CENTER;
+            format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+            // 100 ms of engine buffer; we keep only ~20 ms of it filled.
+            winrt::check_hresult(client->Initialize(
+                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                1'000'000, 0, &format.Format, nullptr));
+            winrt::check_hresult(client->GetService(IID_PPV_ARGS(renderer.put())));
+            winrt::check_hresult(client->GetBufferSize(&buffer_frames));
+            return LW_OK;
+        });
+        if (status != LW_OK) {
+            start_status = status;
+            start_error = lw_last_error();
+            ready.store(-1);
+            SetEvent(started);
+            return;
+        }
+        const UINT32 target = std::min<UINT32>(buffer_frames, sample_rate / 50); // 20 ms
+        auto fill = [&]() -> bool {
+            UINT32 padding = 0;
+            if (FAILED(client->GetCurrentPadding(&padding))) return false; // device invalidated
+            if (padding >= target) return true;
+            const UINT32 frames = target - padding;
+            BYTE *data = nullptr;
+            if (FAILED(renderer->GetBuffer(frames, &data))) return false;
+            callback(context, reinterpret_cast<float *>(data), frames);
+            renderer->ReleaseBuffer(frames, 0);
+            return true;
+        };
+        fill(); // prime with what the source has (silence while it primes)
+        if (FAILED(client->Start())) {
+            start_status = LW_E_OS;
+            start_error = "WASAPI render: IAudioClient::Start failed";
+            ready.store(-1);
+            SetEvent(started);
+            return;
+        }
+        ready.store(1);
+        SetEvent(started);
+
+        HANDLE mmcss = lw::join_mmcss(L"Pro Audio");
+        while (!raw->quit.load(std::memory_order_relaxed)) {
+            if (!fill()) break;
+            Sleep(2);
+        }
+        lw::leave_mmcss(mmcss);
+        client->Stop();
+    });
+
+    WaitForSingleObject(started, INFINITE);
+    CloseHandle(started);
+    if (ready.load() != 1) {
+        render->thread.join();
+        return lw::fail(start_status, "%s", start_error.c_str());
+    }
+    *out = render.release();
+    return LW_OK;
+}
+
+extern "C" void lw_audio_render_stop(lw_audio_render *render) {
+    if (!render) return;
+    render->quit.store(true);
+    if (render->thread.joinable()) render->thread.join();
+    delete render;
 }
 
 // ---- Spike: test tones ---------------------------------------------------------

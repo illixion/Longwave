@@ -33,8 +33,14 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
     /// Independently encoded eyes packed in one atomic native video frame.
     public static let separateEyeVideo = Capability(rawValue: 23)
 
+    /// The client sends its microphone to the host: `microphoneFormat` says the
+    /// rate (or that it stopped), audio shards on channel 0 carry PCM24 mono
+    /// (`MicrophoneAudio`). The host plays it into a capture device a PC app
+    /// can choose as its microphone; it offers this only when it has one.
+    public static let microphone = Capability(rawValue: 24)
+
     /// Every capability this build implements the wire side of.
-    public static let known: [Capability] = (0...23).map { Capability(rawValue: $0) }
+    public static let known: [Capability] = (0...24).map { Capability(rawValue: $0) }
 
     /// Capabilities that are meaningless without others. Negotiation drops a
     /// capability whose requirements didn't survive.
@@ -52,7 +58,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         let names = ["windowStreams", "alphaVideo", "hevc422", "hevc10bitHDR", "av1", "h264", "ltrRecovery",
                      "rfiRecovery", "nack", "audioOpus", "audioPCM24", "audioMultichannel", "spatialObjects",
                      "gamepad", "relativePointer", "clipboard", "virtualDisplay", "localCursor", "sideData",
-                     "depthVideo", "pcvr", "gaze", "foveatedVideo", "separateEyeVideo"]
+                     "depthVideo", "pcvr", "gaze", "foveatedVideo", "separateEyeVideo", "microphone"]
         return Int(rawValue) < names.count ? names[Int(rawValue)] : "capability(\(rawValue))"
     }
 }

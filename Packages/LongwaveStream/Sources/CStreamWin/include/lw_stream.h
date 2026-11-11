@@ -440,6 +440,19 @@ lw_status lw_audio_loopback_start(const char *endpoint_id, lw_audio_callback cal
                                   lw_audio_format *out_format);
 void lw_audio_loopback_stop(lw_audio_loopback *loopback);
 
+/* ---- Audio out (WASAPI render): a stream we generate --------------------- */
+/* Fill `out` with `frames` mono float32 samples at the stream's rate; called on
+ * the shim's MMCSS audio thread every few milliseconds. Must not block. */
+typedef void (*lw_audio_render_callback)(void *context, float *out, uint32_t frames);
+
+typedef struct lw_audio_render lw_audio_render;
+/* Plays a mono float32 stream at `sample_rate` into a render endpoint (from
+ * lw_audio_endpoint_list, or NULL for the default). Windows converts it to the
+ * endpoint's own mix format and rate. About 20 ms is kept queued in the engine. */
+lw_status lw_audio_render_start(const char *endpoint_id, uint32_t sample_rate, lw_audio_render_callback callback,
+                                void *context, lw_audio_render **out);
+void lw_audio_render_stop(lw_audio_render *render);
+
 /* SPIKE ONLY: plays a distinct sine per channel (channel n at 250 * (n + 1) Hz)
  * on an endpoint for `milliseconds`, blocking, so loopback has known content. */
 lw_status lw_audio_play_test_tones(const char *endpoint_id, uint32_t milliseconds, float amplitude);

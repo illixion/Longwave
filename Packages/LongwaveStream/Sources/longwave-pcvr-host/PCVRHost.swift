@@ -91,6 +91,9 @@ struct HostOptions {
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
+    /// `--mic-device`: the render endpoint the headset's microphone plays into
+    /// (a name to match), "off", or nil for the installed virtual cable.
+    var micDevice: String?
 }
 
 /// Where a viewer that negotiated `depthVideo` gets its depth from (section 4.8).
@@ -177,6 +180,8 @@ final class PCVRHost: @unchecked Sendable {
     lazy var desktopCapture = DesktopCapture(log: log, canSend: { [unowned self] in desktop.canSend },
                                              onFrame: { [unowned self] in desktopFrame($0) })
     let companion = CompanionLink()
+    /// The headset's microphone into a virtual cable, when the PC has one.
+    private var microphone: HostMicrophone?
     /// The PCVR stack, as this host asked the Companion for it (under `lock`):
     /// asked to start, when to ask it to stop, and why it last couldn't start.
     private var stackRequested = false
@@ -343,6 +348,7 @@ final class PCVRHost: @unchecked Sendable {
         socket = try UDPSocket(port: options.port)
         device = try GraphicsDevice(for: nil)
         log.line("device: \(device.adapterName); v3 desktop and PCVR on UDP \(options.port); frame source channel '\(options.channel)'")
+        microphone = HostMicrophone.make(option: options.micDevice, log: log)
         reloadDevices(now: Self.now())
     }
 
@@ -1208,7 +1214,9 @@ final class PCVRHost: @unchecked Sendable {
             return (try? desktopAck(answering: hello, grants: grants).encoded()).map { ($0, Self.desktopSlot) }
         }
         if !grants.contains(.screen) { grants = [] }
-        let ack = HostHelloAck(answering: hello, hostCapabilities: PCVRProfile.hostCapabilities, platform: .windows,
+        var capabilities = PCVRProfile.hostCapabilities
+        if microphone != nil { capabilities.insert(.microphone) }
+        let ack = HostHelloAck(answering: hello, hostCapabilities: capabilities, platform: .windows,
                                keyCodeSpace: .hidUsage, grants: grants, maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
                                hostName: String(ProcessInfo.processInfo.hostName.prefix(HelloLimits.maxNameBytes)),
                                software: "Longwave PCVR host")
@@ -1258,7 +1266,8 @@ final class PCVRHost: @unchecked Sendable {
             log.line("viewer '\(viewer.name)' connected from \(endpoint.sessions[index]?.address.description ?? "?")"
                 + " (\(viewer.capabilities.contains(.foveatedVideo) ? "can unwarp" : "no unwarp")"
                 + ", \(viewer.capabilities.contains(.gaze) ? "gaze" : "no gaze")"
-                + ", \(viewer.depthSender != nil ? "depth" : "no depth"))")
+                + ", \(viewer.depthSender != nil ? "depth" : "no depth")"
+                + ", \(viewer.capabilities.contains(.microphone) ? "microphone" : "no microphone"))")
             sendFormat(to: viewer)
             if viewer.depthSender != nil {
                 sendDepthFormat(to: viewer)
@@ -1330,6 +1339,10 @@ final class PCVRHost: @unchecked Sendable {
                     guard let subscription = try? StreamSubscription(decoding: message.body),
                           subscription.streamID == PCVRProfile.streamID else { continue }
                     startStack(for: viewer, now: now)
+                case .microphoneFormat:
+                    guard viewer.capabilities.contains(.microphone),
+                          let format = try? MicrophoneFormat(decoding: message.body) else { continue }
+                    microphone?.format(format, from: viewer.index, name: viewer.name)
                 case .streamStop:
                     guard let subscription = try? StreamSubscription(decoding: message.body),
                           subscription.streamID == PCVRProfile.streamID, viewer.startedStack else { continue }
@@ -1346,7 +1359,11 @@ final class PCVRHost: @unchecked Sendable {
                 let rtt = endpoint.sessions[viewer.index]?.session.rtt.smoothed ?? 2_000_000
                 viewer.sender.onFeedback(results, now: now, rtt: rtt)
                 viewer.depthSender?.onFeedback(results, now: now, rtt: rtt)
-            case .message, .video, .audio:
+            case .audio(let header, let packet):
+                if viewer.capabilities.contains(.microphone) {
+                    microphone?.audio(header, packet: packet, from: viewer.index)
+                }
+            case .message, .video:
                 continue
             }
         }
@@ -1442,6 +1459,7 @@ final class PCVRHost: @unchecked Sendable {
     private func removeViewer(_ viewer: Viewer, reason: String) {
         guard viewers.removeValue(forKey: viewer.index) != nil else { return }
         log.line("viewer '\(viewer.name)' left: \(reason)")
+        microphone?.viewerLeft(viewer.index)
         if viewers.isEmpty { headPose = nil }
         if viewer.startedStack, stackRequested, !viewers.values.contains(where: \.startedStack) {
             stackStopDue = Self.now() + Self.stackGrace
@@ -1535,6 +1553,7 @@ final class PCVRHost: @unchecked Sendable {
         targetBitrate = bitrates.min().map { min($0, options.maxMbps * 1_000_000) }
         if now - lastDeviceReload > 10_000_000_000 { reloadDevices(now: now) }
         if now - lastStats > 5_000_000_000 { logStatistics(now: now) }
+        microphone?.tick(now: now)
         if now &- lastSessionStateCheck > 500_000_000 {
             lastSessionStateCheck = now
             sendSessionStates(now: now)

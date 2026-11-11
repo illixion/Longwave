@@ -235,7 +235,7 @@ final class CapabilityTests: XCTestCase {
         XCTAssertEqual(try set.encoded(), hex("03 01 01 3c"))
         XCTAssertEqual(try CapabilitySet(decoding: hex("03 01 01 3c")), set)
         XCTAssertEqual(try CapabilitySet().encoded(), hex("00"))
-        XCTAssertEqual(try CapabilitySet.known.encoded(), hex("03 ff ff ff"))
+        XCTAssertEqual(try CapabilitySet.known.encoded(), hex("04 ff ff ff 01"))   // 0...24
         XCTAssertEqual(Array(set), [.windowStreams, .nack, .sideData, .depthVideo, .pcvr, .gaze])
     }
 

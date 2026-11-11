@@ -1159,6 +1159,9 @@ final class PCVRHost: @unchecked Sendable {
 
     // MARK: Datagrams (under `lock`)
 
+    /// Where datagrams came from, logged once each (a host nothing reaches is otherwise silent).
+    private var heardFrom: Set<String> = []
+
     private func reloadDevices(now: UInt64) {
         lastDeviceReload = now
         applyDesktopSettings(CompanionSettings.load())
@@ -1183,6 +1186,9 @@ final class PCVRHost: @unchecked Sendable {
 
     private func handle(_ datagram: [UInt8], from address: UDPAddress) {
         let now = Self.now()
+        if heardFrom.count < 64, heardFrom.insert(address.description).inserted {
+            log.line("first datagram from \(address): \(datagram.count) bytes")
+        }
         let events = endpoint.receive(datagram, from: address, now: now, answerInSlot: { deviceID, hello in
             answer(deviceID: deviceID, hello: hello)
         })
@@ -1190,8 +1196,12 @@ final class PCVRHost: @unchecked Sendable {
     }
 
     private func answer(deviceID: String, hello bytes: [UInt8]) -> (ack: [UInt8], slot: UInt8)? {
-        guard let hello = try? ClientHello(decoding: bytes) else { return nil }
+        guard let hello = try? ClientHello(decoding: bytes) else {
+            log.line("a hello from device \(deviceID.prefix(8)) did not decode")
+            return nil
+        }
         var grants = pairedDevices.first { $0.id == deviceID }?.sessionGrants ?? []
+        log.line("hello from '\(hello.deviceName ?? "?")' (device \(deviceID.prefix(8)), \(Self.slot(of: hello) == Self.pcvrSlot ? "PCVR" : "desktop"), screen grant \(grants.contains(.screen)))")
         guard Self.slot(of: hello) == Self.pcvrSlot else {
             grants = desktopGrants(device: grants)
             desktop.answered[deviceID] = (hello, grants)

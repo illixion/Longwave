@@ -105,6 +105,9 @@ final class PCVRShellSession {
             return
         }
         renderer.options.withLock { [renderOptions] in $0 = renderOptions }
+        // The room guardian, drawn by this renderer since a Compositor Services
+        // space has no RealityKit (`PCVRGuardianDriver`).
+        renderer.guardian = PCVRGuardianDriver.shared.attachShell()
         // Only this renderer's own end stops the session: a space reopened
         // quickly starts a new one before the old layer reports invalidation.
         // Captured strongly: the session lives as long as the app (scene
@@ -166,6 +169,7 @@ final class PCVRShellSession {
         fakeRemote = nil
         #endif
         renderer?.stop()
+        if renderer != nil { PCVRGuardianDriver.shared.detachShell() }
         renderer = nil
         poseProducer = nil
         isPresenting = false

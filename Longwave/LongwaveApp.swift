@@ -49,6 +49,7 @@ struct LongwaveApp: App {
             FoveatedGazeDebugEndpoints.register()
             #if os(visionOS)
             PCVRShellEndpoints.register()
+            PCVRGuardianEndpoints.register()
             #endif
             #endif
         }

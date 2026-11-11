@@ -1,4 +1,5 @@
 #if FOVEATED_ENABLED && os(visionOS)
+import RAVEGuardian
 import ARKit
 import CompositorServices
 import DebugTrace
@@ -118,6 +119,10 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     private var depthWarper: PCVRDepthWarper?
     /// The v3 source's depth pictures, when it asked for them. Set before `start()`.
     var depthStore: PCVRDepthStore?
+    /// The room guardian's walls, drawn over the stream in every eye (its
+    /// snapshot is published from the main actor; encoding it never waits).
+    /// Set before `start()`.
+    var guardian: RAVEGuardianMetalRenderer?
     /// GPU times of completed frames, seconds, drained into the stats window.
     private let gpuTimes = OSAllocatedUnfairLock(initialState: [Double]())
     private var depthWarps = 0
@@ -325,6 +330,10 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             } catch {
                 log.error("Reprojection encode failed: \(error, privacy: .public)")
             }
+            if let guardian, let anchor, guardian.hasContent {
+                guardian.encode(commandBuffer: commandBuffer,
+                                targets: Self.guardianTargets(for: drawable, originFromDevice: anchor.originFromAnchorTransform))
+            }
             drawable.encodePresent(commandBuffer: commandBuffer)
         }
         // The frame's texture (and its depth picture) stay leased until the GPU
@@ -381,6 +390,24 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
                 display: PCVREyeView(pose: head * PCVRPose(view.transform),
                                      fieldOfView: PCVRFieldOfView(projection: projection)),
                 displayProjection: projection)
+        }
+    }
+
+    /// The guardian's eye views: the same textures, slices, viewports and rate
+    /// maps the stream was drawn into, with clip-from-world for each eye.
+    private static func guardianTargets(for drawable: LayerRenderer.Drawable,
+                                        originFromDevice: simd_float4x4) -> [RAVEGuardianMetalRenderer.Target] {
+        let rateMaps = drawable.rasterizationRateMaps
+        return drawable.views.indices.map { index in
+            let view = drawable.views[index]
+            let map = view.textureMap
+            let originFromEye = originFromDevice * view.transform
+            return RAVEGuardianMetalRenderer.Target(
+                colorTexture: drawable.colorTextures[map.textureIndex],
+                colorSlice: map.sliceIndex,
+                viewport: map.viewport,
+                rasterizationRateMap: rateMaps.count == drawable.views.count ? rateMaps[index] : rateMaps.first,
+                viewProjection: drawable.computeProjection(viewIndex: index) * originFromEye.inverse)
         }
     }
 

@@ -147,7 +147,9 @@ struct PCVRNativeSessionPanel: View {
     private func start() async {
         startError = nil
         do {
-            let target = try PCVRNativeSession.target(pcvrHost: connection.hostname, connections: connections)
+            let target = try PCVRNativeSession.target(
+                pcvrHost: connection.hostname, connections: connections,
+                windowsHostIDs: Set(CompanionLocator.shared.nearby.filter(\.isWindows).map(\.macID)))
             await session.start(target: target, shell: shell, gameLibrary: manager.gameLibrary)
         } catch {
             startError = error.localizedDescription

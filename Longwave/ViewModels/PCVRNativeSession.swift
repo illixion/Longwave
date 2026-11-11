@@ -330,9 +330,15 @@ final class PCVRNativeSession {
 
     /// The PCVR tab's PC with the credential from pairing with its Companion:
     /// the paired Native connection at the tab's address, else the first one.
-    static func target(pcvrHost: String, connections: [SavedConnection]) throws -> PCVRV3Target {
+    static func target(pcvrHost: String, connections: [SavedConnection],
+                       windowsHostIDs: Set<String> = []) throws -> PCVRV3Target {
         let companions = connections.filter { $0.connectionType == .native && $0.companionCredential?.deviceID != nil }
-        guard let companion = companions.first(where: { !pcvrHost.isEmpty && $0.hostname == pcvrHost }) ?? companions.first,
+        /* With no address typed, PCVR can only mean a Windows PC: a Mac's Companion answers the
+           hello too, without PCVR, and the session then retries forever. Prefer the one seen
+           advertising as Windows, then any Windows-looking address, before "the first". */
+        let preferred = companions.first(where: { !pcvrHost.isEmpty && $0.hostname == pcvrHost })
+            ?? companions.first(where: { $0.companionMacID.map(windowsHostIDs.contains) ?? false })
+        guard let companion = preferred ?? companions.first,
               let credential = companion.companionCredential else { throw PCVRNativeSessionError.noCompanion }
         let host = pcvrHost.isEmpty ? companion.hostname : pcvrHost
         return PCVRV3Target(host: host, credential: credential, deviceName: DeviceName.current)

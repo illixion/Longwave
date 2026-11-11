@@ -44,7 +44,7 @@ final class MacNativeStreamManager {
         var statusText: String {
             switch self {
             case .disconnected(let message): message ?? "Disconnected"
-            case .connecting: "Connecting to Mac…"
+            case .connecting: "Connecting…"
             case .connected: "Connected"
             case .streaming: "Streaming"
             }

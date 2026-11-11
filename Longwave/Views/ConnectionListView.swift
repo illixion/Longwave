@@ -48,10 +48,15 @@ struct ConnectionListView: View {
     /// tab (see `MobileAudioView`) as a second, more direct entry point.
     private var visibleConnections: [SavedConnection] {
         #if os(macOS)
-        savedConnections.filter { $0.connectionType != .ssh }
+        let listed = savedConnections.filter { $0.connectionType != .ssh }
         #else
-        savedConnections.filter { $0.connectionTypeRawValue != "foveated" }
+        let listed = savedConnections.filter { $0.connectionTypeRawValue != "foveated" }
         #endif
+        // Newest activity first, and a connection nobody has opened yet counts from when it was added:
+        // the query's own order puts those (no lastConnected) under every used one.
+        return listed.sorted {
+            ($0.lastConnected ?? $0.createdAt ?? .distantPast) > ($1.lastConnected ?? $1.createdAt ?? .distantPast)
+        }
     }
 
     var body: some View {

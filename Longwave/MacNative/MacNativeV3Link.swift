@@ -132,7 +132,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     /// No v3 host here: hand over to v2.
     private func fallBack() {
         guard !closed else { return }
-        log.notice("No Native v3 answer from the Mac; falling back to v2")
+        log.notice("No Native v3 answer from the host; falling back to v2")
         tearDown()
         noAnswer()
     }
@@ -247,7 +247,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             // In place, so the session's buffers aren't copied per datagram.
             events = try session!.receive(datagram, now: now)
         } catch {
-            finish("Lost the connection to the Mac (\(error)).")
+            finish("Lost the connection to the computer (\(error)).")
             return
         }
         for event in events { handle(event, now: now) }
@@ -256,11 +256,11 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
 
     private func connected(_ opened: TransportSession, ackBytes: [UInt8], now: UInt64) {
         guard let ack = try? HostHelloAck(decoding: ackBytes) else {
-            finish("The Mac's answer couldn't be read.")
+            finish("The computer's answer couldn't be read.")
             return
         }
         guard !ack.refused else {
-            finish("This Mac doesn't allow this device to connect. Check the Devices tab in Longwave Companion on the Mac.")
+            finish("This computer doesn't allow this device to connect. Check the Devices tab in Longwave Companion, and that its Native stream switch is on.")
             return
         }
         var session = opened
@@ -397,7 +397,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         }
         flush(now: now)
         if let closure = session?.closure {
-            finish(closure == .timedOut ? "The Mac stopped answering." : "Lost the connection to the Mac (\(closure)).")
+            finish(closure == .timedOut ? "The computer stopped answering." : "Lost the connection to the computer (\(closure)).")
             return
         }
         let wakes = [session?.nextWakeTime(now: now), receiverDue].compactMap { $0 }

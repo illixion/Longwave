@@ -267,6 +267,9 @@ final class SavedConnection {
     var port: Int
     var label: String
     var lastConnected: Date?
+    /// When the connection was saved: lists put a connection nobody has opened yet
+    /// where it was added, not under every one that has been used. Nil for those saved before this existed.
+    var createdAt: Date?
 
     // Connection type discrimination
     var connectionTypeRawValue: String = ConnectionType.vnc.rawValue
@@ -650,6 +653,7 @@ final class SavedConnection {
         self.label = label.isEmpty ? "\(hostname):\(port)" : label
         self.qualityRawValue = quality.rawValue
         self.lastConnected = nil
+        self.createdAt = Date()
         self.autoLogin = false
         self.savedUsername = ""
         self.savedPassword = ""

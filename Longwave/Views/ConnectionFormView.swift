@@ -317,13 +317,13 @@ struct ConnectionFormView: View {
         case .waitingForHost:
             HStack {
                 ProgressView()
-                Text("Asking the Mac…")
+                Text("Asking the computer…")
             }
         case .confirming(let code):
             VStack(alignment: .leading, spacing: 6) {
                 Text(PairingExchange.display(code))
                     .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
-                Text("Check that the Mac shows this code, then choose Pair there.")
+                Text("Check that the computer shows this code, then choose Pair there.")
                     .foregroundStyle(.secondary)
             }
         case .paired(let grant):

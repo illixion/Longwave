@@ -64,6 +64,11 @@
 	     request — it throws an uncaught ObjC exception from
 	     __ar_session_request_authorization_block_invoke and the app dies with SIGABRT the
 	     moment a foveated session starts with the bridge enabled. -->
+	<!-- The PCVR space's room guardian (RAVEGuardian, PCVRGuardianDriver) runs
+	     scene reconstruction to find your walls, which needs .worldSensing; ARKit
+	     aborts on that request when this string is missing. -->
+	<key>NSWorldSensingUsageDescription</key>
+	<string>Longwave maps the walls around you so it can outline them when you get close during PCVR games.</string>
 	<key>NSHandsTrackingUsageDescription</key>
 	<string>Longwave uses hand tracking to drive virtual VR controllers on your PC, so you can play PCVR games with pinch gestures instead of physical controllers.</string>
 	<key>NSBonjourServices</key>

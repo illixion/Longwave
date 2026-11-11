@@ -1780,6 +1780,12 @@ final class ControllerBridgeSender {
     // anchors already flow through this object and a second HandTrackingProvider would
     // be a second ARKit consumer competing for the same data.
 
+    /// The latest grip (mid-palm) position per hand, ARKit world space; nil for an
+    /// untracked hand. Read by the room guardian (`PCVRGuardianDriver`).
+    var gripPositions: (left: SIMD3<Float>?, right: SIMD3<Float>?) {
+        (leftHand?.position, rightHand?.position)
+    }
+
     /// Head position in the same ARKit world space the hand anchors report in, or nil
     /// while world tracking isn't running.
     var headWorldPosition: SIMD3<Float>? {

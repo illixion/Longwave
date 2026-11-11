@@ -19,6 +19,7 @@
 //  Gated behind FOVEATED_ENABLED.
 
 #if FOVEATED_ENABLED
+import RAVEGuardian
 import SwiftUI
 import RAVEUI
 import SwiftData
@@ -146,6 +147,17 @@ private struct PCVRSessionForm: View {
                           systemImage: "rectangle.on.rectangle",
                           subtitle: "Chat and pages pinned to your wrist or view") {
                     PCVRWebPanelsSettings()
+                }
+                PCVRPanel(title: "Guardian",
+                          systemImage: "square.dashed",
+                          subtitle: "Outline your walls when you get close") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("While you play, the walls around you light up as a grid when your head, a hand or a controller gets close to one, or is heading for one fast. Uses the room map your Vision Pro builds.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        RAVEGuardianSettingsControls()
+                    }
                 }
                 bandwidthPanel
             }

@@ -64,6 +64,7 @@ struct FoveatedImmersiveView: View {
             buildJoystickVisualization(content: content)
             buildGamepadVisualizer(content: content)
             buildTrackerOverlay(content: content)
+            PCVRGuardianDriver.shared.attach(to: content, manager: manager)
         }
         .onChange(of: showSentSkeleton, initial: true) { _, show in
             skeletonRoot.isEnabled = show
@@ -92,6 +93,7 @@ struct FoveatedImmersiveView: View {
         .onDisappear {
             wristDriver.hide(bridge: manager.controllerBridge)
             webPanels.tearDown(bridge: manager.controllerBridge)
+            PCVRGuardianDriver.shared.detach()
             Task { await manager.pauseForImmersiveExit() }
         }
         .task(id: showSentSkeleton) {

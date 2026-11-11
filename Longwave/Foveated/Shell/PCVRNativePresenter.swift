@@ -49,18 +49,67 @@ protocol PCVRNativePresenterPlugin: AnyObject {
     @MainActor static func makePresenter() -> (any PCVRNativePresenter)?
 }
 
+/// Which presenter a native session uses, as the wearer picks it in the PCVR
+/// tab. Two kinds exist:
+/// - eye-tracked: drawn in a foveated-streaming space with RealityKit, where
+///   the system delivers the wearer's gaze, so the PC can foveate where they
+///   look. Apple's foveated streaming provider extension is the official route
+///   (pending its entitlement); a build may carry another presenter of this
+///   kind as its plugin.
+/// - low latency: Shell A, Longwave's own Compositor Services renderer, with
+///   predicted drawable poses and the compositor's late reprojection, but no
+///   gaze (the system gives none to a Compositor Services space), so foveation
+///   stays at the centre.
+/// One immersive space at a time, so the two can't run together; switching
+/// restarts presentation while the PC's stack keeps running.
+enum PCVRNativePresenterChoice: String, CaseIterable, Identifiable {
+    case eyeTracked
+    case lowLatency
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .eyeTracked: "Eye-tracked"
+        case .lowLatency: "Low latency"
+        }
+    }
+
+    static let defaultsKey = "pcvr.native.presenter"
+
+    static var stored: PCVRNativePresenterChoice {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(Self.init(rawValue:)) ?? .eyeTracked
+    }
+}
+
 enum PCVRNativePresenters {
     /// The class a build's presenter plugin goes by.
     static let presenterPluginClassName = "LongwavePCVRPresenterPlugin"
 
-    /// The plugin's presenter if the build carries one, else Shell A.
+    private static var pluginType: PCVRNativePresenterPlugin.Type? {
+        NSClassFromString(presenterPluginClassName) as? PCVRNativePresenterPlugin.Type
+    }
+
+    /// The choices this build can honour: eye-tracked only with a presenter
+    /// that can deliver gaze (the plugin, later the provider extension).
+    static var availableChoices: [PCVRNativePresenterChoice] {
+        pluginType != nil ? [.eyeTracked, .lowLatency] : [.lowLatency]
+    }
+
+    /// The presenter for `choice`: eye-tracked falls back to Shell A when the
+    /// build has no eye-tracked presenter or it can't run right now.
     @MainActor
-    static func preferred(shell: PCVRShellSession) -> any PCVRNativePresenter {
-        if let type = NSClassFromString(presenterPluginClassName) as? PCVRNativePresenterPlugin.Type,
-           let presenter = type.makePresenter() {
+    static func make(_ choice: PCVRNativePresenterChoice, shell: PCVRShellSession) -> any PCVRNativePresenter {
+        if choice == .eyeTracked, let presenter = pluginType?.makePresenter() {
             return presenter
         }
         return PCVRShellPresenter(shell: shell)
+    }
+
+    /// The plugin's presenter if the build carries one, else Shell A.
+    @MainActor
+    static func preferred(shell: PCVRShellSession) -> any PCVRNativePresenter {
+        make(.eyeTracked, shell: shell)
     }
 }
 

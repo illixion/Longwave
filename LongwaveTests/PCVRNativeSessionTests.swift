@@ -47,5 +47,22 @@ final class PCVRNativeSessionTests: XCTestCase {
     func testWithoutAPluginTheShellPresents() {
         XCTAssertNil(NSClassFromString(PCVRNativePresenters.presenterPluginClassName))
     }
+
+    /// A public build has no eye-tracked presenter, so it offers no choice and
+    /// either choice presents with Shell A; the choice persists.
+    @MainActor
+    func testRendererChoiceWithoutAnEyeTrackedPresenter() {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: PCVRNativePresenterChoice.defaultsKey)
+        defer { defaults.set(saved, forKey: PCVRNativePresenterChoice.defaultsKey) }
+        XCTAssertEqual(PCVRNativePresenters.availableChoices, [.lowLatency])
+        let shell = PCVRShellSession()
+        XCTAssertTrue(PCVRNativePresenters.make(.eyeTracked, shell: shell) is PCVRShellPresenter)
+        XCTAssertTrue(PCVRNativePresenters.make(.lowLatency, shell: shell) is PCVRShellPresenter)
+        let session = PCVRNativeSession()
+        session.presenterChoice = .lowLatency
+        XCTAssertEqual(PCVRNativeSession().presenterChoice, .lowLatency)
+        XCTAssertFalse(session.isActive)   // changing it while idle starts nothing
+    }
 }
 #endif

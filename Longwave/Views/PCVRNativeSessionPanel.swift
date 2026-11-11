@@ -33,6 +33,15 @@ struct PCVRNativeSessionPanel: View {
                 Picker("Frame rate", selection: $session.frameRate) {
                     ForEach(PCVRFrameRatePreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
+                if session.availableChoices.count > 1 {
+                    Picker("Renderer", selection: $session.presenterChoice) {
+                        ForEach(session.availableChoices) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(session.state == .connecting)
+                    Text("Eye-tracked lets the PC sharpen where you look. Low latency uses Longwave's own renderer, with sharpness fixed at the centre of view. Switching while you play restarts the picture; the game keeps running.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Quality sets how many pixels the game renders. Match display follows the headset's refresh as visionOS changes it; Half display rate shows every frame for two refreshes (60 fps at 120 Hz, 45 at 90), easier on the PC with an even cadence. Never below 45 fps. Changes apply while you play; a new render size reaches a game when it next starts.")
                     .font(.caption).foregroundStyle(.secondary)
             }

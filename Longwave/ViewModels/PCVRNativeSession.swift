@@ -58,6 +58,19 @@ final class PCVRNativeSession {
         }
     }
 
+    /// Eye-tracked or low latency (`PCVRNativePresenterChoice`). Changing it
+    /// while streaming switches presenter at once.
+    var presenterChoice: PCVRNativePresenterChoice = .stored {
+        didSet {
+            guard presenterChoice != oldValue else { return }
+            UserDefaults.standard.set(presenterChoice.rawValue, forKey: PCVRNativePresenterChoice.defaultsKey)
+            if isActive { Task { await switchPresenter() } }
+        }
+    }
+
+    /// What the wearer can pick between in this build.
+    var availableChoices: [PCVRNativePresenterChoice] { PCVRNativePresenters.availableChoices }
+
     static let qualityKey = "pcvr.native.quality"
     static let frameRateKey = "pcvr.native.frameRate"
 
@@ -67,12 +80,17 @@ final class PCVRNativeSession {
     @ObservationIgnored private weak var remote: PCVRV3Remote?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
     @ObservationIgnored private var bridgeHost: String?
+    /// The running session's target and shell, to restart it with another presenter.
+    @ObservationIgnored private var activeTarget: PCVRV3Target?
+    @ObservationIgnored private weak var activeShell: PCVRShellSession?
+    @ObservationIgnored private var isSwitching = false
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRNative")
 
     init() {
         let defaults = UserDefaults.standard
         quality = PCVRQualityPreset(rawValue: defaults.integer(forKey: Self.qualityKey)) ?? .quality
         frameRate = PCVRFrameRatePreset(rawValue: defaults.integer(forKey: Self.frameRateKey)) ?? .matchDisplay
+        PCVRGuardianDriver.shared.nativeSession = self
     }
 
     /// The presets as sent: the frame-rate cap worked out for the display now.
@@ -94,15 +112,20 @@ final class PCVRNativeSession {
         guard !isActive else { return }
         state = .connecting
         self.gameLibrary = gameLibrary
-        let presenter = PCVRNativePresenters.preferred(shell: shell)
+        activeTarget = target
+        activeShell = shell
+        let presenter = PCVRNativePresenters.make(presenterChoice, shell: shell)
         self.presenter = presenter
         presenterName = presenter.displayName
         bridgeHost = target.host
         let events = PCVRNativePresenterEvents()
         events.remoteStarted = { [weak self] remote in self?.adopt(remote) }
         events.displayChanged = { [weak self] rate in self?.displayChanged(rate) }
+        // Tied to this presenter: one replaced by a switch can still report its
+        // end afterwards, and must not stop the session that replaced it.
+        let identity = ObjectIdentifier(presenter)
         events.ended = { [weak self] reason in
-            Task { @MainActor in await self?.presenterEnded(reason) }
+            Task { @MainActor in await self?.presenterEnded(reason, presenter: identity) }
         }
         appliedCap = nil
         do {
@@ -148,8 +171,21 @@ final class PCVRNativeSession {
         state = .idle
     }
 
-    private func presenterEnded(_ reason: String?) async {
-        guard isActive else { return }
+    /// Restarts the running session with the presenter now chosen. Ending the
+    /// old one doesn't end PCVR on the PC (`endingPCVR: false`), so its stack and
+    /// the game keep running across the switch.
+    private func switchPresenter() async {
+        guard isActive, !isSwitching, let target = activeTarget, let shell = activeShell,
+              let gameLibrary else { return }
+        isSwitching = true
+        defer { isSwitching = false }
+        log.notice("switching native PCVR presenter to \(self.presenterChoice.rawValue, privacy: .public)")
+        await stop(endingPCVR: false)
+        await start(target: target, shell: shell, gameLibrary: gameLibrary)
+    }
+
+    private func presenterEnded(_ reason: String?, presenter identity: ObjectIdentifier) async {
+        guard isActive, !isSwitching, let presenter, ObjectIdentifier(presenter) == identity else { return }
         await stop(endingPCVR: false)
         if let reason { state = .failed(reason) }
     }

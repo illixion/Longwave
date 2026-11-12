@@ -3,9 +3,8 @@
 //  Longwave
 //
 //  The room guardian in the PCVR space (RAVEGuardian): while a game covers the
-//  view, the real walls light up as a grid where your head, a hand or a
-//  controller gets close to one or heads for one fast. Settings are on the PCVR
-//  tab (Guardian panel), on by default.
+//  view, walls show a brief grid cue when a hand or controller accelerates
+//  toward them. Nearby furniture can appear as a translucent hologram.
 //
 //  It runs in both PCVR spaces, whichever is open (only one can be):
 //  - the foveated-streaming space (CloudXR, and native sessions presented by
@@ -18,10 +17,10 @@
 //
 //  Longwave runs no scene reconstruction of its own, so the guardian's sensor
 //  does: a second ARKit session with SceneReconstructionProvider and a
-//  WorldTrackingProvider for the head. Hands and tracked controllers come from
-//  whichever controller bridge runs (the CloudXR manager's or the native
-//  session's), which already holds them in the same ARKit world; without one
-//  the head still guards. Both drawings go over the stream: a game object
+//  WorldTrackingProvider for a room-relative debug reference. Hands and
+//  tracked controllers come from whichever controller bridge runs (the
+//  CloudXR manager's or the native session's), which already holds them in
+//  the same ARKit world. Both drawings go over the stream: a game object
 //  nearer than the wall must not hide a safety outline.
 //
 //  One instance for the app: `FoveatedImmersiveView` is a struct rebuilt on
@@ -47,8 +46,8 @@ final class PCVRGuardianDriver {
     let overlay = RAVEGuardianOverlay()
     /// The native session, for its controller bridge. Set by the session.
     weak var nativeSession: PCVRNativeSession?
-    /// A head used while world tracking gives none (the simulator), set from
-    /// the debug server (`pcvrGuardianControl`).
+    /// A stand-in position used to center the demo room in the simulator,
+    /// set from the debug server (pcvrGuardianControl).
     var standInHead: SIMD3<Float>?
 
     /// Which space draws the guardian, its map and last verdict (debug server).
@@ -120,11 +119,6 @@ final class PCVRGuardianDriver {
     private func probes() -> [RAVEGuardianProbe] {
         var out: [RAVEGuardianProbe] = []
         let bridge = manager?.controllerBridge ?? nativeSession?.controllerBridge
-        if let head = sensor.headProbe() {
-            out.append(head)
-        } else if let head = bridge?.headWorldPosition ?? standInHead {
-            out.append(.init(id: "head", kind: .head, position: head))
-        }
         guard let bridge else { return out }
 
         let grips = bridge.gripPositions

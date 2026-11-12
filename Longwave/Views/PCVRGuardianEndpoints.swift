@@ -25,17 +25,16 @@ enum PCVRGuardianEndpoints {
             .untyped("pcvrGuardian", kind: .query,
                      "The PCVR room guardian: which space draws it (realityKit = the foveated-streaming space, shell = "
                      + "Shell A's Metal overlay, none), its settings, the mapped chunks and triangles, and per tracked "
-                     + "part the clearance to the nearest wall (m), speed toward it (m/s) and 0-1 alert.") { _ in
+                     + "part the clearance to the nearest wall (m), approach speed and acceleration, and 0-1 cue.") { _ in
                 report()
             },
             .untyped("pcvrGuardianControl", kind: .command,
-                     "Change the PCVR guardian. `enabled`, `visibility` proximity|always, `style` grid|lines|solid, "
-                     + "`warningDistance` metres. `demoRoom` puts a stand-in room of `width` x `depth` m around the head "
-                     + "(or the origin); `clearDemo` removes it. `headX/headY/headZ` set a stand-in head used while "
-                     + "world tracking gives none (the simulator); `clearHead` drops it. Returns GET /pcvrGuardian.",
+                     "Change the PCVR guardian. `enabled`, `style` grid|lines|solid, "
+                     + "`warningDistance` metres. `demoRoom` puts a stand-in room of `width` x `depth` m around the debug reference "
+                     + "(or the origin); `clearDemo` removes it. `headX/headY/headZ` set the simulator's stand-in debug reference; "
+                     + "`clearHead` drops it. Returns GET /pcvrGuardian.",
                      parameters: [
                         .boolean("enabled", "the guardian runs"),
-                        .string("visibility", "when it shows", choices: RAVEGuardianSettings.Visibility.allCases.map(\.rawValue)),
                         .string("style", "pattern", choices: RAVEGuardianSettings.Style.allCases.map(\.rawValue)),
                         .number("warningDistance", "safety margin, metres", range: 0.15...1.5),
                         .boolean("demoRoom", "load a stand-in room"),
@@ -51,7 +50,6 @@ enum PCVRGuardianEndpoints {
                 let store = RAVEGuardianSettingsStore.shared
                 var s = store.settings
                 if let v = args.bool("enabled") { s.isEnabled = v }
-                if let v = args.string("visibility").flatMap(RAVEGuardianSettings.Visibility.init) { s.visibility = v }
                 if let v = args.string("style").flatMap(RAVEGuardianSettings.Style.init) { s.appearance.style = v }
                 if let v = args.double("warningDistance") { s.warningDistance = Float(v) }
                 store.settings = s.sanitized()
@@ -82,7 +80,6 @@ enum PCVRGuardianEndpoints {
         return [
             "host": host,
             "enabled": s.isEnabled,
-            "visibility": s.visibility.rawValue,
             "style": s.appearance.style.rawValue,
             "warningDistance": r(s.warningDistance),
             "chunks": map.chunks.count,
@@ -92,7 +89,8 @@ enum PCVRGuardianEndpoints {
             "standInHead": driver.standInHead.map { [r($0.x), r($0.y), r($0.z)] } as Any,
             "probes": frame.probes.map { p -> [String: Any] in
                 ["id": p.probe.id, "clearance": p.clearance.map(r) as Any,
-                 "approachSpeed": r(p.approachSpeed), "alert": r(p.alert)]
+                 "approachSpeed": r(p.approachSpeed),
+                 "approachAcceleration": r(p.approachAcceleration), "alert": r(p.alert)]
             },
         ]
     }

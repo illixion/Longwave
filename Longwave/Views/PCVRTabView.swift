@@ -150,9 +150,9 @@ private struct PCVRSessionForm: View {
                 }
                 PCVRPanel(title: "Guardian",
                           systemImage: "square.dashed",
-                          subtitle: "Outline your walls when you get close") {
+                          subtitle: "Brief wall cues on accelerating hand/controller motion") {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("While you play, the walls around you light up as a grid when your head, a hand or a controller gets close to one, or is heading for one fast. Uses the room map your Vision Pro builds.")
+                        Text("A brief wall grid appears when a hand or controller accelerates toward a wall. Nearby furniture appears as a translucent hologram. visionOS handles headset protection. Uses the room map your Vision Pro builds.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

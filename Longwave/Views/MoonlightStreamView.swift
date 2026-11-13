@@ -65,9 +65,12 @@ struct MoonlightStreamView: View {
     private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
     var body: some View {
+        // No backdrop behind the pane: in Mouse mode the padding around the
+        // picture and the gap above the strip have to be empty, as on the
+        // Native desktop. A black slab there was something the pointer could
+        // land on, and it slid across it onto the window bar. The pane paints
+        // its own black.
         ZStack {
-            Color.black.ignoresSafeArea()
-
             // 1×1 transparent hardware keyboard capture, kept bottommost so it
             // never intercepts gestures. A zero-size / zero-alpha view can't
             // reliably become first responder on visionOS.

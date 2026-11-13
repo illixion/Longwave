@@ -303,12 +303,17 @@ struct NativeCurvedScreenView: View {
             content.add(screen)
         } update: { content in
             applyInputTarget()
-            // The picture's centre on the window plane, in the content's
-            // space — RealityView's origin is not documented to sit there.
+            // The picture's centre on the window plane, in the content's own
+            // space, which is what `position` (relative to the content root)
+            // is in. RealityView's origin is not documented to sit anywhere
+            // in particular. Scene space only coincided with it while the
+            // view filled the window: in mouse mode the pane is inset with a
+            // strip below, and a scene-space position put the mesh above the
+            // pane, its top cut off by the window's edge.
             let center = content.convert(
                 Point3D(x: curve.contentRect.midX, y: curve.contentRect.midY, z: 0),
                 from: .local,
-                to: .scene
+                to: content
             )
             screen.position = SIMD3<Float>(center)
             guard builtCurve != curve else { return }

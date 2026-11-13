@@ -63,6 +63,10 @@ class MoonlightAudioRenderer: @unchecked Sendable {
 
     /// When true, audio is decoded but not played (no audio mode).
     nonisolated(unsafe) var muted: Bool = false
+    /// The controls bar's Audio toggle: frames are still decoded and queued,
+    /// as silence, so turning it back on needs no re-prime and no reconnect.
+    /// (`muted` is the no-audio stream option, which never starts the engine.)
+    nonisolated(unsafe) var silenced: Bool = false
 
     /// Where decoded frames go while the sound stage is up: the stage's
     /// `RAVEChannelFeed`, set and cleared by the main actor, read by the
@@ -373,6 +377,9 @@ class MoonlightAudioRenderer: @unchecked Sendable {
         }
 
         guard decodedSamples > 0 else { return }
+        if silenced {
+            pcmBuffer.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        }
 
         // Surround on the sound stage. Same frames, PLC included, and the
         // feed keeps the same 40 ms cushion and re-primes the same way.

@@ -193,35 +193,26 @@ struct RemoteDesktopView: View {
             mouse: mouseBridge,
             keyboardOpen: isKeyboardWindowOpen,
             toggleKeyboard: toggleKeyboardWindow,
+            // The companion's player, from the same Audio button the Native
+            // desktop uses for its own player. Left out without a companion.
+            audio: connectionManager.hasCompanionAudio
+                ? StreamAudioButton(
+                    isOn: $showAudioPanel,
+                    systemImage: audioManager.state == .streaming ? "speaker.wave.2.fill" : "speaker.wave.2",
+                    help: "The Mac's audio, through its companion",
+                    popover: AnyView(
+                        AudioPlayerPanel(width: 360, showsVolume: true)
+                            .padding(.vertical, 8)
+                            .environment(audioManager)
+                    )
+                )
+                : nil,
             disconnect: disconnect
         ) {
             EmptyView()
-        } pointerExtras: {
+        } display: {
             EmptyView()
-        } trailing: {
-            if connectionManager.hasCompanionAudio {
-                Button(action: { showAudioPanel.toggle() }) {
-                    Label(
-                        "Audio",
-                        systemImage: audioManager.state == .streaming
-                            ? "speaker.wave.2.fill" : "speaker.wave.2"
-                    )
-                }
-                .tint(audioManager.state == .streaming ? .accentColor : nil)
-                .popover(isPresented: $showAudioPanel, arrowEdge: .bottom) {
-                    AudioPlayerPanel(width: 360, showsVolume: true)
-                        .padding(.vertical, 8)
-                        .environment(audioManager)
-                }
-            }
-
-            Button(action: sendCtrlAltDel) {
-                Label("Ctrl+Alt+Del", systemImage: "power")
-            }
         }
-        // The audio popover sits outside the bar, so its hover doesn't cover
-        // it: hold the mouse back while it shows.
-        .onChange(of: showAudioPanel) { _, open in mouseBridge.menuOpen = open }
     }
 
     private func disconnect() {
@@ -283,14 +274,5 @@ struct RemoteDesktopView: View {
         } else {
             openWindow(id: "keyboard")
         }
-    }
-
-    private func sendCtrlAltDel() {
-        connectionManager.sendKeyDown(.control)
-        connectionManager.sendKeyDown(.option)
-        connectionManager.sendKeyDown(.forwardDelete)
-        connectionManager.sendKeyUp(.forwardDelete)
-        connectionManager.sendKeyUp(.option)
-        connectionManager.sendKeyUp(.control)
     }
 }

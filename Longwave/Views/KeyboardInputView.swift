@@ -61,6 +61,12 @@ struct KeyboardInputView: View {
     private var header: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
+                // Here rather than on the desktop's controls bar, as in the
+                // Moonlight keyboard window: it is a key combination.
+                Button("Ctrl+Alt+Del", action: sendCtrlAltDel)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+
                 routeControl
 
                 Spacer(minLength: 0)
@@ -89,6 +95,15 @@ struct KeyboardInputView: View {
         // window past the keyboard it belongs to.
         .frame(width: VirtualKeyboardView.contentWidth)
         .multilineTextAlignment(.center)
+    }
+
+    private func sendCtrlAltDel() {
+        connectionManager.sendKeyDown(.control)
+        connectionManager.sendKeyDown(.option)
+        connectionManager.sendKeyDown(.forwardDelete)
+        connectionManager.sendKeyUp(.forwardDelete)
+        connectionManager.sendKeyUp(.option)
+        connectionManager.sendKeyUp(.control)
     }
 
     // MARK: - Typing Route

@@ -183,6 +183,12 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         spatialAudioEnabled.toggle()
     }
 
+    /// The controls bar's Audio toggle: silences the stream's sound without
+    /// stopping it. Kept across reconnects within the session.
+    var audioMuted = false {
+        didSet { audioRenderer?.silenced = audioMuted }
+    }
+
     /// Whether surround is playing as virtual speakers (the renderer's PHASE
     /// sound stage is up).
     var isSoundStageActive = false
@@ -526,6 +532,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 await MainActor.run {
                     self.videoRenderer = video
                     self.audioRenderer = audio
+                    audio.silenced = self.audioMuted
                     audio.setSceneIdentifier(self.audioSceneIdentifier)
                     audio.onSoundStageChange = { [weak self] active in
                         self?.isSoundStageActive = active

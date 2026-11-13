@@ -86,20 +86,36 @@ struct StreamConnectionStrip<Trailing: View>: View {
 
 // MARK: - Controls ornament
 
+/// The Audio button: one button on every desktop, doing what audio means for
+/// that connection — the Native desktop's audio stream and player, VNC's
+/// companion player, muting a Moonlight stream.
+struct StreamAudioButton {
+    var isOn: Binding<Bool>
+    var systemImage: String
+    var disabled = false
+    var help: String
+    /// Shown from the button while it's on (VNC's player).
+    var popover: AnyView?
+}
+
 /// The controls under every stream window, in one order:
-/// Connections · [leading] · Direct/Touchpad · Right-click · Mouse ·
-/// [pointer extras] · Keyboard · [trailing] · Disconnect.
-/// The pointer group shows only while there's a picture to point at.
-struct StreamControlsBar<Leading: View, PointerExtras: View, Trailing: View>: View {
+/// Connections · [Screen] · Direct/Touchpad · Right-click · Mouse · Display ·
+/// Keyboard · Audio · Disconnect.
+/// A button a connection can't use is left out, never moved. Display and
+/// Audio are shared buttons whose content is the connection's own: Native's
+/// desktop and curve, or Moonlight's stats and spatial audio, behind the one
+/// Display popover. The pointer group shows only while there's a picture.
+struct StreamControlsBar<Screen: View, Display: View>: View {
     let target: any RemotePointerTarget
     let mouse: StreamMouseBridge
     var showsPointerControls = true
     let keyboardOpen: Bool
     let toggleKeyboard: () -> Void
+    var audio: StreamAudioButton?
     let disconnect: () -> Void
-    @ViewBuilder var leading: () -> Leading
-    @ViewBuilder var pointerExtras: () -> PointerExtras
-    @ViewBuilder var trailing: () -> Trailing
+    @ViewBuilder var screen: () -> Screen
+    /// Display popover content; `EmptyView` leaves the button out.
+    @ViewBuilder var display: () -> Display
 
     @Environment(\.openWindow) private var openWindow
 
@@ -112,7 +128,7 @@ struct StreamControlsBar<Leading: View, PointerExtras: View, Trailing: View>: Vi
             }
             .help("Open the connection manager")
 
-            leading()
+            screen()
 
             if showsPointerControls {
                 Button {
@@ -144,7 +160,9 @@ struct StreamControlsBar<Leading: View, PointerExtras: View, Trailing: View>: Vi
                         : "Use the mouse on the remote desktop")
                 }
 
-                pointerExtras()
+                if Display.self != EmptyView.self {
+                    displayButton
+                }
             }
 
             Button(action: toggleKeyboard) {
@@ -152,7 +170,9 @@ struct StreamControlsBar<Leading: View, PointerExtras: View, Trailing: View>: Vi
             }
             .tint(keyboardOpen ? .accentColor : nil)
 
-            trailing()
+            if let audio {
+                audioButton(audio)
+            }
 
             Button(action: disconnect) {
                 Label("Disconnect", systemImage: "xmark.circle")
@@ -162,6 +182,47 @@ struct StreamControlsBar<Leading: View, PointerExtras: View, Trailing: View>: Vi
         .padding(12)
         .glassBackgroundEffect()
         .onHover { mouse.pointerOverControls = $0 }
+    }
+
+    /// A popover rather than a menu: a popover's open state is ours to know,
+    /// and the mouse hit target has to stand aside, and presses be held back,
+    /// for exactly as long as it shows. A menu offers no such signal.
+    private var displayButton: some View {
+        Button {
+            mouse.menuOpen.toggle()
+        } label: {
+            Label("Display", systemImage: "display.2")
+        }
+        .help("How the stream is shown")
+        .popover(isPresented: Binding(
+            get: { mouse.menuOpen },
+            set: { mouse.menuOpen = $0 }
+        ), arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 16) {
+                display()
+            }
+            .padding(20)
+            .frame(width: 380)
+        }
+    }
+
+    @ViewBuilder
+    private func audioButton(_ audio: StreamAudioButton) -> some View {
+        let toggle = Toggle(isOn: audio.isOn) {
+            Label("Audio", systemImage: audio.systemImage)
+        }
+        .toggleStyle(.button)
+        .disabled(audio.disabled)
+        .help(audio.help)
+        if let popover = audio.popover {
+            toggle
+                .popover(isPresented: audio.isOn, arrowEdge: .top) { popover }
+                // The popover sits outside the bar, so its hover doesn't
+                // cover it: hold the mouse back while it shows.
+                .onChange(of: audio.isOn.wrappedValue) { _, open in mouse.menuOpen = open }
+        } else {
+            toggle
+        }
     }
 }
 

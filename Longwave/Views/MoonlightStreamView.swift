@@ -241,42 +241,52 @@ struct MoonlightStreamView: View {
             mouse: mouseBridge,
             keyboardOpen: isKeyboardWindowOpen,
             toggleKeyboard: toggleKeyboardWindow,
+            audio: StreamAudioButton(
+                isOn: Binding(
+                    get: { !manager.audioMuted },
+                    set: { manager.audioMuted = !$0 }
+                ),
+                systemImage: manager.audioMuted ? "speaker.slash" : "speaker.wave.2",
+                help: manager.audioMuted ? "Unmute the stream" : "Mute the stream"
+            ),
             disconnect: { showDisconnectAlert = true }
         ) {
             EmptyView()
-        } pointerExtras: {
-            EmptyView()
-        } trailing: {
-            Toggle(isOn: $showStats) {
-                Label("Stats", systemImage: "chart.bar")
-            }
-            .toggleStyle(.button)
+        } display: {
+            displaySettings
+        }
+    }
 
+    /// Moonlight's content for the shared Display popover: the stats overlay
+    /// and how the stream's sound is rendered.
+    @ViewBuilder
+    private var displaySettings: some View {
+        Toggle(isOn: $showStats) {
+            Label("Stream Statistics", systemImage: "chart.bar")
+        }
+
+        Toggle(isOn: Binding(
+            get: { manager.spatialAudioEnabled },
+            set: { if $0 != manager.spatialAudioEnabled { manager.toggleSpatialAudio() } }
+        )) {
+            Label("Spatial Audio", systemImage: "person.spatialaudio.fill")
+        }
+        Text(manager.spatialAudioEnabled
+             ? "Head-tracked rendering."
+             : "Flat stereo playback of the stream's own mix.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        // Surround as virtual speakers on AirPods/headphones: the front is
+        // wherever the wearer faced when it started, so offer to move it.
+        // On the headset's speakers the stage follows the window instead.
+        if manager.canRecenterSpatialAudio {
             Button {
-                manager.toggleSpatialAudio()
+                manager.recenterSpatialAudio()
             } label: {
-                Label("Spatial Audio", systemImage: manager.spatialAudioEnabled
-                      ? "person.spatialaudio.fill"
-                      : "person.spatialaudio.stereo.fill")
+                Label("Recenter Surround", systemImage: "scope")
             }
-            .labelStyle(.iconOnly)
-            .tint(manager.spatialAudioEnabled ? .accentColor : nil)
-            .help(manager.spatialAudioEnabled
-                  ? "Spatial Audio On — head-tracked rendering"
-                  : "Spatial Audio Off — flat stereo playback")
-
-            // Surround as virtual speakers on AirPods/headphones: the front is
-            // wherever the wearer faced when it started, so offer to move it.
-            // On the headset's speakers the stage follows the window instead.
-            if manager.canRecenterSpatialAudio {
-                Button {
-                    manager.recenterSpatialAudio()
-                } label: {
-                    Label("Recenter Audio", systemImage: "scope")
-                }
-                .labelStyle(.iconOnly)
-                .help("Recenter surround — make where you face now the front")
-            }
+            .help("Make where you face now the front")
         }
     }
 }

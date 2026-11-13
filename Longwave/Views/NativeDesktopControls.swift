@@ -28,6 +28,14 @@ struct NativeDesktopControls: View {
             // stays when Screen is off.
             keyboardOpen: isKeyboardWindowOpen,
             toggleKeyboard: toggleKeyboardWindow,
+            audio: StreamAudioButton(
+                isOn: audioBinding,
+                systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash",
+                disabled: !screenManager.hostServesAudio,
+                help: screenManager.hostServesAudio
+                    ? "Stream the Mac's audio, with its player beside the desktop"
+                    : "This host doesn't stream audio"
+            ),
             disconnect: disconnectAll
         ) {
             Toggle(isOn: Binding(
@@ -37,44 +45,18 @@ struct NativeDesktopControls: View {
                 Label("Screen", systemImage: "macwindow.on.rectangle")
             }
             .toggleStyle(.button)
-        } pointerExtras: {
-            displayButton
-        } trailing: {
-            Toggle(isOn: audioBinding) {
-                Label(
-                    "Audio",
-                    systemImage: screenManager.hostServesAudio ? "speaker.wave.2" : "speaker.slash"
-                )
-            }
-            .toggleStyle(.button)
-            .disabled(!screenManager.hostServesAudio)
+        } display: {
+            displaySettings
         }
     }
 
     // MARK: - Display
 
-    /// A popover rather than a menu: a popover's open state is ours to know,
-    /// and the mouse hit target has to stand aside, and presses be held back,
-    /// for exactly as long as it shows. A menu offers no such signal.
-    private var displayButton: some View {
-        Button {
-            mouseBridge.menuOpen.toggle()
-        } label: {
-            Label("Display", systemImage: "display.2")
-        }
-        .help("Choose which Mac desktop to show, and how much it curves around you")
-        .popover(isPresented: Binding(
-            get: { mouseBridge.menuOpen },
-            set: { mouseBridge.menuOpen = $0 }
-        ), arrowEdge: .top) {
-            displaySettings
-                .padding(20)
-                .frame(width: 380)
-        }
-    }
-
+    /// Which Mac desktop to show, and how much it curves around you — the
+    /// Native desktop's content for the shared Display popover.
+    @ViewBuilder
     private var displaySettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        Group {
             if screenManager.virtualDisplaySettings != nil {
                 virtualDisplayControls
             } else if screenManager.displays.count > 1 {

@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import RAVEMedia
 import CoreGraphics
 import RAVECompanion
 
@@ -25,6 +26,7 @@ final class MacNativeWindowSession: Identifiable {
     init(windowID: UInt32) {
         self.windowID = windowID
         let layer = AVSampleBufferDisplayLayer()
+        RAVEHDRLayer.allowHDR(on: layer)
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = CGColor(gray: 0, alpha: 0)
         layer.isOpaque = false
@@ -179,6 +181,7 @@ final class MacNativeStreamManager {
     /// `displayLayer` would move its CALayer out of the iPad's controller view.
     func makeExternalDisplayLayer() -> AVSampleBufferDisplayLayer {
         let layer = AVSampleBufferDisplayLayer()
+        RAVEHDRLayer.allowHDR(on: layer)
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         renderer?.setMirrorDisplayLayer(layer)
@@ -215,6 +218,7 @@ final class MacNativeStreamManager {
         state = .connecting
 
         let layer = AVSampleBufferDisplayLayer()
+        RAVEHDRLayer.allowHDR(on: layer)
         layer.videoGravity = .resizeAspect
         // The desktop stream is the host's whole display, opaque edge to edge.
         // Letterboxing is the only place the layer's own color shows, and black
@@ -784,6 +788,7 @@ final class MacNativeStreamManager {
         // is what makes the desktop scene's real geometry — bleed, corners,
         // letterboxing — visible in a screenshot.
         let layer = AVSampleBufferDisplayLayer()
+        RAVEHDRLayer.allowHDR(on: layer)
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.isOpaque = true

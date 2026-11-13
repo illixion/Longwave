@@ -1,4 +1,5 @@
 #if os(visionOS)
+import RAVEMedia
 import CoreVideo
 import DebugTrace
 import Metal
@@ -25,7 +26,8 @@ struct DepthScreenDepth {
 /// One picture and its depth, paired by frame number.
 struct DepthScreenFrame {
     let frameNumber: UInt32
-    /// BGRA, IOSurface-backed, as `MacNativeSurfaceDecoder` produces.
+    /// IOSurface-backed, as `MacNativeSurfaceDecoder` produces: BGRA, or
+    /// the decoder's 10-bit YCbCr for an HDR stream.
     let colour: CVPixelBuffer
     let depth: DepthScreenDepth?
     let source: DepthScreenDepthSource
@@ -77,7 +79,7 @@ private struct DepthScreenMeshUniforms {
 /// each eye itself, so stereo is correct and head motion gives parallax.
 ///
 /// Everything per frame stays on the GPU. The picture is blitted into a
-/// mipmapped `LowLevelTexture` (`MacNativeCurvedTexture`, shared with the
+/// mipmapped `LowLevelTexture` (RAVEMedia's `RAVEFrameTexture`, shared with the
 /// curved desktop); a compute kernel reads the depth texture and writes the
 /// vertices straight into a `LowLevelMesh` buffer. The index buffer never
 /// changes. A shader-graph material whose geometry modifier samples the depth
@@ -112,7 +114,7 @@ final class DepthScreenRenderer {
     private let device: MTLDevice?
     private let queue: MTLCommandQueue?
     private let meshPipeline: MTLComputePipelineState?
-    private let colour = MacNativeCurvedTexture()
+    private let colour = RAVEFrameTexture()
     private var mesh: LowLevelMesh?
     private var builtGrid: DepthMeshGrid?
     private var lastFrame: DepthScreenFrame?
@@ -274,7 +276,7 @@ final class DepthScreenRenderer {
     }
 
     private func applyMaterial() {
-        guard let resource = colour.resource, entity.components[ModelComponent.self] != nil else { return }
+        guard entity.components[ModelComponent.self] != nil else { return }
         let sampler = MTLSamplerDescriptor()
         sampler.minFilter = .linear
         sampler.magFilter = .linear
@@ -282,8 +284,7 @@ final class DepthScreenRenderer {
         sampler.maxAnisotropy = 8
         sampler.sAddressMode = .clampToEdge
         sampler.tAddressMode = .clampToEdge
-        var material = UnlitMaterial()
-        material.color = .init(tint: .white, texture: .init(resource, sampler: .init(sampler)))
+        guard var material = colour.material(sampler: sampler) else { return }
         // Edge cells stand nearly edge-on and turn their backs to one eye or
         // the other as the head moves; culled, they'd flicker open like holes.
         material.faceCulling = .none

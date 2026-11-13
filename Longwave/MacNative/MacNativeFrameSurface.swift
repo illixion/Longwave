@@ -3,10 +3,17 @@ import Foundation
 import CoreMedia
 import CoreVideo
 import VideoToolbox
+import RAVEMedia
 
-/// Decodes the desktop stream to BGRA IOSurfaces itself, for presentations
-/// an `AVSampleBufferDisplayLayer` can't do — the curved desktop, which draws
-/// each frame into its own mipmapped texture (`MacNativeCurvedTexture`).
+/// Decodes a stream to IOSurfaces itself, for presentations an
+/// `AVSampleBufferDisplayLayer` can't do — the curved screen, which draws
+/// each frame into its own mipmapped texture (`RAVEFrameTexture`). Used by
+/// the Native desktop and by Moonlight.
+///
+/// An SDR stream decodes to BGRA. An HDR one (PQ or HLG in its format, or
+/// `deepColor` set by a stream that knows) decodes to the decoder's own
+/// 10-bit YCbCr instead: BGRA would squeeze PQ into 8 bits, which bands, and
+/// the texture's converter takes the native frames as they are.
 ///
 /// Decoding is synchronous on the stream client's receive queue, so a frame
 /// is on its way to the screen the moment it has arrived.
@@ -24,8 +31,18 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
         case decoderLost
     }
 
+    /// The stream is HDR whatever its format description says (Moonlight's
+    /// HEVC description is built from parameter sets, and the host signals
+    /// HDR out of band). Takes effect at the next key frame's session.
+    var deepColor = false
+
     private var session: VTDecompressionSession?
     private var format: CMFormatDescription?
+    /// Whether `session` was made to output the decoder's native format.
+    private var sessionIsNative = false
+    /// The decoder's native output turned out to be a format the converter
+    /// doesn't take; this stream decodes to BGRA from then on.
+    private var nativeOutputRefused = false
     /// Set from the output callback (another thread) when a frame came back
     /// with a decoder-loss status; consumed by the next `decode`.
     private let lossLock = NSLock()
@@ -48,6 +65,9 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
            !VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: description) {
             invalidate()
         }
+        if session != nil, sessionIsNative != wantsNativeOutput(description) {
+            invalidate()
+        }
         if session == nil {
             // Creating one fails too while decoding isn't permitted; that is
             // the same loss, retried by the renderer, not a broken stream.
@@ -68,6 +88,16 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
                 return
             }
             guard status == noErr, let imageBuffer else { return }
+            guard RAVEFrameSignal.isSupported(CVPixelBufferGetPixelFormatType(imageBuffer)) else {
+                // Start over in BGRA; that needs a key frame, which the
+                // loss path asks for.
+                AppLog.macNativeVideo.error("Decoder output \(CVPixelBufferGetPixelFormatType(imageBuffer), privacy: .public) can't be drawn; falling back to BGRA")
+                self.lossLock.lock()
+                self.nativeOutputRefused = true
+                self.lostInCallback = true
+                self.lossLock.unlock()
+                return
+            }
             self.onFrame?(imageBuffer)
         }
         if Self.isDecoderLoss(status) {
@@ -91,11 +121,28 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
         format = nil
     }
 
+    /// HDR decodes to the decoder's native format; see the type's comment.
+    private func wantsNativeOutput(_ description: CMFormatDescription) -> Bool {
+        lossLock.lock()
+        let refused = nativeOutputRefused
+        lossLock.unlock()
+        guard !refused else { return false }
+        if deepColor { return true }
+        let transfer = CMFormatDescriptionGetExtension(
+            description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        return transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+            || transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+    }
+
     private func createSession(_ description: CMFormatDescription) -> Bool {
-        let destination: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+        let native = wantsNativeOutput(description)
+        var destination: [CFString: Any] = [
             kCVPixelBufferIOSurfacePropertiesKey: [CFString: Any]() as CFDictionary,
+            kCVPixelBufferMetalCompatibilityKey: true,
         ]
+        if !native {
+            destination[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_32BGRA
+        }
         let specification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
         ]
@@ -115,6 +162,7 @@ nonisolated final class MacNativeSurfaceDecoder: @unchecked Sendable {
         VTSessionSetProperty(newSession, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         session = newSession
         format = description
+        sessionIsNative = native
         return true
     }
 }

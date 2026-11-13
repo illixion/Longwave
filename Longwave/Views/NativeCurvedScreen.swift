@@ -3,6 +3,7 @@ import SwiftUI
 import RealityKit
 import Metal
 import CoreVideo
+import RAVEMedia
 
 /// How strongly a Native desktop wraps around the viewer, Mac Virtual
 /// Display style. Each is a fixed radius rather than an angle, so curvature
@@ -187,88 +188,6 @@ struct NativeScreenCurve: Equatable {
     }
 }
 
-/// The curved desktop's texture: each decoded frame copied into a RealityKit
-/// `LowLevelTexture` and its mip chain rebuilt on the GPU.
-///
-/// The mips are the point. A video material samples a single full-size
-/// image, so where the desktop is drawn small — at a distance, or outside the
-/// gaze where the system renders at lower resolution — each screen pixel
-/// lands on a few scattered texels of fine text, and which ones changes as
-/// the head moves: shimmer. With mips the sampler reads a pre-filtered,
-/// smaller copy matched to the size it is drawn at.
-@MainActor
-final class MacNativeCurvedTexture {
-    private(set) var resource: TextureResource?
-    private var texture: LowLevelTexture?
-    private var size: (width: Int, height: Int) = (0, 0)
-    private let device = MTLCreateSystemDefaultDevice()
-    private lazy var queue = device?.makeCommandQueue()
-    private var cache: CVMetalTextureCache?
-
-    init() {
-        if let device {
-            CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)
-        }
-    }
-
-    /// Draws `pixelBuffer` (BGRA, IOSurface-backed). Returns true when the
-    /// texture had to be rebuilt for a new size, so the material needs the
-    /// new resource.
-    @discardableResult
-    func update(_ pixelBuffer: CVPixelBuffer) -> Bool {
-        guard let cache, let queue else { return false }
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        var rebuilt = false
-        if texture == nil || size != (width, height) {
-            guard rebuild(width: width, height: height) else { return false }
-            rebuilt = true
-        }
-        guard let texture else { return rebuilt }
-
-        var cvTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
-            nil, cache, pixelBuffer, nil, .bgra8Unorm_srgb, width, height, 0, &cvTexture
-        )
-        guard let cvTexture, let source = CVMetalTextureGetTexture(cvTexture),
-              let commandBuffer = queue.makeCommandBuffer() else { return rebuilt }
-        let destination = texture.replace(using: commandBuffer)
-        if let blit = commandBuffer.makeBlitCommandEncoder() {
-            blit.copy(
-                from: source, sourceSlice: 0, sourceLevel: 0,
-                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                sourceSize: MTLSize(width: width, height: height, depth: 1),
-                to: destination, destinationSlice: 0, destinationLevel: 0,
-                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-            )
-            blit.generateMipmaps(for: destination)
-            blit.endEncoding()
-        }
-        // Keeps the decoder's surface alive until the GPU has copied it.
-        commandBuffer.addCompletedHandler { _ in _ = cvTexture }
-        commandBuffer.commit()
-        return rebuilt
-    }
-
-    private func rebuild(width: Int, height: Int) -> Bool {
-        let levels = Int(log2(Double(max(width, height)))) + 1
-        let descriptor = LowLevelTexture.Descriptor(
-            textureType: .type2D,
-            pixelFormat: .bgra8Unorm_srgb,
-            width: width,
-            height: height,
-            mipmapLevelCount: levels,
-            textureUsage: [.shaderRead, .shaderWrite, .renderTarget]
-        )
-        guard let texture = try? LowLevelTexture(descriptor: descriptor),
-              let resource = try? TextureResource(from: texture) else { return false }
-        self.texture = texture
-        self.resource = resource
-        size = (width, height)
-        return true
-    }
-}
-
 /// The desktop drawn on the curve, with its pointer input taken on the mesh
 /// itself: a tap or drag arrives as a 3D hit on the surface, which maps to
 /// the picture exactly, from wherever the viewer is.
@@ -289,7 +208,15 @@ struct NativeCurvedScreenView: View {
 
     @Environment(\.physicalMetrics) private var physicalMetrics
     @State private var screen = Entity()
-    @State private var texture = MacNativeCurvedTexture()
+    /// Each decoded frame drawn into a mipmapped RealityKit texture, HDR
+    /// kept (RAVEMedia). The mips are the point of drawing it ourselves: a
+    /// video material samples one full-size image, so where the desktop is
+    /// drawn small (at a distance, or outside the gaze, where the system
+    /// renders at lower resolution) each screen pixel lands on a few
+    /// scattered texels of fine text, and which ones changes as the head
+    /// moves: shimmer. With mips the sampler reads a pre-filtered copy
+    /// matched to the size it is drawn at.
+    @State private var texture = RAVEFrameTexture()
     @State private var builtCurve: NativeScreenCurve?
     @State private var dragStart: CGPoint?
     @State private var collisionShape: ShapeResource?
@@ -350,6 +277,7 @@ struct NativeCurvedScreenView: View {
         .preferredWindowClippingMargins(.front, curve.sagitta + 8)
         .onAppear {
             surface.onFrame = { frame in
+                texture.settings = StreamHDRTuning.settings
                 if texture.update(frame) { applyMaterial() }
             }
         }
@@ -393,14 +321,14 @@ struct NativeCurvedScreenView: View {
     }
 
     private func applyMaterial() {
-        guard let resource = texture.resource else { return }
         let sampler = MTLSamplerDescriptor()
         sampler.minFilter = .linear
         sampler.magFilter = .linear
         sampler.mipFilter = .linear
         sampler.maxAnisotropy = 8
-        var material = UnlitMaterial()
-        material.color = .init(tint: .white, texture: .init(resource, sampler: .init(sampler)))
+        // Unlit with tone mapping off: SDR white is the window's own white
+        // and an HDR stream's highlights go above it.
+        guard let material = texture.material(sampler: sampler) else { return }
         screen.components[ModelComponent.self]?.materials = [material]
     }
 }

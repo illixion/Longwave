@@ -85,6 +85,7 @@ Longwave/
 │   ├── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (every stream surface)
 │   ├── RemotePointerTarget.swift       — The pointer verbs VNC, Native and Moonlight each map to their own wire calls
 │   ├── StreamMouseBridge.swift         — visionOS Mouse mode: `GCMouse` raw → any `RemotePointerTarget` (accelerated for desktops, raw for Moonlight)
+│   ├── StreamHDRTuning.swift           — Debug tunables for how bright an HDR stream draws on the curved screen (RAVEMedia's `RAVEFrameTexture`)
 │   ├── MacKeyCodeMap.swift             — HID usage ↔ macOS virtual keycode tables (raw ints, UIKit adapters) for the Native keyboard channel
 │   ├── MacNativeVirtualKeyboardSink.swift — Key + modifiers → Native key frames, or text over the inject channel
 │   └── DeviceName.swift                — The name a client introduces itself with (UIDevice / Host)

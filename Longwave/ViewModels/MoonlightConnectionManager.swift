@@ -4,6 +4,7 @@ import Foundation
 import SwiftUI
 import AVFoundation
 import QuartzCore
+import RAVEMedia
 @preconcurrency import MoonlightCommonC
 
 /// NSObject proxy for CADisplayLink target (since MoonlightConnectionManager doesn't extend NSObject).
@@ -150,6 +151,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         let layer = AVSampleBufferDisplayLayer()
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
+        RAVEHDRLayer.allowHDR(on: layer)
         videoRenderer?.setMirrorDisplayLayer(layer)
         library.requestIdrFrame()
         return layer
@@ -159,6 +161,26 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         videoRenderer?.setMirrorDisplayLayer(nil)
         layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
     }
+    /// The decoded picture for the curved screen, which draws frames into
+    /// its own texture. One for the manager's life.
+    let frameSurface = MacNativeFrameSurface()
+    private let surfaceDecoder = MacNativeSurfaceDecoder()
+    /// Whether decoding goes to `frameSurface` rather than the flat layer.
+    private(set) var curvedSurfaceActive = false
+
+    /// Moves decoding between the flat layer and the curved surface.
+    func setCurvedSurface(_ curved: Bool) {
+        guard curved != curvedSurfaceActive else { return }
+        curvedSurfaceActive = curved
+        surfaceDecoder.onFrame = { [frameSurface] in frameSurface.present($0) }
+        videoRenderer?.setSurfaceDecoder(curved ? surfaceDecoder : nil)
+        if !curved { frameSurface.clear() }
+    }
+
+    /// The stream's format with its HDR metadata, for the window's display
+    /// criteria; nil until the first key frame.
+    private(set) var videoFormatDescription: CMVideoFormatDescription?
+
     /// Live streaming statistics.
     var streamStats = StreamStats()
     /// Whether HDR is active for the current stream (set by server callback).
@@ -508,11 +530,17 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
                 let layer = await MainActor.run {
                     let l = AVSampleBufferDisplayLayer()
                     l.videoGravity = .resizeAspect
+                    // Without this an iPhone or a Mac tone-maps the HDR
+                    // stream down to SDR.
+                    RAVEHDRLayer.allowHDR(on: l)
                     return l
                 }
 
                 let video = MoonlightVideoRenderer(library: self.library)
                 video.displayLayer = layer
+                video.onFormatChange = { [weak self] format in
+                    Task { @MainActor in self?.videoFormatDescription = format }
+                }
                 let audio = MoonlightAudioRenderer()
                 audio.muted = noAudio
                 audio.spatialAudioEnabled = self.spatialAudioEnabled
@@ -531,6 +559,7 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
 
                 await MainActor.run {
                     self.videoRenderer = video
+                    if self.curvedSurfaceActive { video.setSurfaceDecoder(self.surfaceDecoder) }
                     self.audioRenderer = audio
                     audio.silenced = self.audioMuted
                     audio.setSceneIdentifier(self.audioSceneIdentifier)
@@ -661,8 +690,11 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         keyboardManager = nil
         displayLayer?.flush()
         displayLayer = nil
+        videoRenderer?.setSurfaceDecoder(nil)
         videoRenderer?.displayLayer = nil
         videoRenderer = nil
+        videoFormatDescription = nil
+        frameSurface.clear()
         audioRenderer = nil
         isSoundStageActive = false
         isStreamActive = false

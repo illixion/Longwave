@@ -3,6 +3,7 @@ import SwiftUI
 import AVFoundation
 import UIKit
 import GameController
+import RAVEMedia
 @preconcurrency import MoonlightCommonC
 
 // MARK: - Video Display View
@@ -58,6 +59,10 @@ struct MoonlightStreamView: View {
     @State private var showStats = false
     @State private var showDisconnectAlert = false
     @State private var pointer = StreamPointerController()
+    @Environment(\.physicalMetrics) private var physicalMetrics
+    /// The same curve the Native desktop offers; flat unless chosen, since
+    /// most of what streams here is a game.
+    @AppStorage("moonlightScreenCurvature") private var curvatureSetting = NativeScreenCurvature.off.rawValue
 
     /// A Bluetooth/USB mouse, read raw and sent to the host as relative
     /// motion — the session's, shared with its controls.
@@ -78,22 +83,54 @@ struct MoonlightStreamView: View {
                 .frame(width: 1, height: 1)
 
             StreamPane(mouseOwnsPointer: mouseOwnsPointer) {
+                let curve = activeCurve
                 ZStack {
-                    Color.black
+                    // A curved picture stands in front of the window plane;
+                    // black behind it would show around its outline.
+                    if curvature == .off { Color.black }
                     if let layer = manager.displayLayer {
-                        VideoDisplayView(displayLayer: layer)
-                            .streamPointerInput(
-                                pointer,
-                                mouseOwnsPointer: mouseOwnsPointer,
-                                // Looking at (or pointing into) this stream is
-                                // what routes the gamepad, the mouse and the
-                                // keyboard here when more than one is running.
-                                onPointerEntered: { sessions.focus(manager.slot) }
-                            )
+                        Group {
+                            if curvature != .off {
+                                if let curve { curvedPicture(curve) } else { Color.clear }
+                            } else {
+                                VideoDisplayView(displayLayer: layer)
+                                    // How a layer declares HDR video on
+                                    // visionOS; without it the picture is
+                                    // dimmed as a whole once it plays. The
+                                    // curve draws through RealityKit and
+                                    // needs none.
+                                    .raveDisplayCriteria(
+                                        format: manager.isHDRActive ? manager.videoFormatDescription : nil,
+                                        refreshRate: Double(max(manager.streamStats.configuredFPS, 1))
+                                    )
+                            }
+                        }
+                        // On the curve the mesh takes tap, press-and-hold
+                        // and drag itself, as hits on its surface.
+                        .streamPointerInput(
+                            pointer,
+                            mouseOwnsPointer: mouseOwnsPointer,
+                            hitTargetHidden: mouseBridge.menuOpen,
+                            hitRect: curve.map(Self.mouseHitRect),
+                            oneHandGestures: curvature == .off ? .all : .subviews,
+                            cursorPlacement: curve.map { curve in
+                                { flat in
+                                    let surface = curve.surfacePoint(forFlatPoint: flat)
+                                    return (point: surface.point, depth: CGFloat(surface.depth))
+                                }
+                            },
+                            planeToFlat: curve.map { curve in { curve.flatPoint(forPlanePoint: $0) } },
+                            // Looking at (or pointing into) this stream is
+                            // what routes the gamepad, the mouse and the
+                            // keyboard here when more than one is running.
+                            onPointerEntered: { sessions.focus(manager.slot) }
+                        )
                     } else {
                         statusView
                     }
                 }
+                .onAppear { manager.setCurvedSurface(curvature != .off) }
+                .onChange(of: curvatureSetting) { manager.setCurvedSurface(curvature != .off) }
             } strip: {
                 StreamConnectionStrip(
                     status: stripStatus,
@@ -195,9 +232,54 @@ struct MoonlightStreamView: View {
         }
     }
 
+    /// The window's aspect: the curve's outline when curved, so its forward
+    /// corners can't run over the ornament, else the picture's own.
     private var streamAspect: Double? {
         guard manager.streamWidth > 0, manager.streamHeight > 0 else { return nil }
+        if let curve = activeCurve { return curve.outlineAspect }
         return Double(manager.streamWidth) / Double(manager.streamHeight)
+    }
+
+    // MARK: - Curved screen
+
+    private var curvature: NativeScreenCurvature {
+        NativeScreenCurvature(rawValue: curvatureSetting) ?? .off
+    }
+
+    private var activeCurve: NativeScreenCurve? {
+        guard let meters = curvature.radiusMeters, manager.displayLayer != nil,
+              manager.streamWidth > 0, manager.streamHeight > 0 else { return nil }
+        return NativeScreenCurve.fitted(
+            stream: manager.pointerStreamSize,
+            in: pointer.viewSize,
+            radius: Double(physicalMetrics.convert(meters, from: .meters))
+        )
+    }
+
+    /// The stream on a curved mesh (`NativeCurvedScreenView`), its frames
+    /// decoded by the app and drawn into a texture that keeps HDR.
+    private func curvedPicture(_ curve: NativeScreenCurve) -> some View {
+        NativeCurvedScreenView(
+            surface: manager.frameSurface,
+            curve: curve,
+            acceptsInput: !mouseOwnsPointer,
+            onTap: pointer.tap(at:),
+            onLongPress: pointer.beginDragLock,
+            onDragChanged: pointer.dragChanged(at:translation:),
+            onDragEnded: pointer.dragEnded(at:)
+        )
+    }
+
+    /// The mouse hit target on a curve: the picture's outline as seen from
+    /// the front, as on the Native desktop.
+    private static func mouseHitRect(_ curve: NativeScreenCurve) -> CGRect {
+        let width = 2 * curve.radius * sin(curve.halfAngle)
+        return CGRect(
+            x: curve.contentRect.midX - width / 2,
+            y: curve.contentRect.minY,
+            width: width,
+            height: curve.contentRect.height
+        )
     }
 
     private var stripStatus: String {
@@ -261,6 +343,17 @@ struct MoonlightStreamView: View {
     /// and how the stream's sound is rendered.
     @ViewBuilder
     private var displaySettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Curve").font(.headline)
+            Picker("Curve", selection: $curvatureSetting) {
+                ForEach(NativeScreenCurvature.allCases) { curvature in
+                    Text(curvature.title).tag(curvature.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+
         Toggle(isOn: $showStats) {
             Label("Stream Statistics", systemImage: "chart.bar")
         }

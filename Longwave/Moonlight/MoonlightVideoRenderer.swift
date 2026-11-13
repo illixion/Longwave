@@ -99,7 +99,36 @@ class MoonlightVideoRenderer: @unchecked Sendable {
         layer?.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
     }
 
-    private nonisolated(unsafe) var formatDescription: CMVideoFormatDescription?
+    /// When set, frames decode here (for the curved screen, which draws
+    /// them into its own texture) instead of in the display layer.
+    private nonisolated(unsafe) var surfaceDecoder: MacNativeSurfaceDecoder?
+    private let surfaceLock = NSLock()
+
+    /// Routes decoding to `decoder`, or back to the display layer with nil.
+    /// The next frames are useless to the new decoder until a key frame.
+    nonisolated func setSurfaceDecoder(_ decoder: MacNativeSurfaceDecoder?) {
+        surfaceLock.lock()
+        let previous = surfaceDecoder
+        surfaceDecoder = decoder
+        decoder?.deepColor = isHDRContent
+        surfaceLock.unlock()
+        guard previous !== decoder else { return }
+        previous?.invalidate()
+        if decoder != nil {
+            displayLayer?.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+        }
+        library.requestIdrFrame()
+    }
+
+    /// The stream's format (with its HDR metadata) changed: what the window
+    /// states as its display criteria. Called on the decode thread.
+    nonisolated(unsafe) var onFormatChange: (@Sendable (CMVideoFormatDescription) -> Void)?
+
+    private nonisolated(unsafe) var formatDescription: CMVideoFormatDescription? {
+        didSet {
+            if let formatDescription, formatDescription != oldValue { onFormatChange?(formatDescription) }
+        }
+    }
     private nonisolated(unsafe) var videoFormat: Int32 = 0
     nonisolated(unsafe) var frameCount: UInt64 = 0
 
@@ -392,6 +421,26 @@ class MoonlightVideoRenderer: @unchecked Sendable {
 
     /// Enqueue a sample buffer to the display layer for decode and display.
     private nonisolated func enqueueToDisplayLayer(_ sampleBuffer: CMSampleBuffer) -> Int32 {
+        surfaceLock.lock()
+        let surfaceDecoder = surfaceDecoder
+        surfaceLock.unlock()
+        if let surfaceDecoder {
+            surfaceDecoder.deepColor = isHDRContent
+            if surfaceDecoder.decode(sampleBuffer) == .decoderLost {
+                // Same loss as the layer's below, and the same pacing.
+                let now = CACurrentMediaTime()
+                guard now - lastDecoderResetTime >= 1.0 else {
+                    droppedFrames += 1
+                    return DR_OK
+                }
+                lastDecoderResetTime = now
+                formatDescription = nil
+                return DR_NEED_IDR
+            }
+            mirrorDisplayLayer?.enqueue(sampleBuffer)
+            frameCount += 1
+            return DR_OK
+        }
         guard let layer = displayLayer else { return DR_NEED_IDR }
 
         // visionOS takes video decoding away while another app's immersive

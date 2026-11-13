@@ -17,10 +17,13 @@ import UIKit
 /// strip) did not help: fast motion still reached the window bar, which
 /// visionOS pulls the pointer onto by proximity. Diagonal pushes into a corner
 /// can still escape; otherwise the pointer stops at the edges (headset,
-/// 2026-10-08).
+/// 2026-10-08). That was on the curved Native desktop, whose curve leaves a
+/// band of its own inside the pane. A flat picture fills its pane, and 16pt
+/// let a fast mouse straight through onto the strip and the window bar
+/// (Moonlight, headset, 2026-11-13), so the gaps are wider now.
 enum StreamMouseLayout {
-    static let inset: CGFloat = 16
-    static let gap: CGFloat = 16
+    static let inset: CGFloat = 32
+    static let gap: CGFloat = 64
     static let stripHeight: CGFloat = 60
     static let paneCornerRadius: CGFloat = 20
     static let windowCornerRadius: CGFloat = 24

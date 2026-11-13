@@ -28,7 +28,7 @@ nonisolated enum AppLog {
     static let moonlightVideo = DebugLogger(subsystem: subsystem, category: "MoonlightVideo")
     static let nvHTTPClient = DebugLogger(subsystem: subsystem, category: "NvHTTPClient")
     static let app = DebugLogger(subsystem: subsystem, category: "App")
-    static let macNativeMouse = DebugLogger(subsystem: subsystem, category: "MacNativeMouse")
+    static let streamMouse = DebugLogger(subsystem: subsystem, category: "StreamMouse")
     static let macNativeVideo = DebugLogger(subsystem: subsystem, category: "MacNativeVideo")
 
     /// Every subsystem the app logs under: the bundle id (`AppLog`, the

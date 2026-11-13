@@ -1,11 +1,11 @@
 #if os(visionOS)
 import SwiftUI
 
-/// The Native desktop's controls: Screen, touch mode, right-click, Mouse,
-/// Display, Keyboard, Audio, Disconnect. Keyboard stays when Screen is off. The desktop window's bottom
-/// ornament. (While a mouse drove the Mac they were briefly a window of their
-/// own, so the pointer couldn't slide onto them; the padded desktop layout
-/// holds the pointer now, and the window is gone.)
+/// The Native desktop's controls on the shared `StreamControlsBar`: Screen
+/// before the pointer group, Display inside it, Audio after Keyboard. The
+/// desktop window's bottom ornament. (While a mouse drove the Mac they were
+/// briefly a window of their own, so the pointer couldn't slide onto them;
+/// the padded desktop layout holds the pointer now, and the window is gone.)
 struct NativeDesktopControls: View {
     let sessionID: MacNativeSessionID
 
@@ -17,16 +17,19 @@ struct NativeDesktopControls: View {
 
     @AppStorage("nativeScreenCurvature.v3") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
 
-    private var mouseBridge: MacNativeMouseBridge { .shared(for: screenManager) }
+    private var mouseBridge: StreamMouseBridge { .shared(for: screenManager) }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                WindowSessionRegistry.surface("main", using: openWindow)
-            } label: {
-                Label("Connections", systemImage: "house")
-            }
-
+        StreamControlsBar(
+            target: screenManager,
+            mouse: mouseBridge,
+            showsPointerControls: screenManager.liveEnabled,
+            // Typing to the Mac doesn't need its picture on, so Keyboard
+            // stays when Screen is off.
+            keyboardOpen: isKeyboardWindowOpen,
+            toggleKeyboard: toggleKeyboardWindow,
+            disconnect: disconnectAll
+        ) {
             Toggle(isOn: Binding(
                 get: { screenManager.liveEnabled },
                 set: { screenManager.liveEnabled = $0 }
@@ -34,47 +37,9 @@ struct NativeDesktopControls: View {
                 Label("Screen", systemImage: "macwindow.on.rectangle")
             }
             .toggleStyle(.button)
-
-            if screenManager.liveEnabled {
-                Button {
-                    screenManager.touchMode = screenManager.touchMode == .absolute ? .relative : .absolute
-                } label: {
-                    Label(
-                        screenManager.touchMode == .absolute ? "Direct" : "Touchpad",
-                        systemImage: screenManager.touchMode == .absolute
-                            ? "hand.tap" : "rectangle.and.hand.point.up.left"
-                    )
-                }
-
-                Button {
-                    screenManager.rightClickAtDesktopCursor()
-                } label: {
-                    Label("Right-click", systemImage: "cursorarrow.click.2")
-                }
-
-                if mouseBridge.isConnected {
-                    Toggle(isOn: Binding(
-                        get: { mouseBridge.captureEnabled },
-                        set: { mouseBridge.captureEnabled = $0 }
-                    )) {
-                        Label("Mouse", systemImage: "computermouse")
-                    }
-                    .toggleStyle(.button)
-                    .help(mouseBridge.captureEnabled
-                        ? "The mouse controls the Mac; hand gestures are off until you turn this off"
-                        : "Use the mouse on the Mac's desktop")
-                }
-
-                displayButton
-            }
-
-            // Outside the Screen group: typing to the Mac doesn't need its
-            // picture on.
-            Button(action: toggleKeyboardWindow) {
-                Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
-            }
-            .tint(isKeyboardWindowOpen ? .accentColor : nil)
-
+        } pointerExtras: {
+            displayButton
+        } trailing: {
             Toggle(isOn: audioBinding) {
                 Label(
                     "Audio",
@@ -83,16 +48,6 @@ struct NativeDesktopControls: View {
             }
             .toggleStyle(.button)
             .disabled(!screenManager.hostServesAudio)
-
-            Button(action: disconnectAll) {
-                Label("Disconnect", systemImage: "xmark.circle")
-            }
-        }
-        .buttonStyle(.bordered)
-        .padding(12)
-        .glassBackgroundEffect()
-        .onHover { hovering in
-            mouseBridge.pointerOverControls = hovering
         }
     }
 

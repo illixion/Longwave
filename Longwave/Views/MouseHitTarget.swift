@@ -5,7 +5,7 @@ import DebugTrace
 
 /// Something for a mouse's system pointer to land on over the desktop, so it
 /// leaves the controls ornament. The input itself is read by
-/// `MacNativeMouseBridge` through `GCMouse`.
+/// `StreamMouseBridge` through `GCMouse`.
 ///
 /// visionOS puts the pointer wherever the gaze ray hits UI. A view with a
 /// clear background didn't catch it (2026-10-03: the pointer never entered
@@ -15,14 +15,18 @@ import DebugTrace
 /// the resize corners and the mini player (headset, 2026-10-08). What holds
 /// it is dead space: Hypnos's thumbnail grid stops the pointer at the empty
 /// gaps between tiles, because nothing there takes a pointer. So in mouse mode
-/// `NativeStreamView` lays the desktop out as a tile in a padded window, makes
+/// every stream window lays its picture out as a tile in a padded window
+/// (`StreamPane`, `StreamPointerInput`), makes
 /// the window-wide layer untargetable, and leaves this hover region as the
 /// one thing over the desktop, on the window plane: in front of it, on a curve,
 /// the pointer left for whatever lay behind at once. Standing it off the plane
 /// on a flat desktop, a frame around it and a bigger gap did nothing.
 struct MouseHitTarget: View {
+    /// The pointer arrived — Moonlight takes input focus for its session.
+    var onEnter: (() -> Void)?
+
     var body: some View {
-        MouseHitSurface()
+        MouseHitSurface(onEnter: onEnter)
             .contentShape(.hoverEffect, Rectangle())
             .hoverEffect(InvisibleHoverEffect())
     }
@@ -39,6 +43,8 @@ struct InvisibleHoverEffect: CustomHoverEffect {
 }
 
 struct MouseHitSurface: UIViewRepresentable {
+    var onEnter: (() -> Void)?
+
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = UIColor(white: 0, alpha: 0.02)
@@ -49,15 +55,25 @@ struct MouseHitSurface: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onEnter = onEnter
+    }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        let coordinator = Coordinator()
+        coordinator.onEnter = onEnter
+        return coordinator
+    }
 
     final class Coordinator: NSObject {
+        var onEnter: (() -> Void)?
+
         @objc func handleHover(_ hover: UIHoverGestureRecognizer) {
             switch hover.state {
-            case .began: AppLog.macNativeMouse.info("Pointer entered the desktop")
-            case .ended, .cancelled: AppLog.macNativeMouse.info("Pointer left the desktop")
+            case .began:
+                AppLog.streamMouse.info("Pointer entered the desktop")
+                onEnter?()
+            case .ended, .cancelled: AppLog.streamMouse.info("Pointer left the desktop")
             default: break
             }
         }

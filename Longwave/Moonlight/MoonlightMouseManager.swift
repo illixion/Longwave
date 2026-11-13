@@ -6,6 +6,8 @@ import RAVEInput
 @preconcurrency import MoonlightCommonC
 
 /// Bridges Apple's GameController `GCMouse` to Moonlight's mouse input APIs.
+/// iOS and macOS only: on visionOS every stream window, Moonlight's included,
+/// reads the mouse through `StreamMouseBridge`.
 /// The mice themselves are read by RAVEInput's `RAVEMouseSource`, which owns
 /// the per-device handler slots for the whole app; this is the Moonlight
 /// policy on top (focus, speed, button codes, high-res scroll).

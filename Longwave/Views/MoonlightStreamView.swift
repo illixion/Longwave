@@ -45,7 +45,10 @@ private struct VideoDisplayView: UIViewRepresentable {
 
 // MARK: - Stream View
 
-/// SwiftUI view that displays the Moonlight video stream and handles input.
+/// SwiftUI view that displays the Moonlight video stream and handles input —
+/// on the same window chrome, hand gestures and Mouse mode as VNC and the
+/// Native desktop (`StreamPointerController`, `StreamMouseBridge`,
+/// `StreamControlsBar`).
 struct MoonlightStreamView: View {
     @Environment(MoonlightConnectionManager.self) private var manager
     @Environment(MoonlightSessionStore.self) private var sessions
@@ -54,22 +57,12 @@ struct MoonlightStreamView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showStats = false
     @State private var showDisconnectAlert = false
+    @State private var pointer = StreamPointerController()
 
-    // Track previous drag translation to compute incremental deltas (relative mode)
-    @State private var previousDragTranslation: CGSize = .zero
-    // Track whether a drag is actively holding the mouse button (absolute mode)
-    @State private var absoluteDragActive = false
-    // Gaze "drag lock": a press-and-hold holds the left button down so a
-    // subsequent pinch-drag drags; a single tap releases it. (It was a
-    // double-tap, which left no gesture free to double-click with.) Lets gaze users
-    // drag (move windows, select) without a physical mouse button.
-    @State private var dragLocked = false
-    @State private var clickCadence = DoubleClickCadence()
-    @State private var dragLockStartedAt: Date?
-    @State private var scrollSteps = ScrollStepAccumulator()
-    /// True while both hands are pinched (and briefly after), so the one-hand
-    /// gestures stand down — see `TwoHandPointerGesture`.
-    @State private var twoHandEngaged = false
+    /// A Bluetooth/USB mouse, read raw and sent to the host as relative
+    /// motion — the session's, shared with its controls.
+    private var mouseBridge: StreamMouseBridge { .shared(for: manager) }
+    private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
     var body: some View {
         ZStack {
@@ -81,72 +74,33 @@ struct MoonlightStreamView: View {
             MoonlightHardwareKeyboardView(library: manager.library)
                 .frame(width: 1, height: 1)
 
-            if let layer = manager.displayLayer {
-                GeometryReader { geometry in
-                    VideoDisplayView(displayLayer: layer)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .gesture(mouseDragGesture(in: geometry.size))
-                        // Both hands: pinch-drag scrolls, pinch-and-release
-                        // right-clicks. Not suppressed for a connected mouse
-                        // the way the tap paths are — a pinch is nothing a
-                        // mouse can also deliver, so there's no double-click to
-                        // avoid, and the wheel and the hands can coexist.
-                        .twoHandPointerGesture(
-                            isEngaged: $twoHandEngaged,
-                            onEngage: cancelImplicitDrag,
-                            onScroll: { delta, anchor in
-                                handScroll(delta, anchor: anchor, in: geometry.size)
-                            },
-                            onSecondaryClick: rightClickAtCurrentPosition
-                        )
-                        .onContinuousHover { phase in
-                            // Track whether the pointer is over the stream content
-                            // (vs the app's controls) so GCMouse clicks on the
-                            // toolbar aren't sent to the remote. Also, in absolute
-                            // mode, position the pointer to match. Relative mode
-                            // gets raw deltas from GCMouse instead.
-                            switch phase {
-                            case .active(let location):
-                                // Looking at this stream is what routes the
-                                // gamepad / Bluetooth mouse / keyboard here when
-                                // more than one is running.
-                                sessions.focus(manager.slot)
-                                manager.setPointerOverContent(true)
-                                if manager.touchMode == .absolute {
-                                    let (streamX, streamY) = mapToStreamCoordinates(location, in: geometry.size)
-                                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
-                                }
-                            case .ended:
-                                manager.setPointerOverContent(false)
-                            }
-                        }
-                        // Press and hold = begin click+drag lock; single tap =
-                        // left click (or release a drag lock), and two quick
-                        // taps double-click. Right click is the toolbar button.
-                        // All suppressed when a physical mouse is connected — it
-                        // owns clicks via GCMouse, and visionOS would otherwise
-                        // double-deliver each click as a tap too.
-                        .gesture(dragLockGesture)
-                        .gesture(SpatialTapGesture(count: 1).onEnded { value in
-                            guard !twoHandEngaged else { return }
-                            singleTap(at: value.location, in: geometry.size)
-                        })
-                }
-                .ignoresSafeArea()
-            } else {
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text(manager.statusMessage)
-                        .foregroundStyle(.secondary)
-                    if case .error = manager.connectionState, manager.canReconnect {
-                        Button("Reconnect Now") {
-                            manager.reconnectNow()
-                        }
-                        .buttonStyle(.borderedProminent)
+            StreamPane(mouseOwnsPointer: mouseOwnsPointer) {
+                ZStack {
+                    Color.black
+                    if let layer = manager.displayLayer {
+                        VideoDisplayView(displayLayer: layer)
+                            .streamPointerInput(
+                                pointer,
+                                mouseOwnsPointer: mouseOwnsPointer,
+                                // Looking at (or pointing into) this stream is
+                                // what routes the gamepad, the mouse and the
+                                // keyboard here when more than one is running.
+                                onPointerEntered: { sessions.focus(manager.slot) }
+                            )
+                    } else {
+                        statusView
                     }
                 }
+            } strip: {
+                StreamConnectionStrip(
+                    status: stripStatus,
+                    streamSize: manager.pointerStreamSize,
+                    mouse: mouseBridge
+                ) {
+                    EmptyView()
+                }
             }
+            .streamAspectLock(streamAspect, paneSize: pointer.viewSize, mouseOwnsPointer: mouseOwnsPointer)
 
             // Statistics overlay
             if showStats {
@@ -154,30 +108,19 @@ struct MoonlightStreamView: View {
                     .environment(manager)
             }
         }
-        #if os(visionOS)
+        .clipShape(RoundedRectangle(cornerRadius: StreamMouseLayout.windowCornerRadius, style: .continuous))
         .background {
             WindowSceneReader { scene in
                 manager.audioSceneIdentifier = scene?.session.persistentIdentifier
             }
             .frame(width: 1, height: 1)
         }
-        #endif
         .overlay(alignment: .top) {
-            if dragLocked {
-                Label("Dragging — tap to drop", systemImage: "hand.draw")
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .glassBackgroundEffect()
-                    .padding(.top, 8)
+            if pointer.dragLocked {
+                StreamBadge.dragLock
             } else if sessions.streamingSessions.count > 1, sessions.focusedSlot != manager.slot {
                 // Physical inputs are going to another stream right now.
-                Label("Controller and mouse are on another stream — look here to take them", systemImage: "gamecontroller")
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .glassBackgroundEffect()
-                    .padding(.top, 8)
+                StreamBadge("Controller and mouse are on another stream — look here to take them", systemImage: "gamecontroller")
             }
         }
         // Keep the live gamepad readout with the stream's Stats display.
@@ -187,6 +130,21 @@ struct MoonlightStreamView: View {
             }
         }
         .handlesGameControllerEvents(matching: .gamepad)
+        .onAppear {
+            pointer.target = manager
+            mouseBridge.streaming = manager.displayLayer != nil
+            mouseBridge.start()
+        }
+        .onChange(of: manager.displayLayer != nil) { _, streaming in
+            mouseBridge.streaming = streaming
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MoonlightInputFocus.didChange)) { note in
+            // Input focus moved to another stream: let go of anything the
+            // mouse was holding down here.
+            if note.object as? Int == manager.slot {
+                mouseBridge.releaseHeldButtons()
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             // Headset donned / window refocused: retry a dropped stream
             // immediately instead of waiting out the backoff timer.
@@ -195,10 +153,13 @@ struct MoonlightStreamView: View {
             }
         }
         .onDisappear {
+            mouseBridge.stop()
             manager.stopStreaming()
             dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
         }
-        .ornament(attachmentAnchor: .scene(.bottom)) {
+        // Below the window, not straddling its bottom edge, where half the
+        // bar covered the bottom of the picture.
+        .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
             controlsBar
         }
         .alert("Disconnect", isPresented: $showDisconnectAlert) {
@@ -214,6 +175,31 @@ struct MoonlightStreamView: View {
         } message: {
             Text("Do you want to end the session on the server, or keep it running for later?")
         }
+    }
+
+    private var statusView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+            Text(manager.statusMessage)
+                .foregroundStyle(.secondary)
+            if case .error = manager.connectionState, manager.canReconnect {
+                Button("Reconnect Now") {
+                    manager.reconnectNow()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var streamAspect: Double? {
+        guard manager.streamWidth > 0, manager.streamHeight > 0 else { return nil }
+        return Double(manager.streamWidth) / Double(manager.streamHeight)
+    }
+
+    private var stripStatus: String {
+        guard manager.displayLayer != nil else { return manager.statusMessage }
+        return manager.isHDRActive ? "Streaming · HDR" : "Streaming"
     }
 
     // MARK: - Teardown
@@ -232,216 +218,36 @@ struct MoonlightStreamView: View {
         }
     }
 
-    // MARK: - Tap Handling
-
-    /// Position the pointer for a tap in absolute mode (no-op in relative mode,
-    /// where the cursor is wherever prior motion left it).
-    private func positionForTap(at location: CGPoint, in viewSize: CGSize) {
-        guard manager.touchMode == .absolute else { return }
-        let (streamX, streamY) = mapToStreamCoordinates(location, in: viewSize)
-        manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
-    }
-
-    /// Single tap: left click, or release an active drag lock.
-    private func singleTap(at location: CGPoint, in viewSize: CGSize) {
-        guard !manager.isMouseConnected else { return }
-        if dragLocked {
-            // Lifting off the press-and-hold that started the lock can arrive
-            // here as a tap; that would release it instantly.
-            if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
-            positionForTap(at: location, in: viewSize)
-            manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-            dragLocked = false
-        } else {
-            // Position the second of two quick taps where the first one landed,
-            // so the host reads them as a double-click rather than two clicks a
-            // few pixels apart (see DoubleClickCadence).
-            positionForTap(at: snappedTapLocation(location, in: viewSize), in: viewSize)
-            manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
-            manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-        }
-    }
-
-    /// Runs a tap through the double-click cadence in view space — Moonlight
-    /// positions via `LiSendMousePositionEvent`, so the snap has to happen
-    /// before the coordinate mapping rather than after it.
-    private func snappedTapLocation(_ location: CGPoint, in viewSize: CGSize) -> CGPoint {
-        guard manager.touchMode == .absolute,
-              viewSize.width > 0, viewSize.height > 0,
-              location.x >= 0, location.y >= 0,
-              location.x <= CGFloat(UInt16.max), location.y <= CGFloat(UInt16.max)
-        else { return location }
-        let snapped = clickCadence.resolve((x: UInt16(location.x), y: UInt16(location.y)))
-        return CGPoint(x: CGFloat(snapped.x), y: CGFloat(snapped.y))
-    }
-
-    /// Press and hold = grab. The hover handler already positions the host
-    /// cursor in absolute mode, so this presses wherever it is — the same rule
-    /// the Right-click button uses.
-    private var dragLockGesture: some Gesture {
-        LongPressGesture(minimumDuration: 0.55)
-            .onEnded { _ in
-                guard !manager.isMouseConnected, !twoHandEngaged, !dragLocked else { return }
-                manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
-                dragLocked = true
-                dragLockStartedAt = Date()
-            }
-    }
-
-    /// Right click at the host's current cursor position (toolbar button).
-    private func rightClickAtCurrentPosition() {
-        manager.library.clickMouseButton(BUTTON_RIGHT)
-    }
-
-    // MARK: - Coordinate Mapping
-
-    /// Maps a view-space point to stream-resolution coordinates, accounting for aspect-ratio letterboxing.
-    private func mapToStreamCoordinates(_ point: CGPoint, in viewSize: CGSize) -> (Int16, Int16) {
-        let streamW = CGFloat(manager.streamWidth)
-        let streamH = CGFloat(manager.streamHeight)
-        let streamAspect = streamW / streamH
-        let viewAspect = viewSize.width / viewSize.height
-
-        let renderRect: CGRect
-        if viewAspect > streamAspect {
-            // Letterboxed (pillarboxed) — black bars on left/right
-            let renderHeight = viewSize.height
-            let renderWidth = renderHeight * streamAspect
-            let offsetX = (viewSize.width - renderWidth) / 2
-            renderRect = CGRect(x: offsetX, y: 0, width: renderWidth, height: renderHeight)
-        } else {
-            // Letterboxed — black bars on top/bottom
-            let renderWidth = viewSize.width
-            let renderHeight = renderWidth / streamAspect
-            let offsetY = (viewSize.height - renderHeight) / 2
-            renderRect = CGRect(x: 0, y: offsetY, width: renderWidth, height: renderHeight)
-        }
-
-        // Clamp point within render rect and normalize to stream coordinates
-        let clampedX = min(max(point.x, renderRect.minX), renderRect.maxX)
-        let clampedY = min(max(point.y, renderRect.minY), renderRect.maxY)
-
-        let normalizedX = (clampedX - renderRect.minX) / renderRect.width
-        let normalizedY = (clampedY - renderRect.minY) / renderRect.height
-
-        let x = Int16(normalizedX * streamW)
-        let y = Int16(normalizedY * streamH)
-        return (x, y)
-    }
-
-    // MARK: - Mouse Drag Gesture
-
-    private func mouseDragGesture(in viewSize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                guard !manager.isMouseConnected, !twoHandEngaged else { return }
-                if manager.touchMode == .absolute {
-                    let (streamX, streamY) = mapToStreamCoordinates(value.location, in: viewSize)
-                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
-                    // In drag-lock the button is already held (from a double-tap);
-                    // don't re-press. Otherwise this is a plain click-and-drag:
-                    // press the button on the first drag update.
-                    if !dragLocked && !absoluteDragActive {
-                        absoluteDragActive = true
-                        manager.library.sendMouseButton(BUTTON_ACTION_PRESS, BUTTON_LEFT)
-                    }
-                } else {
-                    // Relative: send incremental deltas (the button, if any, is
-                    // held remotely — by drag-lock — so this drags).
-                    let dx = value.translation.width - previousDragTranslation.width
-                    let dy = value.translation.height - previousDragTranslation.height
-                    previousDragTranslation = value.translation
-                    manager.library.sendMouseMove(dx: Int16(dx), dy: Int16(dy))
-                }
-            }
-            .onEnded { value in
-                previousDragTranslation = .zero
-                guard !manager.isMouseConnected, !twoHandEngaged else { return }
-                // A plain click-and-drag releases on lift. A drag-lock keeps the
-                // button held until a single tap releases it.
-                if manager.touchMode == .absolute && absoluteDragActive && !dragLocked {
-                    let (streamX, streamY) = mapToStreamCoordinates(value.location, in: viewSize)
-                    manager.library.sendMousePosition(x: streamX, y: streamY, referenceWidth: Int16(manager.streamWidth), referenceHeight: Int16(manager.streamHeight))
-                    manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-                }
-                absoluteDragActive = false
-            }
-    }
-
-    // MARK: - Scroll
-
-    /// Two-hand travel in view points, turned into high-res scroll events.
-    /// Replaces a `MagnifyGesture` that read the hands' *distance*: vertical
-    /// only, and indistinguishable from the opening of a two-hand right-click.
-    ///
-    /// One line is 20 high-res units, the same conversion the `GCMouse` bridge
-    /// and the keyboard's scroll pad use, and horizontal is negated for the
-    /// same reason it is there — a positive event scrolls right, while positive
-    /// travel means the content followed the hands to the right.
-    /// Both hands' scroll. A Moonlight wheel event carries no position — the
-    /// host scrolls under its cursor — so Direct mode first puts the cursor
-    /// where the pinch landed (where the user was looking). Touchpad mode
-    /// leaves it where prior motion put it.
-    private func handScroll(_ delta: CGSize, anchor: CGPoint, in viewSize: CGSize) {
-        if !manager.isMouseConnected {
-            positionForTap(at: anchor, in: viewSize)
-        }
-        scrollBy(delta)
-    }
-
-    private func scrollBy(_ delta: CGSize) {
-        let steps = scrollSteps.steps(for: delta)
-        if steps.dy != 0 {
-            manager.library.sendHighResScroll(Int16(clamping: Int(steps.dy) * 20))
-        }
-        if steps.dx != 0 {
-            manager.library.sendHighResHScroll(Int16(clamping: Int(steps.dx) * -20))
-        }
-    }
-
-    /// A second hand arriving turns whatever the first one was doing into a
-    /// two-hand gesture, so let go of the button an absolute drag pressed on
-    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
-    /// real thing to want.
-    private func cancelImplicitDrag() {
-        guard absoluteDragActive, !dragLocked else { return }
-        manager.library.sendMouseButton(BUTTON_ACTION_RELEASE, BUTTON_LEFT)
-        absoluteDragActive = false
-        previousDragTranslation = .zero
-    }
-
     // MARK: - Controls Bar (Ornament)
 
+    private var isKeyboardWindowOpen: Bool {
+        WindowSessionRegistry.shared.sessions["moonlight-keyboard"] != nil
+    }
+
+    private func toggleKeyboardWindow() {
+        if isKeyboardWindowOpen {
+            dismissWindow(id: "moonlight-keyboard", value: manager.sessionID)
+        } else {
+            openWindow(id: "moonlight-keyboard", value: manager.sessionID)
+        }
+    }
+
     private var controlsBar: some View {
-        HStack(spacing: 16) {
-            Button {
-                manager.setTouchMode(manager.touchMode == .absolute ? .relative : .absolute)
-            } label: {
-                Label(
-                    manager.touchMode == .absolute ? "Direct" : "Touchpad",
-                    systemImage: manager.touchMode == .absolute
-                        ? "hand.tap" : "rectangle.and.hand.point.up.left"
-                )
-            }
-
-            Button {
-                rightClickAtCurrentPosition()
-            } label: {
-                Label("Right-click", systemImage: "cursorarrow.click.2")
-            }
-
-            Button {
-                openWindow(id: "moonlight-keyboard", value: manager.sessionID)
-            } label: {
-                Label("Keyboard", systemImage: "keyboard")
-            }
-
-            Button {
-                showStats.toggle()
-            } label: {
+        StreamControlsBar(
+            target: manager,
+            mouse: mouseBridge,
+            keyboardOpen: isKeyboardWindowOpen,
+            toggleKeyboard: toggleKeyboardWindow,
+            disconnect: { showDisconnectAlert = true }
+        ) {
+            EmptyView()
+        } pointerExtras: {
+            EmptyView()
+        } trailing: {
+            Toggle(isOn: $showStats) {
                 Label("Stats", systemImage: "chart.bar")
             }
-            .tint(showStats ? .accentColor : nil)
+            .toggleStyle(.button)
 
             Button {
                 manager.toggleSpatialAudio()
@@ -468,26 +274,7 @@ struct MoonlightStreamView: View {
                 .labelStyle(.iconOnly)
                 .help("Recenter surround — make where you face now the front")
             }
-
-            Button {
-                WindowSessionRegistry.surface("main", using: openWindow)
-            } label: {
-                Label("Connections", systemImage: "house")
-            }
-            .labelStyle(.iconOnly)
-            .help("Open the connection manager")
-
-            Button(role: .destructive) {
-                showDisconnectAlert = true
-            } label: {
-                Label("Disconnect", systemImage: "xmark.circle.fill")
-            }
-            .labelStyle(.iconOnly)
-            .help("Disconnect")
         }
-        .buttonStyle(.bordered)
-        .padding(12)
-        .glassBackgroundEffect()
     }
 }
 #endif

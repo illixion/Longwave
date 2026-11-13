@@ -1,76 +1,68 @@
 import SwiftUI
 import RoyalVNCKit
 
+/// A VNC desktop, on the same window chrome, hand gestures and Mouse mode as
+/// the Native desktop and Moonlight (`StreamPointerController`,
+/// `StreamMouseBridge`, `StreamControlsBar`).
 struct RemoteDesktopView: View {
     @Environment(VNCConnectionManager.self) private var connectionManager
     @Environment(AudioStreamManager.self) private var audioManager
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
-    @State private var viewSize: CGSize = .zero
-    @State private var isDragging = false
-    @State private var previousDragTranslation: CGSize = .zero
     @State private var showAudioPanel = false
-    // Gaze "drag lock": a press-and-hold holds the left button down so a
-    // subsequent pinch-drag drags; a single tap releases it. (It was a
-    // double-tap, which left no gesture free to double-click with.)
-    @State private var dragLocked = false
-    @State private var clickCadence = DoubleClickCadence()
-    @State private var scrollSteps = ScrollStepAccumulator()
-    /// True while both hands are pinched (and briefly after), so the one-hand
-    /// gestures stand down — see `TwoHandPointerGesture`.
-    @State private var twoHandEngaged = false
-    @State private var dragLockStartedAt: Date?
+    @State private var pointer = StreamPointerController()
+
+    /// A Bluetooth/USB mouse, read raw and driving the remote cursor — see
+    /// `StreamMouseBridge`.
+    private var mouseBridge: StreamMouseBridge { .shared(for: connectionManager) }
+    private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
     var body: some View {
-        Group {
-            if connectionManager.isTrackpadOnly {
-                // Trackpad-only: no NavigationStack — its glass background blocks transparency
-                coreContent
-                    .overlay(alignment: .bottom) {
-                        toolbar
-                            .padding(.bottom, 16)
-                    }
-            } else {
-                NavigationStack {
-                    coreContent
-                        .navigationTitle(connectionManager.connectionTitle)
-                        .overlay(alignment: .bottom) {
-                            toolbar
-                                .padding(.bottom, 16)
+        coreContent
+            // Below the window, not over the bottom of the desktop.
+            .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
+                toolbar
+            }
+            .sheet(isPresented: Bindable(connectionManager).isCredentialPromptPresented) {
+                CredentialPromptView()
+            }
+            .onAppear {
+                pointer.target = connectionManager
+                pointer.trackpadOnly = connectionManager.isTrackpadOnly
+                mouseBridge.streaming = connectionManager.connectionState == .connected
+                mouseBridge.start()
+            }
+            .onDisappear {
+                mouseBridge.stop()
+                // When the window is closed (by system close button or programmatically),
+                // ensure the VNC connection is torn down and keyboard window is closed.
+                dismissWindow(id: "keyboard")
+                if connectionManager.connectionState.isActive {
+                    connectionManager.disconnect()
+                }
+            }
+            .onChange(of: connectionManager.isTrackpadOnly) { _, trackpadOnly in
+                pointer.trackpadOnly = trackpadOnly
+            }
+            .onChange(of: connectionManager.connectionState) { _, newValue in
+                mouseBridge.streaming = newValue == .connected
+                if case .disconnected = newValue {
+                    // Server-initiated disconnect: close windows after a brief delay
+                    Task {
+                        try? await Task.sleep(for: .seconds(1))
+                        // Surface the connection manager and wait for it: visionOS
+                        // won't let an app close its own last window.
+                        WindowSessionRegistry.shared.closeAfterSurfacingMain(
+                            closing: ["keyboard", "remote-desktop"],
+                            using: openWindow
+                        ) {
+                            dismissWindow(id: "keyboard")
+                            dismissWindow(id: "remote-desktop")
                         }
-                }
-                .glassBackgroundEffect()
-            }
-        }
-        .sheet(isPresented: Bindable(connectionManager).isCredentialPromptPresented) {
-            CredentialPromptView()
-        }
-        .onDisappear {
-            // When the window is closed (by system close button or programmatically),
-            // ensure the VNC connection is torn down and keyboard window is closed.
-            dismissWindow(id: "keyboard")
-            if connectionManager.connectionState.isActive {
-                connectionManager.disconnect()
-            }
-        }
-        .onChange(of: connectionManager.connectionState) { _, newValue in
-            if case .disconnected = newValue {
-                // Server-initiated disconnect: close windows after a brief delay
-                Task {
-                    try? await Task.sleep(for: .seconds(1))
-                    // Surface the connection manager and wait for it: visionOS
-                    // won't let an app close its own last window.
-                    WindowSessionRegistry.shared.closeAfterSurfacingMain(
-                        closing: ["keyboard", "remote-desktop"],
-                        using: openWindow
-                    ) {
-                        dismissWindow(id: "keyboard")
-                        dismissWindow(id: "remote-desktop")
                     }
                 }
             }
-        }
     }
 
     // MARK: - Core Content
@@ -85,104 +77,71 @@ struct RemoteDesktopView: View {
             HardwareKeyboardView(connectionManager: connectionManager)
                 .frame(width: 1, height: 1)
 
-            GeometryReader { geometry in
+            StreamPane(mouseOwnsPointer: mouseOwnsPointer) {
                 ZStack {
                     if connectionManager.isTrackpadOnly {
                         if connectionManager.connectionState == .connected {
-                            Color.white.opacity(0.001) // Near-invisible but captures taps
+                            Color.white.opacity(0.001) // Near-invisible but takes the pointer
                             cornerBrackets
                         } else {
                             statusView
                         }
                     } else if let cgImage = connectionManager.framebufferImage {
+                        Color.black
                         Image(uiImage: UIImage(cgImage: cgImage))
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        // Virtual cursor indicator for touchpad mode. macOS Screen
-                        // Sharing doesn't draw the remote cursor, so in relative
-                        // mode this local dot is the only pointer indicator.
-                        if connectionManager.touchMode == .relative,
-                           connectionManager.framebufferSize.width > 0 {
-                            cursorOverlay
-                        }
                     } else {
                         statusView
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .glassBackgroundEffect()
                     }
                 }
-                .overlay {
-                    // Topmost, and deliberately hit-testable: a scroll event is
-                    // routed to the view under the pointer, so it has to be the
-                    // one that's there. It claims no touches, which leaves the
-                    // gestures below untouched.
-                    IndirectScrollSurface(
-                        onScroll: scrollBy,
-                        onScrollEnded: { scrollSteps.reset() }
-                    )
-                }
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .contentShape(Rectangle())
-                // Press and hold = begin click+drag lock; single tap = left
-                // click (or release a drag lock), and two quick taps
-                // double-click. Both hands pinched = right click, or drag them
-                // to scroll; the toolbar button stays as the reachable route.
-                .gesture(dragLockGesture)
-                .gesture(tapGesture)
-                .gesture(dragGesture)
-                .twoHandPointerGesture(
-                    isEngaged: $twoHandEngaged,
-                    onEngage: cancelImplicitDrag,
-                    onScroll: handScroll,
-                    onSecondaryClick: rightClickAtCursor
+                // macOS Screen Sharing doesn't draw the remote cursor, so the
+                // surface draws the local dot in Touchpad mode and whenever
+                // the mouse drives.
+                .streamPointerInput(
+                    pointer,
+                    mouseOwnsPointer: mouseOwnsPointer,
+                    hitTargetHidden: mouseBridge.menuOpen
                 )
-                .onContinuousHover { phase in
-                    // Bluetooth-mouse / pointer motion without a button held.
-                    // A DragGesture only fires while a button is down, so plain
-                    // moves were never transmitted — hover fills that gap. Use
-                    // only the absolute location (gaze can warp the pointer, so
-                    // derived deltas would jump). Click-drag still uses dragGesture.
-                    if case .active(let location) = phase,
-                       let point = translator?.viewToFramebuffer(location) {
-                        connectionManager.moveCursorAbsolute(x: point.x, y: point.y)
-                    }
-                }
-                .onAppear {
-                    viewSize = geometry.size
-                }
-                .onChange(of: geometry.size) { _, newSize in
-                    viewSize = newSize
+            } strip: {
+                StreamConnectionStrip(
+                    status: connectionManager.connectionTitle,
+                    streamSize: connectionManager.framebufferSize,
+                    mouse: mouseBridge
+                ) {
+                    EmptyView()
                 }
             }
+            // Trackpad-only has no picture to fit, and keeps its window free.
+            .streamAspectLock(
+                connectionManager.isTrackpadOnly ? nil : framebufferAspect,
+                paneSize: pointer.viewSize,
+                mouseOwnsPointer: mouseOwnsPointer
+            )
         }
+        .clipShape(RoundedRectangle(cornerRadius: StreamMouseLayout.windowCornerRadius, style: .continuous))
         .overlay(alignment: .top) {
-            VStack(spacing: 8) {
-                if dragLocked { dragLockBadge }
+            VStack(spacing: 0) {
+                if pointer.dragLocked { StreamBadge.dragLock }
                 if !connectionManager.stickyModifiers.isEmpty { stickyModifierBadge }
             }
         }
     }
 
-    /// Shown while a gaze drag lock holds the left button down.
-    private var dragLockBadge: some View {
-        Label("Dragging — tap to drop", systemImage: "hand.draw")
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .glassBackgroundEffect()
-            .padding(.top, 8)
+    private var framebufferAspect: Double? {
+        let size = connectionManager.framebufferSize
+        guard size.width > 0, size.height > 0 else { return nil }
+        return size.width / size.height
     }
 
     /// Shown while a hardware modifier is latched sticky by a double-tap
     /// (see `KeyCaptureView`) — held down at the remote past its own key's
     /// release, until the same key is pressed again.
     private var stickyModifierBadge: some View {
-        Label("\(stickyModifierGlyphs) held — press again to release", systemImage: "keyboard.badge.ellipsis")
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .glassBackgroundEffect()
-            .padding(.top, 8)
+        StreamBadge("\(stickyModifierGlyphs) held — press again to release", systemImage: "keyboard.badge.ellipsis")
     }
 
     private var stickyModifierGlyphs: String {
@@ -229,27 +188,17 @@ struct RemoteDesktopView: View {
     // MARK: - Toolbar
 
     private var toolbar: some View {
-        HStack(spacing: 20) {
-            Button(action: {
-                connectionManager.touchMode = connectionManager.touchMode == .absolute
-                    ? .relative : .absolute
-            }) {
-                Label(
-                    connectionManager.touchMode == .absolute ? "Direct" : "Touchpad",
-                    systemImage: connectionManager.touchMode == .absolute
-                        ? "hand.tap" : "rectangle.and.hand.point.up.left"
-                )
-            }
-
-            Button(action: rightClickAtCursor) {
-                Label("Right-click", systemImage: "cursorarrow.click.2")
-            }
-
-            Button(action: toggleKeyboardWindow) {
-                Label("Keyboard", systemImage: isKeyboardWindowOpen ? "keyboard.fill" : "keyboard")
-            }
-            .tint(isKeyboardWindowOpen ? .accentColor : nil)
-
+        StreamControlsBar(
+            target: connectionManager,
+            mouse: mouseBridge,
+            keyboardOpen: isKeyboardWindowOpen,
+            toggleKeyboard: toggleKeyboardWindow,
+            disconnect: disconnect
+        ) {
+            EmptyView()
+        } pointerExtras: {
+            EmptyView()
+        } trailing: {
             if connectionManager.hasCompanionAudio {
                 Button(action: { showAudioPanel.toggle() }) {
                     Label(
@@ -269,219 +218,21 @@ struct RemoteDesktopView: View {
             Button(action: sendCtrlAltDel) {
                 Label("Ctrl+Alt+Del", systemImage: "power")
             }
-
-            Button(action: { WindowSessionRegistry.surface("main", using: openWindow) }) {
-                Label("Connections", systemImage: "house")
-            }
-            .labelStyle(.iconOnly)
-            .help("Open the connection manager")
-
-            Button(action: {
-                connectionManager.disconnect()
-                WindowSessionRegistry.shared.closeAfterSurfacingMain(
-                    closing: ["keyboard", "remote-desktop"],
-                    using: openWindow
-                ) {
-                    dismissWindow(id: "keyboard")
-                    dismissWindow(id: "remote-desktop")
-                }
-            }) {
-                Label("Disconnect", systemImage: "xmark.circle")
-            }
-            .labelStyle(.iconOnly)
-            .help("Disconnect")
         }
-        .buttonStyle(.bordered)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
-        .glassBackgroundEffect()
-        .clipShape(Capsule())
+        // The audio popover sits outside the bar, so its hover doesn't cover
+        // it: hold the mouse back while it shows.
+        .onChange(of: showAudioPanel) { _, open in mouseBridge.menuOpen = open }
     }
 
-    // MARK: - Gestures
-
-    /// Single tap = left click, or release an active drag lock.
-    private var tapGesture: some Gesture {
-        SpatialTapGesture()
-            .onEnded { value in
-                guard !twoHandEngaged else { return }
-                if dragLocked {
-                    // Lifting off the press-and-hold that started the lock can
-                    // arrive here as a tap; that would release it instantly.
-                    if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
-                    releaseLeft(at: value.location)
-                    dragLocked = false
-                } else {
-                    leftClick(at: value.location)
-                }
-            }
-    }
-
-    /// Press and hold = grab: holds the left button down so the next drag
-    /// drags. Was a double-tap, which left no way to double-click. The hover
-    /// handler keeps the virtual cursor synced in both modes, so this needs no
-    /// location of its own — same rule as the Right-click button.
-    private var dragLockGesture: some Gesture {
-        LongPressGesture(minimumDuration: 0.55)
-            .onEnded { _ in beginDragLockAtCursor() }
-    }
-
-    /// Drag: moves the cursor. While a drag lock is held (or a plain absolute
-    /// click-and-drag is in progress), the left button stays down so this drags.
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                guard !twoHandEngaged else { return }
-                if connectionManager.touchMode == .absolute {
-                    guard let point = translator?.viewToFramebuffer(value.location) else { return }
-                    if dragLocked {
-                        // Button already held by the drag lock — just move.
-                        connectionManager.sendMouseMove(x: point.x, y: point.y)
-                    } else if !isDragging {
-                        isDragging = true
-                        connectionManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-                    } else {
-                        connectionManager.sendMouseMove(x: point.x, y: point.y)
-                    }
-                } else {
-                    // Relative: compute incremental deltas
-                    let dx = value.translation.width - previousDragTranslation.width
-                    let dy = value.translation.height - previousDragTranslation.height
-                    previousDragTranslation = value.translation
-
-                    if let delta = translator?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
-                        connectionManager.moveVirtualCursor(dx: delta.dx, dy: delta.dy)
-                    }
-                }
-            }
-            .onEnded { value in
-                guard !twoHandEngaged else { return }
-                // Plain click-and-drag releases on lift; a drag lock stays held
-                // until a single tap releases it.
-                if connectionManager.touchMode == .absolute && isDragging && !dragLocked {
-                    if let point = translator?.viewToFramebuffer(value.location) {
-                        connectionManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-                    }
-                }
-                isDragging = false
-                previousDragTranslation = .zero
-            }
-    }
-
-    // MARK: - Click Helpers
-
-    /// Left click at a tapped location (absolute) or the virtual cursor (relative).
-    private func leftClick(at location: CGPoint) {
-        if connectionManager.touchMode == .absolute {
-            guard let raw = translator?.viewToFramebuffer(location) else { return }
-            // Snap a quick second tap onto the first one's pixel so the remote
-            // desktop reads the pair as a double-click (see DoubleClickCadence).
-            let point = clickCadence.resolve(raw)
-            connectionManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-            connectionManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-        } else {
-            connectionManager.clickAtVirtualCursor(button: .left)
+    private func disconnect() {
+        connectionManager.disconnect()
+        WindowSessionRegistry.shared.closeAfterSurfacingMain(
+            closing: ["keyboard", "remote-desktop"],
+            using: openWindow
+        ) {
+            dismissWindow(id: "keyboard")
+            dismissWindow(id: "remote-desktop")
         }
-    }
-
-    /// Right click at the current cursor position (toolbar button).
-    private func rightClickAtCursor() {
-        connectionManager.clickAtVirtualCursor(button: .right)
-    }
-
-    /// Press and hold the left button so the next drag drags.
-    private func beginDragLockAtCursor() {
-        guard !twoHandEngaged, !dragLocked else { return }
-        connectionManager.pressMouseAtVirtualCursor(button: .left)
-        dragLocked = true
-        dragLockStartedAt = Date()
-    }
-
-    /// Release the held left button (ends a drag lock).
-    private func releaseLeft(at location: CGPoint) {
-        if connectionManager.touchMode == .absolute {
-            if let point = translator?.viewToFramebuffer(location) {
-                connectionManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-            }
-        } else {
-            connectionManager.releaseMouseAtVirtualCursor(button: .left)
-        }
-    }
-
-    /// Scroll travel in view points — a mouse wheel's, a trackpad's, or both
-    /// hands' midpoint — turned into wheel events at the cursor. Replaces a
-    /// `MagnifyGesture` that read the *distance* between the hands: one axis
-    /// only, and indistinguishable from the start of a two-hand right-click.
-    ///
-    /// Both axes go out at the virtual cursor, which the hover handler keeps on
-    /// a mouse or trackpad pointer in either touch mode. The hands go through
-    /// `handScroll`, since gaze moves no pointer.
-    private func scrollBy(_ delta: CGSize) {
-        let steps = scrollSteps.steps(for: delta)
-        if steps.dy != 0 {
-            connectionManager.scrollAtVirtualCursor(
-                wheel: steps.dy > 0 ? .up : .down,
-                steps: UInt32(abs(Int(steps.dy)))
-            )
-        }
-        if steps.dx != 0 {
-            // Positive travel means the content followed the hands to the
-            // right, which is a scroll towards the *left* of the document.
-            connectionManager.scrollAtVirtualCursor(
-                wheel: steps.dx > 0 ? .left : .right,
-                steps: UInt32(abs(Int(steps.dx)))
-            )
-        }
-    }
-
-    /// Both hands' scroll. Touchpad mode scrolls at the cursor like the wheel
-    /// does; Direct mode scrolls where the pinch landed — where the user was
-    /// looking — since gaze produces no hover and the virtual cursor would
-    /// otherwise sit wherever it last was, the middle of the screen at first.
-    private func handScroll(_ delta: CGSize, anchor: CGPoint) {
-        if connectionManager.touchMode == .absolute,
-           let point = translator?.viewToFramebuffer(anchor),
-           point.x != connectionManager.virtualCursorX || point.y != connectionManager.virtualCursorY {
-            connectionManager.moveCursorAbsolute(x: point.x, y: point.y)
-        }
-        scrollBy(delta)
-    }
-
-    /// A second hand arriving turns whatever the first one was doing into a
-    /// two-hand gesture, so let go of the button an absolute drag pressed on
-    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
-    /// real thing to want.
-    private func cancelImplicitDrag() {
-        guard isDragging, !dragLocked else { return }
-        connectionManager.releaseMouseAtVirtualCursor(button: .left)
-        isDragging = false
-        previousDragTranslation = .zero
-    }
-
-    // MARK: - Helpers
-
-    private var translator: GestureTranslator? {
-        guard connectionManager.framebufferSize.width > 0 else { return nil }
-        return GestureTranslator(
-            framebufferSize: connectionManager.framebufferSize,
-            viewSize: viewSize,
-            trackpadOnly: connectionManager.isTrackpadOnly
-        )
-    }
-
-    /// Local pointer dot for relative/touchpad mode, drawn at the virtual cursor.
-    private var cursorOverlay: some View {
-        let point = translator?.framebufferToView(
-            x: connectionManager.virtualCursorX,
-            y: connectionManager.virtualCursorY
-        ) ?? .zero
-
-        return Circle()
-            .fill(.white.opacity(0.7))
-            .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
-            .frame(width: 12, height: 12)
-            .position(point)
-            .allowsHitTesting(false)
     }
 
     /// L-shaped corner brackets indicating the trackpad boundary

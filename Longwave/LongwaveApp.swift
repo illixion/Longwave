@@ -330,6 +330,9 @@ struct LongwaveApp: App {
         }
         .defaultSize(width: 1920, height: 1080)
         .windowResizability(.contentMinSize)
+        // Chrome-free like the VNC and Native desktops: the stream view
+        // rounds its own corners and carries its controls below the window.
+        .windowStyle(.plain)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
         #endif

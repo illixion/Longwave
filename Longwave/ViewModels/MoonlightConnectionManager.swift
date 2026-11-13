@@ -119,6 +119,21 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         setExternalCursorPosition(x: virtualCursorX + dx, y: virtualCursorY + dy)
     }
 
+    /// Fractions of a pixel left over from relative motion, carried into the
+    /// next move so slow motion isn't truncated to nothing.
+    @ObservationIgnored private var relativeMotionRemainder: CGPoint = .zero
+
+    /// Adds `dx`/`dy` to the carried remainder and returns the whole pixels
+    /// to send, keeping what's left for next time.
+    func takeRelativeMotion(dx: CGFloat, dy: CGFloat) -> (dx: Int, dy: Int) {
+        let x = relativeMotionRemainder.x + dx
+        let y = relativeMotionRemainder.y + dy
+        let wholeX = Int(x.rounded(.towardZero))
+        let wholeY = Int(y.rounded(.towardZero))
+        relativeMotionRemainder = CGPoint(x: x - CGFloat(wholeX), y: y - CGFloat(wholeY))
+        return (wholeX, wholeY)
+    }
+
     /// Whether a physical (Bluetooth/USB) mouse is currently connected. When
     /// true, the stream view suppresses its touch-gesture clicks so the GCMouse
     /// path owns all clicks (avoids visionOS's double-delivery double-clicks).
@@ -682,12 +697,6 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
         mouseManager?.relativeMotionEnabled = (mode == .relative)
     }
 
-    /// Tell the `GCMouse` bridge whether the pointer is over the stream content,
-    /// so physical clicks on the app's own controls aren't sent to the remote.
-    func setPointerOverContent(_ over: Bool) {
-        mouseManager?.pointerOverContent = over
-    }
-
     private func startDisplayLink() {
         let proxy = DisplayLinkProxy()
         proxy.handler = { [weak self] in
@@ -782,7 +791,12 @@ class MoonlightConnectionManager: MoonlightStreamDelegate {
             self.reconnectDelay = 2
             self.startDisplayLink()
             self.startGamepadManager()
+            // visionOS reads the mouse through the stream window's
+            // `StreamMouseBridge`, the same one VNC and Native use; a second
+            // `GCMouse` reader here would send every motion twice.
+            #if !os(visionOS)
             self.startMouseManager()
+            #endif
             self.startKeyboardManager()
             self.onStreamingChanged?(self.slot, true)
         }

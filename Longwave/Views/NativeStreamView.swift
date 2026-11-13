@@ -67,33 +67,18 @@ struct NativeStreamView: View {
     /// at every size.
     @AppStorage("nativeScreenCurvature.v3") private var curvatureSetting = NativeScreenCurvature.standard.rawValue
     @Environment(\.physicalMetrics) private var physicalMetrics
-    /// The scene hosting this window, for locking its aspect to the desktop's.
-    @State private var windowScene: UIWindowScene?
-    @State private var aspectLockTask: Task<Void, Never>?
-    @State private var lockedAspect: Double?
 
     // Pinned to the exact ideal size for one layout pass right after Screen
     // is turned back on from a small fixed-size panel — see the `onChange`
     // of `screenManager.liveEnabled` below for why.
     @State private var forceScreenIdealSize = false
 
-    // Remote-control gesture state (mirrors RemoteDesktopView's absolute-mode
-    // handling — Native has no touchpad/relative mode, the video is always a
-    // 1:1 tap-to-click surface).
-    @State private var viewSize: CGSize = .zero
-    @State private var isDragging = false
-    @State private var dragLocked = false
-    @State private var lastPointerPoint: (x: UInt16, y: UInt16)?
-    @State private var previousDragTranslation: CGSize = .zero
-    @State private var clickCadence = DoubleClickCadence()
-    @State private var dragLockStartedAt: Date?
-    @State private var scrollSteps = ScrollStepAccumulator()
-    /// True while both hands are pinched (and briefly after), so the one-hand
-    /// gestures stand down — see `TwoHandPointerGesture`.
-    @State private var twoHandEngaged = false
+    /// Hands, hover and the wheel on the desktop — the same controller VNC
+    /// and Moonlight use.
+    @State private var pointer = StreamPointerController()
     /// A Bluetooth/USB mouse, read raw and sent straight to the Mac — see
-    /// `MacNativeMouseBridge`. The session's, shared with its controls.
-    private var mouseBridge: MacNativeMouseBridge { .shared(for: screenManager) }
+    /// `StreamMouseBridge`. The session's, shared with its controls.
+    private var mouseBridge: StreamMouseBridge { .shared(for: screenManager) }
 
     /// This session's own audio, injected by the scene. Several sessions can
     /// stream at once and they mix; only Music mode is exclusive, and that is
@@ -187,7 +172,6 @@ struct NativeStreamView: View {
             audioManager.presenterAppeared(Self.audioPresenterID)
             resumeIfNeeded()
         }
-        .onChange(of: mouseOwnsPointer) { scheduleAspectLock() }
         .onDisappear {
             // Soft teardown only — visionOS also fires this on transient
             // hides (space restore, snapping); a full forget happens only
@@ -427,6 +411,7 @@ struct NativeStreamView: View {
 
     @ViewBuilder
     private var screenContent: some View {
+        let curve = activeCurve
         ZStack {
             // Invisible (1×1) hardware keyboard capture — bottommost so it
             // never intercepts gestures. See `HardwareKeyboardView` (VNC's
@@ -434,159 +419,83 @@ struct NativeStreamView: View {
             MacNativeHardwareKeyboardView(screenManager: screenManager)
                 .frame(width: 1, height: 1)
 
-            // In mouse mode the desktop is one tile of a padded layout, the way
-            // Hypnos's thumbnail grid is: dead space around it and between it
-            // and its neighbours, which is what holds the system pointer on a
-            // tile instead of letting it slide onto the window bar and
-            // corners. Everything below sizes from the pane's geometry, so
-            // the curve and the pointer mapping follow the pane.
-            // 16pt of dead space around and between the tiles. More (32pt
-            // outside, 44pt above the strip) did not help: fast motion still
-            // reached the window bar, which visionOS pulls the pointer onto
-            // by proximity. Diagonal pushes into a corner can still escape;
-            // otherwise the pointer stops at the edges (headset, 2026-10-08).
-            VStack(spacing: mouseOwnsPointer ? mousePaneGap : 0) {
-                HStack(spacing: 0) {
-                GeometryReader { geometry in
-                    ZStack {
-                        if curvature != .off {
-                            if let curve = activeCurve {
-                                curvedDesktop(curve)
-                            }
-                        } else if let displayLayer = screenManager.displayLayer {
-                            MacNativeVideoView(displayLayer: displayLayer)
-                                .ignoresSafeArea()
+            // In mouse mode the desktop is one tile of a padded layout — see
+            // `StreamMouseLayout`. Everything below sizes from the pane's
+            // geometry, so the curve and the pointer mapping follow the pane.
+            StreamPane(mouseOwnsPointer: mouseOwnsPointer) {
+                ZStack {
+                    if curvature != .off {
+                        if let curve {
+                            curvedDesktop(curve)
                         }
+                    } else if let displayLayer = screenManager.displayLayer {
+                        MacNativeVideoView(displayLayer: displayLayer)
+                            .ignoresSafeArea()
+                    }
 
-                        if screenManager.state != .streaming {
-                            VStack(spacing: 16) {
-                                if case .disconnected = screenManager.state {
-                                    Image(systemName: "exclamationmark.triangle")
-                                        .font(.system(size: 42))
-                                        .foregroundStyle(.orange)
-                                } else {
-                                    ProgressView()
-                                        .controlSize(.large)
-                                }
-                                Text(desktopStatusText)
-                                    .font(.headline)
+                    if screenManager.state != .streaming {
+                        VStack(spacing: 16) {
+                            if case .disconnected = screenManager.state {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 42))
+                                    .foregroundStyle(.orange)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.large)
                             }
-                            .padding(24)
-                            .glassBackgroundEffect()
-                            // In front of the curve's forward edges, or a dropped
-                            // session showed only as a frozen frame.
-                            .offset(z: (activeCurve?.sagitta ?? 0) + 8)
+                            Text(desktopStatusText)
+                                .font(.headline)
                         }
-                    }
-                    // The picture and its gestures take no pointer while a mouse
-                    // drives the Mac: the hit target below is the only thing the
-                    // pointer may land on, and the dead space around it is what
-                    // keeps it off the window bar and the resize corners.
-                    .allowsHitTesting(!mouseOwnsPointer)
-                    .overlay {
-                        // Topmost, and deliberately hit-testable: a scroll event is
-                        // routed to the view under the pointer, so it has to be the
-                        // one that's there. It claims no touches, which leaves the
-                        // gestures below untouched.
-                        if mouseOwnsPointer {
-                            // Gone while the Display menu is open, so the mouse
-                            // can work the menu.
-                            if !mouseBridge.menuOpen, let rect = mouseHitRect {
-                                MouseHitTarget()
-                                    .frame(width: rect.width, height: rect.height)
-                                    .position(x: rect.midX, y: rect.midY)
-                            }
-                        } else {
-                            IndirectScrollSurface(
-                                onScroll: indirectScroll,
-                                onScrollEnded: { scrollSteps.reset() }
-                            )
-                        }
-                    }
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .contentShape(mouseOwnsPointer ? Path() : Path(CGRect(origin: .zero, size: geometry.size)))
-                    // Press and hold = begin click+drag lock; single tap = left click
-                    // (or release a drag lock). Right click is the toolbar button.
-                    // On the curved desktop the mesh takes these itself, as hits
-                    // on its surface — see `curvedDesktop`.
-                    .gesture(dragLockGesture, including: flatInputMask)
-                    .gesture(tapGesture(), including: flatInputMask)
-                    .gesture(dragGesture(), including: flatInputMask)
-                    // Both hands: pinch-drag scrolls, pinch-and-release right-clicks.
-                    .twoHandPointerGesture(
-                        isEngaged: $twoHandEngaged,
-                        onEngage: cancelImplicitDrag,
-                        onScroll: handScroll,
-                        onSecondaryClick: rightClickAtCursor
-                    )
-                    .onContinuousHover { phase in
-                        // With a mouse connected the bridge moves the Mac's
-                        // cursor by its raw motion; a hover position would
-                        // fight it.
-                        guard !mouseOwnsPointer else { return }
-                        // A mouse hovering the window plane; on the curve it
-                        // follows the ray from the circle's centre.
-                        if let curve = activeCurve {
-                            hover(phase, curve.flatPoint(forPlanePoint:))
-                        } else {
-                            hover(phase)
-                        }
-                    }
-                    .onAppear {
-                        viewSize = geometry.size
-                        screenManager.setCurvedSurface(curvature != .off)
-                    }
-                    .onChange(of: geometry.size) { _, newSize in
-                        viewSize = newSize
-                        // A curve's outline changes shape slightly as it grows;
-                        // re-fit once the resize settles.
-                        scheduleAspectLock(after: .milliseconds(600))
-                    }
-                    .onChange(of: curvatureSetting) {
-                        screenManager.setCurvedSurface(curvature != .off)
-                        scheduleAspectLock()
-                    }
-                    .onChange(of: screenManager.streamSize) {
-                        scheduleAspectLock()
+                        .padding(24)
+                        .glassBackgroundEffect()
+                        // In front of the curve's forward edges, or a dropped
+                        // session showed only as a frozen frame.
+                        .offset(z: (curve?.sagitta ?? 0) + 8)
                     }
                 }
-                    .clipShape(RoundedRectangle(cornerRadius: mouseOwnsPointer ? 20 : 0, style: .continuous))
+                // On the curved desktop the mesh takes tap, press-and-hold and
+                // drag itself, as hits on its surface — see `curvedDesktop`;
+                // hover and both hands follow the ray from the circle's centre.
+                .streamPointerInput(
+                    pointer,
+                    mouseOwnsPointer: mouseOwnsPointer,
+                    hitTargetHidden: mouseBridge.menuOpen,
+                    hitRect: mouseHitRect(curve),
+                    oneHandGestures: curvature == .off ? .all : .subviews,
+                    cursorPlacement: curve.map { curve in
+                        { flat in
+                            // On a curved desktop the dot sits on the curve
+                            // itself, depth and all.
+                            let surface = curve.surfacePoint(forFlatPoint: flat)
+                            return (point: surface.point, depth: CGFloat(surface.depth))
+                        }
+                    },
+                    planeToFlat: curve.map { curve in { curve.flatPoint(forPlanePoint: $0) } }
+                )
+                .onAppear { screenManager.setCurvedSurface(curvature != .off) }
+                .onChange(of: curvatureSetting) {
+                    screenManager.setCurvedSurface(curvature != .off)
                 }
-                if mouseOwnsPointer {
-                    connectionStrip
-                }
+            } strip: {
+                connectionStrip
             }
-            .padding(mouseOwnsPointer ? mousePaneInset : 0)
-
-            WindowSceneReader { scene in
-                windowScene = scene
-                scheduleAspectLock()
+            .streamAspectLock(desktopAspect, paneSize: pointer.viewSize, mouseOwnsPointer: mouseOwnsPointer)
+            .onAppear {
+                pointer.target = screenManager
+                startMouseBridge()
             }
-            .frame(width: 1, height: 1)
-            .onAppear(perform: startMouseBridge)
             .onChange(of: screenManager.state) {
                 mouseBridge.streaming = screenManager.state == .streaming
             }
             .onDisappear {
                 mouseBridge.stop()
-                // Screen off: the audio and picker panels size themselves.
-                aspectLockTask?.cancel()
-                windowScene?.lockAspect(nil)
-                lockedAspect = nil
-            }
-
-            // Local pointer dot for trackpad mode — the Mac's own cursor
-            // isn't visible until the pointer actually lands there.
-            // With a mouse, the Mac draws its own cursor into the stream.
-            if screenManager.touchMode == .relative, !mouseOwnsPointer, screenManager.streamSize.width > 0 {
-                cursorOverlay
             }
         }
         .overlay(alignment: .top) {
-            if dragLocked {
-                dragLockBadge
+            if pointer.dragLocked {
+                StreamBadge.dragLock
             } else if let message = inputWarningMessage {
-                inputWarningBadge(message)
+                StreamBadge(message, systemImage: "computermouse")
             }
         }
         // The desktop stream is opaque now, so this scene is a solid slab in
@@ -594,7 +503,7 @@ struct NativeStreamView: View {
         // Mac's display arrives as a hard-cornered rectangle pasted into the
         // room. (When the composition was transparent there were no edges to
         // round.)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: StreamMouseLayout.windowCornerRadius, style: .continuous))
         // As on Moonlight's stream view, whose mouse locks the way this one
         // didn't with the modifier only on the mouse hit target: the whole
         // content claims game-controller events.
@@ -617,13 +526,11 @@ struct NativeStreamView: View {
 
     /// What streams, for the strip under the desktop in mouse mode.
     private var connectionStrip: some View {
-        HStack(spacing: 28) {
-            Label(screenManager.state.statusText, systemImage: "dot.radiowaves.left.and.right")
-            if screenManager.streamSize.width > 0 {
-                Text("\(Int(screenManager.streamSize.width)) × \(Int(screenManager.streamSize.height))")
-                    .monospacedDigit()
-            }
-            Spacer()
+        StreamConnectionStrip(
+            status: screenManager.state.statusText,
+            streamSize: screenManager.streamSize,
+            mouse: mouseBridge
+        ) {
             // The audio controls live in the strip, not in a tile beside the
             // desktop or a bar of their own: a tile let the pointer cross
             // onto it and off the window, and a second bar below a dead one
@@ -658,14 +565,6 @@ struct NativeStreamView: View {
                 .buttonStyle(.borderless)
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 32)
-        .frame(height: mouseStripHeight)
-        .frame(maxWidth: .infinity)
-        .glassBackgroundEffect()
-        // Presses on these stay off the Mac while the pointer is here.
-        .onHover { mouseBridge.pointerOverControls = $0 }
         .sheet(isPresented: $showEQ) {
             @Bindable var audioManager = audioManager
             EQEditorView(settings: $audioManager.eqSettings)
@@ -676,11 +575,6 @@ struct NativeStreamView: View {
     private static let screenIdealHeight: CGFloat = 900
 
     // MARK: - Screen remote control (mouse + keyboard)
-
-    private var translator: GestureTranslator? {
-        guard screenManager.streamSize.width > 0 else { return nil }
-        return GestureTranslator(framebufferSize: screenManager.streamSize, viewSize: viewSize)
-    }
 
     private var curvature: NativeScreenCurvature {
         NativeScreenCurvature(rawValue: curvatureSetting) ?? .standard
@@ -693,7 +587,7 @@ struct NativeStreamView: View {
         guard let meters = curvature.radiusMeters, screenManager.streamSize.width > 0 else { return nil }
         return NativeScreenCurve.fitted(
             stream: screenManager.streamSize,
-            in: viewSize,
+            in: pointer.viewSize,
             radius: Double(physicalMetrics.convert(meters, from: .meters))
         )
     }
@@ -708,47 +602,6 @@ struct NativeStreamView: View {
         return screenManager.streamSize.width / screenManager.streamSize.height
     }
 
-    private func scheduleAspectLock(after delay: Duration = .zero) {
-        aspectLockTask?.cancel()
-        aspectLockTask = Task { @MainActor in
-            if delay > .zero { try? await Task.sleep(for: delay) }
-            guard !Task.isCancelled, screenManager.liveEnabled, let desktop = desktopAspect,
-                  viewSize.width > 0, viewSize.height > 0 else { return }
-            // In mouse mode the desktop is a pane inside padding and a strip,
-            // fixed amounts, so the window's aspect that puts the desktop's
-            // own on the pane depends on the width. A resize re-fits (the
-            // caller debounces it), so the drift between sizes settles.
-            let extras = mouseOwnsPointer ? mouseLayoutExtras : .zero
-            let windowWidth = viewSize.width + extras.width
-            let aspect = windowWidth / (viewSize.width / desktop + extras.height)
-            // Within 1% of both the lock and the window is close enough;
-            // re-requesting would only jitter.
-            let windowAspect = windowWidth / (viewSize.height + extras.height)
-            if let lockedAspect, abs(lockedAspect - aspect) / aspect < 0.01,
-               abs(windowAspect - aspect) / aspect < 0.01 { return }
-            guard let windowScene else { return }
-            windowScene.lockAspect(aspect)
-            lockedAspect = aspect
-        }
-    }
-
-    /// The mouse layout's padding, the gap above its strip and the strip's
-    /// height. The layout and the aspect lock both read these.
-    private var mousePaneInset: CGFloat { 16 }
-    private var mousePaneGap: CGFloat { 16 }
-    private var mouseStripHeight: CGFloat { 60 }
-
-    /// What the mouse layout adds around the desktop's pane.
-    private var mouseLayoutExtras: CGSize {
-        CGSize(width: 2 * mousePaneInset, height: 2 * mousePaneInset + mousePaneGap + mouseStripHeight)
-    }
-
-    /// The window-wide pointer gestures run only on the flat desktop; on the
-    /// curved one they stand aside for the mesh's own.
-    private var flatInputMask: GestureMask {
-        curvature == .off ? .all : .subviews
-    }
-
     /// The desktop on a curved mesh, with tap, press-and-hold and drag
     /// taken as hits on the mesh itself — see `NativeCurvedScreenView`.
     private func curvedDesktop(_ curve: NativeScreenCurve) -> some View {
@@ -756,16 +609,16 @@ struct NativeStreamView: View {
             surface: screenManager.frameSurface,
             curve: curve,
             acceptsInput: !mouseOwnsPointer,
-            onTap: handleTap(at:),
-            onLongPress: beginDragLockAtCursor,
-            onDragChanged: handleDragChanged(at:translation:),
-            onDragEnded: handleDragEnded(at:)
+            onTap: pointer.tap(at:),
+            onLongPress: pointer.beginDragLock,
+            onDragChanged: pointer.dragChanged(at:translation:),
+            onDragEnded: pointer.dragEnded(at:)
         )
     }
 
     /// Whether a physical mouse drives the Mac's cursor: the view's own
     /// taps, drags and hover then stand aside, since visionOS also delivers
-    /// each physical click to them (Moonlight's rule too).
+    /// each physical click to them.
     private var mouseOwnsPointer: Bool { mouseBridge.ownsPointer }
 
     private func startMouseBridge() {
@@ -781,12 +634,9 @@ struct NativeStreamView: View {
     /// once (the strip, then the ornament), whatever dead space lay between.
     /// With the mesh taking no input in mouse mode, the plane is enough
     /// (headset, 2026-10-08). On the curve the outline is the one in the
-    /// plane of its forward edges.
-    private var mouseHitRect: CGRect? {
-        guard screenManager.streamSize.width > 0, viewSize.width > 0 else { return nil }
-        guard let curve = activeCurve else {
-            return NativeScreenCurve.fittedRect(stream: screenManager.streamSize, in: viewSize)
-        }
+    /// plane of its forward edges; flat, the fitted picture (the default).
+    private func mouseHitRect(_ curve: NativeScreenCurve?) -> CGRect? {
+        guard let curve else { return nil }
         let width = 2 * curve.radius * sin(curve.halfAngle)
         return CGRect(
             x: curve.contentRect.midX - width / 2,
@@ -794,20 +644,6 @@ struct NativeStreamView: View {
             width: width,
             height: curve.contentRect.height
         )
-    }
-
-    /// Bluetooth-mouse / gaze pointer motion without a button held — a
-    /// DragGesture only fires while a button is down.
-    private func hover(_ phase: HoverPhase, _ toFlat: (CGPoint) -> CGPoint = { $0 }) {
-        if case .active(let location) = phase, let point = framebufferPoint(toFlat(location)) {
-            lastPointerPoint = point
-            screenManager.moveCursorAbsolute(x: point.x, y: point.y)
-        }
-    }
-
-    /// A point on the flat picture (view coordinates) to a stream pixel.
-    private func framebufferPoint(_ location: CGPoint) -> (x: UInt16, y: UInt16)? {
-        translator?.viewToFramebuffer(location)
     }
 
     private var desktopStatusText: String {
@@ -822,223 +658,12 @@ struct NativeStreamView: View {
         return screenManager.state.statusText
     }
 
-    /// Single tap = left click (absolute) or click at the virtual cursor
-    /// (trackpad), or release an active drag lock.
-    private func tapGesture() -> some Gesture {
-        SpatialTapGesture()
-            .onEnded { value in handleTap(at: value.location) }
-    }
-
-    /// `location` is on the flat picture, in view points — from the flat
-    /// gesture surface directly, or mapped off the curved mesh.
-    private func handleTap(at location: CGPoint) {
-        guard !twoHandEngaged, !mouseOwnsPointer else { return }
-        if dragLocked {
-            // Lifting off the press-and-hold that *started* the lock
-            // can arrive here as a tap; that would release it instantly.
-            if let started = dragLockStartedAt, Date().timeIntervalSince(started) < 0.4 { return }
-            releaseLeft(at: location)
-            dragLocked = false
-        } else {
-            leftClick(at: location)
-        }
-    }
-
-    /// Press and hold = grab: holds the left button down so the next drag
-    /// drags, released by the next tap. This was a double-tap, which left no
-    /// way to double-click — the second tap grabbed instead of clicking.
-    private var dragLockGesture: some Gesture {
-        LongPressGesture(minimumDuration: 0.55)
-            .onEnded { _ in beginDragLockAtCursor() }
-    }
-
-    /// Drag moves the cursor; the left button stays down for the duration
-    /// (or, while a drag lock is held, for as long as the lock lasts).
-    private func dragGesture() -> some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in handleDragChanged(at: value.location, translation: value.translation) }
-            .onEnded { value in handleDragEnded(at: value.location) }
-    }
-
-    /// Points on the flat picture, in view points, like `handleTap`.
-    private func handleDragChanged(at location: CGPoint, translation: CGSize) {
-        guard !twoHandEngaged, !mouseOwnsPointer else { return }
-        if screenManager.touchMode == .absolute {
-            guard let point = framebufferPoint(location) else { return }
-            if dragLocked {
-                screenManager.sendMouseMove(x: point.x, y: point.y)
-            } else if !isDragging {
-                isDragging = true
-                screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-            } else {
-                screenManager.sendMouseMove(x: point.x, y: point.y)
-            }
-        } else {
-            let dx = translation.width - previousDragTranslation.width
-            let dy = translation.height - previousDragTranslation.height
-            previousDragTranslation = translation
-            if let delta = translator?.viewDeltaToFramebufferDelta(dx: dx, dy: dy) {
-                screenManager.moveVirtualCursor(dx: delta.dx, dy: delta.dy)
-            }
-        }
-    }
-
-    private func handleDragEnded(at location: CGPoint) {
-        guard !twoHandEngaged else { return }
-        if screenManager.touchMode == .absolute, isDragging, !dragLocked,
-           let point = framebufferPoint(location) {
-            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-        }
-        isDragging = false
-        previousDragTranslation = .zero
-    }
-
-    /// A second hand arriving turns whatever the first one was doing into a
-    /// two-hand gesture, so let go of the button an absolute drag pressed on
-    /// its own. A deliberate drag *lock* is left held — scrolling mid-drag is a
-    /// real thing to want.
-    private func cancelImplicitDrag() {
-        guard isDragging, !dragLocked else { return }
-        if screenManager.touchMode == .absolute {
-            if let point = lastPointerPoint {
-                screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-            }
-        } else {
-            screenManager.releaseMouseAtVirtualCursor(button: .left)
-        }
-        isDragging = false
-        previousDragTranslation = .zero
-    }
-
-    /// Scroll travel in view points — a mouse wheel's, a trackpad's, or both
-    /// hands' midpoint — turned into the line steps the host takes. The wheel
-    /// reaches us through `IndirectScrollSurface`, since SwiftUI surfaces it to
-    /// no gesture at all; the hands through `TwoHandPointerGesture`.
-    private func indirectScroll(_ delta: CGSize) {
-        guard screenManager.streamSize.width > 0 else { return }
-        let steps = scrollSteps.steps(for: delta)
-        guard steps.dx != 0 || steps.dy != 0 else { return }
-        if screenManager.touchMode == .absolute {
-            // Wherever the pointer is, which with a mouse is exactly where the
-            // user meant to scroll — the pinch has to settle for the middle.
-            let point = lastPointerPoint ?? (
-                x: UInt16(clamping: Int(screenManager.streamSize.width / 2)),
-                y: UInt16(clamping: Int(screenManager.streamSize.height / 2))
-            )
-            screenManager.sendScroll(x: point.x, y: point.y, deltaX: steps.dx, deltaY: steps.dy)
-        } else {
-            screenManager.scrollAtVirtualCursor(deltaX: steps.dx, deltaY: steps.dy)
-        }
-    }
-
-    /// Both hands' scroll. Touchpad mode scrolls at the virtual cursor, as the
-    /// wheel does. Direct mode scrolls where the pinch landed — where the user
-    /// was looking: gaze produces no hover, so `lastPointerPoint` is only ever
-    /// set by a mouse and the wheel's fallback would put every hand scroll in
-    /// the middle of the screen.
-    private func handScroll(_ delta: CGSize, anchor: CGPoint) {
-        guard screenManager.touchMode == .absolute, !mouseOwnsPointer else {
-            indirectScroll(delta)
-            return
-        }
-        guard screenManager.streamSize.width > 0 else { return }
-        let flat = activeCurve.map { $0.flatPoint(forPlanePoint: anchor) } ?? anchor
-        guard let point = framebufferPoint(flat) else { return }
-        let steps = scrollSteps.steps(for: delta)
-        guard steps.dx != 0 || steps.dy != 0 else { return }
-        screenManager.sendScroll(x: point.x, y: point.y, deltaX: steps.dx, deltaY: steps.dy)
-    }
-
-    private func leftClick(at location: CGPoint) {
-        if screenManager.touchMode == .absolute {
-            guard let raw = framebufferPoint(location) else { return }
-            // Snap a quick second tap onto the first one's pixel so the host
-            // reads the pair as a double-click (see DoubleClickCadence).
-            let point = clickCadence.resolve(raw)
-            screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-        } else {
-            // Trackpad mode already clicks twice at the same virtual cursor.
-            screenManager.clickAtVirtualCursor(button: .left)
-        }
-    }
-
-    /// Press and hold the left button so the next drag drags, at the tracked
-    /// pointer — the same "wherever the cursor is" rule the Right-click button
-    /// uses, since a long press carries no location of its own.
-    private func beginDragLockAtCursor() {
-        guard !twoHandEngaged, !dragLocked, !mouseOwnsPointer else { return }
-        if screenManager.touchMode == .absolute {
-            guard let point = lastPointerPoint else { return }
-            screenManager.sendMouseDown(button: .left, x: point.x, y: point.y)
-        } else {
-            screenManager.pressMouseAtVirtualCursor(button: .left)
-        }
-        dragLocked = true
-        dragLockStartedAt = Date()
-    }
-
-    /// Release the held left button (ends a drag lock).
-    private func releaseLeft(at location: CGPoint) {
-        if screenManager.touchMode == .absolute {
-            guard let point = framebufferPoint(location) else { return }
-            screenManager.sendMouseUp(button: .left, x: point.x, y: point.y)
-        } else {
-            screenManager.releaseMouseAtVirtualCursor(button: .left)
-        }
-    }
-
-    /// Right click at the last known pointer position (absolute) or the
-    /// virtual cursor (trackpad) — a toolbar button, since there's no gesture
-    /// free to dedicate to it, matching RemoteDesktopView's approach.
-    private func rightClickAtCursor() {
-        screenManager.rightClickAtDesktopCursor()
-    }
-
-    private var dragLockBadge: some View {
-        Label("Dragging — tap to drop", systemImage: "hand.draw")
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .glassBackgroundEffect()
-            .padding(.top, 8)
-    }
-
-    /// Local pointer dot drawn at the virtual cursor, for trackpad mode.
-    private var cursorOverlay: some View {
-        let flat = translator?.framebufferToView(
-            x: screenManager.virtualCursorX,
-            y: screenManager.virtualCursorY
-        ) ?? .zero
-        // On a curved desktop the dot sits on the curve itself, depth and
-        // all, rather than on the window plane behind it.
-        let surface: (point: CGPoint, depth: Double) =
-            activeCurve?.surfacePoint(forFlatPoint: flat) ?? (point: flat, depth: 0)
-
-        return Circle()
-            .fill(.white.opacity(0.7))
-            .overlay(Circle().stroke(.black.opacity(0.3), lineWidth: 1))
-            .frame(width: 12, height: 12)
-            .position(surface.point)
-            .offset(z: CGFloat(surface.depth) + 1)
-            .allowsHitTesting(false)
-    }
-
     private var inputWarningMessage: String? {
         switch screenManager.mouseAvailability {
         case .disabled: return "Mouse control is off — enable it in the Mac companion's Native settings."
         case .accessibilityDenied: return "Mouse control needs Accessibility permission on the Mac."
         case .available, .unknown: return nil
         }
-    }
-
-    private func inputWarningBadge(_ message: String) -> some View {
-        Label(message, systemImage: "computermouse")
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .glassBackgroundEffect()
-            .padding(.top, 8)
     }
 
     /// Shown over the video in place of `compactAudioPanel` once Audio has

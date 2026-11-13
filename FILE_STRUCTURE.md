@@ -25,16 +25,19 @@ Longwave/
 │   ├── NativeWindowStreamView.swift    — One chrome-free scene per streamed host window (Unity-style)
 │   ├── HomeOrnamentModifier.swift      — Home ornament for sub-windows (reveals and opens id "main")
 │   ├── SessionWindowPush.swift         — `@PushSessionWindow`: session windows take the main window's place (RAVEUI push)
-│   ├── RemoteDesktopView.swift         — VNC framebuffer display + gestures + toolbar
+│   ├── RemoteDesktopView.swift         — VNC framebuffer display on the shared stream surface + chrome
 │   ├── VirtualKeyboardView.swift       — Our own on-screen key grid + modifier latches
 │   ├── KeyboardInputView.swift         — VNC keyboard window (key grid, route picker, dictation)
 │   ├── HardwareKeyboardView.swift      — VNC hardware keyboard capture (UIViewRepresentable)
 │   ├── CredentialPromptView.swift      — VNC auth prompt sheet
 │   ├── ThirdPartyNoticesView.swift     — Parses THIRD_PARTY_NOTICES.md by H2 headings
 │   ├── MoonlightPairingView.swift      — Pairing flow, PIN display, app picker, launch
-│   ├── MoonlightStreamView.swift       — Stream display, gesture input, controls ornament
+│   ├── MoonlightStreamView.swift       — Moonlight video layer on the shared stream surface + chrome
 │   ├── MoonlightKeyboardView.swift     — Moonlight keyboard window (key grid, Ctrl+Alt+Del)
 │   ├── MoonlightHardwareKeyboardView.swift — Moonlight hardware keyboard capture
+│   ├── StreamPointerSurface.swift      — `StreamPointerController` + `.streamPointerInput`: hands, hover, wheel and the mouse hit target for every visionOS desktop (VNC, Native, Moonlight)
+│   ├── StreamWindowChrome.swift        — `StreamControlsBar` ornament, mouse-mode `StreamPane` + connection strip, badges, window aspect lock
+│   ├── MouseHitTarget.swift            — Faint layer the mouse's system pointer sits on in Mouse mode
 │   └── StreamStatsOverlay.swift        — Live stats HUD (codec, FPS, RTT, decode time, drops)
 ├── Foveated/                           — PCVR, all of it behind FOVEATED_ENABLED (= the Pro edition)
 │   ├── FoveatedEndpoint.swift          — Endpoint validation and mode → endpoint mapping
@@ -79,7 +82,9 @@ Longwave/
 │   ├── VNCVirtualKeyboardSink.swift    — Key + modifiers → VNC keysyms (pure `events()`, unit-tested)
 │   ├── MoonlightVirtualKeyboardSink.swift — Key + modifiers → Windows VK codes + modifier mask
 │   ├── SSHVirtualKeyboardSink.swift    — Key + modifiers → PTY bytes (⌃G → 0x07), unit-tested
-│   ├── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (VNC)
+│   ├── GestureTranslator.swift         — View-to-framebuffer coordinate mapping (every stream surface)
+│   ├── RemotePointerTarget.swift       — The pointer verbs VNC, Native and Moonlight each map to their own wire calls
+│   ├── StreamMouseBridge.swift         — visionOS Mouse mode: `GCMouse` raw → any `RemotePointerTarget` (accelerated for desktops, raw for Moonlight)
 │   ├── MacKeyCodeMap.swift             — HID usage ↔ macOS virtual keycode tables (raw ints, UIKit adapters) for the Native keyboard channel
 │   ├── MacNativeVirtualKeyboardSink.swift — Key + modifiers → Native key frames, or text over the inject channel
 │   └── DeviceName.swift                — The name a client introduces itself with (UIDevice / Host)

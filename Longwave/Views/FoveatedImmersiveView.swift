@@ -39,12 +39,19 @@ struct FoveatedImmersiveView: View {
     #endif
     @AppStorage("foveatedWristHUD") private var wristHUDEnabled = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
+    /// Worn as a sleeve on the forearm (the default) or summoned over the palm as the
+    /// one big panel it used to be. See PCVRSleeve.swift.
+    @AppStorage(PCVRSleeveDriver.styleKey) private var wristHUDStyle = PCVRSleeveDriver.Style.sleeve.rawValue
+    @Environment(\.openWindow) private var openWindow
+
+    private var wearsSleeve: Bool { wristHUDStyle != PCVRSleeveDriver.Style.panel.rawValue }
 
     /// Debug marker root: one sphere per joint per hand, hidden unless the HUD asks
     /// for them. Built once and re-posed — 52 entities created per frame would be a
     /// worse frame-time bug than the one they exist to diagnose.
     private let skeletonRoot = Entity()
     private let wristDriver = WristHUDDriver()
+    private let sleeveDriver = PCVRSleeveDriver()
     private let chargeEntity = Entity()
     private let bannerDriver = ImmersiveBannerDriver()
     private let webPanels = PCVRWebPanelsDriver()
@@ -58,6 +65,7 @@ struct FoveatedImmersiveView: View {
             content.add(skeletonRoot)
 
             buildWristHUD(content: content)
+            buildSleeve(content: content)
             buildGestureCharge(content: content)
             buildBanner(content: content)
             buildWebPanels(content: content)
@@ -72,10 +80,19 @@ struct FoveatedImmersiveView: View {
         .onChange(of: wristHUDEnabled) { _, enabled in
             // Leaving a hand suppressed after the HUD is switched off would silently
             // disable its gestures in-game.
-            if !enabled { wristDriver.hide(bridge: manager.controllerBridge) }
+            if !enabled {
+                wristDriver.hide(bridge: manager.controllerBridge)
+                sleeveDriver.hide(bridge: manager.controllerBridge)
+            }
         }
         .onChange(of: wristHUDOnRight) { _, _ in
             wristDriver.hide(bridge: manager.controllerBridge)
+            sleeveDriver.hide(bridge: manager.controllerBridge)
+        }
+        .onChange(of: wristHUDStyle) { _, _ in
+            // Whichever was up lets go of its hand before the other takes over.
+            wristDriver.hide(bridge: manager.controllerBridge)
+            sleeveDriver.hide(bridge: manager.controllerBridge)
         }
         // Move mode's grab bar and resize corner on the pinned web panels.
         .gesture(DragGesture().targetedToAnyEntity()
@@ -92,6 +109,7 @@ struct FoveatedImmersiveView: View {
         .appsBesideSpace(manager.appsBeside)
         .onDisappear {
             wristDriver.hide(bridge: manager.controllerBridge)
+            sleeveDriver.hide(bridge: manager.controllerBridge)
             webPanels.tearDown(bridge: manager.controllerBridge)
             PCVRGuardianDriver.shared.detach()
             Task { await manager.pauseForImmersiveExit() }
@@ -125,11 +143,33 @@ struct FoveatedImmersiveView: View {
             guard let panel else { return }
             wristDriver.update(panel: panel,
                                hand: wristHUDOnRight ? .right : .left,
-                               enabled: wristHUDEnabled,
+                               enabled: wristHUDEnabled && !wearsSleeve,
                                bridge: manager.controllerBridge)
         })
         wristDriver.panel = panel
         content.add(panel.root)
+    }
+
+    // MARK: Sleeve
+
+    /// The same controls worn on the forearm (PCVRSleeve.swift): a few tiles on the palm
+    /// side of the arm, and the whole readout above as a panel one of them docks beside
+    /// it. The default; the palm panel above stays behind Settings' "Shown as".
+    private func buildSleeve(content: RealityViewContent) {
+        let details = RAVEPanel(name: "SleeveHUD", size: [0.14, 0.1]) {
+            FoveatedHUDView().environment(manager).environment(limiter)
+        }
+        details.contentScale = 0.5
+        details.opacity = 0
+        sleeveDriver.details = details
+        sleeveDriver.openControls = { WindowSessionRegistry.surface("foveated-controls", using: openWindow) }
+        sleeveDriver.root.components.set(ClosureComponent { _ in
+            sleeveDriver.update(hand: wristHUDOnRight ? .right : .left,
+                                enabled: wristHUDEnabled && wearsSleeve,
+                                bridge: manager.controllerBridge)
+        })
+        content.add(sleeveDriver.root)
+        content.add(details.root)
     }
 
     // MARK: Pinned web panels

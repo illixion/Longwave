@@ -96,6 +96,7 @@ private struct PCVRSessionForm: View {
     @Environment(PCVRNativeSession.self) private var nativeSession
     @AppStorage("foveatedWristHUD") private var wristHUD = true
     @AppStorage("foveatedWristHUDOnRight") private var wristHUDOnRight = false
+    @AppStorage(PCVRSleeveDriver.styleKey) private var wristHUDStyle = PCVRSleeveDriver.Style.sleeve.rawValue
     #if LONGWAVE_INTERNAL
     @AppStorage("pcvrBodyTracking") private var bodyTracking = false
     @AppStorage("pcvrBodyTrackingHub") private var bodyTrackingHub = ""
@@ -609,7 +610,9 @@ private struct PCVRSessionForm: View {
             Toggle(isOn: $wristHUD) {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Wrist HUD", systemImage: "hand.raised")
-                    Text("Turn a palm toward your face to quit the running title, show the PC's desktop, or switch between controllers and bare hands.")
+                    Text(wristHUDStyle == PCVRSleeveDriver.Style.panel.rawValue
+                         ? "Turn a palm toward your face to quit the running title, show the PC's desktop, or switch between controllers and bare hands."
+                         : "Turn the inside of your forearm toward your face for keys on your arm: quit the running title, show the PC's desktop, switch between controllers and bare hands, or open the full readout beside it. Press a key with your other index finger, or look at it and pinch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -617,8 +620,13 @@ private struct PCVRSessionForm: View {
             }
             if wristHUD {
                 Picker("Worn on", selection: $wristHUDOnRight) {
-                    Text("Left wrist").tag(false)
-                    Text("Right wrist").tag(true)
+                    Text("Left arm").tag(false)
+                    Text("Right arm").tag(true)
+                }
+                .pickerStyle(.segmented)
+                Picker("Shown as", selection: $wristHUDStyle) {
+                    Text("Keys on the forearm").tag(PCVRSleeveDriver.Style.sleeve.rawValue)
+                    Text("Panel over the palm").tag(PCVRSleeveDriver.Style.panel.rawValue)
                 }
                 .pickerStyle(.segmented)
             }

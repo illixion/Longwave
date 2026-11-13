@@ -50,6 +50,7 @@ struct LongwaveApp: App {
             #if os(visionOS)
             PCVRShellEndpoints.register()
             PCVRGuardianEndpoints.register()
+            PCVRSleeveEndpoints.register()
             #endif
             #endif
         }

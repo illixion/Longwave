@@ -59,6 +59,7 @@ enum BackupManager {
         prefs.foveatedShowSentSkeleton = d.object(forKey: "foveatedShowSentSkeleton") as? Bool
         prefs.foveatedWristHUD = d.object(forKey: "foveatedWristHUD") as? Bool
         prefs.foveatedWristHUDOnRight = d.object(forKey: "foveatedWristHUDOnRight") as? Bool
+        prefs.foveatedWristHUDStyle = d.string(forKey: "foveatedWristHUDStyle")
         prefs.foveatedGameProfilesData = d.data(forKey: "foveatedGameProfiles.v1")
         prefs.foveatedWebPanelsData = d.data(forKey: "foveatedWebPanels")
 
@@ -148,6 +149,7 @@ enum BackupManager {
         if let v = prefs.foveatedShowSentSkeleton { d.set(v, forKey: "foveatedShowSentSkeleton") }
         if let v = prefs.foveatedWristHUD { d.set(v, forKey: "foveatedWristHUD") }
         if let v = prefs.foveatedWristHUDOnRight { d.set(v, forKey: "foveatedWristHUDOnRight") }
+        if let v = prefs.foveatedWristHUDStyle { d.set(v, forKey: "foveatedWristHUDStyle") }
         if let v = prefs.foveatedGameProfilesData { d.set(v, forKey: "foveatedGameProfiles.v1") }
         if let v = prefs.foveatedWebPanelsData { d.set(v, forKey: "foveatedWebPanels") }
 

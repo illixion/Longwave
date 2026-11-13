@@ -1105,6 +1105,10 @@ final class ControllerBridgeSender {
     }
 
     private func ingest(_ anchor: HandAnchor) {
+        // Kept whole for the sleeve (`sleeveHandAnchors`), which needs the forearm joints.
+        let entry = (anchor, CACurrentMediaTime())
+        if anchor.chirality == .left { lastLeftAnchor = entry } else { lastRightAnchor = entry }
+
         // Feed the gesture engine first (it tracks per-finger pinches + the joystick).
         gestureEngine.ingest(anchor)
 
@@ -1812,6 +1816,25 @@ final class ControllerBridgeSender {
         guard length > 1e-4 else { return nil }
         forward /= length
         return (position, forward)
+    }
+
+    /// The last anchor delivered per hand, with when: the sleeve's fallback for a hand
+    /// the prediction lacks.
+    private var lastLeftAnchor: (anchor: HandAnchor, at: CFTimeInterval)?
+    private var lastRightAnchor: (anchor: HandAnchor, at: CFTimeInterval)?
+
+    /// Both hands for the forearm sleeve (`PCVRSleeveDriver`), predicted a moment ahead:
+    /// what is drawn on an arm trails the delivered anchors by frames. Falls back to the
+    /// last delivered anchor for a hand the prediction lacks; nil while hand tracking is
+    /// not running. From this object's own provider, for the reason above.
+    func sleeveHandAnchors(lookahead: TimeInterval = 0.02) -> (left: HandAnchor?, right: HandAnchor?)? {
+        guard handProvider.state == .running else { return nil }
+        let now = CACurrentMediaTime()
+        let predicted = handProvider.handAnchors(at: now + lookahead)
+        func fresh(_ entry: (anchor: HandAnchor, at: CFTimeInterval)?) -> HandAnchor? {
+            entry.flatMap { now - $0.at <= 0.1 ? $0.anchor : nil }
+        }
+        return (predicted.leftHand ?? fresh(lastLeftAnchor), predicted.rightHand ?? fresh(lastRightAnchor))
     }
 
     /// How squarely a palm faces the viewer — the wrist HUD's summon gesture.

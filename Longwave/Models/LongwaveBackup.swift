@@ -240,6 +240,8 @@ struct PreferencesBackup: Codable {
     var foveatedShowSentSkeleton: Bool?
     var foveatedWristHUD: Bool?
     var foveatedWristHUDOnRight: Bool?
+    /// "sleeve" or "panel" (`PCVRSleeveDriver.Style`); absent in older backups.
+    var foveatedWristHUDStyle: String?
     /// Double-encoded `[String: GameProfile]` (`GameProfiles.saved()`), kept
     /// as an opaque blob so this struct doesn't need `GameProfile`, which is
     /// declared inside `#if FOVEATED_ENABLED`.

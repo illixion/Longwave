@@ -10,7 +10,11 @@ struct RemoteDesktopView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var showAudioPanel = false
+    /// Pending teardown after the window disappeared; cancelled if it comes back.
+    @State private var teardownTask: Task<Void, Never>?
     @State private var pointer = StreamPointerController()
 
     /// A Bluetooth/USB mouse, read raw and driving the remote cursor — see
@@ -28,6 +32,8 @@ struct RemoteDesktopView: View {
                 CredentialPromptView()
             }
             .onAppear {
+                teardownTask?.cancel()
+                teardownTask = nil
                 pointer.target = connectionManager
                 pointer.trackpadOnly = connectionManager.isTrackpadOnly
                 mouseBridge.streaming = connectionManager.connectionState == .connected
@@ -35,11 +41,22 @@ struct RemoteDesktopView: View {
             }
             .onDisappear {
                 mouseBridge.stop()
-                // When the window is closed (by system close button or programmatically),
-                // ensure the VNC connection is torn down and keyboard window is closed.
-                dismissWindow(id: "keyboard")
-                if connectionManager.connectionState.isActive {
-                    connectionManager.disconnect()
+                // visionOS also fires this on transient hides: the app being
+                // suspended and resumed, a space restore, a window push. Tearing
+                // the session down then flips the state to `.disconnected`, which
+                // closes this window and the keyboard a second later — the desktop
+                // just vanishes on resume. So only a window closed while the app
+                // is active disconnects, and after a grace period the window can
+                // cancel by reappearing.
+                guard scenePhase == .active else { return }
+                teardownTask?.cancel()
+                teardownTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { return }
+                    dismissWindow(id: "keyboard")
+                    if connectionManager.connectionState.isActive {
+                        connectionManager.disconnect()
+                    }
                 }
             }
             .onChange(of: connectionManager.isTrackpadOnly) { _, trackpadOnly in

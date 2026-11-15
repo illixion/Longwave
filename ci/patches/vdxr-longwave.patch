@@ -1,3 +1,44 @@
+diff --git a/virtualdesktop-openxr/frame.cpp b/virtualdesktop-openxr/frame.cpp
+index 4cede67..af93576 100644
+--- a/virtualdesktop-openxr/frame.cpp
++++ b/virtualdesktop-openxr/frame.cpp
+@@ -857,6 +857,12 @@ namespace virtualdesktop_openxr {
+ 
+         // CONFORMANCE: We ignore eyeVisibility, since there is no equivalent in the OVR compositor.
+         // We cannot achieve conformance for this particular (but uncommon) API usage.
++        // Longwave: its LibOVR carries one-eye layers, with Virtual Desktop's flag values (OVR_Ext.h).
++        if (m_ovrIsLongwave && quad.eyeVisibility == XR_EYE_VISIBILITY_LEFT) {
++            layer.Header.Flags |= 0x200000; // ovrLayerFlag_DisableRight
++        } else if (m_ovrIsLongwave && quad.eyeVisibility == XR_EYE_VISIBILITY_RIGHT) {
++            layer.Header.Flags |= 0x100000; // ovrLayerFlag_DisableLeft
++        }
+ 
+         if (quad.subImage.imageArrayIndex >= xrSwapchain.xrDesc.arraySize || xrSwapchain.xrDesc.faceCount != 1) {
+             return XR_ERROR_VALIDATION_FAILURE;
+diff --git a/virtualdesktop-openxr/runtime.h b/virtualdesktop-openxr/runtime.h
+index 144f5e0..2fa7bbe 100644
+--- a/virtualdesktop-openxr/runtime.h
++++ b/virtualdesktop-openxr/runtime.h
+@@ -637,6 +637,7 @@ namespace virtualdesktop_openxr {
+         // Instance & OVR state.
+         bool m_isOVRLoaded{false};
+         bool m_useOculusRuntime{false};
++        bool m_ovrIsLongwave{false}; // Longwave: the LibOVR is Longwave's session-broker shim
+         wil::unique_hmodule m_OVRlay;
+         ovrSession m_ovrSession{nullptr};
+         bool m_instanceCreated{false};
+diff --git a/virtualdesktop-openxr/system.cpp b/virtualdesktop-openxr/system.cpp
+index a439e52..f7f1c0c 100644
+--- a/virtualdesktop-openxr/system.cpp
++++ b/virtualdesktop-openxr/system.cpp
+@@ -349,6 +349,7 @@ namespace virtualdesktop_openxr {
+ 
+         std::string_view versionString(ovr_GetVersionString());
+         Log("OVR: %s\n", versionString.data());
++        m_ovrIsLongwave = versionString.find("Longwave") != std::string_view::npos;
+         TraceLoggingWrite(g_traceProvider, "OVR_SDK", TLArg(versionString.data(), "VersionString"));
+ 
+         *m_OVRlay.put() = LoadLibrary((dllHome /
 diff --git a/virtualdesktop-openxr/vulkan_interop.cpp b/virtualdesktop-openxr/vulkan_interop.cpp
 index 5d8464e..04f88ba 100644
 --- a/virtualdesktop-openxr/vulkan_interop.cpp

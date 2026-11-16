@@ -27,6 +27,10 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
     nonisolated(unsafe) var onFormatDescription: (@Sendable (Data) -> Void)?
     nonisolated(unsafe) var onFrame: (@Sendable (Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onError: (@Sendable (String) -> Void)?
+    /// Whether every viewer's link can take another frame of this window now.
+    /// While it can't, captured frames are held back, not encoded and dropped,
+    /// so the stream's reference chain stays whole (the desktop does the same).
+    nonisolated(unsafe) var canEncode: (@Sendable () -> Bool)?
 
     let windowID: UInt32
     private(set) var pixelScale: CGFloat = 2
@@ -34,6 +38,8 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
     private let outputQueue: DispatchQueue
     private var stream: SCStream?
     private nonisolated(unsafe) var encoder: MacHEVCEncoder?
+    /// The newest frame held back while the link was full; only touched on `outputQueue`.
+    private nonisolated(unsafe) var heldSample: CMSampleBuffer?
     private var lastConfiguredSize: CGSize = .zero
 
     nonisolated init(windowID: UInt32) {
@@ -99,6 +105,16 @@ final class MacNativeWindowStreamer: NSObject, @unchecked Sendable {
         encoder?.requestKeyFrame()
     }
 
+    /// The link took the backlog: encode the frame held back meanwhile, so a
+    /// window that has gone still doesn't stay on a stale picture.
+    nonisolated func pipeCleared() {
+        outputQueue.async { [self] in
+            guard let held = heldSample, canEncode?() ?? true else { return }
+            heldSample = nil
+            encoder?.encode(held)
+        }
+    }
+
     func stop() async {
         if let stream {
             try? await stream.stopCapture()
@@ -153,6 +169,11 @@ extension MacNativeWindowStreamer: SCStreamOutput {
               SCFrameStatus(rawValue: statusRaw) == .complete else {
             return
         }
+        guard canEncode?() ?? true else {
+            heldSample = sampleBuffer
+            return
+        }
+        heldSample = nil
         encoder?.encode(sampleBuffer)
     }
 }
@@ -171,6 +192,8 @@ final class MacNativeWindowStreamCoordinator {
     nonisolated(unsafe) var onWindowFormatDescription: (@Sendable (UInt32, Data) -> Void)?
     nonisolated(unsafe) var onWindowFrame: (@Sendable (UInt32, Data, Bool, UInt64, UInt64) -> Void)?
     nonisolated(unsafe) var onWindowClosed: (@Sendable (UInt32, String?) -> Void)?
+    /// Whether a window's viewers' links can take another frame (see `MacNativeWindowStreamer.canEncode`).
+    nonisolated(unsafe) var canEncodeWindow: (@Sendable (UInt32) -> Bool)?
 
     private var streamers: [UInt32: MacNativeWindowStreamer] = [:]
     private var targets: [UInt32: MacNativeWindowTarget] = [:]
@@ -265,6 +288,9 @@ final class MacNativeWindowStreamCoordinator {
         streamer.onFrame = { [weak self] data, keyFrame, sequence, timestamp in
             self?.onWindowFrame?(windowID, data, keyFrame, sequence, timestamp)
         }
+        streamer.canEncode = { [weak self] in
+            self?.canEncodeWindow?(windowID) ?? true
+        }
         streamer.onError = { [weak self] message in
             Task { @MainActor [weak self] in
                 self?.closeStream(windowID: windowID, reason: message)
@@ -300,6 +326,10 @@ final class MacNativeWindowStreamCoordinator {
     /// subscribed to one another viewer already started.
     func requestKeyFrame(windowID: UInt32) {
         streamers[windowID]?.requestKeyFrame()
+    }
+
+    func pipeCleared(windowID: UInt32) {
+        streamers[windowID]?.pipeCleared()
     }
 
     func stopStream(windowID: UInt32) {

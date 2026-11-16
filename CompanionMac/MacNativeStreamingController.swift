@@ -812,6 +812,9 @@ final class MacNativeStreamingController {
         server.onWindowStreamStop = { windowID in
             onMain { $0.windowViewerLeft(windowID, subscriber: Self.v3Subscriber) }
         }
+        server.onWindowPipeClear = { windowID in
+            onMain { $0.windowStreams.pipeCleared(windowID: windowID) }
+        }
         server.onWindowKeyFrameNeeded = { windowID in
             onMain { $0.windowStreams.requestKeyFrame(windowID: windowID) }
         }
@@ -875,6 +878,7 @@ final class MacNativeStreamingController {
             }
         }
         v3Server = server
+        windowStreams.canEncodeWindow = { [weak server] windowID in server?.windowCanAcceptFrame(windowID) ?? true }
         server.start()
         server.setMouseAvailability(input.mouseStatusByte)
         server.setKeyboardAvailability(input.keyboardStatusByte)

@@ -46,6 +46,8 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     /// viewer and window; the controller counts them across both servers.
     nonisolated(unsafe) var onWindowStreamStart: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onWindowStreamStop: (@Sendable (UInt32) -> Void)?
+    /// A window's gate reopened (`windowCanAcceptFrame`).
+    nonisolated(unsafe) var onWindowPipeClear: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onWindowKeyFrameNeeded: (@Sendable (UInt32) -> Void)?
     nonisolated(unsafe) var onWindowMouseMove: (@Sendable (UInt32, UInt16, UInt16) -> Void)?
     nonisolated(unsafe) var onWindowMouseDown: (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
@@ -145,6 +147,8 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     private let gateLock = NSLock()
     private nonisolated(unsafe) var gateOpen = true
     private nonisolated(unsafe) var hasDesktopViewers = false
+    /// Windows whose v3 viewers' links are full. Behind `gateLock`.
+    private nonisolated(unsafe) var closedWindowGates: Set<UInt32> = []
 
     nonisolated init(port: UInt16, keyring: CompanionKeyring) {
         self.port = port
@@ -271,6 +275,14 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         gateLock.lock()
         defer { gateLock.unlock() }
         return gateOpen
+    }
+
+    /// Whether every v3 viewer of this window can take another frame now. Read
+    /// from the window's capture queue.
+    nonisolated func windowCanAcceptFrame(_ windowID: UInt32) -> Bool {
+        gateLock.lock()
+        defer { gateLock.unlock() }
+        return !closedWindowGates.contains(windowID)
     }
 
     // MARK: Media
@@ -860,12 +872,19 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     private func updateGate() {
         let desktop = viewers.values.filter(\.wantsDesktop)
         let open = desktop.allSatisfy(\.sender.canAcceptFrame)
+        var closedWindows: Set<UInt32> = []
+        for viewer in viewers.values {
+            for (windowID, sender) in viewer.windowSenders where !sender.canAcceptFrame { closedWindows.insert(windowID) }
+        }
         gateLock.lock()
         let wasOpen = gateOpen
         gateOpen = open
         hasDesktopViewers = !desktop.isEmpty
+        let reopened = closedWindowGates.subtracting(closedWindows)
+        closedWindowGates = closedWindows
         gateLock.unlock()
         if open, !wasOpen { onDesktopPipeClear?() }
+        for windowID in reopened { onWindowPipeClear?(windowID) }
     }
 
     /// Hands the slowest viewer's budget to the encoder, and its RTT to the
@@ -890,9 +909,10 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             let rtt = desktop.compactMap { endpoint.sessions[$0.index]?.session.rtt.smoothed }.max() ?? 0
             onLinkLatency?(Double(rtt) / 1_000_000)
         }
-        if now - lastStatsLog > 5_000_000_000, !desktop.isEmpty {
+        let media = viewers.values.filter(\.sendsMedia)
+        if now - lastStatsLog > 5_000_000_000, !media.isEmpty {
             lastStatsLog = now
-            for viewer in desktop { logStatistics(viewer) }
+            for viewer in media { logStatistics(viewer) }
         }
     }
 

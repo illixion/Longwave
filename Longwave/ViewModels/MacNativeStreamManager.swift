@@ -690,7 +690,8 @@ final class MacNativeStreamManager {
             if let grants = ack?.grants, let connection {
                 connection.companionGrants = Set(grants.compactMap(CompanionGrant.init(rawValue:)))
             }
-            if let ack, unityEnabled, !ack.supportsWindowStreams, client?.transportIsV3 == true, let connection {
+            if let ack, unityEnabled, !ack.supportsWindowStreams, client?.transportIsV3 == true,
+               ack.platform == "macOS", let connection {
                 // This host speaks v3 but has no window streams on it: Unity
                 // needs the classic stream, so connect again that way, once.
                 v3UnusableForWindows = true

@@ -12,8 +12,9 @@ import StreamWire
 /// it and shares its queue and renderer, so a v3 session looks the same to
 /// everything above.
 ///
-/// The first cut carries the desktop stream, remote input, the display choice
-/// and the remote-control status; the host's ack says window streams are off.
+/// It carries the desktop stream, Unity's per-window streams (more stream IDs
+/// on this session, §4.2; only when the host negotiated them), remote input,
+/// the display choice and the remote-control status.
 nonisolated final class MacNativeV3Link: @unchecked Sendable {
     typealias Event = MacNativeStreamClient.Event
 
@@ -24,6 +25,8 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     // Called on `queue`, like the v2 client's own connection callbacks.
     private let emit: (Event) -> Void
     private let noAnswer: () -> Void
+    /// The renderer for a window's stream, if its scene is open. Called on `queue`.
+    private let windowRenderer: (UInt32) -> MacNativeVideoRenderer?
     private let log = DebugLogger(subsystem: "pro.longwave", category: "MacNativeV3Link")
 
     private let hello: ClientHello
@@ -32,13 +35,35 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     private var timer: NativeV3Timer?
     private var session: TransportSession?
     private var capabilities = CapabilitySet()
-    private var receiver = VideoStreamReceiver(streamID: NativeV3.desktopStreamID)
-    /// Formats not yet in force, oldest first: each applies from its
-    /// `firstFrameNumber` on.
-    private var pendingFormats: [FormatDescription] = []
-    private var hasFormat = false
-    /// Frames that arrived before any format did.
-    private var heldFrames: [AssembledVideoFrame] = []
+    /// What one video stream needs to play out: its receiver, and the formats
+    /// and frames that arrive out of step with each other.
+    private final class Playout {
+        var receiver: VideoStreamReceiver
+        /// Formats not yet in force, oldest first: each applies from its
+        /// `firstFrameNumber` on.
+        var pendingFormats: [FormatDescription] = []
+        var hasFormat = false
+        /// Frames that arrived before any format did.
+        var heldFrames: [AssembledVideoFrame] = []
+
+        init(streamID: UInt32, configuration: VideoStreamReceiver.Configuration = .init()) {
+            receiver = VideoStreamReceiver(streamID: streamID, configuration: configuration)
+        }
+
+        /// Drops the picture with its format, so a restart waits for the host's next one.
+        func reset() {
+            hasFormat = false
+            pendingFormats.removeAll()
+            heldFrames.removeAll()
+        }
+    }
+
+    private var desktop = Playout(streamID: NativeV3.desktopStreamID)
+    /// One per subscribed window.
+    private var windows: [UInt32: Playout] = [:]
+    private var receiverConfiguration = VideoStreamReceiver.Configuration()
+    /// Whether the host negotiated window streams.
+    private var windowsNegotiated: Bool { capabilities.contains(.windowStreams) }
     private var pointerSequence: UInt32 = 0
     private var latency = MacNativeFrameLatencyMeter(label: "v3 desktop")
     /// When the receiver next needs a poll (timeouts, NACKs). Not on every
@@ -51,11 +76,15 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     private static let answerTimeout: UInt64 = 2_000_000_000
 
     init?(host: String, port: UInt16, credential: CompanionCredential, deviceName: String, wantsScreen: Bool,
-          queue: DispatchQueue, renderer: MacNativeVideoRenderer,
+          wantsWindows: Bool, queue: DispatchQueue, renderer: MacNativeVideoRenderer,
+          windowRenderer: @escaping (UInt32) -> MacNativeVideoRenderer?,
           emit: @escaping (Event) -> Void, noAnswer: @escaping () -> Void) {
         guard let psk = NativeV3.psk(for: credential) else { return nil }
         var offer: [Capability] = [.nack]
         if MacNativeVideoCapability.decodesHEVC422InHardware { offer.append(.hevc422) }
+        // Asked for only by a session using Unity: the host then sends the
+        // window inventory, which names every window on the Mac.
+        if wantsWindows { offer.append(.windowStreams) }
         hello = ClientHello(capabilities: CapabilitySet(offer), platform: Self.platform,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
                             intent: wantsScreen ? [.screen, .audio] : [.audio],
@@ -68,6 +97,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         self.port = port
         self.queue = queue
         self.renderer = renderer
+        self.windowRenderer = windowRenderer
         self.emit = emit
         self.noAnswer = noAnswer
     }
@@ -145,25 +175,26 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
 
     // MARK: Input and control (on `queue`)
 
-    func sendMouseMove(x: UInt16, y: UInt16) {
+    func sendMouseMove(x: UInt16, y: UInt16, streamID: UInt32 = NativeV3.desktopStreamID) {
         guard session != nil else { return }
         pointerSequence &+= 1
         // Built first: hostTime() reads `session`, which the optional-chained
         // mutating send already holds for writing (a runtime exclusivity trap).
         let snapshot = StateSnapshot(sequence: pointerSequence, hostTime: hostTime(),
-                                     payload: .pointerAbsolute(PointerPosition(streamID: NativeV3.desktopStreamID, x: x, y: y)))
+                                     payload: .pointerAbsolute(PointerPosition(streamID: streamID, x: x, y: y)))
         session?.send(snapshot)
         flush(now: NativeV3.now())
     }
 
-    func sendMouseButton(down: Bool, button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16) {
-        let event = MouseButtonEvent(streamID: NativeV3.desktopStreamID, button: MouseButton(rawValue: button.rawValue) ?? .middle,
+    func sendMouseButton(down: Bool, button: MacNativeStreamProtocol.MouseButton, x: UInt16, y: UInt16,
+                         streamID: UInt32 = NativeV3.desktopStreamID) {
+        let event = MouseButtonEvent(streamID: streamID, button: MouseButton(rawValue: button.rawValue) ?? .middle,
                                      x: x, y: y)
         send(down ? .mouseDown(event) : .mouseUp(event))
     }
 
-    func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
-        send(.scroll(ScrollEvent(streamID: NativeV3.desktopStreamID, x: x, y: y, lineDeltaX: deltaX, lineDeltaY: deltaY,
+    func sendScroll(x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16, streamID: UInt32 = NativeV3.desktopStreamID) {
+        send(.scroll(ScrollEvent(streamID: streamID, x: x, y: y, lineDeltaX: deltaX, lineDeltaY: deltaY,
                                  preciseDeltaX: Int32(deltaX) * 120, preciseDeltaY: Int32(deltaY) * 120)))
     }
 
@@ -172,24 +203,42 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         send(down ? .keyDown(key) : .keyUp(key))
     }
 
+    func sendFocusWindow(streamID: UInt32) {
+        send(.focusWindow(streamID: streamID))
+    }
+
     /// The decoder lost its state: freeze until a key frame, and ask for one.
-    func requestKeyFrame() {
+    func requestKeyFrame(streamID: UInt32 = NativeV3.desktopStreamID) {
+        guard let playout = playout(for: streamID) else { return }
         let now = NativeV3.now()
-        handle(receiver.requestKeyFrame(now: now))
-        receiverDue = min(receiverDue, receiver.nextWakeTime(now: now) ?? .max)
+        handle(playout.receiver.requestKeyFrame(now: now), stream: streamID)
+        receiverDue = min(receiverDue, playout.receiver.nextWakeTime(now: now) ?? .max)
         drive()
     }
 
     /// The Screen toggle. Stopping drops the format with the picture (the
     /// manager resets the renderer), so a restart waits for the host's next one.
     func setDesktopSubscribed(_ on: Bool) {
-        if !on {
-            hasFormat = false
-            pendingFormats.removeAll()
-            heldFrames.removeAll()
-        }
+        if !on { desktop.reset() }
         guard let body = try? StreamSubscription(streamID: NativeV3.desktopStreamID).encoded() else { return }
         sendControl(on ? .streamStart : .streamStop, body: body)
+    }
+
+    /// A window's stream (its scene opened or closed). Subscribing again, as a
+    /// scene does when visionOS brings it back, starts the stream afresh.
+    func setWindowSubscribed(_ windowID: UInt32, _ on: Bool) {
+        guard windowsNegotiated, windowID != NativeV3.desktopStreamID else { return }
+        if on {
+            windows[windowID] = Playout(streamID: windowID, configuration: receiverConfiguration)
+        } else {
+            windows[windowID] = nil
+        }
+        guard let body = try? StreamSubscription(streamID: windowID).encoded() else { return }
+        sendControl(on ? .streamStart : .streamStop, body: body)
+    }
+
+    private func playout(for streamID: UInt32) -> Playout? {
+        streamID == NativeV3.desktopStreamID ? desktop : windows[streamID]
     }
 
     func sendSelectDisplay(id: String) {
@@ -269,15 +318,17 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         capabilities = hello.sessionCapabilities(from: ack)
         var configuration = VideoStreamReceiver.Configuration()
         configuration.nacks = capabilities.contains(.nack)
-        receiver = VideoStreamReceiver(streamID: NativeV3.desktopStreamID, configuration: configuration)
+        receiverConfiguration = configuration
+        desktop = Playout(streamID: NativeV3.desktopStreamID, configuration: configuration)
+        windows = [:]
         log.notice("Native v3 session up (\(ack.platform.description, privacy: .public), datagrams up to \(ack.maxUDPPayload, privacy: .public) bytes)")
-        emit(.connected(Self.v2Ack(ack)))
+        emit(.connected(Self.v2Ack(ack, windowStreams: windowsNegotiated)))
         drive()
     }
 
     /// What the rest of the client reads from a v2 ack: the host's platform,
-    /// key code space and grants. Window streams and stills are v2-only for now.
-    private static func v2Ack(_ ack: HostHelloAck) -> MacNativeStreamProtocol.HelloAck {
+    /// key code space and grants. Stills are v2-only for now.
+    private static func v2Ack(_ ack: HostHelloAck, windowStreams: Bool) -> MacNativeStreamProtocol.HelloAck {
         var grants: [String] = []
         for (bit, grant) in CompanionGrant.allCases.enumerated() where ack.grants.rawValue & (1 << bit) != 0 {
             grants.append(grant.rawValue)
@@ -286,7 +337,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             protocolVersion: MacNativeStreamProtocol.protocolVersion,
             platform: ack.platform == .windows ? "windows" : "macOS",
             keyCodeSpace: ack.keyCodeSpace == .hidUsage ? .hidUsage : .macVirtual,
-            supportsWindowStreams: false,
+            supportsWindowStreams: windowStreams,
             supportsTransparentDesktop: false,
             supportsAudioStream: ack.platform == .macOS,
             supportsStills: false,
@@ -307,7 +358,8 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             }
             emit(kind == .mouse ? .mouseAvailability(availability) : .keyboardAvailability(availability))
         case .video(let header, let data):
-            handle(receiver.receive(header, data: data, now: now))
+            guard let playout = playout(for: header.streamID) else { return }
+            handle(playout.receiver.receive(header, data: data, now: now), stream: header.streamID)
             receiverDue = min(receiverDue, now + 2_000_000)
         case .message, .audio, .state, .nack, .feedback:
             break
@@ -318,14 +370,23 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         switch message.type {
         case .formatDescription:
             guard let format = try? FormatDescription(decoding: message.body),
-                  format.streamID == NativeV3.desktopStreamID else { return }
-            pendingFormats.append(format)
-            if !hasFormat {
+                  let playout = playout(for: format.streamID) else { return }
+            playout.pendingFormats.append(format)
+            if !playout.hasFormat {
                 // Frames that beat their format here wait for it.
-                let held = heldFrames
-                heldFrames = []
-                for frame in held { deliver(frame) }
+                let held = playout.heldFrames
+                playout.heldFrames = []
+                for frame in held { deliver(frame, stream: format.streamID) }
             }
+        case .windowInventory:
+            if let inventory = try? JSONDecoder().decode(MacNativeStreamProtocol.WindowInventory.self, from: Data(message.body)) {
+                emit(.inventory(inventory.windows))
+            }
+        case .streamClosed:
+            guard let closed = try? StreamClosed(decoding: message.body) else { return }
+            // The host dropped it: the scene stays subscribed on this side.
+            windows[closed.streamID] = nil
+            emit(.windowClosed(closed.streamID, closed.reason.isEmpty ? nil : closed.reason))
         case .displayList:
             if let list = try? JSONDecoder().decode(MacNativeStreamProtocol.DisplayList.self, from: Data(message.body)) {
                 emit(.displays(list))
@@ -338,11 +399,11 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
         }
     }
 
-    private func handle(_ outputs: [VideoStreamReceiver.Output]) {
+    private func handle(_ outputs: [VideoStreamReceiver.Output], stream streamID: UInt32) {
         for output in outputs {
             switch output {
             case .frame(let frame):
-                deliver(frame)
+                deliver(frame, stream: streamID)
             case .nack(let nack):
                 session?.send(nack)
             case .recovery(let request):
@@ -352,22 +413,27 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     }
 
     /// Hands a decodable frame to the renderer, under the format in force for it.
-    private func deliver(_ frame: AssembledVideoFrame) {
-        while let next = pendingFormats.first, !SerialNumber.isNewer(next.firstFrameNumber, than: frame.frameNumber) {
-            pendingFormats.removeFirst()
+    private func deliver(_ frame: AssembledVideoFrame, stream streamID: UInt32) {
+        guard let playout = playout(for: streamID) else { return }
+        // A window whose scene isn't open (any more) has nowhere to draw.
+        guard let renderer = streamID == NativeV3.desktopStreamID ? renderer : windowRenderer(streamID) else { return }
+        while let next = playout.pendingFormats.first, !SerialNumber.isNewer(next.firstFrameNumber, than: frame.frameNumber) {
+            playout.pendingFormats.removeFirst()
             renderer.setFormatDescription(
                 Data(next.configuration),
                 kind: MacNativeStreamProtocol.FormatKind(rawValue: next.formatKind.rawValue) ?? .coreMediaImageDescription)
-            hasFormat = true
+            playout.hasFormat = true
         }
-        guard hasFormat else {
-            heldFrames.append(frame)
-            if heldFrames.count > 8 { heldFrames.removeFirst() }
+        guard playout.hasFormat else {
+            playout.heldFrames.append(frame)
+            if playout.heldFrames.count > 8 { playout.heldFrames.removeFirst() }
             return
         }
         let now = NativeV3.now()
-        latency.record(captureTime: frame.captureTime, isKeyFrame: frame.flags.contains(.key), now: now,
-                       hostNow: session?.clock.remoteTime(atLocal: now))
+        if streamID == NativeV3.desktopStreamID {
+            latency.record(captureTime: frame.captureTime, isKeyFrame: frame.flags.contains(.key), now: now,
+                           hostNow: session?.clock.remoteTime(atLocal: now))
+        }
         renderer.enqueue(MacNativeStreamProtocol.VideoFrame(
             data: Data(frame.payload.accessUnit), isKeyFrame: frame.flags.contains(.key),
             sequence: UInt64(frame.frameNumber), timestampNanoseconds: frame.captureTime))
@@ -392,8 +458,14 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             return
         }
         if now >= receiverDue {
-            handle(receiver.poll(now: now, rtt: session?.rtt.smoothed ?? 0))
-            receiverDue = receiver.nextWakeTime(now: now) ?? .max
+            let rtt = session?.rtt.smoothed ?? 0
+            var due = UInt64.max
+            for streamID in [NativeV3.desktopStreamID] + Array(windows.keys) {
+                guard let playout = playout(for: streamID) else { continue }
+                handle(playout.receiver.poll(now: now, rtt: rtt), stream: streamID)
+                due = min(due, playout.receiver.nextWakeTime(now: now) ?? .max)
+            }
+            receiverDue = due
         }
         flush(now: now)
         if let closure = session?.closure {

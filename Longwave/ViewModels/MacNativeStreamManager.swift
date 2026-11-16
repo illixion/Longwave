@@ -193,6 +193,9 @@ final class MacNativeStreamManager {
         layer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
     }
     private var activeConnectionID: UUID?
+    /// The host answered Native v3 without window streams (an older Companion)
+    /// while Unity is on, so this target connects over v2 until it is forgotten.
+    private var v3UnusableForWindows = false
     /// Text-only typing fallback — the same channel/token VNC uses, opened
     /// alongside Screen so plain typing works even with keyboard shortcuts
     /// off (or before the user opts into them at all).
@@ -203,6 +206,7 @@ final class MacNativeStreamManager {
     /// off, so the live toggle has something to connect to.
     func prepare(for connection: SavedConnection) {
         self.connection = connection
+        v3UnusableForWindows = false
         unityEnabled = connection.nativeUnityEnabled
         unityAutoShow = connection.nativeUnityAutoShow
         unityVisibleWindowIDs = []
@@ -238,7 +242,8 @@ final class MacNativeStreamManager {
                 credential: connection.companionCredential ?? CompanionCredential(token: "", deviceID: nil),
                 deviceName: DeviceName.current,
                 wantsScreen: liveEnabled,
-                prefersV3: UserDefaults.standard.bool(forKey: ConnectionDefaults.Keys.nativeV3)
+                prefersV3: UserDefaults.standard.bool(forKey: ConnectionDefaults.Keys.nativeV3) && !v3UnusableForWindows,
+                wantsWindows: unityEnabled
             ),
             renderer: renderer
         )
@@ -350,6 +355,7 @@ final class MacNativeStreamManager {
         }
         windowSessions = [:]
         connection = nil
+        v3UnusableForWindows = false
         liveEnabled = false
         unityEnabled = false
         unityAutoShow = false
@@ -684,8 +690,15 @@ final class MacNativeStreamManager {
             if let grants = ack?.grants, let connection {
                 connection.companionGrants = Set(grants.compactMap(CompanionGrant.init(rawValue:)))
             }
+            if let ack, unityEnabled, !ack.supportsWindowStreams, client?.transportIsV3 == true, let connection {
+                // This host speaks v3 but has no window streams on it: Unity
+                // needs the classic stream, so connect again that way, once.
+                v3UnusableForWindows = true
+                connect(to: connection)
+                return
+            }
             if let ack {
-                // v2 session: streams are subscription-based. Desktop rides
+                // Streams are subscription-based (v2, and v3 with window streams). Desktop rides
                 // the Screen toggle; open per-window scenes resubscribe so a
                 // reconnect resumes them.
                 if liveEnabled {

@@ -16,6 +16,9 @@ final class MacNativeStreamClient: @unchecked Sendable {
         /// Try Native v3 first (the client's experimental setting), falling
         /// back to v2 when no v3 host answers. Needs a per-device credential.
         var prefersV3: Bool = false
+        /// The session uses Unity: over v3 the client then asks the host for
+        /// window streams (and so the window inventory).
+        var wantsWindows: Bool = false
     }
 
     enum Event: Sendable {
@@ -87,7 +90,8 @@ final class MacNativeStreamClient: @unchecked Sendable {
     func start() {
         if config.prefersV3, let link = MacNativeV3Link(
             host: config.host, port: config.port, credential: config.credential, deviceName: config.deviceName,
-            wantsScreen: config.wantsScreen, queue: queue, renderer: renderer,
+            wantsScreen: config.wantsScreen, wantsWindows: config.wantsWindows, queue: queue, renderer: renderer,
+            windowRenderer: { [weak self] windowID in self?.windowRenderers[windowID] },
             emit: { [weak self] event in
                 if case .closed(let message) = event {
                     self?.emitClosed(message)
@@ -217,6 +221,10 @@ final class MacNativeStreamClient: @unchecked Sendable {
     /// the queue is safe.
     private nonisolated(unsafe) var usingV3 = false
 
+    /// Whether this session runs over Native v3. Set by `start`, cleared by the
+    /// fallback to v2.
+    nonisolated var transportIsV3: Bool { usingV3 }
+
     // MARK: - v2 multiplexed streams
 
     /// Registers (or, with nil, removes) the renderer that receives a window
@@ -237,18 +245,22 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func sendWindowStreamStart(windowID: UInt32) {
-        // v3 carries only the desktop so far; this is its Screen toggle.
-        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(true) } }) { return }
+        // Over v3 the desktop rides the Screen toggle and a window is one more stream.
+        if onV3({ link in
+            if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(true) } else { link.setWindowSubscribed(windowID, true) }
+        }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStart, windowID: windowID))
     }
 
     func sendWindowStreamStop(windowID: UInt32) {
-        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(false) } }) { return }
+        if onV3({ link in
+            if windowID == NativeV3.desktopStreamID { link.setDesktopSubscribed(false) } else { link.setWindowSubscribed(windowID, false) }
+        }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.windowStreamStop, windowID: windowID))
     }
 
     func sendRequestKeyFrame(windowID: UInt32) {
-        if onV3({ link in if windowID == NativeV3.desktopStreamID { link.requestKeyFrame() } }) { return }
+        if onV3({ $0.requestKeyFrame(streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.requestKeyFrame, windowID: windowID))
     }
 
@@ -263,11 +275,12 @@ final class MacNativeStreamClient: @unchecked Sendable {
     }
 
     func sendFocusWindow(windowID: UInt32) {
-        if usingV3 { return }
+        if onV3({ $0.sendFocusWindow(streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowID(.focusWindow, windowID: windowID))
     }
 
     func sendWindowMouseMove(windowID: UInt32, x: UInt16, y: UInt16) {
+        if onV3({ $0.sendMouseMove(x: x, y: y, streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowMouseMove(windowID: windowID, x: x, y: y))
     }
 
@@ -277,6 +290,7 @@ final class MacNativeStreamClient: @unchecked Sendable {
         x: UInt16,
         y: UInt16
     ) {
+        if onV3({ $0.sendMouseButton(down: true, button: button, x: x, y: y, streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowMouseButton(
             .windowMouseDown, windowID: windowID, button: button, x: x, y: y
         ))
@@ -288,12 +302,14 @@ final class MacNativeStreamClient: @unchecked Sendable {
         x: UInt16,
         y: UInt16
     ) {
+        if onV3({ $0.sendMouseButton(down: false, button: button, x: x, y: y, streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowMouseButton(
             .windowMouseUp, windowID: windowID, button: button, x: x, y: y
         ))
     }
 
     func sendWindowScroll(windowID: UInt32, x: UInt16, y: UInt16, deltaX: Int16, deltaY: Int16) {
+        if onV3({ $0.sendScroll(x: x, y: y, deltaX: deltaX, deltaY: deltaY, streamID: windowID) }) { return }
         send(MacNativeStreamProtocol.encodeWindowScroll(
             windowID: windowID, x: x, y: y, deltaX: deltaX, deltaY: deltaY
         ))

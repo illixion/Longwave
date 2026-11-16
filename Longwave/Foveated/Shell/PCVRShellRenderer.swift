@@ -45,6 +45,13 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Where the picture is taken to lie, metres ahead of the render eye, for a
     /// frame whose depth has not arrived (or a host that sends none).
     var planeDistance: Float = 50
+    /// The quality tier to hold, for A/B runs; nil lets the render loop pick
+    /// one from its GPU time (`PCVRWarpBudget`). A tier only ever limits
+    /// `maxSteps`, `stepTexels` and `fillsFromOtherEye` as set here.
+    var tier: PCVRWarpTier?
+    /// The share of the display period a display frame's GPU time may take
+    /// before the tier is lowered (`PCVRWarpBudget.Configuration.share`).
+    var budgetShare = PCVRWarpBudget.defaultShare
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -76,6 +83,13 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
     /// GPU time of a display frame's command buffer, ms.
     var gpuTime: Double?
     var gpuTimeMax: Double?
+    /// The depth warp's tier in force (pinned or picked by the budget).
+    var warpTier = PCVRWarpTier.full
+    /// The display period the loop observed (the shortest interval between
+    /// two presentation times in the window) and the GPU time the budget
+    /// allows of it, ms.
+    var displayPeriod: Double?
+    var warpBudget: Double?
     var worldTracking = "—"
     var configuration = "—"
 }
@@ -129,6 +143,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     private let gpuTimes = OSAllocatedUnfairLock(initialState: [Double]())
     private var depthWarps = 0
     private var depthWarpsWithoutDepth = 0
+    /// The warp's tier when none is pinned, stepped once per stats window.
+    private var warpBudget = PCVRWarpBudget()
     /// `LayerRenderer.Clock` seconds minus `CACurrentMediaTime()`. ARKit takes
     /// the former; the receiver clock everything else stamps is the latter.
     private var clockOffset: TimeInterval = 0
@@ -311,10 +327,12 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         // One depth picture for the frame, kept until the GPU is done with it.
         var depthEntry: PCVRDepthStore.Entry?
         if let warper, let presented {
-            warper.maxSteps = warp.maxSteps
-            warper.stepTexels = warp.stepTexels
+            let march = (warp.tier ?? warpBudget.tier).limiting(
+                PCVRWarpMarch(maxSteps: warp.maxSteps, stepTexels: warp.stepTexels, fillsFromOtherEye: warp.fillsFromOtherEye))
+            warper.maxSteps = march.maxSteps
+            warper.stepTexels = march.stepTexels
             warper.tintsFills = warp.tintsFills
-            warper.fillsFromOtherEye = warp.fillsFromOtherEye
+            warper.fillsFromOtherEye = march.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1
             if depthEntry == nil { depthWarpsWithoutDepth += 1 }
@@ -351,7 +369,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         commandBuffer.commit()
         committed = true
         frame.endSubmission()
-        publishStatsIfDue(now: presentTime, tracking: tracking)
+        publishStatsIfDue(now: presentTime, tracking: tracking, warp: warp)
     }
 
     private func produceSnapshot(head: PCVRPose, drawable: LayerRenderer.Drawable, presentLayerTime: TimeInterval,
@@ -438,7 +456,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
     // MARK: Stats
 
-    private func publishStatsIfDue(now: TimeInterval, tracking: DataProviderState) {
+    private func publishStatsIfDue(now: TimeInterval, tracking: DataProviderState, warp: PCVRShellDepthWarp) {
         guard now - window.start >= 0.5 else { return }
         let counts = mailbox.counts
         let horizon = poseProducer.predictionHorizon
@@ -449,9 +467,31 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             return times
         }
         let warps = depthWarps, withoutDepth = depthWarpsWithoutDepth
+        let gpuMean = gpu.isEmpty ? nil : gpu.reduce(0, +) / Double(gpu.count)
+        // The budget steps on the window's mean GPU time against the period
+        // the display ran at in it. A pinned tier, or the warp off, leaves it
+        // be: the time measured is then not its tier's.
+        let configuration = {
+            var configuration = PCVRWarpBudget.Configuration()
+            configuration.share = warp.budgetShare
+            return configuration
+        }()
+        if warp.isEnabled, warp.tier == nil {
+            let before = warpBudget.tier
+            warpBudget = warpBudget.observing(gpuTime: gpuMean, period: snapshot.shortestInterval, configuration: configuration)
+            if warpBudget.tier != before, let gpuMean, let period = snapshot.shortestInterval {
+                log.notice("Depth warp tier \(before.name, privacy: .public) -> \(self.warpBudget.tier.name, privacy: .public): GPU \(gpuMean * 1000, format: .fixed(precision: 2)) ms of a \(period * 1000, format: .fixed(precision: 2)) ms period, budget \(PCVRWarpBudget.allowance(period: period, configuration: configuration) * 1000, format: .fixed(precision: 2)) ms")
+            }
+        }
+        let tier = warp.tier ?? warpBudget.tier
         stats.withLock { stats in
-            stats.gpuTime = gpu.isEmpty ? nil : gpu.reduce(0, +) / Double(gpu.count) * 1000
+            stats.gpuTime = gpuMean.map { $0 * 1000 }
             stats.gpuTimeMax = gpu.max().map { $0 * 1000 }
+            stats.warpTier = tier
+            stats.displayPeriod = snapshot.shortestInterval.map { $0 * 1000 }
+            stats.warpBudget = snapshot.shortestInterval.map {
+                PCVRWarpBudget.allowance(period: $0, configuration: configuration) * 1000
+            }
             stats.depthWarps = warps
             stats.depthWarpsWithoutDepth = withoutDepth
             stats.displayRate = snapshot.presents > 1 ? Double(snapshot.presents - 1) / max(snapshot.lastPresent - snapshot.firstPresent, 1e-3) : 0
@@ -490,6 +530,11 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         var firstPresent: TimeInterval = 0
         var lastPresent: TimeInterval = 0
         var withoutAnchor = 0
+        /// The shortest interval between two presentation times: the display
+        /// period, whatever rate visionOS chose. Not the mean, which a missed
+        /// refresh stretches, just when the budget should not grow. Intervals
+        /// under 4 ms (240 Hz) are a repeated timestamp, not a period.
+        var shortestInterval: TimeInterval?
         var frameAge = Series()
         var poseToPresent = Series()
         var arrivalToPresent = Series()
@@ -498,6 +543,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
         mutating func addPresent(time: TimeInterval, frameAge age: TimeInterval?, hasAnchor: Bool) {
             if presents == 0 { firstPresent = time }
+            if presents > 0, time - lastPresent >= 0.004 {
+                shortestInterval = min(shortestInterval ?? .infinity, time - lastPresent)
+            }
             if start == 0 { start = time }
             presents += 1
             lastPresent = time

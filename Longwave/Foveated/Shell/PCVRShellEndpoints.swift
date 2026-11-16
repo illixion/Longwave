@@ -18,7 +18,7 @@ enum PCVRShellEndpoints {
         DebugSurface.shared.register([
             .untyped("pcvrShell", kind: .query,
                      "Shell A, the PCVR v3 stream in a CompositorServices space: whether it is open, the render loop's "
-                     + "measurements (display rate, frame age, GPU time, depth warps) and the v3 source's") { _ in
+                     + "measurements (display rate, frame age, GPU time, depth warps, the warp's tier and GPU budget) and the v3 source's") { _ in
                 guard let session = PCVRShellSession.current else {
                     throw DebugError.unavailable("no Shell A session", hint: "a FOVEATED_ENABLED visionOS build makes one at launch")
                 }
@@ -37,6 +37,11 @@ enum PCVRShellEndpoints {
                         .number("warpStep", "the march's step in depth-map texels (default 2)", default: 0, range: 0...8),
                         .boolean("warpTint", "diagnostics: the pixels the warp fills in, in magenta (cyan: filled from the other eye)"),
                         .boolean("otherEye", "fill what an eye could not see from the frame's other eye (default on)"),
+                        .string("warpTier", "auto | full | reduced | minimal: pin the warp's quality tier for an A/B run, or let "
+                                + "the GPU budget pick it (auto, the default). reduced: at most 20 steps of 3 texels; minimal: "
+                                + "12 steps of 4 texels, no other-eye fill", default: ""),
+                        .number("warpBudget", "the share of the display period a display frame's GPU time may take before "
+                                + "the tier is lowered (default 0.8)", default: 0, range: 0...2),
                         .number("planeDistance", "metres ahead a frame without depth is taken to lie (default 50)",
                                 default: 0, range: 0...1000),
                         .boolean("predictsToLatency", "predict the uplink pose by the measured pipeline latency (default on)"),
@@ -53,6 +58,16 @@ enum PCVRShellEndpoints {
                 if let step = args.double("warpStep"), step > 0 { options.depthWarp.stepTexels = Float(step) }
                 if let tint = args.bool("warpTint") { options.depthWarp.tintsFills = tint }
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
+                if let name = args.string("warpTier"), !name.isEmpty {
+                    if name == "auto" {
+                        options.depthWarp.tier = nil
+                    } else if let tier = PCVRWarpTier(name: name) {
+                        options.depthWarp.tier = tier
+                    } else {
+                        throw DebugError.invalidArgument("no warp tier named \(name)", hint: "auto, full, reduced or minimal")
+                    }
+                }
+                if let share = args.double("warpBudget"), share > 0 { options.depthWarp.budgetShare = share }
                 if let plane = args.double("planeDistance"), plane > 0 { options.depthWarp.planeDistance = Float(plane) }
                 if let predicts = args.bool("predictsToLatency") { options.predictsToLatency = predicts }
                 if let percentile = args.double("percentile"), percentile >= 0 { options.readinessPercentile = percentile }
@@ -111,10 +126,12 @@ enum PCVRShellEndpoints {
             "framesWithoutAnchor": s.framesWithoutAnchor,
             "depthWarps": s.depthWarps,
             "depthWarpsWithoutDepth": s.depthWarpsWithoutDepth,
+            "warpTier": s.warpTier.name,
         ]
         let optional: [String: Double?] = [
             "frameAgeMs": s.frameAge, "frameAgeMaxMs": s.frameAgeMax, "poseToPresentMs": s.poseToPresent,
             "arrivalToPresentMs": s.arrivalToPresent, "gpuTimeMs": s.gpuTime, "gpuTimeMaxMs": s.gpuTimeMax,
+            "displayPeriodMs": s.displayPeriod, "warpBudgetMs": s.warpBudget,
         ]
         for (key, value) in optional { if let value { stats[key] = value } }
         if let readiness = s.readiness { stats["readinessMs"] = readiness }
@@ -125,6 +142,7 @@ enum PCVRShellEndpoints {
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
+                "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,
                 "maxHorizonMs": session.renderOptions.maximumHorizon * 1000,

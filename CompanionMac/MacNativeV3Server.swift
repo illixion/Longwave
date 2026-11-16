@@ -13,8 +13,9 @@ import RAVECompanion
 /// sans-I/O `HostEndpoint`: it owns the socket and the timer, and each viewer
 /// gets its own `VideoStreamSender` on the one shared capture and encode.
 ///
-/// The first cut carries the desktop, remote input, the display choice and the
-/// remote-control status. Window streams, stills and audio stay on v2. The
+/// It carries the desktop, Unity's per-window streams (more stream IDs on the
+/// same session, §4.2), remote input, the display choice and the
+/// remote-control status. Stills and audio stay on v2. The
 /// callbacks mirror `MacNativeStreamServer`'s, so the streaming controller
 /// treats both servers' viewers as one set.
 nonisolated final class MacNativeV3Server: @unchecked Sendable {
@@ -41,6 +42,16 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     nonisolated(unsafe) var onTargetBitrate: (@Sendable (Int?) -> Void)?
     /// The slowest viewer's smoothed round trip, ms.
     nonisolated(unsafe) var onLinkLatency: (@Sendable (Double) -> Void)?
+    /// A viewer subscribed to, or let go of, a window stream. Called once per
+    /// viewer and window; the controller counts them across both servers.
+    nonisolated(unsafe) var onWindowStreamStart: (@Sendable (UInt32) -> Void)?
+    nonisolated(unsafe) var onWindowStreamStop: (@Sendable (UInt32) -> Void)?
+    nonisolated(unsafe) var onWindowKeyFrameNeeded: (@Sendable (UInt32) -> Void)?
+    nonisolated(unsafe) var onWindowMouseMove: (@Sendable (UInt32, UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onWindowMouseDown: (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onWindowMouseUp: (@Sendable (UInt32, MacNativeStreamProtocol.MouseButton, UInt16, UInt16) -> Void)?
+    nonisolated(unsafe) var onWindowScroll: (@Sendable (UInt32, UInt16, UInt16, Int16, Int16) -> Void)?
+    nonisolated(unsafe) var onFocusWindow: (@Sendable (UInt32) -> Void)?
 
     private struct PeerKey: Hashable, Sendable {
         let id: ObjectIdentifier
@@ -66,7 +77,11 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         /// for the desktop (its Screen toggle).
         var wantsScreen: Bool
         var confirmed = false
+        /// The viewer's first sender: the desktop's, and the owner of the
+        /// session's rate controller whether or not the desktop is watched.
         var sender: VideoStreamSender
+        /// One follower per subscribed window, paced out of `sender`'s budget.
+        var windowSenders: [UInt32: VideoStreamSender] = [:]
         var lastPointer: UInt32?
 
         init(index: UInt32, deviceID: String, hello: ClientHello, grants: Set<CompanionGrant>, capabilities: CapabilitySet) {
@@ -80,14 +95,19 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         }
 
         var wantsDesktop: Bool { confirmed && wantsScreen }
+        /// Window streams were negotiated and the device may see the screen.
+        var wantsWindows: Bool { confirmed && capabilities.contains(.windowStreams) && grants.contains(.screen) }
+        /// Whether `pump` has anything to send: frames, or probes for the rate controller.
+        var sendsMedia: Bool { wantsDesktop || !windowSenders.isEmpty }
 
         var summary: MacNativeStreamServer.ClientSummary {
-            .init(deviceName: deviceName, protocolVersion: 3, decodesHEVC422: capabilities.contains(.hevc422))
+            .init(deviceName: deviceName, protocolVersion: 3, decodesHEVC422: capabilities.contains(.hevc422),
+                  wantsWindows: wantsWindows)
         }
     }
 
     /// What this host offers. HEVC is the baseline and needs no capability.
-    private static let capabilities = CapabilitySet([.nack, .hevc422])
+    private static let capabilities = CapabilitySet([.nack, .hevc422, .windowStreams])
     /// IDRs for one stream at most this often (§6.3).
     private static let keyFrameInterval: UInt64 = 250_000_000
 
@@ -106,6 +126,11 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     /// The desktop format with `firstFrameNumber` left for each viewer to fill.
     private nonisolated(unsafe) var currentFormat: FormatDescription?
     private nonisolated(unsafe) var currentDisplayList: [UInt8]?
+    /// Each streaming window's format, with `firstFrameNumber` left for each viewer to fill.
+    private nonisolated(unsafe) var windowFormats: [UInt32: FormatDescription] = [:]
+    /// The window inventory as JSON, for viewers that join after it was published.
+    private nonisolated(unsafe) var currentInventory: [UInt8]?
+    private nonisolated(unsafe) var lastWindowKeyFrameRequest: [UInt32: UInt64] = [:]
     private nonisolated(unsafe) var mouseAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var keyboardAvailability = MacNativeStreamProtocol.RemoteControlStatus.disabled.rawValue
     private nonisolated(unsafe) var lastKeyFrameRequest: UInt64?
@@ -285,6 +310,141 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         }
     }
 
+    // MARK: Window streams
+
+    /// The window inventory (JSON `WindowInventory`, as v2 sends it), for the
+    /// viewers that negotiated window streams.
+    nonisolated func broadcastInventory(_ windows: [MacNativeStreamProtocol.WindowInfo]) {
+        guard let json = try? JSONEncoder().encode(MacNativeStreamProtocol.WindowInventory(windows: windows)) else { return }
+        queue.async { [self] in
+            currentInventory = Array(json)
+            for viewer in viewers.values where viewer.wantsWindows { send(.windowInventory, body: Array(json), to: viewer) }
+            pump()
+        }
+    }
+
+    nonisolated func broadcastWindowFormatDescription(windowID: UInt32, data: Data) {
+        guard let format = Self.formatDescription(from: data, streamID: windowID) else {
+            log.error("Could not describe a window's format for v3 viewers")
+            return
+        }
+        queue.async { [self] in
+            windowFormats[windowID] = format
+            for viewer in viewers.values where viewer.windowSenders[windowID] != nil { sendWindowFormat(windowID, to: viewer) }
+            pump()
+        }
+    }
+
+    nonisolated func broadcastWindowFrame(windowID: UInt32, _ data: Data, isKeyFrame: Bool, timestampNanoseconds: UInt64) {
+        queue.async { [self] in
+            let now = NativeV3.now()
+            var wantsKeyFrame = false
+            for viewer in viewers.values where viewer.windowSenders[windowID] != nil {
+                guard let udpPayload = endpoint.sessions[viewer.index]?.session.udpPayload else { continue }
+                do {
+                    switch try viewer.windowSenders[windowID]?.submit(
+                        accessUnit: data, isKeyFrame: isKeyFrame, captureTime: timestampNanoseconds,
+                        udpPayload: udpPayload, now: now) {
+                    case .awaitingKeyFrame?, .queueFull?:
+                        wantsKeyFrame = true
+                    case .queued?, nil:
+                        break
+                    }
+                } catch {
+                    log.error("Could not shard a window frame: \(String(describing: error), privacy: .public)")
+                }
+            }
+            if wantsKeyFrame { requestWindowKeyFrame(windowID, now: now) }
+            pump()
+        }
+    }
+
+    /// The window's capture ended on the host: every viewer of it is told, and
+    /// the session carries on.
+    nonisolated func sendWindowClosed(windowID: UInt32, reason: String?) {
+        queue.async { [self] in
+            windowFormats[windowID] = nil
+            lastWindowKeyFrameRequest[windowID] = nil
+            for viewer in viewers.values where viewer.windowSenders[windowID] != nil {
+                viewer.windowSenders[windowID] = nil
+                sendStreamClosed(windowID, reason: reason ?? "", to: viewer)
+            }
+            pump()
+        }
+    }
+
+    private func subscribeWindow(_ windowID: UInt32, for viewer: Viewer, now: UInt64) {
+        guard viewer.wantsWindows else { return }
+        let resubscribed = viewer.windowSenders[windowID] != nil
+        if !resubscribed {
+            guard viewer.windowSenders.count < MacNativeStreamProtocol.maxConcurrentWindowStreams else {
+                sendStreamClosed(windowID, reason: "Window stream limit reached (\(MacNativeStreamProtocol.maxConcurrentWindowStreams)).", to: viewer)
+                return
+            }
+            var configuration = VideoStreamSender.Configuration(streamID: windowID)
+            configuration.followsExternalRate = true
+            let wasWatched = isWatched(windowID)
+            viewer.windowSenders[windowID] = VideoStreamSender(configuration: configuration)
+            // The capture starts with the first v3 viewer of a window; a later
+            // one joins it (the key frame below).
+            if !wasWatched { onWindowStreamStart?(windowID) }
+        } else {
+            // A scene that came back: start its chain again from a key frame.
+            viewer.windowSenders[windowID]?.recoveryRequested()
+        }
+        sendWindowFormat(windowID, to: viewer)
+        lastWindowKeyFrameRequest[windowID] = nil
+        requestWindowKeyFrame(windowID, now: now)
+    }
+
+    private func unsubscribeWindow(_ windowID: UInt32, for viewer: Viewer) {
+        guard viewer.windowSenders.removeValue(forKey: windowID) != nil else { return }
+        if !isWatched(windowID) { onWindowStreamStop?(windowID) }
+    }
+
+    private func isWatched(_ windowID: UInt32) -> Bool {
+        viewers.values.contains { $0.windowSenders[windowID] != nil }
+    }
+
+    /// Stamped for this viewer: its frames number from its own first key frame.
+    private func sendWindowFormat(_ windowID: UInt32, to viewer: Viewer) {
+        guard var format = windowFormats[windowID], let sender = viewer.windowSenders[windowID] else { return }
+        format.firstFrameNumber = sender.upcomingFrameNumber
+        viewer.windowSenders[windowID]?.recoveryRequested()
+        guard let body = try? format.encoded() else { return }
+        send(.formatDescription, body: body, to: viewer)
+    }
+
+    /// IDRs for one window at most this often, like the desktop's.
+    private func requestWindowKeyFrame(_ windowID: UInt32, now: UInt64) {
+        if let last = lastWindowKeyFrameRequest[windowID], now - last < Self.keyFrameInterval { return }
+        lastWindowKeyFrameRequest[windowID] = now
+        onWindowKeyFrameNeeded?(windowID)
+    }
+
+    private func sendStreamClosed(_ windowID: UInt32, reason: String, to viewer: Viewer) {
+        guard let body = try? StreamClosed(streamID: windowID, reason: reason).encoded() else { return }
+        send(.streamClosed, body: body, to: viewer)
+    }
+
+    private func nextOutput(of viewer: Viewer, window windowID: UInt32?, now: UInt64) -> VideoStreamSender.Output? {
+        guard let windowID else { return viewer.sender.next(now: now) }
+        return viewer.windowSenders[windowID]?.next(now: now)
+    }
+
+    /// Splits the viewer's budget between its streams: the desktop weighs two
+    /// windows. The pacing is a cap, so a still window's share isn't lost, but
+    /// the sum stays inside what the one rate controller measured.
+    private func applyPacing(to viewer: Viewer, now: UInt64) {
+        guard !viewer.windowSenders.isEmpty else { return }
+        let total = viewer.sender.controller.budget.pacingRate
+        let weights = UInt64((viewer.wantsDesktop ? 2 : 0) + viewer.windowSenders.count)
+        viewer.sender.setPacingRate(max(total * 2 / weights, 100_000), now: now)
+        for windowID in viewer.windowSenders.keys {
+            viewer.windowSenders[windowID]?.setPacingRate(max(total / weights, 100_000), now: now)
+        }
+    }
+
     private func sendFormat(to viewer: Viewer) {
         guard var format = currentFormat else { return }
         format.firstFrameNumber = viewer.sender.upcomingFrameNumber
@@ -303,7 +463,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     /// The v3 format for a CoreMedia ImageDescription blob: the blob travels as
     /// is (Apple clients rebuild the description from it); size, chroma and bit
     /// depth are read out for clients that don't.
-    private static func formatDescription(from data: Data) -> FormatDescription? {
+    private static func formatDescription(from data: Data, streamID: UInt32 = NativeV3.desktopStreamID) -> FormatDescription? {
         var description: CMVideoFormatDescription?
         let status = data.withUnsafeBytes { bytes -> OSStatus in
             guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return -1 }
@@ -330,7 +490,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             bitDepth = (hvcC[hvcC.startIndex + 17] & 0x07) + 8
         }
         let format = FormatDescription(
-            streamID: NativeV3.desktopStreamID, firstFrameNumber: 0, codec: codec, formatKind: .coreMediaImageDescription,
+            streamID: streamID, firstFrameNumber: 0, codec: codec, formatKind: .coreMediaImageDescription,
             size: PixelSize(width: UInt16(clamping: dimensions.width), height: UInt16(clamping: dimensions.height)),
             bitDepth: bitDepth, chromaFormat: chroma, colour: colour(of: description), configuration: Array(data))
         return (try? format.validate()) != nil ? format : nil
@@ -442,6 +602,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         sendControlStatus(.mouse, mouseAvailability, to: viewer)
         sendControlStatus(.keyboard, keyboardAvailability, to: viewer)
         if viewer.grants.contains(.screen), let currentDisplayList { send(.displayList, body: currentDisplayList, to: viewer) }
+        if viewer.wantsWindows, let currentInventory { send(.windowInventory, body: currentInventory, to: viewer) }
         // Before the stream starts: the capture reads the viewers' chroma.
         onClientConnected?(viewer.deviceName, viewer.wantsScreen)
         onClientsChanged?(summaries)
@@ -482,7 +643,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             switch event {
             case .message(.input, let message):
                 guard viewer.grants.contains(.input), let input = try? TimedInputEvent(message: message) else { continue }
-                handle(input.event)
+                handle(input.event, from: viewer)
             case .message(.control, let message):
                 handle(message, from: viewer, now: now)
             case .message:
@@ -491,15 +652,42 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
                 guard viewer.grants.contains(.input), case .pointerAbsolute(let pointer) = snapshot.payload else { continue }
                 if let last = viewer.lastPointer, !SerialNumber.isNewer(snapshot.sequence, than: last) { continue }
                 viewer.lastPointer = snapshot.sequence
-                onMouseMove?(pointer.x, pointer.y)
+                if pointer.streamID == NativeV3.desktopStreamID {
+                    onMouseMove?(pointer.x, pointer.y)
+                } else if viewer.windowSenders[pointer.streamID] != nil {
+                    onWindowMouseMove?(pointer.streamID, pointer.x, pointer.y)
+                }
             case .nack(let nack):
-                viewer.sender.handle(nack)
+                if nack.streamID == NativeV3.desktopStreamID {
+                    viewer.sender.handle(nack)
+                } else {
+                    viewer.windowSenders[nack.streamID]?.handle(nack)
+                }
             case .feedback(_, let results):
                 let rtt = endpoint.sessions[viewer.index]?.session.rtt.smoothed ?? 2_000_000
                 viewer.sender.onFeedback(results, now: now, rtt: rtt)
             case .video, .audio:
                 continue
             }
+        }
+    }
+
+    /// A window's streamID on a pointer event addresses that window, but only
+    /// one this viewer subscribed to: window coordinates are not desktop ones.
+    private func handle(_ input: InputEvent, from viewer: Viewer) {
+        switch input {
+        case .mouseDown(let event) where event.streamID != NativeV3.desktopStreamID:
+            if viewer.windowSenders[event.streamID] != nil { onWindowMouseDown?(event.streamID, Self.button(event.button), event.x, event.y) }
+        case .mouseUp(let event) where event.streamID != NativeV3.desktopStreamID:
+            if viewer.windowSenders[event.streamID] != nil { onWindowMouseUp?(event.streamID, Self.button(event.button), event.x, event.y) }
+        case .scroll(let scroll) where scroll.streamID != NativeV3.desktopStreamID:
+            if viewer.windowSenders[scroll.streamID] != nil {
+                onWindowScroll?(scroll.streamID, scroll.x, scroll.y, scroll.lineDeltaX, scroll.lineDeltaY)
+            }
+        case .focusWindow(let streamID):
+            if viewer.windowSenders[streamID] != nil { onFocusWindow?(streamID) }
+        default:
+            handle(input)
         }
     }
 
@@ -533,9 +721,15 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     private func handle(_ message: Message, from viewer: Viewer, now: UInt64) {
         switch message.type {
         case .recoveryRequest:
-            guard viewer.wantsDesktop, (try? RecoveryRequest(decoding: message.body)) != nil else { return }
-            viewer.sender.recoveryRequested()
-            requestKeyFrame(now: now)
+            guard let request = try? RecoveryRequest(decoding: message.body) else { return }
+            if request.streamID == NativeV3.desktopStreamID {
+                guard viewer.wantsDesktop else { return }
+                viewer.sender.recoveryRequested()
+                requestKeyFrame(now: now)
+            } else if viewer.windowSenders[request.streamID] != nil {
+                viewer.windowSenders[request.streamID]?.recoveryRequested()
+                requestWindowKeyFrame(request.streamID, now: now)
+            }
         case .selectDisplay:
             guard viewer.grants.contains(.screen), let id = try? TextBody.decode(message.body) else { return }
             onSelectDisplay?(id)
@@ -545,15 +739,22 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
                                                          from: Data(message.body)) else { return }
             onConfigureVirtualDisplay?(change)
         case .streamStart:
-            guard viewer.grants.contains(.screen), !viewer.wantsScreen,
-                  let subscription = try? StreamSubscription(decoding: message.body),
-                  subscription.streamID == NativeV3.desktopStreamID else { return }
+            guard viewer.grants.contains(.screen), let subscription = try? StreamSubscription(decoding: message.body) else { return }
+            if subscription.streamID != NativeV3.desktopStreamID {
+                subscribeWindow(subscription.streamID, for: viewer, now: now)
+                return
+            }
+            guard !viewer.wantsScreen else { return }
             let running = viewers.values.contains(where: \.wantsDesktop)
             viewer.wantsScreen = true
             startDesktop(for: viewer, alreadyRunning: running)
         case .streamStop:
-            guard viewer.wantsScreen, let subscription = try? StreamSubscription(decoding: message.body),
-                  subscription.streamID == NativeV3.desktopStreamID else { return }
+            guard let subscription = try? StreamSubscription(decoding: message.body) else { return }
+            if subscription.streamID != NativeV3.desktopStreamID {
+                unsubscribeWindow(subscription.streamID, for: viewer)
+                return
+            }
+            guard viewer.wantsScreen else { return }
             viewer.wantsScreen = false
             stopDesktopIfUnwatched()
         case .bye:
@@ -593,6 +794,9 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
         guard viewers.removeValue(forKey: viewer.index) != nil else { return }
         guard viewer.confirmed else { return }
         log.notice("v3 viewer \(viewer.deviceName, privacy: .private(mask: .hash)) left: \(reason, privacy: .public)")
+        let released = Array(viewer.windowSenders.keys)
+        viewer.windowSenders = [:]
+        for windowID in released where !isWatched(windowID) { onWindowStreamStop?(windowID) }
         onClientsChanged?(summaries)
         stopDesktopIfUnwatched()
         updateGate()
@@ -602,21 +806,25 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     /// datagrams. Then re-arms the timer for the earliest next work.
     private func pump() {
         let now = NativeV3.now()
-        for viewer in viewers.values where viewer.wantsDesktop {
+        for viewer in viewers.values where viewer.sendsMedia {
             guard let address = endpoint.sessions[viewer.index]?.address,
                   let connection = peers[address]?.connection else { continue }
+            applyPacing(to: viewer, now: now)
             var datagrams: [[UInt8]] = []
-            while let output = viewer.sender.next(now: now) {
-                let datagram: [UInt8]?? = endpoint.withSession(viewer.index) { session in
-                    switch output {
-                    case .shard(let header, let data): try? session.sealVideo(header, data: data, now: now)
-                    case .padding(let size, let cluster): try? session.sealPadding(size: size, probeCluster: cluster, now: now)
+            // The desktop sender first (nil), then each window's.
+            for windowID in [UInt32?.none] + viewer.windowSenders.keys.sorted().map({ UInt32?.some($0) }) {
+                while let output = nextOutput(of: viewer, window: windowID, now: now) {
+                    let datagram: [UInt8]?? = endpoint.withSession(viewer.index) { session in
+                        switch output {
+                        case .shard(let header, let data): try? session.sealVideo(header, data: data, now: now)
+                        case .padding(let size, let cluster): try? session.sealPadding(size: size, probeCluster: cluster, now: now)
+                        }
                     }
-                }
-                if let datagram = datagram ?? nil { datagrams.append(datagram) }
-                if datagrams.count >= 32 {
-                    NativeV3.send(datagrams, on: connection)
-                    datagrams = []
+                    if let datagram = datagram ?? nil { datagrams.append(datagram) }
+                    if datagrams.count >= 32 {
+                        NativeV3.send(datagrams, on: connection)
+                        datagrams = []
+                    }
                 }
             }
             NativeV3.send(datagrams, on: connection)
@@ -628,8 +836,11 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
 
         var wakes: [UInt64] = [now + 1_000_000_000]
         if let next = endpoint.nextWakeTime(now: now) { wakes.append(next) }
-        for viewer in viewers.values where viewer.wantsDesktop {
+        for viewer in viewers.values where viewer.sendsMedia {
             if let next = viewer.sender.nextWakeTime(now: now) { wakes.append(next) }
+            for windowID in viewer.windowSenders.keys {
+                if let next = viewer.windowSenders[windowID]?.nextWakeTime(now: now) { wakes.append(next) }
+            }
         }
         timer?.arm(at: max(wakes.min()!, now + 50_000))
     }

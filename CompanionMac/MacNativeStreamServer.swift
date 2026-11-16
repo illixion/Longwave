@@ -21,6 +21,8 @@ final class MacNativeStreamServer: @unchecked Sendable {
         let deviceName: String
         let protocolVersion: Int
         let decodesHEVC422: Bool
+        /// A v3 viewer that negotiated window streams, so the window inventory runs for it.
+        var wantsWindows = false
 
         var isV2: Bool { protocolVersion >= 2 }
     }

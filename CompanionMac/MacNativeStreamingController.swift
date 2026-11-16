@@ -329,6 +329,8 @@ final class MacNativeStreamingController {
     /// Whether the window-stream coordinator (inventory + per-window capture)
     /// is running — it starts with the first v2 viewer, not with each one.
     private var windowStreamsRunning = false
+    /// Which server (`v2Subscriber`, `v3Subscriber`) has viewers on each window stream.
+    private var windowSubscribers: [UInt32: Set<Int>] = [:]
 
     private func globalPoint(x: UInt16, y: UInt16) -> CGPoint {
         CGPoint(
@@ -575,7 +577,7 @@ final class MacNativeStreamingController {
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
                     self.desktopViewerJoined(Self.v2Subscriber)
                 } else {
-                    self.windowStreams.startStream(windowID: windowID)
+                    self.windowViewerJoined(windowID, subscriber: Self.v2Subscriber)
                 }
             }
         }
@@ -585,7 +587,7 @@ final class MacNativeStreamingController {
                 if windowID == MacNativeStreamProtocol.desktopStreamID {
                     self.desktopViewersLeft(Self.v2Subscriber)
                 } else {
-                    self.windowStreams.stopStream(windowID: windowID)
+                    self.windowViewerLeft(windowID, subscriber: Self.v2Subscriber)
                 }
             }
         }
@@ -677,6 +679,7 @@ final class MacNativeStreamingController {
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
                 self.server?.broadcastInventory(windows)
+                self.v3Server?.broadcastInventory(windows)
             }
         }
         windowStreams.onWindowFormatDescription = { [weak self] windowID, data in
@@ -687,6 +690,7 @@ final class MacNativeStreamingController {
                     kind: .coreMediaImageDescription,
                     data: data
                 )
+                self.v3Server?.broadcastWindowFormatDescription(windowID: windowID, data: data)
             }
         }
         windowStreams.onWindowFrame = { [weak self] windowID, data, keyFrame, sequence, timestamp in
@@ -699,12 +703,16 @@ final class MacNativeStreamingController {
                     sequence: sequence,
                     timestampNanoseconds: timestamp
                 )
+                self.v3Server?.broadcastWindowFrame(
+                    windowID: windowID, data, isKeyFrame: keyFrame, timestampNanoseconds: timestamp)
             }
         }
         windowStreams.onWindowClosed = { [weak self] windowID, reason in
             Task { @MainActor [weak self] in
                 guard let self, self.serverGeneration == generation else { return }
+                self.windowSubscribers[windowID] = nil
                 self.server?.sendWindowClosed(windowID: windowID, reason: reason)
+                self.v3Server?.sendWindowClosed(windowID: windowID, reason: reason)
             }
         }
 
@@ -797,6 +805,47 @@ final class MacNativeStreamingController {
         server.onKeyFrameNeeded = {
             onMain { $0.capture?.requestKeyFrame() }
         }
+        // Window streams: the same coordinator and input path v2 uses, tagged v3.
+        server.onWindowStreamStart = { windowID in
+            onMain { $0.windowViewerJoined(windowID, subscriber: Self.v3Subscriber) }
+        }
+        server.onWindowStreamStop = { windowID in
+            onMain { $0.windowViewerLeft(windowID, subscriber: Self.v3Subscriber) }
+        }
+        server.onWindowKeyFrameNeeded = { windowID in
+            onMain { $0.windowStreams.requestKeyFrame(windowID: windowID) }
+        }
+        server.onFocusWindow = { windowID in
+            onMain { controller in
+                guard let target = controller.windowStreams.target(for: windowID) else { return }
+                controller.input.raiseWindow(target)
+            }
+        }
+        server.onWindowMouseMove = { windowID, x, y in
+            onMain { controller in
+                guard let point = controller.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                controller.input.moveMouse(to: point)
+            }
+        }
+        server.onWindowMouseDown = { windowID, button, x, y in
+            onMain { controller in
+                guard let point = controller.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                controller.raiseIfOccluded(windowID: windowID, at: point)
+                controller.input.mouseDown(button: button, at: point)
+            }
+        }
+        server.onWindowMouseUp = { windowID, button, x, y in
+            onMain { controller in
+                guard let point = controller.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                controller.input.mouseUp(button: button, at: point)
+            }
+        }
+        server.onWindowScroll = { windowID, x, y, deltaX, deltaY in
+            onMain { controller in
+                guard let point = controller.globalPoint(windowID: windowID, x: x, y: y) else { return }
+                controller.input.scroll(deltaX: Int32(deltaX), deltaY: Int32(deltaY), at: point)
+            }
+        }
         server.onTargetBitrate = { bits in
             onMain { controller in
                 controller.v3LinkBudget = bits
@@ -842,9 +891,9 @@ final class MacNativeStreamingController {
         // Only ever raised by a viewer that has probed its own hardware
         // decoder — see `MacNativeVideoCapability`.
         viewersDecodeHEVC422 = !clients.isEmpty && clients.allSatisfy(\.decodesHEVC422)
-        // The inventory runs for as long as at least one v2 viewer is around
-        // to receive it.
-        if v2Clients.contains(where: \.isV2) {
+        // The inventory runs for as long as at least one viewer that wants
+        // windows (a v2 one, or a v3 one that negotiated them) is around.
+        if v2Clients.contains(where: \.isV2) || v3Clients.contains(where: \.wantsWindows) {
             startWindowStreams()
         } else {
             stopWindowStreams()
@@ -854,6 +903,25 @@ final class MacNativeStreamingController {
 
     private var hasVideoViewers: Bool {
         server?.hasVideoViewers() == true || v3Server?.hasVideoViewers() == true
+    }
+
+    /// A window stream runs while any viewer, on either server, watches it:
+    /// each server reports its first and last viewer of a window.
+    private func windowViewerJoined(_ windowID: UInt32, subscriber: Int) {
+        let wasWatched = !(windowSubscribers[windowID]?.isEmpty ?? true)
+        windowSubscribers[windowID, default: []].insert(subscriber)
+        if wasWatched {
+            // Already streaming: the new viewer needs a key frame, not a new capture.
+            windowStreams.requestKeyFrame(windowID: windowID)
+        } else {
+            windowStreams.startStream(windowID: windowID)
+        }
+    }
+
+    private func windowViewerLeft(_ windowID: UInt32, subscriber: Int) {
+        guard var subscribers = windowSubscribers[windowID], subscribers.remove(subscriber) != nil else { return }
+        windowSubscribers[windowID] = subscribers.isEmpty ? nil : subscribers
+        if subscribers.isEmpty { windowStreams.stopStream(windowID: windowID) }
     }
 
     private func desktopViewerJoined(_ subscriber: Int) {
@@ -902,6 +970,7 @@ final class MacNativeStreamingController {
     }
 
     private func stopWindowStreams() {
+        windowSubscribers = [:]
         guard windowStreamsRunning else {
             windowStreams.stop()
             return

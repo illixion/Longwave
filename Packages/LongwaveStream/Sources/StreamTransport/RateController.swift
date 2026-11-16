@@ -159,6 +159,12 @@ public struct GCCRateController: SendRateController {
         public var recoveryProbeMaximumInterval: UInt64 = 8_000_000_000
         /// How long a peak is remembered for recovery.
         public var recoveryWindow: UInt64 = 60_000_000_000
+        /// While the link shows no loss and no queue, the budget stays at or
+        /// above this share of the recent peak (`recoveryWindow`). A delay
+        /// blip on a healthy link then costs quality briefly, not a collapse
+        /// to a trickle: the cut is real only once the link shows it (loss,
+        /// or a queue past half the ceiling), and the floor lifts then.
+        public var healthyFloorShare = 0.25
         /// A queue above half the ceiling is drained over about this long by
         /// holding the budget under the estimate, rather than by cutting the
         /// estimate itself (which GCC regrows only additively near the link).
@@ -255,8 +261,49 @@ public struct GCCRateController: SendRateController {
     /// Times a queue that didn't drain was taken as the path's own delay.
     public private(set) var baselineRebases = 0
 
+    /// The share of the recent peak the budget keeps while the link looks
+    /// healthy, or nil (`Configuration.healthyFloorShare`).
+    private var healthyFloor: UInt64? {
+        guard loss.smoothed < 0.02, lossLimit == nil, usage != .overusing,
+              // A queue can't be ours while we send far under the estimate.
+              isApplicationLimited || queueDelay.smoothed < Double(configuration.queueDelayCeiling) / 2
+        else { return nil }
+        return recentPeakFloor
+    }
+
+    private var recentPeakFloor: UInt64? {
+        guard let peak else { return nil }
+        return min(UInt64(Double(peak.rate) * configuration.healthyFloorShare), aimd.maximum)
+    }
+
+    /// Sending far under the estimate and getting all of it through: a still
+    /// desktop. Not an encoder that sends more than a narrow link carries
+    /// (that one's receive rate is under its send rate), whose queue is its own.
+    private var isApplicationLimited = false
+
+    /// Re-judged per report (the sums are over a second of packets). The
+    /// receive rate lags the send rate and probe bursts widen the gap, so
+    /// "gets it through" means over 0.4 of it: an encoder overrunning a narrow
+    /// link delivers a fraction of that (0.23 in `testDelayStepAndRecovery`).
+    private mutating func judgeApplicationLimit() {
+        guard let sent = sendRate, let received = receiveRate else {
+            isApplicationLimited = false
+            return
+        }
+        isApplicationLimited = Double(sent) < configuration.applicationLimitedRatio * Double(aimd.rate)
+            && Double(received) >= 0.4 * Double(sent)
+    }
+
+    /// Bytes per second sent over the last second or so of reports.
+    private var sendRate: UInt64? {
+        guard let first = recentSends.first?.time, let last = recentSends.last?.time,
+              last > first + 200_000_000 else { return nil }
+        let bytes = recentSends.reduce(0) { $0 + $1.size }
+        return UInt64(Double(bytes) * 1e9 / Double(last - first))
+    }
+
     public var budget: SendBudget {
-        let limited = min(aimd.rate, lossLimit ?? .max)
+        let limited = max(min(aimd.rate, lossLimit ?? .max), healthyFloor ?? 0)
         let total = limited > drainAllowance ? limited - drainAllowance : 0
         let fec = min(max(2 * loss.smoothed + configuration.minimumFEC, configuration.minimumFEC), configuration.maximumFEC)
         return SendBudget(total: max(total, configuration.minimum), fecRatio: fec)
@@ -284,6 +331,7 @@ public struct GCCRateController: SendRateController {
             recentSends.removeAll { $0.time + 1_000_000_000 < newest }
         }
         loss.close(now: now)
+        judgeApplicationLimit()
         usage = trendline.state
         let ceiling = Double(configuration.queueDelayCeiling)
         let probing = probeGraceUntil.map { now < $0 } ?? false
@@ -299,8 +347,13 @@ public struct GCCRateController: SendRateController {
             ? UInt64(excess / Double(configuration.queueDrainTime) * Double(received ?? aimd.rate)) : 0
 
         if usage == .overusing {
-            if let received, aimd.mayReduceFurther(now: now, rtt: rtt, received: received) {
-                aimd.update(.overusing, received: received, now: now, rtt: rtt)
+            // Application limited with no loss: a queue can't be ours, since
+            // cutting what we send would not drain it, and the receive rate
+            // is the encoder's, not the link's (see `AimdRateControl.update`).
+            let applicationLimited = isApplicationLimited && loss.smoothed < 0.02
+            if let received, aimd.mayReduceFurther(now: now, rtt: rtt, received: received, applicationLimited: applicationLimited) {
+                aimd.update(.overusing, received: received, now: now, rtt: rtt, applicationLimited: applicationLimited,
+                            floor: recentPeakFloor ?? 0)
             }
         } else if let result = finishProbe(now: now, rtt: rtt) {
             lastProbeResult = result

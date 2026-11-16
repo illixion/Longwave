@@ -372,4 +372,45 @@ final class RateControlSimulationTests: XCTestCase {
         XCTAssertGreaterThan(sender.meanBudget(recovered), 0.8 * Double(capacity), "fill \(fill): back within 8 s")
         XCTAssertLessThan(sender.delayPercentile(0.95, recovered), 20 * ms, "fill \(fill)")
     }
+
+    /// The collapse of 2026-11-16 20:04 (Companion log): a still desktop on a
+    /// healthy Wi-Fi link, 0 % loss, a 3 ms queue, and the budget went from 64
+    /// to 2.9 Mbit/s (encoder 1.5), taking 35 s to climb back. The only
+    /// signal was a brief delay rise. The cut was 0.85 × the receive rate,
+    /// which on a still desktop is the encoder's trickle, not the link.
+    func testDelayBlipOnAStillDesktopDoesNotCollapseTheBudget() throws {
+        for ramp in [(blip: 20 * ms, rise: 300 * ms), (blip: 45 * ms, rise: 120 * ms)] {
+            let link = bottleneck(propagation: 1 * ms, jitter: 300_000)
+            let (harness, index) = try connect(down: link)
+            let sender = ControlledSender(harness: harness, index: index, propagation: 1 * ms)
+            let start = harness.now
+            harness.run(for: 6_000 * ms)
+            // Motion first, so the estimate has found the link; then a still desktop.
+            sender.encoderLimit = 60_000
+            harness.run(for: 12_000 * ms)
+            let before = start + 12_000 * ms..<start + 18_000 * ms
+            let held = sender.meanBudget(before)
+            // Four delay blips on the way to the next second.
+            for _ in 0..<4 {
+                var shaped = link
+                var elapsed: UInt64 = 0
+                while elapsed < ramp.rise {
+                    let fraction = Double(elapsed) / Double(ramp.rise)
+                    shaped.propagationDelay = 1 * ms + UInt64(Double(ramp.blip) * fraction)
+                    harness.network.setModel(shaped, from: .host, to: .client)
+                    harness.run(for: 20 * ms)
+                    elapsed += 20 * ms
+                }
+                harness.network.setModel(link, from: .host, to: .client)
+                harness.run(for: 1_000 * ms)
+            }
+            harness.run(for: 4_000 * ms)
+            let after = start + 18_000 * ms..<start + 27_000 * ms
+            sender.report("blip \(ramp.blip / ms) ms", after, capacity: Double(capacity))
+            // The floor is a quarter of the recent peak; it was 5 % of it before the fix.
+            XCTAssertGreaterThan(sender.minimumBudget(after), UInt64(0.2 * held), "blip \(ramp.blip / ms) ms: no collapse")
+            let recovered = start + 25_500 * ms..<start + 27_000 * ms
+            XCTAssertGreaterThan(sender.meanBudget(recovered), 0.5 * held, "blip \(ramp.blip / ms) ms: back after the last blip")
+        }
+    }
 }

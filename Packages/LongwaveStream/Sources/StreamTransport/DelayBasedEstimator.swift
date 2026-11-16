@@ -303,6 +303,10 @@ struct AimdRateControl: Sendable {
     enum Phase: Sendable, Equatable { case hold, increase, decrease }
 
     static let beta = 0.85
+    /// The cut for an overuse signal read while the sender is application
+    /// limited (see `update`): a fifth off the estimate, not 0.85 × a receive
+    /// rate that is only the encoder's trickle.
+    static let applicationLimitedCut = 0.8
     static let packetSize = 1_200.0
 
     let minimum: UInt64
@@ -325,10 +329,12 @@ struct AimdRateControl: Sendable {
 
     /// Whether an overuse may cut again: one RTT (10–200 ms) after the last
     /// change, or at once if the receive rate has fallen under half.
-    func mayReduceFurther(now: UInt64, rtt: UInt64, received: UInt64) -> Bool {
+    func mayReduceFurther(now: UInt64, rtt: UInt64, received: UInt64, applicationLimited: Bool = false) -> Bool {
         guard let lastChange else { return true }
         let interval = min(max(rtt, 10_000_000), 200_000_000)
-        return now - lastChange >= interval || received < rate / 2
+        // A receive rate under half the estimate is the sender's, when it is
+        // application limited, and says nothing of the link.
+        return now - lastChange >= interval || (!applicationLimited && received < rate / 2)
     }
 
     /// A lower or raised ceiling; the rate comes down to it at once.
@@ -343,7 +349,17 @@ struct AimdRateControl: Sendable {
         lastChange = now
     }
 
-    mutating func update(_ usage: BandwidthUsage, received: UInt64?, now: UInt64, rtt: UInt64) {
+    /// `applicationLimited`: the sender sends far under the estimate (a still
+    /// desktop), the queue is short and nothing is lost, so the delay signal
+    /// is the only evidence of congestion. The receive rate then measures
+    /// the encoder, and cutting to 0.85 × it collapsed a 64 Mbit/s estimate to
+    /// 2.9 on a healthy link (2026-11-16). The cut is a fixed share of the
+    /// estimate instead, and the link capacity estimate is left alone: a
+    /// trickle must not become the remembered capacity. The cuts also stop at
+    /// `floor`: a blip lasts several round trips and 0.8 each would still
+    /// compound to nothing.
+    mutating func update(_ usage: BandwidthUsage, received: UInt64?, now: UInt64, rtt: UInt64,
+                         applicationLimited: Bool = false, floor: UInt64 = 0) {
         switch usage {
         case .normal: if phase == .hold { phase = .increase }
         case .overusing: if phase != .decrease { phase = .decrease }
@@ -370,6 +386,12 @@ struct AimdRateControl: Sendable {
             }
             lastChange = now
         case .decrease:
+            if applicationLimited {
+                next = max(UInt64(Double(rate) * Self.applicationLimitedCut), min(floor, rate))
+                phase = .hold
+                lastChange = now
+                break
+            }
             guard let received else { break }
             var decreased = UInt64(Self.beta * Double(received))
             if decreased > rate, let estimate = link.estimate { decreased = UInt64(Self.beta * estimate * 1_000) }

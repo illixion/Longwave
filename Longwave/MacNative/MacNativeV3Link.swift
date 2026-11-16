@@ -210,6 +210,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
     /// The decoder lost its state: freeze until a key frame, and ask for one.
     func requestKeyFrame(streamID: UInt32 = NativeV3.desktopStreamID) {
         guard let playout = playout(for: streamID) else { return }
+        log.notice("Decoder asked for a key frame (stream \(streamID, privacy: .public))")
         let now = NativeV3.now()
         handle(playout.receiver.requestKeyFrame(now: now), stream: streamID)
         receiverDue = min(receiverDue, playout.receiver.nextWakeTime(now: now) ?? .max)
@@ -407,6 +408,7 @@ nonisolated final class MacNativeV3Link: @unchecked Sendable {
             case .nack(let nack):
                 session?.send(nack)
             case .recovery(let request):
+                log.notice("Asked the host to recover stream \(streamID, privacy: .public) from frame \(request.firstLostFrame, privacy: .public)")
                 if let body = try? request.encoded() { try? session?.send(.recoveryRequest, body: body, on: .control) }
             }
         }

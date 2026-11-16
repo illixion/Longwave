@@ -279,7 +279,7 @@ public struct GCCRateController: SendRateController {
     /// Sending far under the estimate and getting all of it through: a still
     /// desktop. Not an encoder that sends more than a narrow link carries
     /// (that one's receive rate is under its send rate), whose queue is its own.
-    private var isApplicationLimited = false
+    public private(set) var isApplicationLimited = false
 
     /// Re-judged per report (the sums are over a second of packets). The
     /// receive rate lags the send rate and probe bursts widen the gap, so

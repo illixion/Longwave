@@ -142,6 +142,8 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
     /// The encoder's most (bits/s), which each viewer's rate estimate stops at.
     private nonisolated(unsafe) var encoderCeiling: Int?
     private nonisolated(unsafe) var lastSweep: UInt64 = 0
+    /// Each viewer's recent budget high and when it was seen, to say why it fell.
+    private nonisolated(unsafe) var budgetHigh: [UInt32: (value: UInt64, time: UInt64, logged: Bool)] = [:]
     private nonisolated(unsafe) var desktopRunning = false
 
     private let gateLock = NSLock()
@@ -804,6 +806,7 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
 
     private func removeViewer(_ viewer: Viewer, reason: String) {
         guard viewers.removeValue(forKey: viewer.index) != nil else { return }
+        budgetHigh[viewer.index] = nil
         guard viewer.confirmed else { return }
         log.notice("v3 viewer \(viewer.deviceName, privacy: .private(mask: .hash)) left: \(reason, privacy: .public)")
         let released = Array(viewer.windowSenders.keys)
@@ -910,10 +913,31 @@ nonisolated final class MacNativeV3Server: @unchecked Sendable {
             onLinkLatency?(Double(rtt) / 1_000_000)
         }
         let media = viewers.values.filter(\.sendsMedia)
+        for viewer in media { logBudgetFall(viewer, now: now) }
         if now - lastStatsLog > 5_000_000_000, !media.isEmpty {
             lastStatsLog = now
             for viewer in media { logStatistics(viewer) }
         }
+    }
+
+    /// A budget that halves within 2 s is logged once with what the controller
+    /// saw, so a collapse (2026-11-16: 64 to 2.9 Mbit/s on a healthy link) can
+    /// be read from the log and not only seen as a blocky picture.
+    private func logBudgetFall(_ viewer: Viewer, now: UInt64) {
+        let rate = viewer.sender.controller
+        let total = rate.budget.total
+        guard let high = budgetHigh[viewer.index], now - high.time < 2_000_000_000, total <= high.value else {
+            budgetHigh[viewer.index] = (total, now, false)
+            return
+        }
+        guard total * 2 < high.value, !high.logged else { return }
+        budgetHigh[viewer.index]?.logged = true
+        func mbps(_ bytes: UInt64) -> String { String(format: "%.1f", Double(bytes) * 8 / 1e6) }
+        let line = "v3 budget fell \(mbps(high.value)) to \(mbps(total)) Mbps: \(rate.usage), "
+            + "received \(rate.receiveRate.map(mbps) ?? "-") Mbps, app-limited \(rate.isApplicationLimited), "
+            + "loss \(String(format: "%.1f", rate.smoothedLoss * 100))%, queue \(rate.queueingDelay / 1_000_000) ms, "
+            + "max \(mbps(rate.maximum)) Mbps"
+        log.notice("\(line, privacy: .public)")
     }
 
     /// What the rate controller sees and does, every 5 s while a viewer

@@ -95,6 +95,14 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
     /// `outputQueue`.
     private nonisolated(unsafe) var lastFrame: CMSampleBuffer?
     private nonisolated(unsafe) var refinementGeneration = 0
+    /// The encoder is running far under its target (the link budget collapsed:
+    /// under half of it, until it is back over 70 %). Written on the main
+    /// actor, read on `outputQueue`.
+    private nonisolated(unsafe) var starvedNow = false
+    /// A frame was encoded while starved, so the picture may carry blocks that
+    /// nothing will repair: a still desktop sends no frame to replace them, and
+    /// key frames aren't scheduled. Only touched on `outputQueue`.
+    private nonisolated(unsafe) var encodedWhileStarved = false
     /// Smoothed time from the frame's display refresh to ScreenCaptureKit
     /// handing it over, in ms.
     private(set) nonisolated(unsafe) var averageCaptureMilliseconds: Double = 0
@@ -208,6 +216,38 @@ final class MacNativeScreenCapture: NSObject, @unchecked Sendable {
         guard let encoder else { return }
         encoder.setLiveBitrate(effectiveBitrate)
         publishSummary(encoder)
+        // Hysteresis: starved under half the target, recovered from 70 %.
+        let starved = starvedNow
+            ? effectiveBitrate * 10 < targetBitrate * 7
+            : effectiveBitrate * 2 < targetBitrate && targetBitrate > 0
+        guard starved != starvedNow else { return }
+        starvedNow = starved
+        if !starved { refreshStillPicture() }
+    }
+
+    /// The bitrate is back. Whatever was encoded while it was starved (a
+    /// scroll or a window drawn at 1.5 Mbit/s of a 60 Mbit/s target, seen
+    /// 2026-11-16 as blocky purple patches) stays on a still desktop: the
+    /// refinement re-encodes only follow a change, within a second of it, and
+    /// at that same starved rate. A key frame of the last picture at the
+    /// recovered rate replaces all of it.
+    private func refreshStillPicture() {
+        outputQueue.async { [self] in refreshStill(attempt: 0) }
+    }
+
+    private nonisolated func refreshStill(attempt: Int) {
+        guard encodedWhileStarved, let frame = lastFrame else { return }
+        guard canEncode?() ?? true else {
+            // The viewers' links are full; try again shortly.
+            if attempt < 20 {
+                outputQueue.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.refreshStill(attempt: attempt + 1) }
+            }
+            return
+        }
+        encodedWhileStarved = false
+        encoder?.requestKeyFrame()
+        encoder?.encode(frame, presentationTime: CMClockGetTime(CMClockGetHostTimeClock()))
+        scheduleRefinement()
     }
 
     func start() async throws {
@@ -544,8 +584,13 @@ extension MacNativeScreenCapture: SCStreamOutput {
     private nonisolated static let refinementDelays: [Double] = [0.12, 0.4, 1.0]
 
     private nonisolated func encodeAndRefine(_ sampleBuffer: CMSampleBuffer) {
+        if starvedNow { encodedWhileStarved = true }
         encoder?.encode(sampleBuffer)
         lastFrame = sampleBuffer
+        scheduleRefinement()
+    }
+
+    private nonisolated func scheduleRefinement() {
         refinementGeneration &+= 1
         let generation = refinementGeneration
         for delay in Self.refinementDelays {

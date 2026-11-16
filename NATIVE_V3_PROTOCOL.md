@@ -93,8 +93,8 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
   - **Clients:** with theirs on, they try v3 first, falling back to v2 after 2 s
     or a refused port (`MacNativeV3Link`, inside `MacNativeStreamClient`).
   - **What v3 carries:** the desktop, remote input (as input events and pointer
-    STATE), the display choice and remote-control status. Window streams,
-    stills and audio stay on v2.
+    STATE), the display choice and remote-control status. Stills and audio stay
+    on v2. **Window streams (Unity) joined on 2026-11-16**, below.
   - **Shared parts:** the package gained `StreamHost.VideoStreamSender` (one
     viewer's frames, FEC, pacing and NACK resends, gated on its rate
     controller) and `StreamPlayout.VideoStreamReceiver` (decodable frames
@@ -113,6 +113,36 @@ is kept explicit in [Risks and open questions](#9-risks-and-open-questions).
 - Builds on [[NATIVE_MAC_STREAMING_PLAN.md]]. That plan's Phase 4 (discovery,
   pinned identities) and Phase 5 (adaptive bitrate, congestion feedback,
   latency measurement) are absorbed here rather than built on v2.
+
+### Window streams over v3 (2026-11-16)
+
+Unity's per-window streams run on the session's one transport, as more stream
+IDs (§4.2). Negotiated by the `windowStreams` capability, which a client offers
+only when its connection uses Unity, because the host then also pushes the
+window inventory (titles of every window on the Mac).
+
+- **Subscribing:** `streamStart`/`streamStop` with the window ID, needing the
+  `screen` grant. The host answers with that window's `formatDescription`
+  (stamped with this viewer's own next frame number) and starts it from a key
+  frame, rate-limited to one per 250 ms per window. A repeat `streamStart`
+  restarts the viewer's chain, as a scene coming back does. At most 6 windows
+  per viewer (`maxConcurrentWindowStreams`); a window that can't start gets a
+  `streamClosed`.
+- **Inventory:** `windowInventory` (0x26, v2's JSON body) on confirm and on
+  each change. `streamClosed` replaces v2's `windowClosed`.
+- **Rate:** the viewer's first sender owns the one rate controller. A window's
+  sender is a follower (`VideoStreamSender.Configuration.followsExternalRate`):
+  it takes no feedback and sends no probes, and the host paces every stream
+  from the owner's budget, the desktop weighing two windows. Window encoder
+  bitrates do not follow the budget yet; a full queue costs a key frame
+  request, as the desktop's does. That is the open item.
+- **Input:** `mouseDown`, `mouseUp`, `scroll`, the pointer STATE and
+  `focusWindow` carry the window's stream ID and are applied to that window
+  only while the viewer is subscribed to it, with the `input` grant.
+  Window-local coordinates are never read as desktop ones.
+- **NACK and recovery** route by stream ID.
+- **Fallback:** a client that wants windows and meets a v3 host without the
+  capability reconnects over v2, once per session (`MacNativeStreamManager`).
 
 ### PCVR implementation reconciliation (2026-11-07)
 
@@ -1063,7 +1093,9 @@ swift-foundation's `JSONEncoder` exists on Linux and Windows. Hot-path messages
 0x20; `recoveryRequest` 0x21 (`streamID u32 | firstLostFrame u32`, client to
 host, the first damaged frame of §6.3); `bye` 0x22 (a UTF-8 reason, possibly
 empty); the JSON bodies `displayList` 0x23, `selectDisplay` 0x24 (the display
-id as UTF-8), `virtualDisplayChange` 0x25 and `windowInventory` 0x26. A
+id as UTF-8), `virtualDisplayChange` 0x25 and `windowInventory` 0x26. `streamClosed` 0x2D (host to client: `streamID u32 | reasonLength u16 | reason
+UTF-8`; the stream ended on the host, its window closed or the host's stream
+limit was hit, and the session carries on). A
 `formatDescription` applies from its `firstFrameNumber`. Each viewer's frames
 are numbered from its own first key frame, so a client holds frames that
 arrive before their format and applies the format at that number.

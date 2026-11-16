@@ -41,6 +41,8 @@ enum PCVRShellEndpoints {
                                 default: 0, range: 0...1000),
                         .boolean("predictsToLatency", "predict the uplink pose by the measured pipeline latency (default on)"),
                         .number("percentile", "which readiness latency the horizon takes, 0-1 (default 0.5)", default: -1, range: -1...1),
+                        .number("maxHorizonMs", "the longest prediction horizon, ms (default 100): a game several frames deep is "
+                                + "ready later, and what the cap leaves over the reprojection bridges", default: 0, range: 0...300),
                      ]) { args in
                 guard let session = PCVRShellSession.current else {
                     throw DebugError.unavailable("no Shell A session", hint: "a FOVEATED_ENABLED visionOS build makes one at launch")
@@ -54,6 +56,7 @@ enum PCVRShellEndpoints {
                 if let plane = args.double("planeDistance"), plane > 0 { options.depthWarp.planeDistance = Float(plane) }
                 if let predicts = args.bool("predictsToLatency") { options.predictsToLatency = predicts }
                 if let percentile = args.double("percentile"), percentile >= 0 { options.readinessPercentile = percentile }
+                if let horizon = args.double("maxHorizonMs"), horizon > 0 { options.maximumHorizon = horizon / 1000 }
                 if options != session.renderOptions { session.renderOptions = options }
                 switch args.string("action") ?? "set" {
                 case "open":
@@ -124,6 +127,7 @@ enum PCVRShellEndpoints {
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,
+                "maxHorizonMs": session.renderOptions.maximumHorizon * 1000,
             ] as [String: Any],
         ]
         if let v = session.v3Status {
@@ -131,7 +135,7 @@ enum PCVRShellEndpoints {
                 "state": v.state, "picture": v.picture, "framesDecoded": v.framesDecoded, "framesLost": v.framesLost,
                 "decodeErrors": v.decodeErrors, "megabitsPerSecond": v.megabitsPerSecond,
                 "posesPerSecond": v.posesPerSecond, "gazeNegotiated": v.gazeNegotiated, "foveated": v.foveated,
-                "framesWithoutFoveation": v.framesWithoutFoveation, "depthNegotiated": v.depthNegotiated,
+                "framesWithoutFoveation": v.framesWithoutFoveation, "framesRescheduled": v.framesRescheduled, "depthNegotiated": v.depthNegotiated,
                 "depthFramesDecoded": v.depthFramesDecoded, "depthFramesLost": v.depthFramesLost,
                 "depthPicture": v.depthPicture,
             ]

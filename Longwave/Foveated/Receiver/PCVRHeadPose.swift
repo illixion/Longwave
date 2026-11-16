@@ -88,6 +88,10 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
     /// quickly beyond a few tens of milliseconds; past this, reprojection is the
     /// better bet than an extrapolated head.
     static let maximumPredictionHorizon: TimeInterval = 0.1
+    /// The cap in force. A game whose engine is several frames deep is ready
+    /// later than the default allows (133-178 ms, Cyberpunk, 2026-11-16); what
+    /// the cap leaves over, the presenter's reprojection has to bridge.
+    var maximumHorizon = PCVRHeadPoseProducer.maximumPredictionHorizon
 
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRShell")
     /// A thread-safe gaze source (the official provider's push source, or a
@@ -142,7 +146,7 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
             let rank = Int(min(max(readinessPercentile, 0), 1) * Double(max(sorted.count - 1, 0)) + 0.5)
             measured = sorted.isEmpty ? nil : sorted[min(sorted.count - 1, rank)]
         }
-        return min(max(measured ?? 0, 0), Self.maximumPredictionHorizon)
+        return min(max(measured ?? 0, 0), maximumHorizon)
     }
 
     /// The display period, from the gaps between consecutive snapshots'
@@ -183,7 +187,7 @@ nonisolated final class PCVRHeadPoseProducer: @unchecked Sendable {
             let boundary = Double(periods > last ? last : last - 1) + Self.boundaryAllowance
             if abs(raw - boundary) < Self.hysteresis { periods = last }
         }
-        periods = min(max(periods, 0), Int((Self.maximumPredictionHorizon / period).rounded(.up)))
+        periods = min(max(periods, 0), Int((maximumHorizon / period).rounded(.up)))
         if let last = horizonPeriods, last != periods { horizonSteps += 1 }
         horizonPeriods = periods
         return Double(periods) * period

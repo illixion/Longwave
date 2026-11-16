@@ -23,6 +23,8 @@ nonisolated struct PCVRShellRenderOptions: Equatable, Sendable {
     /// later than the median is superseded by the next, a repeat and a skip
     /// (23% of frames at 60 Hz).
     var readinessPercentile = 0.5
+    /// The longest prediction horizon (`PCVRHeadPoseProducer.maximumHorizon`), seconds.
+    var maximumHorizon = PCVRHeadPoseProducer.maximumPredictionHorizon
     var depthWarp = PCVRShellDepthWarp()
 }
 
@@ -262,6 +264,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         frame.startSubmission()
         let options = self.options.withLock { $0 }
         poseProducer.readinessPercentile = options.readinessPercentile
+        poseProducer.maximumHorizon = options.maximumHorizon
         let presentLayerTime = primary.frameTiming.presentationTime.pcvrSeconds
         let presentTime = presentLayerTime - clockOffset
         let tracking = worldTracking.state

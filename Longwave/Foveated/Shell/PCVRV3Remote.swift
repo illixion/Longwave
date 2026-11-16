@@ -45,6 +45,10 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     var foveationCentres: [Float]?
     /// Frames dropped because their foveation side data didn't match the format.
     var framesWithoutFoveation = 0
+    /// Frames due at their own pose's display time rather than the host's
+    /// label (`PCVRV3Remote.scheduledDisplayTime`): a game rendering from an
+    /// older pose.
+    var framesRescheduled = 0
     /// Whether the host sends the depth stream, and how much of it arrived.
     var depthNegotiated = false
     var depthFramesDecoded = 0
@@ -246,6 +250,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var retryAt: UInt64?
     private var attempts = 0
     private var counters = Counters()
+    /// The display time each recent pose was predicted for (this clock), by
+    /// sequence: see `scheduledDisplayTime`. On `queue`.
+    private var sentDisplayTimes: [(sequence: UInt32, displayTime: TimeInterval)] = []
     private var lastStats: UInt64 = 0
     private var lastCentres: [Float]?
     /// What this client reports and asks for (on `queue`); sent after every connect.
@@ -259,6 +266,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         var framesAssembled = 0
         var framesWithoutPose = 0
         var framesWithoutFoveation = 0
+        var framesRescheduled = 0
         var payloadBytes = 0
         var posesSent = 0
         var gazeSent = 0
@@ -716,11 +724,17 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             needsTimedKeyFrame = true
             return
         }
-        guard let renderPose = Self.renderMetadata(wirePose, localTime: {
+        guard var renderPose = Self.renderMetadata(wirePose, localTime: {
             session?.clock.localTime(atRemote: $0)
         }) else {
             needsTimedKeyFrame = true
             return
+        }
+        let posed = sentDisplayTimes.last { $0.sequence == renderPose.poseSequence }?.displayTime
+        let scheduled = Self.scheduledDisplayTime(label: renderPose.displayTime, posed: posed)
+        if scheduled != renderPose.displayTime {
+            renderPose.displayTime = scheduled
+            counters.framesRescheduled += 1
         }
         // A warped picture is only drawable with the centres it was warped
         // around, under this format's parameters.
@@ -762,6 +776,24 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         decoder?.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
                        frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose,
                        foveation: foveation)
+    }
+
+    /// How much later than its own pose's display time a frame's label may be
+    /// and still be the host's pacing (a frame one stream period "early" is
+    /// labelled a slot on, up to 22 ms at 45 fps).
+    static let labelSlack: TimeInterval = 0.03
+
+    /// When a frame is due. The host labels each frame with the display slot
+    /// of the newest pose at its frame-clock tick. A game renders from an older
+    /// pose (its engine is a few frames deep; the producer names that pose in
+    /// `poseSequence`), and the horizon is measured from that pose, so the
+    /// label is then later than the frame can be shown and it waits out the
+    /// difference in the mailbox (34 ms of 66 from arrival to present,
+    /// Cyberpunk at 45 fps on a 90 Hz display, 2026-11-16). Such a frame is due
+    /// at the display time its own pose was predicted for.
+    static func scheduledDisplayTime(label: TimeInterval, posed: TimeInterval?) -> TimeInterval {
+        guard let posed, label - posed > labelSlack else { return label }
+        return posed
     }
 
     /// A frame without a clock mapping cannot supply a truthful render time.
@@ -835,6 +867,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let state = StateSnapshot(sequence: snapshot.sequence, hostTime: hostNow, payload: .headPose(pose))
         session?.send(state)
         counters.posesSent += 1
+        sentDisplayTimes.append((snapshot.sequence, snapshot.displayTime))
+        if sentDisplayTimes.count > 512 { sentDisplayTimes.removeFirst(sentDisplayTimes.count - 512) }
         if pose.gaze != nil { counters.gazeSent += 1 }
         flush(now: now)
     }
@@ -907,10 +941,12 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let gazeNegotiated = gazeNegotiated
         let lost = receiver.statistics.framesLost
         let withoutFoveation = counters.framesWithoutFoveation
+        let rescheduled = counters.framesRescheduled
         let centres = lastCentres
         let microphoneRate = Double(counters.microphonePackets) / elapsed
         status.withLock {
             $0.framesWithoutFoveation += withoutFoveation
+            $0.framesRescheduled += rescheduled
             $0.foveationCentres = centres
             $0.framesDecoded += decoded.frames
             $0.decodeErrors += decoded.errors

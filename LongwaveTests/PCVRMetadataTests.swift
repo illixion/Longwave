@@ -67,6 +67,17 @@ final class PCVRMetadataTests: XCTestCase {
         XCTAssertEqual(converted.eyes.left.pose.position.x, 0.03)
         XCTAssertEqual(converted.eyes.left.fieldOfView.angleLeft, -0.8)
     }
+    func testFrameIsDueAtItsOwnPoseWhenTheLabelIsFarLater() {
+        // The home scene: rendered from the newest pose, label equal or one stream period on.
+        XCTAssertEqual(PCVRV3Remote.scheduledDisplayTime(label: 10.126, posed: 10.126), 10.126)
+        XCTAssertEqual(PCVRV3Remote.scheduledDisplayTime(label: 10.148, posed: 10.126), 10.148)
+        // A game three and a half frames deep at 45 fps: 78 ms behind the label.
+        XCTAssertEqual(PCVRV3Remote.scheduledDisplayTime(label: 10.126, posed: 10.048), 10.048)
+        // A pose too old to be remembered, or a label earlier than the pose: the label stands.
+        XCTAssertEqual(PCVRV3Remote.scheduledDisplayTime(label: 10.126, posed: nil), 10.126)
+        XCTAssertEqual(PCVRV3Remote.scheduledDisplayTime(label: 10.0, posed: 10.126), 10.0)
+    }
+
     func testProviderSourceFeedsSnapshotsAndClearsOnReset() {
         let source = RAVEPushGazeSource()
         let producer = PCVRHeadPoseProducer(gazeSource: source)

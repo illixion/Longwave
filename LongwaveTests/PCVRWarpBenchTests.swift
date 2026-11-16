@@ -38,6 +38,10 @@ final class PCVRWarpBenchTests: XCTestCase {
             throw XCTSkip("set TEST_RUNNER_PCVR_BENCH=<output directory> to run the warp bench")
         }
         directory = URL(fileURLWithPath: path)
+        // `PCVR_BENCH_BOUND_PASSES=0`: the march from the stream's near depth, for comparison.
+        if let passes = ProcessInfo.processInfo.environment["PCVR_BENCH_BOUND_PASSES"].flatMap(Int.init) {
+            PCVRDepthWarper.boundPasses = passes
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         queue = try XCTUnwrap(device.makeCommandQueue())
@@ -646,6 +650,138 @@ final class PCVRWarpBenchTests: XCTestCase {
         let text = report.joined(separator: "\n")
         print(text)
         try text.write(to: directory.appendingPathComponent("report.txt"), atomically: true, encoding: .utf8)
+    }
+
+    // MARK: Quality tiers, through the display path
+
+    /// Warps `frame` straight into two display views of the bench's eye size
+    /// (`PCVRDepthWarper.encode(frame:depth:views:)`, what Shell A's render
+    /// loop calls), at the frame's own frusta so the room rendered at the
+    /// target is still the truth. Returns the picture laid out like the
+    /// compute path's (both eyes side by side) and the time of one encode,
+    /// milliseconds: the least over `timedRuns` command buffers of
+    /// `encodesPerRun` encodes each, from commit to completion on the wall
+    /// clock (the simulator reports no GPU start and end times worth the
+    /// name: 0.06-0.1 ms for all of this). It is the Mac's GPU, so only the
+    /// ratio between two runs means anything.
+    private func warpDisplay(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, to targets: PCVRStereo<PCVREyeView>,
+                             march: PCVRWarpMarch, timedRuns: Int = 12,
+                             encodesPerRun: Int = 16) throws -> (pixels: [Float16], gpuMs: Double) {
+        let w = Self.width, h = Self.height
+        let near: Float = 0.1
+        let projection = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, -1), SIMD4(0, 0, near, 0)))
+        var views: [PCVRReceiverTarget] = []
+        for eye in 0..<2 {
+            let colourDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: w, height: h,
+                                                                            mipmapped: false)
+            colourDescriptor.usage = [.renderTarget, .shaderRead]
+            colourDescriptor.storageMode = .shared
+            let depthDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: w, height: h,
+                                                                           mipmapped: false)
+            depthDescriptor.usage = .renderTarget
+            depthDescriptor.storageMode = .private
+            views.append(PCVRReceiverTarget(
+                eye: eye, colorTexture: try XCTUnwrap(device.makeTexture(descriptor: colourDescriptor)),
+                depthTexture: try XCTUnwrap(device.makeTexture(descriptor: depthDescriptor)), depthClearValue: 0,
+                viewport: MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1),
+                display: targets[eye], displayProjection: projection))
+        }
+        let warper = try PCVRDepthWarper(device: device)
+        warper.maxSteps = march.maxSteps
+        warper.stepTexels = march.stepTexels
+        warper.fillsFromOtherEye = march.fillsFromOtherEye
+        // `PCVR_BENCH_TINT=1`: the filled pixels tinted, to see in the strips which pixels were made up.
+        warper.tintsFills = ProcessInfo.processInfo.environment["PCVR_BENCH_TINT"] == "1"
+        var times: [Double] = []
+        // The first run compiles the pipelines and makes the map; it draws the picture and is not timed.
+        for _ in 0...timedRuns {
+            let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+            for _ in 0..<encodesPerRun {
+                try warper.encode(frame: frame, depth: depth, views: views, planeDistance: 50, commandBuffer: commandBuffer)
+            }
+            let start = CACurrentMediaTime()
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            times.append((CACurrentMediaTime() - start) * 1000 / Double(encodesPerRun))
+            XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+        }
+        times.removeFirst()
+        var pixels = [Float16](repeating: 0, count: 2 * w * h * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            for eye in 0..<2 {
+                views[eye].colorTexture.getBytes(bytes.baseAddress! + eye * w * 8, bytesPerRow: 2 * w * 8,
+                                                 from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            }
+        }
+        return (pixels, times.min() ?? 0)
+    }
+
+    /// Each `PCVRWarpTier` over the bench's moves, through the display path,
+    /// at the headset's depth size (a divisor of 8 here: 324x260 an eye):
+    /// the score against the truth and the encode's GPU time, per case and
+    /// averaged per tier, beside the same encode without a depth map (one
+    /// plane, no march: the part of the time no tier can touch).
+    /// `PCVR_BENCH_TIER_STRIPS=1` writes the strips too, `PCVR_BENCH_CASES`
+    /// (comma-separated names) picks the moves.
+    func testWarpTiers() throws {
+        let renderEyes = Self.eyes(head: Self.head)
+        let source = try render(renderEyes)
+        let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 1, texture: source.colour,
+                                     renderPose: PCVRRenderPose(poseSequence: 1, spaceEpoch: 0, displayTime: 0, eyes: renderEyes),
+                                     arrivalTime: 0)
+        let strips = ProcessInfo.processInfo.environment["PCVR_BENCH_TIER_STRIPS"] == "1"
+        // Shell A's defaults (`PCVRShellDepthWarp`).
+        let defaults = PCVRWarpMarch(maxSteps: 32, stepTexels: 2, fillsFromOtherEye: true)
+        var report = ["case | depth divisor | tier | gpu ms | score"]
+        for divisor in Self.list("PCVR_BENCH_DIVISORS", [8]).map(Int.init) {
+            let depth = try hostDepth(source, divisor: divisor)
+            var totals: [PCVRWarpTier: (gpu: Double, visible: Double, uncovered: Double, wrong: Double, count: Double)] = [:]
+            var plane = 0.0, planeCount = 0.0
+            let names = ProcessInfo.processInfo.environment["PCVR_BENCH_CASES"].map { $0.split(separator: ",").map(String.init) }
+            for c in Self.cases where names?.contains(c.name) ?? true {
+                var head = Self.head
+                head.position += Self.head.rotation.act(c.move)
+                head.rotation = simd_quatf(angle: c.yaw * .pi / 180, axis: [0, 1, 0]) * head.rotation
+                let truthEyes = Self.eyes(head: head)
+                let truth = try render(truthEyes)
+                let truthPixels = Self.pixels(truth.colour)
+                let mask = uncoveredMask(truth: truth, truthEye: truthEyes.left, source: source, sourceEye: renderEyes.left)
+                try autoreleasepool {
+                    plane += try warpDisplay(frame, depth: nil, to: truthEyes, march: defaults).gpuMs
+                    planeCount += 1
+                }
+                // A pool per warp: its textures and pixel arrays are a few hundred megabytes, and the
+                // simulator killed the run without one.
+                for tier in PCVRWarpTier.allCases { try autoreleasepool {
+                    let (pixels, gpu) = try warpDisplay(frame, depth: depth, to: truthEyes, march: tier.limiting(defaults))
+                    let (score, diff) = self.score(pixels, truth: truth, truthPixels: truthPixels, uncovered: mask)
+                    report.append(String(format: "%@ | %d | %@ | %.2f | %@", c.name, divisor, tier.name, gpu, score.description))
+                    var total = totals[tier] ?? (0, 0, 0, 0, 0)
+                    total.gpu += gpu
+                    total.visible += Double(score.visibleError)
+                    total.uncovered += Double(score.uncoveredError)
+                    total.wrong += Double(score.wrongPercent)
+                    total.count += 1
+                    totals[tier] = total
+                    if strips {
+                        writeStrip("tier-\(tier.name)-\(c.name)-d\(divisor)-board", truth: truthPixels, warped: pixels, diff: diff,
+                                   x0: 1000, y0: 950, width: 520, height: 420)
+                        writeStrip("tier-\(tier.name)-\(c.name)-d\(divisor)-wheel", truth: truthPixels, warped: pixels, diff: diff,
+                                   x0: 1680, y0: 700, width: 520, height: 420)
+                    }
+                } }
+            }
+            report.append(String(format: "mean | %d | no depth (plane) | %.2f |", divisor, plane / max(planeCount, 1)))
+            for tier in PCVRWarpTier.allCases {
+                guard let t = totals[tier], t.count > 0 else { continue }
+                report.append(String(format: "mean | %d | %@ | %.2f | visible err %.4f | uncovered err %.3f | wrong %.2f %%",
+                                     divisor, tier.name, t.gpu / t.count, t.visible / t.count, t.uncovered / t.count,
+                                     t.wrong / t.count))
+            }
+        }
+        let text = report.joined(separator: "\n")
+        print(text)
+        try text.write(to: directory.appendingPathComponent("tiers.txt"), atomically: true, encoding: .utf8)
     }
 
     // MARK: Scene shader

@@ -44,6 +44,19 @@ import simd
 /// where interpolation would smear the near side into the far. (Marching every
 /// pixel took 5 ms of GPU a tick on the headset, 2026-11-07, half the tick.)
 ///
+/// A march's cost is its depth reads, and two things keep those few
+/// (`prepare`, once per encode, at the depth map's size: a few hundred
+/// thousand texels against the hundreds of millions of reads the marches
+/// made). The depth is decoded and smoothed once into the *scene* texture, so
+/// a march sample is one gather instead of five bilinear taps and a read.
+/// And the scene's coarser levels hold the nearest depth under each block of
+/// texels, so a ray starts where it first could meet anything along its
+/// track rather than at half the stream's near depth: with the room a metre
+/// off and the near depth at 0.25 m, seven steps in eight were through air.
+/// (In Cyberpunk 2077, whose picture is all depth edges, the display frame
+/// took 9.1-9.8 ms of GPU against 5.0 for a plane, and the display fell from
+/// 120 Hz to 90 or 45; Vision Pro M5, 2026-11-16.)
+///
 /// **Output.** `encode` writes the warped picture for both eyes side by side
 /// and, when asked, the warped depth at the depth map's size, encoded like the
 /// source (`PCVRDepthMap` with the same near and far): a mesh placed at the
@@ -88,6 +101,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     private let mapPipeline: any MTLComputePipelineState
     private let colourPipeline: any MTLComputePipelineState
     private let depthPipeline: any MTLComputePipelineState
+    private let preparePipeline: any MTLComputePipelineState
+    private let reducePipeline: any MTLComputePipelineState
     private let library: any MTLLibrary
     /// Depth always written, never tested: each pixel is drawn once. Without
     /// a state Metal leaves depth writes off, and the views' depth stays clear.
@@ -111,6 +126,26 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     }
     private let sampler: any MTLSamplerState
     private let noDepth: any MTLTexture
+    /// A depth map made ready for the march (`prepare`): level 0 is the
+    /// scene's inverse depth per texel, smoothed where a surface is smooth;
+    /// each level above holds the largest (nearest) of the level below.
+    private struct Scene {
+        var texture: any MTLTexture
+        var levels: [any MTLTexture]
+    }
+    /// One per depth map bound in an encode (the frame's, then its fill
+    /// sources'), remade when a map's size changes.
+    private var scenes: [Scene] = []
+    /// The scene's coarsest level is blocks of 64 depth texels: a track
+    /// longer than that (a head move of a fifth of the picture) is marched
+    /// from the near depth as before.
+    static let sceneLevels = 7
+
+    /// Mirrors `PCVRDepthWarpPrepare`.
+    private struct PrepareUniforms {
+        var decode: SIMD4<Float>
+        var edge: Float
+    }
     /// The warp map, remade when the output size changes.
     private var map: (any MTLTexture)?
     /// Output pixels per warp-map texel, each axis.
@@ -121,6 +156,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     var maxSteps = 32
     /// The march's step across the depth picture, in texels.
     var stepTexels: Float = 1
+    /// How many times a ray looks up the scene's nearest depth along its
+    /// track before it marches (`pcvrDepthWarpNearest`); 0 marches from the
+    /// stream's near depth, as the warp did before 2026-11-16.
+    nonisolated(unsafe) static var boundPasses = 2
     /// Diagnostics: draw the pixels the warp fills in (their true content was
     /// hidden from the source eye) in magenta.
     var tintsFills = false
@@ -210,9 +249,13 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         self.depthWrite = depthWrite
         guard let map = library.makeFunction(name: "pcvrDepthWarpMap"),
               let colour = library.makeFunction(name: "pcvrDepthWarpColour"),
-              let depth = library.makeFunction(name: "pcvrDepthWarpDepth") else {
+              let depth = library.makeFunction(name: "pcvrDepthWarpDepth"),
+              let prepare = library.makeFunction(name: "pcvrDepthWarpPrepare"),
+              let reduce = library.makeFunction(name: "pcvrDepthWarpReduce") else {
             throw PCVRReceiverError.resourceCreationFailed("depth warp kernels")
         }
+        preparePipeline = try device.makeComputePipelineState(function: prepare)
+        reducePipeline = try device.makeComputePipelineState(function: reduce)
         mapPipeline = try device.makeComputePipelineState(function: map)
         colourPipeline = try device.makeComputePipelineState(function: colour)
         depthPipeline = try device.makeComputePipelineState(function: depth)
@@ -257,7 +300,6 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     func encode(frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>, planeDistance: Float,
                 into colour: any MTLTexture, warpedDepth: (any MTLTexture)? = nil, fills: [FillSource] = [],
                 commandBuffer: any MTLCommandBuffer) throws {
-        let depthTexture = depth?.texture ?? noDepth
         let map = try warpMap(for: colour)
         let eyeWidth = colour.width / 2
         let outputSize = SIMD2(Float(eyeWidth), Float(colour.height))
@@ -311,14 +353,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
         }
         encoder.label = "PCVR depth warp"
+        // The frame's own depth is source 0, so its scene is the first.
+        let sourceScenes = try sources.enumerated().map { try prepare($1.depth, slot: $0, encoder: encoder) }
         encoder.setBytes(&uniforms, length: length, index: 0)
         encoder.setTexture(frame.texture, index: 0)
-        encoder.setTexture(depthTexture, index: 1)
+        encoder.setTexture(sourceScenes.first ?? noDepth, index: 1)
         encoder.setTexture(colour, index: 2)
         encoder.setTexture(map, index: 3)
         let slots = Self.fillFrames + 1
         let fillColours: [(any MTLTexture)?] = (0..<slots).map { $0 < sources.count ? sources[$0].frame.texture : noDepth }
-        let fillDepths: [(any MTLTexture)?] = (0..<slots).map { $0 < sources.count ? sources[$0].depth.texture : noDepth }
+        let fillDepths: [(any MTLTexture)?] = (0..<slots).map { $0 < sourceScenes.count ? sourceScenes[$0] : noDepth }
         encoder.setTextures(fillColours, range: 4..<(4 + slots))
         encoder.setTextures(fillDepths, range: (4 + slots)..<(4 + 2 * slots))
         encoder.setSamplerState(sampler, index: 0)
@@ -355,7 +399,6 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             try PCVRReceiver.encodeClear(targets: targets, commandBuffer: commandBuffer)
             return
         }
-        let depthTexture = depth?.texture ?? noDepth
         let logical = Self.logicalSize(first)
         let map = try displayMap(width: logical.width, height: logical.height)
         var uniforms = (0..<2).map { slot in
@@ -386,6 +429,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
         }
         compute.label = "PCVR depth warp map"
+        let depthTexture = try depth.map { try prepare($0, slot: 0, encoder: compute) } ?? noDepth
         compute.setBytes(&uniforms, length: length, index: 0)
         compute.setTexture(depthTexture, index: 1)
         compute.setTexture(map, index: 3)
@@ -417,6 +461,56 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             }
             encoder.endEncoding()
         }
+    }
+
+    /// Encodes `depth`'s scene texture (see "Cost") into `encoder`, ahead of
+    /// the passes that march through it, and returns it. `slot` names which of
+    /// the encode's depth maps this is, so each keeps its own texture.
+    private func prepare(_ depth: PCVRDepthMap, slot: Int, encoder: any MTLComputeCommandEncoder) throws -> any MTLTexture {
+        let source = depth.texture
+        while scenes.count <= slot { scenes.append(try makeScene(width: source.width, height: source.height)) }
+        if scenes[slot].texture.width != source.width || scenes[slot].texture.height != source.height {
+            scenes[slot] = try makeScene(width: source.width, height: source.height)
+        }
+        let scene = scenes[slot]
+        let decode = depth.decode
+        var uniforms = PrepareUniforms(decode: decode, edge: Self.edgeCodes / 255 * abs(decode.x * decode.w))
+        encoder.setComputePipelineState(preparePipeline)
+        encoder.setBytes(&uniforms, length: MemoryLayout<PrepareUniforms>.stride, index: 1)
+        encoder.setTexture(source, index: 0)
+        encoder.setTexture(scene.levels[0], index: 1)
+        encoder.dispatchThreads(MTLSize(width: source.width, height: source.height, depth: 1),
+                                threadsPerThreadgroup: Self.threadgroup(preparePipeline))
+        encoder.setComputePipelineState(reducePipeline)
+        for level in 1..<scene.levels.count {
+            encoder.setTexture(scene.levels[level - 1], index: 0)
+            encoder.setTexture(scene.levels[level], index: 1)
+            encoder.dispatchThreads(MTLSize(width: scene.levels[level].width, height: scene.levels[level].height, depth: 1),
+                                    threadsPerThreadgroup: Self.threadgroup(reducePipeline))
+        }
+        return scene.texture
+    }
+
+    private func makeScene(width: Int, height: Int) throws -> Scene {
+        // Half floats: inverse depth to one part in 2000, eight times finer
+        // than a code of the 8-bit picture, and a format every GPU gathers.
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r16Float, width: width, height: height,
+                                                                  mipmapped: true)
+        descriptor.mipmapLevelCount = min(descriptor.mipmapLevelCount, Self.sceneLevels)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw PCVRReceiverError.resourceCreationFailed("depth warp scene")
+        }
+        texture.label = "PCVR depth warp scene"
+        let levels = try (0..<texture.mipmapLevelCount).map { level in
+            guard let view = texture.makeTextureView(pixelFormat: .r16Float, textureType: .type2D,
+                                                     levels: level..<(level + 1), slices: 0..<1) else {
+                throw PCVRReceiverError.resourceCreationFailed("depth warp scene level")
+            }
+            return view
+        }
+        return Scene(texture: texture, levels: levels)
     }
 
     /// One view a pixel can be filled from: `fill` indexes the earlier
@@ -618,41 +712,108 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                 // 128: seen pixels read with Catmull-Rom (`resampling`), 2048: de-ringed (bit 11; bits 8-10 are the fill index)
     };
 
+    #define PCVR_WARP_BOUND_PASSES \(PCVRDepthWarper.boundPasses)
+
     struct PCVRDepthWarpHit {
         float2 uv;     // source render UV
         float w;       // inverse depth there, in the source eye
         float filled;  // 1 where the ray's true point was hidden and the far side fills in
     };
 
-    // The scene's inverse depth at a source render UV: five bilinear taps, at
-    // the point and two texels each way, averaged where they agree (a tent
+    struct PCVRDepthWarpPrepare {
+        float4 decode;  // a depth map's value scale and offset, 1/far, 1/near - 1/far
+        float edge;
+    };
+
+    // A depth map's scene texture, level 0: per texel the inverse depth,
+    // averaged with the texels two each way where the five agree (a tent
     // about five texels wide: an 8-bit depth picture holds a slanted surface
     // as terraces a code apart, and under a few centimetres of shift each
     // terrace moved a pixel more than the next, a shimmer over text and
-    // grids on every head movement, headset 2026-11-07), else the texel
-    // under the point, so an edge stays a step at the texel boundary
-    // (PCVREyeMeshBuilder takes the nearest depth of the four around a vertex
-    // instead, which here would grow every near shape by a texel and drag a
-    // rim of background with it).
-    static float pcvrDepthWarpScene(float2 renderUV, constant PCVRDepthWarpUniforms &u,
-                                    texture2d<float, access::sample> depth, sampler linear) {
-        if (!(u.flags & 1u)) return u.planeInverse;
-        float2 position = (u.depthRect.xy + saturate(renderUV) * u.depthRect.zw) * u.depthSize - 0.5;
-        float2 low = u.depthTexels.xy, high = u.depthTexels.zw;
-        const float2 offsets[5] = {float2(0, 0), float2(-2, 0), float2(2, 0), float2(0, -2), float2(0, 2)};
+    // grids on every head movement, headset 2026-11-07), else the texel's
+    // own, so an edge stays a step at the texel boundary (PCVREyeMeshBuilder
+    // takes the nearest depth of the four around a vertex instead, which here
+    // would grow every near shape by a texel and drag a rim of background
+    // with it). Each eye's half on its own.
+    kernel void pcvrDepthWarpPrepare(texture2d<float, access::read> depth [[texture(0)]],
+                                     texture2d<float, access::write> scene [[texture(1)]],
+                                     constant PCVRDepthWarpPrepare &p [[buffer(1)]],
+                                     uint2 gid [[thread_position_in_grid]]) {
+        int eyeWidth = max(int(depth.get_width()) / 2, 1);
+        int eye = int(gid.x) >= eyeWidth ? 1 : 0;
+        int2 low = int2(eye * eyeWidth, 0), high = int2(eye * eyeWidth + eyeWidth - 1, int(depth.get_height()) - 1);
+        const int2 offsets[5] = {int2(0, 0), int2(-2, 0), int2(2, 0), int2(0, -2), int2(0, 2)};
         float w[5];
         float nearest = -1e30, farthest = 1e30;
         for (int k = 0; k < 5; k++) {
-            float2 p = clamp(position + offsets[k], low, high);
-            float value = saturate(depth.sample(linear, (p + 0.5) / u.depthSize).r * u.depthDecode.x + u.depthDecode.y);
-            w[k] = u.depthDecode.z + value * u.depthDecode.w;
+            float value = saturate(depth.read(uint2(clamp(int2(gid) + offsets[k], low, high))).r * p.decode.x + p.decode.y);
+            w[k] = p.decode.z + value * p.decode.w;
             nearest = max(nearest, w[k]);
             farthest = min(farthest, w[k]);
         }
-        if (nearest - farthest <= u.edge) return (2 * w[0] + w[1] + w[2] + w[3] + w[4]) / 6;
-        uint2 q = uint2(clamp(round(position), low, high));
-        float value = saturate(depth.read(q).r * u.depthDecode.x + u.depthDecode.y);
-        return u.depthDecode.z + value * u.depthDecode.w;
+        float smooth = (2 * w[0] + w[1] + w[2] + w[3] + w[4]) / 6;
+        scene.write(float4(nearest - farthest <= p.edge ? smooth : w[0]), gid);
+    }
+
+    // The scene texture's next level: per texel the largest inverse depth
+    // (the nearest surface) of the level below under it. Three texels each
+    // way, not two: a level of odd size leaves one over at its far edge.
+    kernel void pcvrDepthWarpReduce(texture2d<float, access::read> finer [[texture(0)]],
+                                    texture2d<float, access::write> coarser [[texture(1)]],
+                                    uint2 gid [[thread_position_in_grid]]) {
+        int2 last = int2(finer.get_width(), finer.get_height()) - 1;
+        float nearest = 0;
+        for (int y = 0; y < 3; y++) {
+            for (int x = 0; x < 3; x++) {
+                nearest = max(nearest, finer.read(uint2(min(int2(gid) * 2 + int2(x, y), last))).r);
+            }
+        }
+        coarser.write(float4(nearest), gid);
+    }
+
+    // Where a source render UV falls among this eye's depth texels.
+    static float2 pcvrDepthWarpTexel(float2 renderUV, constant PCVRDepthWarpUniforms &u) {
+        return clamp((u.depthRect.xy + saturate(renderUV) * u.depthRect.zw) * u.depthSize - 0.5, u.depthTexels.xy, u.depthTexels.zw);
+    }
+
+    // The scene's inverse depth at a source render UV: the scene texture's
+    // four texels round the point (`pcvrDepthWarpPrepare`) in one gather,
+    // interpolated where they agree, else the nearest of them, so an edge
+    // stays a step. On a smooth surface this is the tent of five bilinear
+    // taps the march used to take per sample, which was five of every six of
+    // its texture reads.
+    static float pcvrDepthWarpScene(float2 renderUV, constant PCVRDepthWarpUniforms &u,
+                                    texture2d<float, access::sample> scene, sampler linear) {
+        if (!(u.flags & 1u)) return u.planeInverse;
+        float2 position = pcvrDepthWarpTexel(renderUV, u);
+        float2 base = max(min(floor(position), u.depthTexels.zw - 1), u.depthTexels.xy);
+        float2 f = saturate(position - base);
+        // x: (0, 1), y: (1, 1), z: (1, 0), w: (0, 0) of the four.
+        float4 w = scene.gather(linear, (base + 1) / u.depthSize);
+        float spread = max(max(w.x, w.y), max(w.z, w.w)) - min(min(w.x, w.y), min(w.z, w.w));
+        if (spread <= u.edge) return mix(mix(w.w, w.z, f.x), mix(w.x, w.y, f.x), f.y);
+        return f.y > 0.5 ? (f.x > 0.5 ? w.y : w.x) : (f.x > 0.5 ? w.z : w.w);
+    }
+
+    // The nearest the scene comes (its largest inverse depth) anywhere a ray
+    // whose track runs from `uvA` to `uvB` can sample it: the track is a
+    // straight line in the picture, so the box round its ends holds it, and
+    // the scene level whose texels are as large as the box covers it in four
+    // reads. Negative when no level is that coarse.
+    static float pcvrDepthWarpNearest(float2 uvA, float2 uvB, constant PCVRDepthWarpUniforms &u,
+                                      texture2d<float, access::sample> scene) {
+        float2 a = pcvrDepthWarpTexel(uvA, u), b = pcvrDepthWarpTexel(uvB, u);
+        int2 low = int2(u.depthTexels.xy), high = int2(u.depthTexels.zw);
+        int2 first = clamp(int2(floor(min(a, b))), low, high);
+        int2 last = clamp(int2(floor(max(a, b))) + 1, low, high);
+        int extent = max(last.x - first.x, last.y - first.y);
+        uint level = extent <= 1 ? 0u : 32u - clz(uint(extent - 1));
+        if (level >= scene.get_num_mip_levels()) return -1;
+        int2 size = int2(scene.get_width(level), scene.get_height(level)) - 1;
+        int shift = int(level);
+        int2 p = min(first >> shift, size), q = min(last >> shift, size);
+        return max(max(scene.read(uint2(p.x, p.y), level).r, scene.read(uint2(q.x, p.y), level).r),
+                   max(scene.read(uint2(p.x, q.y), level).r, scene.read(uint2(q.x, q.y), level).r));
     }
 
     // The target ray at inverse distance `lambda` (1/s along it): where that
@@ -678,6 +839,25 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float rhoNear, rhoFar;
         pcvrDepthWarpRay(D, t, lambdaMax, u.sourceTangents, uvNear, rhoNear);
         pcvrDepthWarpRay(D, t, 0, u.sourceTangents, uvFar, rhoFar);
+        // Nothing along the track is nearer than the scene's nearest under
+        // it, and the ray's inverse depth in the source eye only falls as it
+        // goes out (for a ray that heads away from that eye), so the march
+        // can start where the ray reaches that depth, a little in front. A
+        // second look over the shortened track finds a nearer start still
+        // when the first had a near object beside the track in its box.
+        if ((u.flags & 1u) && -D.z > 1e-3 && -(D.z + t.z * lambdaMax) > 1e-3) {
+            for (int pass = 0; pass < PCVR_WARP_BOUND_PASSES; pass++) {
+                float nearest = pcvrDepthWarpNearest(uvNear, uvFar, u, depth);
+                if (nearest < 0) break;
+                float bound = nearest * 1.02 + 0.5 * u.edge + 1e-4;
+                float reach = 1 + bound * t.z;
+                if (reach <= 1e-3) break;
+                float start = bound * -D.z / reach;
+                if (start >= lambdaMax) break;
+                lambdaMax = start;
+                pcvrDepthWarpRay(D, t, lambdaMax, u.sourceTangents, uvNear, rhoNear);
+            }
+        }
         // About a depth texel a step along the ray's track across the picture,
         // and at least four: a ray near the axis of a forward or backward move
         // barely crosses the picture, but its inverse depth is not linear in
@@ -1054,6 +1234,29 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         }
         if ((u.flags & 2u) && hit.filled > 0.5) {
             out.color = float4(1, 0, 1, 1);
+        } else if (hit.filled > 0.5 && (u.flags & 1u)) {
+            // What neither eye saw: the far surface a depth texel and two
+            // pixels back from the silhouette along the ray's track, one tap
+            // (`pcvrDepthWarpHoleColour` explains the distance; its five
+            // taps, compiled into this shader, cost every pixel of the Mac's
+            // GPU a tenth more whether or not they ran). The hit itself is
+            // the far side's last sample before the edge, and now that the
+            // march starts close in front of the scene its steps are short
+            // and that sample sits on the near object's antialiased rim: the
+            // strip under the board filled with its dark frame, 0.31 off the
+            // wall against 0.07 (PCVRWarpBenchTests, down15, 2026-11-16).
+            float4 tt = u.targetTangents;
+            float3 D = u.rotation * float3(tt.x + target.x * (tt.y - tt.x), tt.z - target.y * (tt.z - tt.w), -1);
+            float2 uvNear, uvFar;
+            float rhoNear, rhoFar;
+            pcvrDepthWarpRay(D, u.translation.xyz, u.nearInverse, u.sourceTangents, uvNear, rhoNear);
+            pcvrDepthWarpRay(D, u.translation.xyz, 0, u.sourceTangents, uvFar, rhoFar);
+            float2 texel = 1.0 / max(u.depthRect.zw * u.depthSize, float2(1));
+            float2 pixel = float2(u.wireX.w, u.wireY.w) / max(u.sourceRect.zw * float2(source.get_width(), source.get_height()), float2(1));
+            float2 track = uvFar - uvNear;
+            PCVRDepthWarpHit off = hit;
+            if (length(track / texel) > 1e-3) off.uv -= normalize(track) * (max(texel.x, texel.y) + 2 * max(pixel.x, pixel.y));
+            out.color = float4(pcvrDepthWarpSample(off, u, source, linear), 1);
         } else {
             out.color = float4(pcvrDepthWarpSample(hit, u, source, linear), 1);
         }

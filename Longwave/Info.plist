@@ -22,6 +22,13 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Game Mode experiment: documented for iOS/macOS only, unconfirmed on
+	     visionOS. Unknown keys are ignored. Measure with _profile before
+	     keeping. LSApplicationCategoryType is not set: the visionOS build
+	     strips it from the bundle (checked 2026-11-16), so the category can
+	     only come from App Store Connect. -->
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<key>GCSupportedGameControllers</key>
 	<array>
 		<dict>

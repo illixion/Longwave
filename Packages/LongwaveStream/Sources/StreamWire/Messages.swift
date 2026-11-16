@@ -36,6 +36,8 @@ public struct MessageType: RawRepresentable, Hashable, Sendable, CustomStringCon
     public static let pcvrSessionState = MessageType(rawValue: 0x2B)
     /// Client -> host: the microphone's format, or that it stopped (`MicrophoneFormat`).
     public static let microphoneFormat = MessageType(rawValue: 0x2C)
+    /// Host -> client: a stream ended on the host's side, e.g. its window closed (`StreamClosed`).
+    public static let streamClosed = MessageType(rawValue: 0x2D)
 
     // Input events, client -> host, channel 1 (0x40...0x5F). See `InputEvent`.
     public static let keyDown = MessageType(rawValue: 0x40)

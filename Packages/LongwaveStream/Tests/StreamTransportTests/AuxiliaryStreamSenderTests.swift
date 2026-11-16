@@ -27,4 +27,29 @@ final class AuxiliaryStreamSenderTests: XCTestCase {
         XCTAssertEqual(second.referenceDistance, 2)
         XCTAssertEqual(sender.upcomingFrameNumber, 10)
     }
+
+    /// A window beside the desktop follows its owner's pace: no probes, no
+    /// feedback of its own, and the rate it is told.
+    func testFollowerSenderNeverProbesAndKeepsItsGivenPace() throws {
+        var configuration = VideoStreamSender.Configuration(streamID: 42)
+        configuration.followsExternalRate = true
+        var sender = VideoStreamSender(configuration: configuration)
+        sender.setPacingRate(10_000_000, now: 0)
+        _ = try sender.submit(accessUnit: [0, 0, 0, 1, 0x40, 1, 2, 3], isKeyFrame: true, captureTime: 1,
+                              udpPayload: 1_452, now: 1)
+        var padding = 0
+        var shards = 0
+        // Far past any probe the controller would schedule on its own.
+        for second in 1...5 {
+            while let output = sender.next(now: UInt64(second) * 1_000_000_000) {
+                switch output {
+                case .padding: padding += 1
+                case .shard: shards += 1
+                }
+            }
+        }
+        XCTAssertEqual(padding, 0)
+        XCTAssertGreaterThan(shards, 0)
+        XCTAssertEqual(sender.statistics.probes, 0)
+    }
 }

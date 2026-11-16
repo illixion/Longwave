@@ -18,6 +18,15 @@ final class ControlMessageTests: XCTestCase {
         XCTAssertThrowsError(try StreamSubscription(decoding: hex("0700")))
     }
 
+    func testStreamClosedGoldenBytes() throws {
+        let closed = StreamClosed(streamID: 7, reason: "ab")
+        XCTAssertEqual(hexString(try MessageFraming.encode(.streamClosed, body: closed.encoded())), "2d0807000000020061" + "62")
+        XCTAssertEqual(try StreamClosed(decoding: hex("07000000020061" + "62")), closed)
+        XCTAssertEqual(try StreamClosed(decoding: hex("070000000000")), StreamClosed(streamID: 7))
+        XCTAssertThrowsError(try StreamClosed(decoding: hex("0700000003006162")), "short reason")
+        XCTAssertThrowsError(try StreamClosed(decoding: hex("070000000100ff")), "invalid UTF-8")
+    }
+
     func testTextBodies() throws {
         XCTAssertEqual(try TextBody.decode(try TextBody.encode("Mac sleeping")[...]), "Mac sleeping")
         XCTAssertEqual(try TextBody.decode([][...]), "")

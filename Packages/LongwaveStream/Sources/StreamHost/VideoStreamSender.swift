@@ -32,6 +32,11 @@ public struct VideoStreamSender: Sendable {
         public var history: UInt64 = 300_000_000
         public var minimumParity: Int = 2
         public var rateControl: GCCRateController.Configuration = .init()
+        /// A secondary stream on a session whose primary sender owns the rate
+        /// controller (a window beside the desktop). It ignores feedback and
+        /// never probes; its owner sets its pace with `setPacingRate`, so the
+        /// streams together stay inside the one budget.
+        public var followsExternalRate = false
 
         public init(streamID: UInt32) {
             self.streamID = streamID
@@ -222,8 +227,14 @@ public struct VideoStreamSender: Sendable {
     // MARK: Network side
 
     public mutating func onFeedback(_ results: [SentPacketLog.Result], now: UInt64, rtt: UInt64) {
+        guard !configuration.followsExternalRate else { return }
         controller.onFeedback(results, now: now, rtt: rtt)
         pacer.setRate(controller.budget.pacingRate, now: now)
+    }
+
+    /// A follower's pace, bytes per second (`Configuration.followsExternalRate`).
+    public mutating func setPacingRate(_ bytesPerSecond: UInt64, now: UInt64) {
+        pacer.setRate(bytesPerSecond, now: now)
     }
 
     /// Requeues what a NACK names, ahead of everything else.
@@ -254,7 +265,7 @@ public struct VideoStreamSender: Sendable {
 
     /// The next thing to send, if anything may leave now.
     public mutating func next(now: UInt64) -> Output? {
-        if probe == nil, let cluster = controller.nextProbe(now: now) {
+        if probe == nil, !configuration.followsExternalRate, let cluster = controller.nextProbe(now: now) {
             let size = DatagramLayout.defaultUDPPayload
             probe = (cluster, now, max(cluster.bytes / size, 5), UInt64(size) * 1_000_000_000 / max(cluster.rate, 1))
             statistics.probes += 1

@@ -47,6 +47,38 @@ public struct StreamSubscription: WireCodable, Hashable {
     }
 }
 
+/// Host -> client: `streamID` ended on the host (its window closed, or the
+/// capture failed). The client stops that stream; the session carries on.
+///
+/// Body: `streamID u32 | reasonLength u16 | reason UTF-8` (6 + reason).
+public struct StreamClosed: WireCodable, Hashable {
+    public static let maxReasonBytes = 512
+
+    public var streamID: UInt32
+    public var reason: String
+
+    public init(streamID: UInt32, reason: String = "") {
+        self.streamID = streamID
+        self.reason = reason
+    }
+
+    public init(from reader: inout WireReader) throws(WireError) {
+        streamID = try reader.readUInt32()
+        let length = Int(try reader.readUInt16())
+        guard length <= Self.maxReasonBytes else { throw .tooLarge("streamClosed.reason") }
+        let bytes = try reader.readBytes(length)
+        reason = String(decoding: bytes, as: UTF8.self)
+        guard reason.utf8.elementsEqual(bytes) else { throw .invalid("streamClosed.reason") }
+    }
+
+    public func encode(to writer: inout WireWriter) throws(WireError) {
+        let bytes = Array(reason.utf8.prefix(Self.maxReasonBytes))
+        writer.writeUInt32(streamID)
+        writer.writeUInt16(UInt16(bytes.count))
+        writer.writeBytes(bytes)
+    }
+}
+
 /// UTF-8 text bodies (`bye`'s reason, `selectDisplay`'s id), checked strictly.
 public enum TextBody {
     public static let maxBytes = 1024

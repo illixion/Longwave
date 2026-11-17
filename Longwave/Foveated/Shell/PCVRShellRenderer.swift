@@ -45,10 +45,15 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Where the picture is taken to lie, metres ahead of the render eye, for a
     /// frame whose depth has not arrived (or a host that sends none).
     var planeDistance: Float = 50
-    /// The quality tier to hold, for A/B runs; nil lets the render loop pick
-    /// one from its GPU time (`PCVRWarpBudget`). A tier only ever limits
-    /// `maxSteps`, `stepTexels` and `fillsFromOtherEye` as set here.
-    var tier: PCVRWarpTier?
+    /// The quality tier to hold; nil lets the render loop pick one from its
+    /// GPU time (`PCVRWarpBudget`). A tier only ever limits `maxSteps`,
+    /// `stepTexels` and `fillsFromOtherEye` as set here. Held at full: the
+    /// headset's GPU clock follows the load, so a display frame's GPU time
+    /// stays near the budget whatever the tier (minimal 9.4 ms, full 8.8 ms,
+    /// warp off 5.75 ms of 11.1, Cyberpunk, 2026-11-17), and the budget only
+    /// ever walked the tier down to minimal, which drops the other-eye fill
+    /// for nothing.
+    var tier: PCVRWarpTier? = .full
     /// The share of the display period a display frame's GPU time may take
     /// before the tier is lowered (`PCVRWarpBudget.Configuration.share`).
     var budgetShare = PCVRWarpBudget.defaultShare

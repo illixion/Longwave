@@ -41,8 +41,8 @@ enum PCVRShellEndpoints {
                                  + "reprojected with the world (default on; needs a broker and host that mark it)"),
                         .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
                                  + "motion the host sends with depth (default on; host --motion on)"),
-                        .string("warpTier", "auto | full | reduced | minimal: pin the warp's quality tier for an A/B run, or let "
-                                + "the GPU budget pick it (auto, the default). reduced: at most 20 steps of 3 texels; minimal: "
+                        .string("warpTier", "auto | full | reduced | minimal: hold the warp's quality tier (default full), or let "
+                                + "the GPU budget pick it (auto). reduced: at most 20 steps of 3 texels; minimal: "
                                 + "12 steps of 4 texels, no other-eye fill", default: ""),
                         .number("warpBudget", "the share of the display period a display frame's GPU time may take before "
                                 + "the tier is lowered (default 0.8)", default: 0, range: 0...2),

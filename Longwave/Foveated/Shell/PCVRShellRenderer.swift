@@ -70,6 +70,10 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Diagnostics: the compositor gets the plane's depth, not the scene's
     /// (`PCVRDepthWarper.flatCompositorDepth`).
     var flatCompositorDepth = false
+    /// Fill what a pose miss uncovers from the last few frames shown, each
+    /// with its own depth, as well as from the frame's other eye
+    /// (`PCVRDepthWarper.encode(..., fills:)`).
+    var fillsFromEarlierFrames = true
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -175,6 +179,12 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     private var firstShown: (frameNumber: UInt32, streamEpoch: UInt32, time: TimeInterval)?
     /// The warp's tier when none is pinned, stepped once per stats window.
     private var warpBudget = PCVRWarpBudget()
+    /// The frames shown before the one on screen, newest first, each with the
+    /// depth that came with it: the depth warp's earlier-frame fills.
+    private var fillHistory: [(frame: PCVRDecodedFrame, depth: PCVRDepthStore.Entry)] = []
+    /// The frame on screen, while it has its own depth: it joins
+    /// `fillHistory` when the next one replaces it.
+    private var shownWithDepth: (frame: PCVRDecodedFrame, depth: PCVRDepthStore.Entry)?
     /// `LayerRenderer.Clock` seconds minus `CACurrentMediaTime()`. ARKit takes
     /// the former; the receiver clock everything else stamps is the latter.
     private var clockOffset: TimeInterval = 0
@@ -369,7 +379,20 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1
             if depthEntry == nil { depthWarpsWithoutDepth += 1 }
+            if presented.isNew {
+                if let previous = shownWithDepth, previous.frame !== presented.frame {
+                    fillHistory.insert(previous, at: 0)
+                    if fillHistory.count > PCVRDepthWarper.fillFrames { fillHistory.removeLast(fillHistory.count - PCVRDepthWarper.fillFrames) }
+                }
+                if let depthEntry, depthEntry.frameNumber == presented.frame.frameNumber {
+                    shownWithDepth = (presented.frame, depthEntry)
+                } else {
+                    shownWithDepth = nil
+                }
+            }
         }
+        let fills = warper != nil && warp.fillsFromEarlierFrames
+            ? fillHistory.map { PCVRDepthWarper.FillSource(frame: $0.frame, depth: $0.depth.map) } : []
         // A repeat moves on along the frame's own motion, by the time since the
         // frame was first shown: only the motion with that frame's number, as
         // a neighbour's would move it by another frame's motion.
@@ -388,7 +411,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         let capture = presented == nil ? nil : PCVRShellCapture.shared.next()
         if let capture, let presented {
             recordCaptureInput(capture, presented: presented.frame, isNew: presented.isNew, depth: depthEntry,
-                               head: head, presentTime: presentTime, motion: motion != nil, warp: warp,
+                               head: head, presentTime: presentTime, motion: motion != nil, warp: warp, fills: fills,
                                commandBuffer: commandBuffer)
         }
         for (drawableIndex, drawable) in drawables.enumerated() {
@@ -397,7 +420,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             do {
                 if let warper {
                     try warper.encode(frame: presented?.frame, depth: depthEntry?.map, views: targets,
-                                      planeDistance: warp.planeDistance, motion: motion, commandBuffer: commandBuffer)
+                                      planeDistance: warp.planeDistance, motion: motion, fills: fills,
+                                      commandBuffer: commandBuffer)
                 } else if let receiver {
                     try receiver.encode(frame: presented?.frame, targets: targets,
                                         options: options.receiver, commandBuffer: commandBuffer)
@@ -418,7 +442,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         // has finished sampling them.
         let sampled = presented?.frame
         commandBuffer.addCompletedHandler { [inFlight, gpuTimes] buffer in
-            withExtendedLifetime((sampled, depthEntry)) {}
+            withExtendedLifetime((sampled, depthEntry, fills)) {}
             capture?.complete()
             let time = buffer.gpuEndTime - buffer.gpuStartTime
             if time > 0 { gpuTimes.withLock { $0.append(time) } }
@@ -494,7 +518,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
 
     private func recordCaptureInput(_ capture: PCVRShellCapture.Frame, presented frame: PCVRDecodedFrame, isNew: Bool,
                                     depth: PCVRDepthStore.Entry?, head: PCVRPose?, presentTime: TimeInterval,
-                                    motion: Bool, warp: PCVRShellDepthWarp, commandBuffer: any MTLCommandBuffer) {
+                                    motion: Bool, warp: PCVRShellDepthWarp, fills: [PCVRDepthWarper.FillSource],
+                                    commandBuffer: any MTLCommandBuffer) {
         var meta: [String: Any] = [
             "version": 1,
             "presentTime": presentTime,
@@ -509,7 +534,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             "warp": ["enabled": warp.isEnabled, "maxSteps": warp.maxSteps, "stepTexels": Double(warp.stepTexels),
                      "otherEye": warp.fillsFromOtherEye, "hudLocked": warp.headLockedHud,
                      "planeDistance": Double(warp.planeDistance), "tier": (warp.tier ?? warpBudget.tier).name,
-                     "refinesEdges": warp.refinesEdges] as [String: Any],
+                     "refinesEdges": warp.refinesEdges, "earlierFrames": warp.fillsFromEarlierFrames,
+                     "fills": fills.map { Int($0.frame.frameNumber) }] as [String: Any],
         ]
         if let head { meta["head"] = PCVRShellCapture.json(head) }
         if let foveation = frame.foveation {

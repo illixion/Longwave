@@ -450,8 +450,18 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// The warp map is laid out per display view (left, right) at a quarter
     /// of the view's logical size; a single view (the simulator's, a capture)
     /// uses its first half.
+    ///
+    /// **Fills** as in the compute path: a pixel its own eye could not see
+    /// tries `fillSlots` views per display view, the frame's other eye and
+    /// both eyes of `fills` (earlier frames with their own depth), best
+    /// placed first (`fillPlan`). Before 2026-11-17 the display path tried
+    /// the other eye only, and what a pose miss uncovered beside a near
+    /// object that the other eye could not see either was smeared from the
+    /// far side of the edge: background stretching round the hands on every
+    /// head movement (Cyberpunk, warp off removed it).
     func encode(frame: PCVRDecodedFrame?, depth: PCVRDepthMap?, views targets: [PCVRReceiverTarget],
-                planeDistance: Float, motion: PCVRMotionShift? = nil, commandBuffer: any MTLCommandBuffer) throws {
+                planeDistance: Float, motion: PCVRMotionShift? = nil, fills: [FillSource] = [],
+                commandBuffer: any MTLCommandBuffer) throws {
         guard let frame, let first = targets.first else {
             try PCVRReceiver.encodeClear(targets: targets, commandBuffer: commandBuffer)
             return
@@ -466,27 +476,57 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                  outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
                                  map: map, mapSlot: slot, flags: 4, motion: motion)
         }
-        // Each view's ray through the frame's other eye, for what its own eye
-        // could not see (`fillsFromOtherEye`): slots 2 and 3.
+        // Fill views per display view: uniforms 2 + fillSlots * slot + k,
+        // each naming its source in the fill texture arrays (0: this frame).
         var fragmentUniforms = uniforms
+        var sources: [FillSource] = depth.map { [FillSource(frame: frame, depth: $0)] } ?? []
+        let viewTargets = PCVRStereo(left: targets[0].display.pose, right: targets[min(1, targets.count - 1)].display.pose)
+        let plan = depth == nil ? [[], []] : Self.fillPlan(frame: frame, targets: viewTargets, fills: fills,
+                                                           otherEye: fillsFromOtherEye)
         for slot in 0..<2 {
             let target = targets[min(slot, targets.count - 1)]
             let size = Self.logicalSize(target)
-            fragmentUniforms.append(self.uniforms(
-                frame: frame, eye: 1 - min(target.eye, 1), depth: depth, target: target.display.pose,
-                targetTangents: target.display.fieldOfView.tangents, planeDistance: planeDistance,
-                outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
-                map: map, mapSlot: slot, flags: 4, motion: motion))
-        }
-        if fillsFromOtherEye && depth != nil {
-            for slot in 0..<2 { fragmentUniforms[slot].flags |= 8 }
+            let eye = min(target.eye, 1)
+            for k in 0..<Self.fillSlots {
+                var index: Int?
+                var view: FillView?
+                if k < plan[eye].count, let depth {
+                    let chosen = plan[eye][k]
+                    let source = chosen.fill.map { fills[$0] } ?? FillSource(frame: frame, depth: depth)
+                    if let existing = sources.firstIndex(where: { $0.frame === source.frame }) {
+                        index = existing
+                    } else if sources.count <= Self.fillFrames {
+                        index = sources.count
+                        sources.append(source)
+                    }
+                    view = chosen
+                }
+                guard let index, let view else {
+                    var unused = uniforms[slot]
+                    unused.flags = 0
+                    fragmentUniforms.append(unused)
+                    continue
+                }
+                let source = sources[index]
+                var fill = self.uniforms(
+                    frame: source.frame, eye: view.eye, depth: source.depth, target: target.display.pose,
+                    targetTangents: target.display.fieldOfView.tangents, planeDistance: planeDistance,
+                    outputSize: SIMD2(Float(size.width), Float(size.height)), outputOrigin: .zero,
+                    map: map, mapSlot: slot, flags: 4 | 32 | UInt32(index) << 8)
+                fill.maxSteps = UInt32(max(fillMaxSteps, 1))
+                fill.stepTexels = max(fillStepTexels, 0.25)
+                    * Self.depthDetail(width: source.depth.texture.width * sceneScale(source.depth))
+                fragmentUniforms.append(fill)
+                fragmentUniforms[slot].flags |= 8
+            }
         }
         let length = MemoryLayout<Uniforms>.stride * 2
         guard let compute = commandBuffer.makeComputeCommandEncoder() else {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
         }
         compute.label = "PCVR depth warp map"
-        let depthTexture = try depth.map { try prepare($0, frame: frame, slot: 0, encoder: compute) } ?? noDepth
+        let sourceScenes = try sources.enumerated().map { try prepare($1.depth, frame: $1.frame, slot: $0, encoder: compute) }
+        let depthTexture = sourceScenes.first ?? noDepth
         compute.setBytes(&uniforms, length: length, index: 0)
         compute.setTexture(depthTexture, index: 1)
         compute.setTexture(map, index: 3)
@@ -504,9 +544,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             encoder.label = "PCVR depth warp"
             encoder.setRenderPipelineState(try displayPipeline(for: group[0]))
             if group[0].depthTexture != nil { encoder.setDepthStencilState(depthWrite) }
-            encoder.setFragmentBytes(&fragmentUniforms, length: MemoryLayout<Uniforms>.stride * 4, index: 0)
+            encoder.setFragmentBytes(&fragmentUniforms, length: MemoryLayout<Uniforms>.stride * fragmentUniforms.count, index: 0)
             encoder.setFragmentTexture(frame.texture, index: 0)
             encoder.setFragmentTexture(depthTexture, index: 1)
+            let slots = Self.fillFrames + 1
+            encoder.setFragmentTextures((0..<slots).map { $0 < sources.count ? sources[$0].frame.texture : noDepth },
+                                        range: 4..<(4 + slots))
+            encoder.setFragmentTextures((0..<slots).map { $0 < sourceScenes.count ? sourceScenes[$0] : noDepth },
+                                        range: (4 + slots)..<(4 + 2 * slots))
             encoder.setFragmentTexture(map, index: 3)
             encoder.setFragmentTexture(motion?.map.texture ?? noDepth, index: 15)
             encoder.setFragmentTexture(depth?.hud ?? noDepth, index: 16)
@@ -1474,7 +1519,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                              texture2d<float, access::sample> depth,
                                                              texture2d<float, access::sample> map,
                                                              texture2d<float, access::sample> motion,
-                                                             texture2d<float, access::sample> hud, sampler linear) {
+                                                             texture2d<float, access::sample> hud,
+                                                             array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillColour,
+                                                             array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillDepth,
+                                                             sampler linear) {
         constant PCVRDepthWarpUniforms &u = eyes[v.index.x];
         float2 target = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
         PCVRDepthWarpDisplayOut out;
@@ -1486,16 +1534,24 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             return out;
         }
         PCVRDepthWarpHit hit = pcvrDepthWarpLookup(target, target, u, depth, map, linear);
-        if (hit.filled > 0.5 && (u.flags & 8u)) {
-            // Hidden from this eye's render view: the other eye, 6 cm to the
-            // side, often saw it (what a sideways move uncovers beside a near
-            // object is what the eye on that side sees past it). Its own hit,
-            // if it saw one inside its frame, is the true content.
-            constant PCVRDepthWarpUniforms &o = eyes[2 + v.index.x];
-            PCVRDepthWarpHit other = pcvrDepthWarpMarch(target, o, depth, linear);
-            bool inside = all(other.uv >= 0.0) && all(other.uv <= 1.0);
-            if (other.filled < 0.5 && inside) {
-                out.color = (u.flags & 2u) ? float4(0, 1, 1, 1) : float4(pcvrDepthWarpSample(other, o, source, motion, linear), 1);
+        bool outside = any(hit.uv < 0.0) || any(hit.uv > 1.0);
+        if ((hit.filled > 0.5 || outside) && (u.flags & 8u)) {
+            // Hidden from this eye's render view, or past its frame: the fill
+            // views in turn (the encoder's "Fills"), the frame's other eye
+            // and earlier frames. The first whose own hit saw it inside its
+            // frame gives the true content.
+            for (uint k = 0; k < 2; k++) {
+                constant PCVRDepthWarpUniforms &o = eyes[2 + 2 * v.index.x + k];
+                if (!(o.flags & 32u)) break;
+                uint index = min((o.flags >> 8) & 7u, uint(PCVR_FILL_FRAMES - 1));
+                PCVRDepthWarpHit other = pcvrDepthWarpMarch(target, o, fillDepth[index], linear);
+                if (other.filled > 0.5 || any(other.uv < 0.0) || any(other.uv > 1.0)) continue;
+                if (u.flags & 2u) {
+                    out.color = index == 0 ? float4(0, 1, 1, 1) : float4(1, 1, 0, 1);
+                } else {
+                    float2 uv = pcvrEyeTexel(pcvrWireUV(other.uv, o.wireX, o.wireY), o.sourceRect, o.sourceBounds);
+                    out.color = float4(fillColour[index].sample(linear, uv).rgb, 1);
+                }
                 out.depth = pcvrDepthWarpCompositorDepth(other, o, v.projection);
                 return out;
             }
@@ -1540,8 +1596,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                           texture2d<float, access::sample> map [[texture(3)]],
                                                           texture2d<float, access::sample> motion [[texture(15)]],
                                                           texture2d<float, access::sample> hud [[texture(16)]],
+                                                          array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillColour [[texture(4)]],
+                                                          array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillDepth [[texture(9)]],
                                                           sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, linear);
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, fillColour, fillDepth, linear);
     }
 
     fragment float4 pcvrDepthWarpDisplayColour(PCVRDepthWarpFullScreen in [[stage_in]],
@@ -1552,8 +1610,10 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                texture2d<float, access::sample> map [[texture(3)]],
                                                texture2d<float, access::sample> motion [[texture(15)]],
                                                texture2d<float, access::sample> hud [[texture(16)]],
+                                               array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillColour [[texture(4)]],
+                                               array<texture2d<float, access::sample>, PCVR_FILL_FRAMES> fillDepth [[texture(9)]],
                                                sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, linear).color;
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, fillColour, fillDepth, linear).color;
     }
     """ }
 }

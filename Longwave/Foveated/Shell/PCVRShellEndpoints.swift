@@ -46,6 +46,8 @@ enum PCVRShellEndpoints {
                         .number("shiftLimitMm", "the most head translation the warp corrects per pixel by depth, mm; the rest is "
                                 + "corrected as if everything lay at planeDistance (opens no holes, near things swim). "
                                 + "Negative: no limit (default)", default: 0, range: -1...1000),
+                        .boolean("earlierFrames", "fill what a pose miss uncovers from the last few frames shown (with their "
+                                 + "own depth) as well as the frame's other eye (default on)"),
                         .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
                                  + "motion the host sends with depth (default on; host --motion on)"),
                         .string("warpTier", "auto | full | reduced | minimal: hold the warp's quality tier (default full), or let "
@@ -72,6 +74,7 @@ enum PCVRShellEndpoints {
                 if let motion = args.bool("motion") { options.depthWarp.motionExtrapolation = motion }
                 if let refine = args.bool("refineEdges") { options.depthWarp.refinesEdges = refine }
                 if let flat = args.bool("flatDepth") { options.depthWarp.flatCompositorDepth = flat }
+                if let earlier = args.bool("earlierFrames") { options.depthWarp.fillsFromEarlierFrames = earlier }
                 if let limit = args.double("shiftLimitMm"), limit != 0 {
                     PCVRDepthWarper.depthShiftLimitNow = limit < 0 ? .infinity : Float(limit / 1000)
                 }
@@ -218,6 +221,7 @@ enum PCVRShellEndpoints {
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
                 "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud, "refineEdges": warp.refinesEdges, "flatDepth": warp.flatCompositorDepth,
+                "earlierFrames": warp.fillsFromEarlierFrames,
                 "shiftLimitMm": PCVRDepthWarper.depthShiftLimitNow.isFinite ? Double(PCVRDepthWarper.depthShiftLimitNow) * 1000 : -1,
                 "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,

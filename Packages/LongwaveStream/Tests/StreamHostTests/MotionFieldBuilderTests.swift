@@ -117,5 +117,25 @@ final class MotionFieldBuilderTests: XCTestCase {
             }
         }
     }
+
+    /// Motion the previous field didn't have where the content was is the
+    /// search's noise: sent still. Motion that carries on is kept.
+    func testMotionMustCarryOnFromTheLastField() throws {
+        let previous = pose(yaw: 0, displayTime: 1_000_000), current = pose(yaw: 0, displayTime: 2_000_000)
+        let s = search(yaw: 0, game: SIMD2(12, 0))
+        let first = try XCTUnwrap(MotionFieldBuilder.build(search: s, renderEye: renderEye, current: current, previous: previous,
+                                                           turnRemoved: true))
+        let carried = try XCTUnwrap(MotionFieldBuilder.build(search: s, renderEye: renderEye, current: current, previous: previous,
+                                                             turnRemoved: true, history: first.field))
+        let still = MotionField(cellSize: 32, columns: first.field.columns, rows: first.field.rows, renderSize: renderEye,
+                                interval: 1000, scale: 1, vectors: [Int8](repeating: 0, count: first.field.vectors.count))
+        let flicker = try XCTUnwrap(MotionFieldBuilder.build(search: s, renderEye: renderEye, current: current, previous: previous,
+                                                             turnRemoved: true, history: still))
+        let cell = (30 * 80 + 40) * 2
+        XCTAssertEqual(carried.field.vectors[cell], 12)
+        XCTAssertEqual(flicker.field.vectors[cell], 0)
+        XCTAssertGreaterThan(flicker.diagnostics.unconfirmed, 4000)
+        XCTAssertEqual(carried.diagnostics.unconfirmed, 0)
+    }
 }
 

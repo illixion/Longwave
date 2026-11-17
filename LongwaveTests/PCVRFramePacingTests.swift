@@ -172,12 +172,13 @@ final class PCVRFramePacingTests: XCTestCase {
     /// frame written at a slot is shown in the next one. Returns, per frame
     /// shown, how far its slot's display time was from its render display time.
     private func runTimed(source: TimeInterval, display: TimeInterval, seconds: TimeInterval, lead: TimeInterval,
+                          displayJitter: (Int) -> TimeInterval = { _ in 0 },
                           latency: (Int) -> TimeInterval) -> (errors: [TimeInterval], shown: [UInt32], queue: PCVRPacedFrameQueue<Frame>) {
         var queue = PCVRPacedFrameQueue<Frame>()
         let count = Int(seconds / source)
         var frames = (0..<count).map { n -> Frame in
             let start = Double(n) * source
-            return Frame(frameNumber: UInt32(n), arrivalTime: start + latency(n), displayTime: start + lead)
+            return Frame(frameNumber: UInt32(n), arrivalTime: start + latency(n), displayTime: start + lead + displayJitter(n))
         }
         frames.sort { $0.arrivalTime < $1.arrivalTime }
         var errors: [TimeInterval] = [], shown: [UInt32] = []
@@ -232,7 +233,8 @@ final class PCVRFramePacingTests: XCTestCase {
         let run = runTimed(source: 2 * display, display: display, seconds: 6, lead: 9 * display) { n in
             12 * display + (n % 3 == 0 ? 0.003 : -0.003)
         }
-        let settled = Array(zip(run.shown, run.errors).dropFirst(30))
+        // Past the hand-over to arrival order at the cadence (after 45 frames of it, about 90 in all).
+        let settled = Array(zip(run.shown, run.errors).dropFirst(120))
         XCTAssertEqual(run.queue.holdBack, 5 * display, accuracy: 1e-9, "held back by the late frames' lateness")
         XCTAssertEqual(settled.map(\.0), Array(settled.first!.0...settled.last!.0), "every frame shown, in order")
         let errors = settled.map(\.1)
@@ -270,5 +272,24 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertEqual(mailbox.takeForPresentation(spaceEpoch: 0, now: 0.02)?.frame.frameNumber, 2)
         XCTAssertEqual(mailbox.pacing?.trimmed, 0)
     }
+
+    func testAHalfRateSourceWithDisplayTimesASlotOffIsShownTwoSlotsEach() {
+        // The headset on 2026-11-17: Cyberpunk at 45 fps on 90 Hz, each frame
+        // rendered for the newest head pose, so its display time sits a slot
+        // early or late as often as not, and arriving with 8 ms of jitter. By
+        // display time two frames came due in one slot and one was dropped
+        // (53 of 713); in arrival order at the cadence none is.
+        let display = 1.0 / 90
+        let run = runTimed(source: 2 * display, display: display, seconds: 8, lead: 9 * display,
+                           displayJitter: { n in [0, display, -display, 0, display][n % 5] }) { n in
+            12 * display + Double((n * 7919) % 17 - 8) / 1000
+        }
+        // Past the hand-over to arrival order at the cadence (after 45 frames of it, about 90 in all): no frame left out.
+        let settled = Array(run.shown.dropFirst(120))
+        XCTAssertEqual(settled, Array(settled.first!...settled.last!), "every frame shown, in order")
+        XCTAssertLessThanOrEqual(run.queue.dropped, 20, "only while the cadence settled")
+        XCTAssertLessThanOrEqual(run.queue.trimmed, 1)
+    }
 }
 #endif
+

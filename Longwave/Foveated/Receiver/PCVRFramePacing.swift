@@ -100,6 +100,16 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         let ratio = sourcePeriod / period, whole = ratio.rounded()
         return whole >= 2 && abs(ratio - whole) < 0.1 ? Int(whole) : 1
     }
+    /// The same whole cadence for this many frames in a row hands timed
+    /// playout over to arrival order (`takeForPresentation(spaceEpoch:now:until:)`):
+    /// the measured source period glides from its start through every ratio
+    /// on its way to the true one.
+    static var cadenceFrames: Int { 45 }
+    private var streakCadence = 1
+    private var cadenceStreak = 0
+    /// The cadence that has held for `cadenceFrames` frames, else 1.
+    var settledCadence: Int { cadenceStreak >= Self.cadenceFrames ? streakCadence : 1 }
+
     /// The display period, measured from the takes.
     private(set) var period: TimeInterval = 1.0 / 90
     /// How long the frame shown last had waited for its slot.
@@ -143,6 +153,8 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             if interval >= 0, interval < 0.1 { sourcePeriod += 0.05 * (interval - sourcePeriod) }
         }
         lastArrival = frame.arrivalTime
+        let now = cadence
+        if now == streakCadence { cadenceStreak += 1 } else { streakCadence = now; cadenceStreak = 1 }
         arrivals.append((frame.poseSequence, frame.arrivalTime))
         if arrivals.count > Self.capacity * 4 { arrivals.removeFirst(arrivals.count - Self.capacity * 4) }
         queued.append(frame)
@@ -169,6 +181,17 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     /// pace with no cadence to match: 50 fps on 120 Hz, or a game wavering
     /// between 70 and 90, holds each frame for as long as its time lasts.
     mutating func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval, until target: TimeInterval) -> Presentation {
+        // A source at a whole fraction of the display rate (45 fps on 90 Hz) plays
+        // in arrival order, each frame held its cadence: by display time, frames
+        // whose render display times jitter by a slot (they take the newest head
+        // pose, on the display's own grid) came due two in one slot and one was
+        // dropped, 53 of 713 in 16 s on the headset (2026-11-17), the microstutter
+        // left once everything else was fixed. The hold-back is still measured,
+        // for when the rate leaves the cadence.
+        if settledCadence >= 2 {
+            sampleLateness(slotTime: target - period / 2)
+            return takeForPresentation(spaceEpoch: spaceEpoch, now: now)
+        }
         if let lastTake {
             let interval = now - lastTake
             if interval > 1.0 / 150, interval < 1.0 / 40 { period += 0.05 * (interval - period) }
@@ -246,8 +269,11 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         }
         let showing = current.flatMap { $0.spaceEpoch == spaceEpoch ? $0 : nil }
         // Held for its cadence, unless frames are piling up behind it or a
-        // slot of delay is being given back.
-        let holding = showing != nil && heldSlots < cadence && queued.count < 2 && !shortenHold
+        // slot of delay is being given back. Above a cadence of one, two may
+        // wait: a late frame followed closely by the next is arrival jitter, and
+        // cutting the hold for it showed one frame for a single slot.
+        let piledUp = queued.count >= (cadence > 1 ? 3 : 2)
+        let holding = showing != nil && heldSlots < cadence && !piledUp && !shortenHold
         guard !queued.isEmpty, !holding else {
             guard let showing else {
                 return Presentation(frame: nil, isNew: false, released: released)
@@ -258,8 +284,8 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         }
         if heldSlots < cadence, shortenHold { trimmed += 1 }
         shortenHold = false
-        // Piled up: show the older of the last two, keeping one behind it.
-        while queued.count > Self.queuedAfterTake + 1 {
+        // Piled up: show the oldest that keeps at most one (two above a cadence of one) behind it.
+        while queued.count > Self.queuedAfterTake + (cadence > 1 ? 2 : 1) {
             released.append(queued.removeFirst())
             dropped += 1
         }

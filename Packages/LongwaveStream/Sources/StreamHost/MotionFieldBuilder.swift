@@ -68,6 +68,8 @@ public enum MotionFieldBuilder {
         public var measured: Double = 0
         public var head: Double = 0
         public var residual: Double = 0
+        /// Cells with motion that the previous field didn't confirm, sent still.
+        public var unconfirmed = 0
         /// Per cell, both eyes (left then right, rows top first): the
         /// measured and the residual motion, nil where unknown.
         public var measuredCells: [SIMD2<Float>?] = []
@@ -86,7 +88,8 @@ public enum MotionFieldBuilder {
     public static func build(search: Search, renderEye: PixelSize, current: RenderPose, previous: RenderPose,
                              cellSize: Int = PCVRProfile.motionCellSize, scale: Float = PCVRProfile.motionScale,
                              keepCells: Bool = false, turnRemoved: Bool = false,
-                             floor: Float = noiseFloor) -> (field: MotionField, diagnostics: Diagnostics)? {
+                             floor: Float = noiseFloor, history: MotionField? = nil)
+        -> (field: MotionField, diagnostics: Diagnostics)? {
         guard current.displayTime > previous.displayTime, search.block > 0, cellSize > 0,
               search.vectors.count >= search.gridWidth * search.gridHeight * 2,
               search.known.count >= search.gridWidth * search.gridHeight else { return nil }
@@ -105,6 +108,8 @@ public enum MotionFieldBuilder {
             let turn = Rotation(from: now.pose.orientation, to: before.pose.orientation)
             // Residual motion per output cell, render pixels; nil where unknown.
             var cells = [SIMD2<Float>?](repeating: nil, count: columns * rows)
+            /// Per cell, where its content was in the previous frame's render eye (the turn's share).
+            var origins = [SIMD2<Float>](repeating: .zero, count: columns * rows)
             var measuredCells = [SIMD2<Float>?](repeating: nil, count: keepCells ? columns * rows : 0)
             for row in 0..<rows {
                 for column in 0..<columns {
@@ -126,6 +131,7 @@ public enum MotionFieldBuilder {
                     // Searched against the previous picture already turned to this
                     // pose (`previousFromCurrent`): the search's vector is the game's.
                     let head: SIMD2<Float>? = turnRemoved ? .zero : turned
+                    origins[row * columns + column] = p + turned
                     let residual = measured - (head ?? .zero)
                     cells[row * columns + column] = residual
                     diagnostics.cells += 1
@@ -148,8 +154,16 @@ public enum MotionFieldBuilder {
                         continue
                     }
                     func quantised(_ value: Float) -> Int8 { Int8(min(max((value / scale).rounded(), -127), 127)) }
-                    // Under the search's precision (a pixel of its picture): still.
-                    let still = (v.x / sx) * (v.x / sx) + (v.y / sy) * (v.y / sy) < floor * floor
+                    // Under the search's precision (a pixel of its picture): still. And motion
+                    // the previous frame didn't have where this content was is taken as
+                    // the search's noise (road markings and other repeating texture warped in
+                    // place, headset 2026-11-17): real motion carries on from frame to frame.
+                    var still = (v.x / sx) * (v.x / sx) + (v.y / sy) * (v.y / sy) < floor * floor
+                    if !still, let history,
+                       !agrees(v, history: history, eye: eye, at: origins[row * columns + column] + v, cellSize: cellSize) {
+                        still = true
+                        diagnostics.unconfirmed += 1
+                    }
                     vectors[at] = still ? 0 : quantised(v.x)
                     vectors[at + 1] = still ? 0 : quantised(v.y)
                 }
@@ -167,6 +181,27 @@ public enum MotionFieldBuilder {
     }
 
     private static func length(_ v: SIMD2<Float>) -> Double { Double((v.x * v.x + v.y * v.y).squareRoot()) }
+
+    /// Whether the previous field had about this motion (within 40% of it, or
+    /// 3 pixels) at `point` of `eye`'s previous render image, in the cell there
+    /// or one beside it.
+    static func agrees(_ v: SIMD2<Float>, history: MotionField, eye: Int, at point: SIMD2<Float>, cellSize: Int) -> Bool {
+        let columns = Int(history.columns), rows = Int(history.rows)
+        guard Int(history.cellSize) == cellSize, columns > 0, rows > 0 else { return true }
+        let cx = Int((point.x / Float(cellSize)).rounded(.down)), cy = Int((point.y / Float(cellSize)).rounded(.down))
+        let tolerance = max(3, 0.4 * Float(length(v)))
+        for dy in -1...1 {
+            for dx in -1...1 {
+                let x = cx + dx, y = cy + dy
+                guard x >= 0, x < columns, y >= 0, y < rows else { continue }
+                let at = (eye * columns * rows + y * columns + x) * 2
+                guard history.vectors[at] != MotionField.unknown else { continue }
+                let h = SIMD2(Float(history.vectors[at]), Float(history.vectors[at + 1])) * history.scale
+                if length(h - v) <= Double(tolerance) { return true }
+            }
+        }
+        return false
+    }
 
     /// Where the point at render pixel `p` of this frame's eye was in the
     /// previous frame's, for a still world at infinity, minus `p`: the motion

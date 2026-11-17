@@ -281,6 +281,8 @@ final class PCVRHost: @unchecked Sendable {
     /// The previous picture turned to the current one's render orientation.
     private var motionReproject: ReprojectPass?
     private var motionTurned: GraphicsTexture?
+    /// The last field built, which this one's motion must agree with.
+    private var previousField: MotionField?
     private var hudMarkPass: HudMarkPass?
     private var hudMarkUnavailable = false
     /// The depth pass's output on a marked frame, before the mark pass copies it into the job's texture.
@@ -927,7 +929,10 @@ final class PCVRHost: @unchecked Sendable {
         guard let previous = previousMotion, previous.searchEye == picture.searchEye,
               previous.renderEye == picture.renderEye,
               picture.renderPose.displayTime > previous.renderPose.displayTime,
-              picture.renderPose.displayTime - previous.renderPose.displayTime < 100_000_000 else { return nil }
+              picture.renderPose.displayTime - previous.renderPose.displayTime < 100_000_000 else {
+            previousField = nil
+            return nil
+        }
         do {
             let width = Int(picture.searchEye.width) * 2, height = Int(picture.searchEye.height)
             if motionSearch?.width != width || motionSearch?.height != height {
@@ -956,9 +961,10 @@ final class PCVRHost: @unchecked Sendable {
             let dumping = options.motionProbe != nil && Self.now() - lastMotionDump > 3_000_000_000
             guard let built = MotionFieldBuilder.build(search: search, renderEye: picture.renderEye,
                                                        current: picture.renderPose, previous: previous.renderPose,
-                                                       keepCells: dumping, turnRemoved: true)
-            else { return nil }
+                                                       keepCells: dumping, turnRemoved: true, history: previousField)
+            else { previousField = nil; return nil }
             let field = built.field
+            previousField = field
             if dumping, let directory = options.motionProbe {
                 lastMotionDump = Self.now()
                 dumpMotion(to: directory, picture: picture, previous: previous, turned: turned, field: field,

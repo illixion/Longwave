@@ -107,6 +107,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     private let depthPipeline: any MTLComputePipelineState
     private let preparePipeline: any MTLComputePipelineState
     private let reducePipeline: any MTLComputePipelineState
+    private let referencePipeline: any MTLComputePipelineState
+    private let refinePipeline: any MTLComputePipelineState
     private let library: any MTLLibrary
     /// Depth always written, never tested: each pixel is drawn once. Without
     /// a state Metal leaves depth writes off, and the views' depth stays clear.
@@ -150,6 +152,35 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         var decode: SIMD4<Float>
         var edge: Float
     }
+
+    /// Mirrors `PCVRDepthWarpRefine`.
+    private struct RefineUniforms {
+        var wireX0: SIMD4<Float>, wireX1: SIMD4<Float>
+        var wireY0: SIMD4<Float>, wireY1: SIMD4<Float>
+        var rect0: SIMD4<Float>, rect1: SIMD4<Float>
+        var bounds0: SIMD4<Float>, bounds1: SIMD4<Float>
+        var edge: Float
+        var colourSigma: Float
+    }
+
+    /// Sharpen the depth picture's edges by the frame's colour before the
+    /// march (`pcvrDepthWarpRefine`): the scene is made at `refineScale`
+    /// times the depth picture's size, and where its texels straddle an edge
+    /// each finer texel takes the depth of whichever nearby depth texel's
+    /// colour is most like its own. Without it a near shape's outline sits
+    /// on the depth texel grid, and the host takes each texel's nearest
+    /// depth, so a rim of background up to a texel wide is moved as if it
+    /// were the near shape: stair-stepped hands and HUD glyphs whose steps
+    /// flip from side to side as the head moves (Shell A capture, Cyberpunk,
+    /// 2026-11-17).
+    var refinesEdges = false
+    static let refineScale = 2
+    /// How alike two colours must be (in square-root RGB) to count as the
+    /// same surface: the colour weight's standard deviation.
+    var refineColourSigma: Float = 0.08
+    /// Per depth map slot: the prepared depth at its own size, and its
+    /// texels' mean colour, when the scene is refined.
+    private var refineScratch: [(depth: any MTLTexture, colour: any MTLTexture)] = []
     /// The warp map, remade when the output size changes.
     private var map: (any MTLTexture)?
     /// Output pixels per warp-map texel, each axis.
@@ -205,7 +236,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
 
     /// A depth map's texels per reference texel, at least 1.
     static func depthDetail(_ depth: any MTLTexture) -> Float {
-        max(1, Float(depth.width / 2) / referenceDepthEyeWidth)
+        depthDetail(width: depth.width)
+    }
+
+    static func depthDetail(width: Int) -> Float {
+        max(1, Float(width / 2) / referenceDepthEyeWidth)
+    }
+
+    /// How many scene texels a depth texel becomes (`refinesEdges`).
+    private func sceneScale(_ depth: PCVRDepthMap) -> Int {
+        refinesEdges && depth.texture.width / 2 * Self.refineScale <= 4096 ? Self.refineScale : 1
     }
 
     /// An earlier frame and its depth, for filling what the frame being
@@ -258,10 +298,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
               let colour = library.makeFunction(name: "pcvrDepthWarpColour"),
               let depth = library.makeFunction(name: "pcvrDepthWarpDepth"),
               let prepare = library.makeFunction(name: "pcvrDepthWarpPrepare"),
-              let reduce = library.makeFunction(name: "pcvrDepthWarpReduce") else {
+              let reduce = library.makeFunction(name: "pcvrDepthWarpReduce"),
+              let reference = library.makeFunction(name: "pcvrDepthWarpReference"),
+              let refine = library.makeFunction(name: "pcvrDepthWarpRefine") else {
             throw PCVRReceiverError.resourceCreationFailed("depth warp kernels")
         }
         preparePipeline = try device.makeComputePipelineState(function: prepare)
+        referencePipeline = try device.makeComputePipelineState(function: reference)
+        refinePipeline = try device.makeComputePipelineState(function: refine)
         reducePipeline = try device.makeComputePipelineState(function: reduce)
         mapPipeline = try device.makeComputePipelineState(function: map)
         colourPipeline = try device.makeComputePipelineState(function: colour)
@@ -349,7 +393,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                     outputSize: outputSize, outputOrigin: SIMD2(UInt32(eye * eyeWidth), 0), map: map, mapSlot: eye,
                     flags: 32 | UInt32(index) << 8)
                 fill.maxSteps = UInt32(max(fillMaxSteps, 1))
-                fill.stepTexels = max(fillStepTexels, 0.25) * Self.depthDetail(source.depth.texture)
+                fill.stepTexels = max(fillStepTexels, 0.25) * Self.depthDetail(width: source.depth.texture.width * sceneScale(source.depth))
                 uniforms.append(fill)
                 uniforms[eye].flags |= 8
             }
@@ -361,7 +405,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         }
         encoder.label = "PCVR depth warp"
         // The frame's own depth is source 0, so its scene is the first.
-        let sourceScenes = try sources.enumerated().map { try prepare($1.depth, slot: $0, encoder: encoder) }
+        let sourceScenes = try sources.enumerated().map { try prepare($1.depth, frame: $1.frame, slot: $0, encoder: encoder) }
         encoder.setBytes(&uniforms, length: length, index: 0)
         encoder.setTexture(frame.texture, index: 0)
         encoder.setTexture(sourceScenes.first ?? noDepth, index: 1)
@@ -437,7 +481,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             throw PCVRReceiverError.resourceCreationFailed("depth warp encoder")
         }
         compute.label = "PCVR depth warp map"
-        let depthTexture = try depth.map { try prepare($0, slot: 0, encoder: compute) } ?? noDepth
+        let depthTexture = try depth.map { try prepare($0, frame: frame, slot: 0, encoder: compute) } ?? noDepth
         compute.setBytes(&uniforms, length: length, index: 0)
         compute.setTexture(depthTexture, index: 1)
         compute.setTexture(map, index: 3)
@@ -476,21 +520,53 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// Encodes `depth`'s scene texture (see "Cost") into `encoder`, ahead of
     /// the passes that march through it, and returns it. `slot` names which of
     /// the encode's depth maps this is, so each keeps its own texture.
-    private func prepare(_ depth: PCVRDepthMap, slot: Int, encoder: any MTLComputeCommandEncoder) throws -> any MTLTexture {
+    private func prepare(_ depth: PCVRDepthMap, frame: PCVRDecodedFrame, slot: Int,
+                         encoder: any MTLComputeCommandEncoder) throws -> any MTLTexture {
         let source = depth.texture
-        while scenes.count <= slot { scenes.append(try makeScene(width: source.width, height: source.height)) }
-        if scenes[slot].texture.width != source.width || scenes[slot].texture.height != source.height {
-            scenes[slot] = try makeScene(width: source.width, height: source.height)
+        let scale = sceneScale(depth)
+        let width = source.width * scale, height = source.height * scale
+        while scenes.count <= slot { scenes.append(try makeScene(width: width, height: height)) }
+        if scenes[slot].texture.width != width || scenes[slot].texture.height != height {
+            scenes[slot] = try makeScene(width: width, height: height)
         }
         let scene = scenes[slot]
         let decode = depth.decode
-        var uniforms = PrepareUniforms(decode: decode, edge: Self.edgeCodes / 255 * abs(decode.x * decode.w))
+        let edge = Self.edgeCodes / 255 * abs(decode.x * decode.w)
+        var uniforms = PrepareUniforms(decode: decode, edge: edge)
+        let prepared = scale == 1 ? scene.levels[0] : try scratch(slot: slot, width: source.width, height: source.height).depth
         encoder.setComputePipelineState(preparePipeline)
         encoder.setBytes(&uniforms, length: MemoryLayout<PrepareUniforms>.stride, index: 1)
         encoder.setTexture(source, index: 0)
-        encoder.setTexture(scene.levels[0], index: 1)
+        encoder.setTexture(prepared, index: 1)
         encoder.dispatchThreads(MTLSize(width: source.width, height: source.height, depth: 1),
                                 threadsPerThreadgroup: Self.threadgroup(preparePipeline))
+        if scale > 1 {
+            let colours = refineScratch[slot].colour
+            let wire0 = frame.wireConstants(eye: 0), wire1 = frame.wireConstants(eye: 1)
+            var refine = RefineUniforms(
+                wireX0: wire0.x, wireX1: wire1.x, wireY0: wire0.y, wireY1: wire1.y,
+                rect0: PCVRReceiver.eyeRect(eye: 0, texture: frame.texture),
+                rect1: PCVRReceiver.eyeRect(eye: 1, texture: frame.texture),
+                bounds0: PCVRReceiver.eyeBounds(eye: 0, texture: frame.texture),
+                bounds1: PCVRReceiver.eyeBounds(eye: 1, texture: frame.texture),
+                edge: edge, colourSigma: max(refineColourSigma, 0.005))
+            encoder.setComputePipelineState(referencePipeline)
+            encoder.setBytes(&refine, length: MemoryLayout<RefineUniforms>.stride, index: 1)
+            encoder.setTexture(frame.texture, index: 0)
+            encoder.setTexture(colours, index: 1)
+            encoder.setSamplerState(sampler, index: 0)
+            encoder.dispatchThreads(MTLSize(width: colours.width, height: colours.height, depth: 1),
+                                    threadsPerThreadgroup: Self.threadgroup(referencePipeline))
+            encoder.setComputePipelineState(refinePipeline)
+            encoder.setBytes(&refine, length: MemoryLayout<RefineUniforms>.stride, index: 1)
+            encoder.setTexture(prepared, index: 0)
+            encoder.setTexture(colours, index: 1)
+            encoder.setTexture(frame.texture, index: 2)
+            encoder.setTexture(scene.levels[0], index: 3)
+            encoder.setSamplerState(sampler, index: 0)
+            encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
+                                    threadsPerThreadgroup: Self.threadgroup(refinePipeline))
+        }
         encoder.setComputePipelineState(reducePipeline)
         for level in 1..<scene.levels.count {
             encoder.setTexture(scene.levels[level - 1], index: 0)
@@ -499,6 +575,28 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                     threadsPerThreadgroup: Self.threadgroup(reducePipeline))
         }
         return scene.texture
+    }
+
+    /// `refineScratch[slot]`, remade when the depth picture's size changes.
+    private func scratch(slot: Int, width: Int, height: Int) throws -> (depth: any MTLTexture, colour: any MTLTexture) {
+        if refineScratch.count > slot, refineScratch[slot].depth.width == width, refineScratch[slot].depth.height == height {
+            return refineScratch[slot]
+        }
+        func make(_ format: MTLPixelFormat, _ label: String) throws -> any MTLTexture {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .private
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                throw PCVRReceiverError.resourceCreationFailed(label)
+            }
+            texture.label = label
+            return texture
+        }
+        let made = (depth: try make(.r16Float, "PCVR depth warp prepared depth"),
+                    colour: try make(.rgba16Float, "PCVR depth warp texel colours"))
+        while refineScratch.count <= slot { refineScratch.append(made) }
+        refineScratch[slot] = made
+        return made
     }
 
     private func makeScene(width: Int, height: Int) throws -> Scene {
@@ -656,7 +754,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             translation -= excess
             rotation.columns.2 -= excess / plane
         }
-        let detail = depth.map { Self.depthDetail($0.texture) } ?? 1
+        let scale = depth.map { sceneScale($0) } ?? 1
+        let sceneWidth = depthTexture.width * scale, sceneHeight = depthTexture.height * scale
+        let detail = depth.map { _ in Self.depthDetail(width: sceneWidth) } ?? 1
         let motionConstants = motion.map { $0.constants(eye: eye) }
         var result = Uniforms(
             rotation: rotation,
@@ -667,9 +767,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             sourceRect: PCVRReceiver.eyeRect(eye: eye, texture: frame.texture),
             sourceBounds: PCVRReceiver.eyeBounds(eye: eye, texture: frame.texture),
             depthRect: PCVRReceiver.eyeRect(eye: eye, texture: depthTexture),
-            depthTexels: PCVREyeMeshBuilder.eyeTexels(eye: eye, texture: depthTexture),
+            depthTexels: SIMD4(Float(eye * sceneWidth / 2), 0, Float(eye * sceneWidth / 2 + sceneWidth / 2 - 1), Float(sceneHeight - 1)),
             depthDecode: decode,
-            depthSize: SIMD2(Float(depthTexture.width), Float(depthTexture.height)),
+            depthSize: SIMD2(Float(sceneWidth), Float(sceneHeight)),
             mapRect: PCVRReceiver.eyeRect(eye: mapSlot, texture: map),
             mapBounds: PCVRReceiver.eyeBounds(eye: mapSlot, texture: map),
             mapSize: SIMD2(Float(map.width / 2), Float(map.height)),
@@ -782,6 +882,88 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         }
         float smooth = (2 * w[0] + w[1] + w[2] + w[3] + w[4]) / 6;
         scene.write(float4(nearest - farthest <= p.edge ? smooth : w[0]), gid);
+    }
+
+    struct PCVRDepthWarpRefine {
+        float4 wireX[2];        // the frame's centre/edge map per eye
+        float4 wireY[2];
+        float4 sourceRect[2];   // each eye's half of the frame texture, and its clamp
+        float4 sourceBounds[2];
+        float edge;
+        float colourSigma;      // square-root RGB
+    };
+
+    // The frame's colour at a render UV of one eye, in square-root RGB.
+    static float3 pcvrDepthWarpRefineColour(float2 uv, int eye, constant PCVRDepthWarpRefine &r,
+                                            texture2d<float, access::sample> source, sampler linear) {
+        float3 c = source.sample(linear, pcvrEyeTexel(pcvrWireUV(saturate(uv), r.wireX[eye], r.wireY[eye]),
+                                                      r.sourceRect[eye], r.sourceBounds[eye]), level(0)).rgb;
+        return sqrt(max(c, 0.0));
+    }
+
+    // Each depth texel's mean colour (four taps over its footprint), for `pcvrDepthWarpRefine`.
+    kernel void pcvrDepthWarpReference(texture2d<float, access::sample> source [[texture(0)]],
+                                       texture2d<float, access::write> reference [[texture(1)]],
+                                       constant PCVRDepthWarpRefine &r [[buffer(1)]],
+                                       sampler linear [[sampler(0)]],
+                                       uint2 gid [[thread_position_in_grid]]) {
+        int eyeWidth = max(int(reference.get_width()) / 2, 1);
+        int eye = int(gid.x) >= eyeWidth ? 1 : 0;
+        float2 size = float2(eyeWidth, reference.get_height());
+        float2 local = float2(int(gid.x) - eye * eyeWidth, int(gid.y));
+        float3 sum = float3(0);
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 2; i++) {
+                sum += pcvrDepthWarpRefineColour((local + 0.25 + 0.5 * float2(i, j)) / size, eye, r, source, linear);
+            }
+        }
+        reference.write(float4(sum / 4, 1), gid);
+    }
+
+    // The scene at the refined size, level 0. Where the four prepared depth
+    // texels round a finer texel agree, their bilinear blend; across an edge,
+    // the depth of the one among the sixteen round it whose mean colour is
+    // most like this texel's own colour, weighted by distance. Chosen, never
+    // blended, so an edge stays a step, now on the colour's outline.
+    kernel void pcvrDepthWarpRefine(texture2d<float, access::read> coarse [[texture(0)]],
+                                    texture2d<float, access::read> reference [[texture(1)]],
+                                    texture2d<float, access::sample> source [[texture(2)]],
+                                    texture2d<float, access::write> fine [[texture(3)]],
+                                    constant PCVRDepthWarpRefine &r [[buffer(1)]],
+                                    sampler linear [[sampler(0)]],
+                                    uint2 gid [[thread_position_in_grid]]) {
+        int fineEye = max(int(fine.get_width()) / 2, 1);
+        int eye = int(gid.x) >= fineEye ? 1 : 0;
+        int coarseEye = max(int(coarse.get_width()) / 2, 1);
+        float2 fineSize = float2(fineEye, fine.get_height());
+        float2 coarseSize = float2(coarseEye, coarse.get_height());
+        float2 fineLocal = float2(int(gid.x) - eye * fineEye, int(gid.y)) + 0.5;
+        float2 c = fineLocal * coarseSize / fineSize - 0.5;
+        int2 low = int2(eye * coarseEye, 0), high = int2(eye * coarseEye + coarseEye - 1, int(coarse.get_height()) - 1);
+        int2 b = int2(floor(c));
+        float2 f = c - float2(b);
+        float w00 = coarse.read(uint2(clamp(low + b, low, high))).r;
+        float w10 = coarse.read(uint2(clamp(low + b + int2(1, 0), low, high))).r;
+        float w01 = coarse.read(uint2(clamp(low + b + int2(0, 1), low, high))).r;
+        float w11 = coarse.read(uint2(clamp(low + b + int2(1, 1), low, high))).r;
+        float spread = max(max(w00, w10), max(w01, w11)) - min(min(w00, w10), min(w01, w11));
+        if (spread <= r.edge) {
+            fine.write(float4(mix(mix(w00, w10, f.x), mix(w01, w11, f.x), f.y)), gid);
+            return;
+        }
+        float3 own = pcvrDepthWarpRefineColour(fineLocal / fineSize, eye, r, source, linear);
+        float inverseSigma = 0.5 / (r.colourSigma * r.colourSigma);
+        float best = -1, chosen = w00;
+        for (int j = -1; j <= 2; j++) {
+            for (int i = -1; i <= 2; i++) {
+                uint2 p = uint2(clamp(low + b + int2(i, j), low, high));
+                float3 dc = reference.read(p).rgb - own;
+                float2 dp = float2(b + int2(i, j)) - c;
+                float score = exp(-0.5 * dot(dp, dp) - dot(dc, dc) * inverseSigma);
+                if (score > best) { best = score; chosen = coarse.read(p).r; }
+            }
+        }
+        fine.write(float4(chosen), gid);
     }
 
     // The scene texture's next level: per texel the largest inverse depth

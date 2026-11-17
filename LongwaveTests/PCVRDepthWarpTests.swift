@@ -32,7 +32,8 @@ final class PCVRDepthWarpTests: XCTestCase {
 
     /// Both eyes side by side, each pixel's red and green its own eye-local UV
     /// (at its centre), so a bilinear tap anywhere reads back the UV it took.
-    private func gradientFrame(foveation: PCVRFoveation?, pose: PCVRPose) throws -> PCVRDecodedFrame {
+    private func gradientFrame(foveation: PCVRFoveation?, pose: PCVRPose,
+                               blue: ((Int, Int) -> Float)? = nil) throws -> PCVRDecodedFrame {
         let width = 2 * Self.eyeWidth, height = Self.eyeHeight
         let colour = try texture(.rgba16Float, width: width, height: height)
         var pixels = [Float16](repeating: 0, count: width * height * 4)
@@ -41,7 +42,7 @@ final class PCVRDepthWarpTests: XCTestCase {
                 let i = (y * width + x) * 4
                 pixels[i] = Float16((Float(x % Self.eyeWidth) + 0.5) / Float(Self.eyeWidth))
                 pixels[i + 1] = Float16((Float(y) + 0.5) / Float(height))
-                pixels[i + 2] = Float16(x >= Self.eyeWidth ? 1 : 0)
+                pixels[i + 2] = Float16(x >= Self.eyeWidth ? 1 : blue?(x, y) ?? 0)
                 pixels[i + 3] = 1
             }
         }
@@ -93,8 +94,9 @@ final class PCVRDepthWarpTests: XCTestCase {
 
     private func warp(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>,
                       planeDistance: Float = 2, resampling: PCVRDepthWarper.Resampling? = nil,
-                      motion: PCVRMotionShift? = nil) throws -> Output {
+                      motion: PCVRMotionShift? = nil, refinesEdges: Bool = false) throws -> Output {
         let warper = try PCVRDepthWarper(device: device)
+        warper.refinesEdges = refinesEdges
         if let resampling { warper.resampling = resampling }
         // These scenes' right eyes are flat (`depthMap`), not what that eye saw.
         warper.fillsFromOtherEye = false
@@ -315,6 +317,50 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertGreaterThan(bg, 500)
         // The warped depth: near across the block, far elsewhere, the strip included.
         try checkWarpedDepth(out, blockStart: blockStart, blockEnd: blockEnd, margin: margin, near: 0.5, far: 2)
+    }
+
+    /// The host takes each depth texel's nearest depth, so a near shape's
+    /// depth reaches up to a texel past its outline. Unrefined, the
+    /// background in that rim moves with the shape; refined by the colour
+    /// (`refinesEdges`), it stays with the background.
+    func testRefinedEdgesKeepTheBackgroundRimOffANearShape() throws {
+        // The block's colour (blue) from pixel 131 to 252 across and 67 to 188 down:
+        // mid-texel at both ends (texels are 8 pixels), so depth texels 16...31
+        // and 8...23 are near, each holding three to five pixels of background.
+        let inside = { (x: Int, y: Int) -> Bool in (131..<253).contains(x) && (67..<189).contains(y) }
+        let frame = try gradientFrame(foveation: nil, pose: .identity, blue: { inside($0, $1) ? 1 : 0 })
+        let depth = try depthMap { x, y in (16..<32).contains(x) && (8..<24).contains(y) ? 0.5 : 2 }
+        let shift: Float = -0.1   // the eye moves left: the block slides right, over the background beside it
+        let targets = frame.renderPose.eyes.map { $0.pose * PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
+                                                                     position: [shift, 0, 0]) }
+        let t = Self.fov.tangents, width = t.y - t.x
+        let nearShift = shift / 0.5 / width, farShift = shift / 2 / width
+        let texel = 1 / Float(Self.eyeWidth)
+        func dragged(_ out: Output) -> (rim: Int, block: Int) {
+            var rim = 0, block = 0
+            for y in stride(from: 90, to: 166, by: 2) {
+                for x in 2..<(Self.eyeWidth - 2) {
+                    let u = (Float(x) + 0.5) / Float(Self.eyeWidth)
+                    let got = out.sourceUV(eye: 0, x: x, y: y)
+                    let i = (y * out.width + x) * 4
+                    let isBlock = Float(out.colour[i + 2]) > 0.5
+                    let movedNear = abs(got.x - (u + nearShift)) < 1.5 * texel
+                    if movedNear, isBlock { block += 1 }
+                    // Background shown where the block's shift put it: the rim, dragged.
+                    // Background from the rim (source pixels 128 to 130) shown where the
+                    // block's shift put it: dragged. (A fill can land at the block's
+                    // shift too, from farther off the edge; not counted.)
+                    let sourceColumn = Int(got.x * Float(Self.eyeWidth))
+                    if movedNear, !isBlock, (126..<131).contains(sourceColumn) { rim += 1 }
+                }
+            }
+            return (rim, block)
+        }
+        let plain = dragged(try warp(frame, depth: depth, targets: targets))
+        let refined = dragged(try warp(frame, depth: depth, targets: targets, refinesEdges: true))
+        XCTAssertGreaterThan(plain.rim, 80, "the unrefined warp should drag the rim (the case under test)")
+        XCTAssertLessThan(refined.rim, plain.rim / 10, "refined \(refined.rim) vs plain \(plain.rim)")
+        XCTAssertGreaterThan(refined.block, plain.block * 9 / 10, "the block itself still moves as near")
     }
 
     private func checkWarpedDepth(_ out: Output, blockStart: Float, blockEnd: Float, margin: Float, near: Float,

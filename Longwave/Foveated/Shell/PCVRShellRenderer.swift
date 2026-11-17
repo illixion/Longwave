@@ -64,6 +64,9 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Show the HUD the host marked as head-locked where the head is now,
     /// instead of reprojecting it with the world (`PCVRDepthWarper.headLockedHud`).
     var headLockedHud = true
+    /// Sharpen the depth picture's edges by the frame's colour before the
+    /// march (`PCVRDepthWarper.refinesEdges`).
+    var refinesEdges = false
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -357,6 +360,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             warper.stepTexels = march.stepTexels
             warper.tintsFills = warp.tintsFills
             warper.headLockedHud = warp.headLockedHud
+            warper.refinesEdges = warp.refinesEdges
             warper.fillsFromOtherEye = march.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1
@@ -500,7 +504,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             "motionShift": motion,
             "warp": ["enabled": warp.isEnabled, "maxSteps": warp.maxSteps, "stepTexels": Double(warp.stepTexels),
                      "otherEye": warp.fillsFromOtherEye, "hudLocked": warp.headLockedHud,
-                     "planeDistance": Double(warp.planeDistance), "tier": (warp.tier ?? warpBudget.tier).name] as [String: Any],
+                     "planeDistance": Double(warp.planeDistance), "tier": (warp.tier ?? warpBudget.tier).name,
+                     "refinesEdges": warp.refinesEdges] as [String: Any],
         ]
         if let head { meta["head"] = PCVRShellCapture.json(head) }
         if let foveation = frame.foveation {

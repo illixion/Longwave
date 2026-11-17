@@ -39,6 +39,8 @@ enum PCVRShellEndpoints {
                         .boolean("otherEye", "fill what an eye could not see from the frame's other eye (default on)"),
                         .boolean("hudLocked", "show the HUD the host marked as head-locked where the head is now, not "
                                  + "reprojected with the world (default on; needs a broker and host that mark it)"),
+                        .boolean("refineEdges", "sharpen the depth picture's edges by the frame's colour before the warp "
+                                 + "(twice its size; default off): outlines of hands and HUD on the colour, not the depth grid"),
                         .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
                                  + "motion the host sends with depth (default on; host --motion on)"),
                         .string("warpTier", "auto | full | reduced | minimal: hold the warp's quality tier (default full), or let "
@@ -63,6 +65,7 @@ enum PCVRShellEndpoints {
                 if let tint = args.bool("warpTint") { options.depthWarp.tintsFills = tint }
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
                 if let motion = args.bool("motion") { options.depthWarp.motionExtrapolation = motion }
+                if let refine = args.bool("refineEdges") { options.depthWarp.refinesEdges = refine }
                 if let locked = args.bool("hudLocked") { options.depthWarp.headLockedHud = locked }
                 if let name = args.string("warpTier"), !name.isEmpty {
                     if name == "auto" {
@@ -205,7 +208,7 @@ enum PCVRShellEndpoints {
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
-                "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud,
+                "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud, "refineEdges": warp.refinesEdges,
                 "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,

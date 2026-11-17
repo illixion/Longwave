@@ -254,6 +254,27 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertEqual(run.queue.holdBack, 0)
     }
 
+    func testTimedPlayoutStartsFreshAfterAStreamFormatChange() {
+        // A late 45 fps stream on a 90 Hz display is replaced by an on-time 90 fps stream.
+        var queue = runTimed(source: 2 * period, display: period, seconds: 4, lead: 9 * period) { _ in
+            14 * period
+        }.queue
+        XCTAssertEqual(queue.settledCadence, 2)
+        XCTAssertGreaterThan(queue.holdBack, 4 * period)
+
+        for index in 0..<4 {
+            let now = 4 + Double(index) * period
+            let frame = Frame(streamEpoch: 1, frameNumber: UInt32(index),
+                              arrivalTime: now, displayTime: now + period)
+            _ = queue.deliver(frame)
+            let presentation = queue.takeForPresentation(spaceEpoch: 0, now: now, until: now + 1.5 * period)
+            XCTAssertEqual(presentation.frame, frame)
+            XCTAssertTrue(presentation.isNew)
+        }
+        XCTAssertEqual(queue.settledCadence, 1)
+        XCTAssertEqual(queue.holdBack, 0)
+    }
+
     func testTimedPlayoutTellsThePresenterWhatArrived() {
         var queue = PCVRPacedFrameQueue<Frame>()
         _ = queue.deliver(Frame(frameNumber: 1, arrivalTime: 0.5, poseSequence: 41))

@@ -169,6 +169,7 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
                 dropped += queued.count
                 released = queued
                 queued = []
+                resetSourceTiming()
             }
         }
         if let lastArrival {
@@ -214,6 +215,25 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             dropped += 1
         }
         return released
+    }
+
+    private mutating func resetSourceTiming() {
+        // A format change can change both the source rate and the time it takes
+        // to decode. Keep the display clock and the last picture while the new
+        // stream arrives, and learn its timing from its own frames.
+        lastArrival = nil
+        periodArrivals.removeAll(keepingCapacity: true)
+        sourcePeriod = period
+        streakCadence = 1
+        cadenceStreak = 0
+        settledCadence = 1
+        offCadence = 0
+        lateness.removeAll(keepingCapacity: true)
+        lastSampled = nil
+        holdBack = 0
+        minimumWait = .infinity
+        waits = 0
+        shortenHold = false
     }
 
     /// The frames that arrived since the last call, oldest first.

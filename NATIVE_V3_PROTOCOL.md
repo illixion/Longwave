@@ -894,13 +894,14 @@ unit, when the stream's `formatDescription` declares `sideData` with the types
 it uses. Putting them in the payload, not a separate message, means FEC and
 NACK protect them, they can't be paired with the wrong frame, and the 24-byte
 shard header stays the same for every stream. Unknown types are skipped by
-length. Types: `renderPose` and `foveation` (§4.7), `depthRange` (§4.8), with
-more added append-only.
+length. Types: `renderPose` and `foveation` (§4.7), `depthRange` and
+`motionField` (§4.8), with more added append-only.
 
 *Encoding (2026-10-12).* Items sit in the payload's side data section above,
 so a parser never has to guess where TLVs end and NAL units begin. The design
 left that boundary open. Type numbers: renderPose 1 (102 bytes), foveation 2
-(20 bytes), depthRange 3 (13 bytes). Each known type appears at most once per
+(20 bytes), depthRange 3 (13 bytes), inputBridge 4 (at most 512 bytes),
+motionField 5 (18 bytes plus 4 per block pair). Each known type appears at most once per
 frame. The format's declared types bound what a frame may carry:
 
 - an item whose type isn't declared is an error;
@@ -1452,6 +1453,28 @@ not VR.
   3080 at native density. `near` is the estimate's widest disparity, about
   0.15 m. Most Unity titles submit no depth (Hyperbolica creates no depth
   swapchain), which is why the estimate exists.
+- **The game's motion (capability `motionField`, 2026-11-17).** A game held at
+  45 fps on a 90 Hz headset shows each frame twice; the depth warp corrects
+  each display frame for the head, but whatever moves in the game itself steps
+  every 22 ms. A headset that offers `motionField` (with `depthVideo`) gets a
+  `motionField` side data item on its depth frames: per 32x32 block of each
+  render eye, where that block's content was in the previous eye frame, with
+  the motion the change of render orientation explains removed (the warp
+  already handles the head). On a display frame that repeats a stream frame
+  it reads the picture at `p + v * t / interval`, `t` the time since the
+  frame was first shown (Oculus's ASW). The host gets the motion from NVENC's
+  motion-estimation-only mode on a quarter-size copy of both eyes, on the
+  encoder engine rather than the busy 3D engine (4 ms beside the colour
+  encode with Cyberpunk running, 2026-11-17;
+  `docs/PCVR_MOTION_EXTRAPOLATION.md`). Item, little-endian:
+  `flags u8 (0) | cellSize u8 | columns u16 | rows u16 | renderWidth u16 |
+  renderHeight u16 | interval u32 (us, previous frame's render time to this
+  one's) | scale f32 (render pixels a unit) | vectors`, the vectors per eye
+  (left, then right), rows top first, `x i8, y i8` per block, `x = -128`
+  meaning no motion known. The blocks tile the render eye, the last column and
+  row overhanging it. 80x64 blocks for a 2536x2040 eye: 20 KB a frame. A
+  frame without the item, or a receiver that didn't offer the capability,
+  repeats as before.
 - **Pre-rendered cutscenes** have no depth buffer (the component sees a
   cleared or constant one). It marks those frames empty in `depthRange`, and
   the headset switches to estimated depth until real depth returns, rather

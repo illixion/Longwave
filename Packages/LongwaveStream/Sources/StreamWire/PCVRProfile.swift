@@ -14,18 +14,23 @@ public enum PCVRProfile {
     public static let gazeClientCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze])
     /// What a PCVR client offers: `gaze` with a gaze source that has capture
     /// times, `depthVideo` when it reprojects by depth (it then subscribes to
-    /// the eye stream's depth auxiliary, `depthStreamID`).
-    public static func clientCapabilities(gaze: Bool, depth: Bool, separateEyes: Bool = false) -> CapabilitySet {
+    /// the eye stream's depth auxiliary, `depthStreamID`), and `motionField`
+    /// with depth when it extrapolates repeated frames along the game's motion.
+    public static func clientCapabilities(gaze: Bool, depth: Bool, separateEyes: Bool = false,
+                                          motion: Bool = false) -> CapabilitySet {
         var set = gaze ? gazeClientCapabilities : clientCapabilities
         if depth { set.insert(.depthVideo) }
+        if depth && motion { set.insert(.motionField) }
         if separateEyes { set.insert(.separateEyeVideo) }
         return set
     }
     /// What the PCVR host answers with. It accepts gaze and hands it to the
     /// frame source's host state, where the compositor reads it, warps the eye
     /// images for a viewer that negotiated `foveatedVideo`, and sends depth to
-    /// one that negotiated `depthVideo`.
-    public static let hostCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze, .depthVideo, .separateEyeVideo])
+    /// one that negotiated `depthVideo` (with the game's motion on its frames
+    /// for one that negotiated `motionField` too).
+    public static let hostCapabilities = CapabilitySet([.nack, .sideData, .pcvr, .foveatedVideo, .gaze, .depthVideo,
+                                                        .separateEyeVideo, .motionField])
 
     /// The eye stream's depth auxiliary (section 4.8): both eyes' inverse depth
     /// side by side, each in its render frustum, unwarped, at `depthDivisor`
@@ -34,6 +39,14 @@ public enum PCVRProfile {
     public static let depthStreamID: UInt32 = 2
     public static let depthDivisor = 16
     public static let depthEncoding = DepthEncoding(kind: .inverseLinear, valueBits: 8)
+
+    /// The motion field's block (render pixels per side): the smallest block
+    /// NVENC's motion search reports (8x8) on a picture a quarter of the render
+    /// eye per axis. 80x64 blocks for a 2536x2040 eye, 20 KB a frame.
+    public static let motionCellSize = 32
+    /// Render pixels per motion vector unit: the search's precision on that
+    /// picture (a quarter pixel of it), +-127 pixels a frame.
+    public static let motionScale: Float = 1
 
     /// One depth eye for a render eye: `divisor` (the default `depthDivisor`)
     /// smaller, even sizes. A receiver reads the size from the pictures, so a

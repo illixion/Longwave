@@ -40,7 +40,7 @@ enum MotionProbe {
         let previous = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
         let current = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
         let half = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
-        var params = lw_motion_params(width: Int32(width), height: Int32(height), preset: UInt32(preset))
+        var params = lw_motion_params(width: Int32(width), height: Int32(height), preset: UInt32(preset), block: 0)
         var m: OpaquePointer?
         try Pipeline.check(lw_motion_create(device.raw, &params, &m), "lw_motion_create")
         let motion = m!

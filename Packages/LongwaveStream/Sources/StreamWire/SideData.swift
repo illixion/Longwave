@@ -15,6 +15,10 @@ public struct SideDataType: RawRepresentable, Hashable, Comparable, Sendable, Cu
     /// rides the encrypted stream so a PCVR client finds the bridge without a
     /// side channel.
     public static let inputBridge = SideDataType(rawValue: 4)
+    /// The game's own image motion per block of a PCVR depth frame
+    /// (`MotionField`, capability `motionField`), for extrapolating the
+    /// display frames that repeat it.
+    public static let motionField = SideDataType(rawValue: 5)
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
     public var description: String { "sideData(\(rawValue))" }
@@ -177,6 +181,96 @@ public enum DepthRange: Sendable, Hashable {
     }
 }
 
+/// The game's own image motion in a PCVR frame (section 4.8, capability
+/// `motionField`), on the depth auxiliary's frame of the same number: per block
+/// of each eye's render image, where that block's content was in the previous
+/// eye frame, with the part the change of render pose explains removed (the
+/// headset's warp already moves each frame from its render pose to the display
+/// pose). So the content at render pixel `p` was at `p + v` one `interval`
+/// earlier; a display frame shown `t` after the frame's own time samples it at
+/// `p + v * t / interval` to carry the motion on.
+///
+/// ```
+///  0  u8   flags          reserved, 0
+///  1  u8   cellSize       render pixels per block side, both axes
+///  2  u16  columns        blocks per eye row
+///  4  u16  rows           block rows per eye
+///  6  u16  renderWidth    the render eye the blocks tile (the last column and row may overhang it)
+///  8  u16  renderHeight
+/// 10  u32  interval       microseconds from the previous frame's render time to this one's
+/// 14  f32  scale          render pixels per vector unit
+/// 18  ...  vectors        left eye then right, rows top first, each block x i8 then y i8;
+///                         x = -128 marks a block with no motion known (y then 0)
+/// ```
+public struct MotionField: Sendable, Hashable {
+    public static let headerSize = 18
+    /// The marker in a block's x for "no motion known".
+    public static let unknown: Int8 = -128
+
+    public var cellSize: UInt8
+    public var columns: UInt16
+    public var rows: UInt16
+    public var renderSize: PixelSize
+    public var interval: UInt32
+    public var scale: Float
+    /// `2 * 2 * columns * rows` values: per eye, per block, x then y.
+    public var vectors: [Int8]
+
+    public init(cellSize: UInt8, columns: UInt16, rows: UInt16, renderSize: PixelSize, interval: UInt32, scale: Float,
+                vectors: [Int8]) {
+        self.cellSize = cellSize
+        self.columns = columns
+        self.rows = rows
+        self.renderSize = renderSize
+        self.interval = interval
+        self.scale = scale
+        self.vectors = vectors
+    }
+
+    public var wireSize: Int { Self.headerSize + vectors.count }
+
+    /// The most blocks per eye that fit one side data item beside the others.
+    public static let maxBlocksPerEye = (Int(UInt16.max) - headerSize - 512) / 4
+
+    func validate() throws(WireError) {
+        guard cellSize > 0, columns > 0, rows > 0, Int(columns) * Int(rows) <= Self.maxBlocksPerEye else {
+            throw .invalid("motionField.size")
+        }
+        guard renderSize.isNonZero, Int(columns) * Int(cellSize) >= Int(renderSize.width),
+              Int(rows) * Int(cellSize) >= Int(renderSize.height),
+              Int(columns - 1) * Int(cellSize) < Int(renderSize.width), Int(rows - 1) * Int(cellSize) < Int(renderSize.height)
+        else { throw .inconsistent("motionField.renderSize") }
+        guard interval > 0 else { throw .invalid("motionField.interval") }
+        guard scale.isFinite, scale > 0 else { throw .invalid("motionField.scale") }
+        guard vectors.count == 4 * Int(columns) * Int(rows) else { throw .inconsistent("motionField.vectors") }
+    }
+
+    init(from reader: inout WireReader) throws(WireError) {
+        guard try reader.readUInt8() == 0 else { throw .invalid("motionField.flags") }
+        cellSize = try reader.readUInt8()
+        columns = try reader.readUInt16()
+        rows = try reader.readUInt16()
+        renderSize = PixelSize(width: try reader.readUInt16(), height: try reader.readUInt16())
+        interval = try reader.readUInt32()
+        scale = try reader.readFloat32()
+        let count = 4 * Int(columns) * Int(rows)
+        vectors = try reader.readBytes(count).map { Int8(bitPattern: $0) }
+        try validate()
+    }
+
+    func encode(to writer: inout WireWriter) {
+        writer.writeUInt8(0)
+        writer.writeUInt8(cellSize)
+        writer.writeUInt16(columns)
+        writer.writeUInt16(rows)
+        writer.writeUInt16(renderSize.width)
+        writer.writeUInt16(renderSize.height)
+        writer.writeUInt32(interval)
+        writer.writeFloat32(scale)
+        writer.writeBytes(vectors.map { UInt8(bitPattern: $0) })
+    }
+}
+
 /// The side data of one frame: each known item at most once.
 ///
 /// Wire: a sequence of `type u8 | length u16 | value` items, in ascending type
@@ -190,13 +284,15 @@ public struct SideData: Sendable, Hashable {
     /// Opaque (`SideDataType.inputBridge`), at most `maxInputBridge` bytes.
     public var inputBridge: [UInt8]?
     public static let maxInputBridge = 512
+    public var motionField: MotionField?
 
     public init(renderPose: RenderPose? = nil, foveation: FoveationSideData? = nil, depthRange: DepthRange? = nil,
-                inputBridge: [UInt8]? = nil) {
+                inputBridge: [UInt8]? = nil, motionField: MotionField? = nil) {
         self.renderPose = renderPose
         self.foveation = foveation
         self.depthRange = depthRange
         self.inputBridge = inputBridge
+        self.motionField = motionField
     }
 
     public static let none = SideData()
@@ -209,6 +305,7 @@ public struct SideData: Sendable, Hashable {
         if foveation != nil { types.insert(.foveation) }
         if depthRange != nil { types.insert(.depthRange) }
         if inputBridge != nil { types.insert(.inputBridge) }
+        if motionField != nil { types.insert(.motionField) }
         return types
     }
 
@@ -219,6 +316,7 @@ public struct SideData: Sendable, Hashable {
         if let inputBridge, inputBridge.isEmpty || inputBridge.count > Self.maxInputBridge {
             throw .invalid("sideData.inputBridge")
         }
+        try motionField?.validate()
     }
 
     /// Decodes items until the reader is exhausted.
@@ -242,6 +340,9 @@ public struct SideData: Sendable, Hashable {
                 guard inputBridge == nil else { throw .duplicate("sideData.inputBridge") }
                 guard length > 0, length <= Self.maxInputBridge else { throw .invalid("sideData.inputBridge") }
                 inputBridge = Array(try value.readBytes(length))
+            case .motionField:
+                guard motionField == nil else { throw .duplicate("sideData.motionField") }
+                motionField = try MotionField(from: &value)
             default:
                 break // unknown: skipped by length
             }
@@ -262,6 +363,9 @@ public struct SideData: Sendable, Hashable {
         if let inputBridge {
             writeItem(.inputBridge, length: inputBridge.count, to: &writer) { $0.writeBytes(inputBridge) }
         }
+        if let motionField {
+            writeItem(.motionField, length: motionField.wireSize, to: &writer) { motionField.encode(to: &$0) }
+        }
     }
 
     private func writeItem(_ type: SideDataType, length: Int, to writer: inout WireWriter,
@@ -277,6 +381,7 @@ public struct SideData: Sendable, Hashable {
             + (foveation == nil ? 0 : 3 + FoveationSideData.wireSize)
             + (depthRange == nil ? 0 : 3 + DepthRange.wireSize)
             + (inputBridge.map { 3 + $0.count } ?? 0)
+            + (motionField.map { 3 + $0.wireSize } ?? 0)
     }
 }
 

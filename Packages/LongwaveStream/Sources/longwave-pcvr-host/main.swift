@@ -11,7 +11,7 @@
 //                      [--depth-mbps 16] [--depth-scale 16] [--depth-qp 12] [--depth-dump DIR] [--preset 1-7]
 //                      [--vbv-frames 1-8] [--multipass off|quarter|full] [--aq 0-15] [--max-qp 0-51]
 //                      [--max-eye WxH] [--fovea-qp -10] [--edge-qp 10] [--fovea-radius 8] [--edge-radius 30]
-//                      [--rate-change reconfigure|rebuild] [--mic-device NAME|off]
+//                      [--rate-change reconfigure|rebuild] [--mic-device NAME|off] [--motion on|off]
 //
 // --mic-device names the render endpoint the headset's microphone plays into
 // (any part of its name, e.g. "Line 1"); by default the first installed virtual
@@ -132,6 +132,14 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 exit(2)
             }
             options.depthMbps = mbps
+        case "--motion":
+            switch value(argument) {
+            case "on": options.motion = true
+            case "off": options.motion = false
+            default:
+                print("--motion takes on or off: the game's motion on depth frames, for a headset that extrapolates by it")
+                exit(2)
+            }
         case "--depth-qp":
             guard let qp = Int(value(argument)), (0...51).contains(qp) else {
                 print("--depth-qp takes 0 (CBR at --depth-mbps) or a constant QP 1-51")

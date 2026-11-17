@@ -114,4 +114,57 @@ final class SideDataTests: XCTestCase {
         let bad = SideData(depthRange: .planes(near: 1, far: 0.5, convergence: 0))
         XCTAssertWireError(.invalid("depthRange.far")) { try FramePayload.encode(sideData: bad, accessUnit: [1]) }
     }
+
+    func testMotionFieldGoldenAndRoundTrip() throws {
+        // One block per eye: left moved (3, -2) render pixels, right unknown.
+        let field = MotionField(cellSize: 32, columns: 1, rows: 1, renderSize: PixelSize(width: 30, height: 20),
+                                interval: 22_222, scale: 1, vectors: [3, -2, MotionField.unknown, 0])
+        let side = SideData(depthRange: Fixtures.depthRange, motionField: field)
+        var writer = WireWriter()
+        try side.encodeItems(to: &writer)
+        let item = hex("05 1600",   // type motionField, length 22
+                       "00 20",     // flags, cell size 32
+                       "0100 0100", // 1x1 blocks per eye
+                       "1e00 1400", // render eye 30x20
+                       "ce560000",  // interval 22222 us
+                       "0000803f",  // scale 1
+                       "03fe 8000") // left (3, -2), right unknown
+        XCTAssertEqual(writer.bytes, Self.depthRangeItem + item)
+        XCTAssertEqual(side.encodedItemsLength, writer.count)
+        var reader = WireReader(writer.bytes)
+        XCTAssertEqual(try SideData(items: &reader), side)
+
+        // A 2536x2040 eye's field fits one item with room to spare.
+        let eye = MotionField(cellSize: 32, columns: 80, rows: 64, renderSize: PixelSize(width: 2536, height: 2040),
+                              interval: 22_222, scale: 1,
+                              vectors: [Int8](repeating: 1, count: 4 * 80 * 64))
+        let payload = try FramePayload.encode(sideData: SideData(depthRange: Fixtures.depthRange, motionField: eye),
+                                              accessUnit: [1, 2])
+        XCTAssertEqual(try FramePayload.decode(payload).sideData.motionField, eye)
+    }
+
+    func testMotionFieldRejects() {
+        func encode(_ field: MotionField) throws(WireError) {
+            var writer = WireWriter()
+            try SideData(motionField: field).encodeItems(to: &writer)
+        }
+        XCTAssertWireError(.inconsistent("motionField.vectors")) {
+            try encode(MotionField(cellSize: 32, columns: 2, rows: 1, renderSize: PixelSize(width: 40, height: 20), interval: 1,
+                                   scale: 1, vectors: [0, 0, 0, 0]))
+        }
+        XCTAssertWireError(.invalid("motionField.interval")) {
+            try encode(MotionField(cellSize: 32, columns: 1, rows: 1, renderSize: PixelSize(width: 30, height: 20), interval: 0,
+                                   scale: 1, vectors: [0, 0, 0, 0]))
+        }
+        XCTAssertWireError(.invalid("motionField.size")) {
+            try encode(MotionField(cellSize: 0, columns: 1, rows: 1, renderSize: PixelSize(width: 30, height: 20), interval: 1,
+                                   scale: 1, vectors: [0, 0, 0, 0]))
+        }
+        XCTAssertWireError(.inconsistent("motionField.renderSize")) {
+            try encode(MotionField(cellSize: 32, columns: 1, rows: 1, renderSize: PixelSize(width: 40, height: 20), interval: 1,
+                                   scale: 1, vectors: [0, 0, 0, 0]))
+        }
+        var reader = WireReader(hex("05 1600 01 20 0100 0100 1e00 1400 ce560000 0000803f 03fe 8000"))
+        XCTAssertWireError(.invalid("motionField.flags")) { try SideData(items: &reader) }
+    }
 }

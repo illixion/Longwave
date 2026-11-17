@@ -37,6 +37,8 @@ enum PCVRShellEndpoints {
                         .number("warpStep", "the march's step in depth-map texels (default 2)", default: 0, range: 0...8),
                         .boolean("warpTint", "diagnostics: the pixels the warp fills in, in magenta (cyan: filled from the other eye)"),
                         .boolean("otherEye", "fill what an eye could not see from the frame's other eye (default on)"),
+                        .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
+                                 + "motion the host sends with depth (default on; host --motion on)"),
                         .string("warpTier", "auto | full | reduced | minimal: pin the warp's quality tier for an A/B run, or let "
                                 + "the GPU budget pick it (auto, the default). reduced: at most 20 steps of 3 texels; minimal: "
                                 + "12 steps of 4 texels, no other-eye fill", default: ""),
@@ -58,6 +60,7 @@ enum PCVRShellEndpoints {
                 if let step = args.double("warpStep"), step > 0 { options.depthWarp.stepTexels = Float(step) }
                 if let tint = args.bool("warpTint") { options.depthWarp.tintsFills = tint }
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
+                if let motion = args.bool("motion") { options.depthWarp.motionExtrapolation = motion }
                 if let name = args.string("warpTier"), !name.isEmpty {
                     if name == "auto" {
                         options.depthWarp.tier = nil
@@ -127,6 +130,7 @@ enum PCVRShellEndpoints {
             "framesWithoutAnchor": s.framesWithoutAnchor,
             "depthWarps": s.depthWarps,
             "depthWarpsWithoutDepth": s.depthWarpsWithoutDepth,
+            "motionShifts": s.motionShifts,
             "warpTier": s.warpTier.name,
         ]
         let optional: [String: Double?] = [
@@ -136,6 +140,7 @@ enum PCVRShellEndpoints {
         ]
         for (key, value) in optional { if let value { stats[key] = value } }
         if let readiness = s.readiness { stats["readinessMs"] = readiness }
+        if let pixels = s.motionMeanPixels { stats["motionMeanPixels"] = pixels }
         let warp = session.renderOptions.depthWarp
         var body: [String: Any] = [
             "presenting": session.isPresenting,
@@ -143,6 +148,7 @@ enum PCVRShellEndpoints {
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
+                "motion": warp.motionExtrapolation,
                 "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,

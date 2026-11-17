@@ -373,6 +373,7 @@ typedef struct lw_motion lw_motion;
 typedef struct lw_motion_params {
     int32_t width, height;
     uint32_t preset; /* 1 (fastest) to 7; 0 = 4 */
+    uint32_t block;  /* the output grid's block side in pixels: 8, 16 or 32; 0 = 16 */
 } lw_motion_params;
 typedef struct lw_motion_stats {
     double submit_ms, wait_ms, parse_ms; /* CPU wall time of each step */

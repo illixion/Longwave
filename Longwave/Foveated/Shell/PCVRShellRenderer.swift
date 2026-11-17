@@ -52,6 +52,9 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// The share of the display period a display frame's GPU time may take
     /// before the tier is lowered (`PCVRWarpBudget.Configuration.share`).
     var budgetShare = PCVRWarpBudget.defaultShare
+    /// Carry the game's own motion on in display frames that repeat a stream
+    /// frame (`PCVRMotionShift`), from the motion the host sends with depth.
+    var motionExtrapolation = true
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -83,6 +86,10 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
     /// picture (warped at `PCVRShellDepthWarp.planeDistance`).
     var depthWarps = 0
     var depthWarpsWithoutDepth = 0
+    /// Display frames moved on along the game's motion, of those that repeated
+    /// a frame with motion, and the motion's mean length (render pixels a frame).
+    var motionShifts = 0
+    var motionMeanPixels: Double?
     /// GPU time of a display frame's command buffer, ms.
     var gpuTime: Double?
     var gpuTimeMax: Double?
@@ -146,6 +153,11 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     private let gpuTimes = OSAllocatedUnfairLock(initialState: [Double]())
     private var depthWarps = 0
     private var depthWarpsWithoutDepth = 0
+    private var motionShifts = 0
+    private var motionPixels = 0.0
+    /// The frame on screen and when it was first shown, for how far a repeat
+    /// of it carries its motion on.
+    private var firstShown: (frameNumber: UInt32, streamEpoch: UInt32, time: TimeInterval)?
     /// The warp's tier when none is pinned, stepped once per stats window.
     private var warpBudget = PCVRWarpBudget()
     /// `LayerRenderer.Clock` seconds minus `CACurrentMediaTime()`. ARKit takes
@@ -340,13 +352,28 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             depthWarps += 1
             if depthEntry == nil { depthWarpsWithoutDepth += 1 }
         }
+        // A repeat moves on along the frame's own motion, by the time since the
+        // frame was first shown: only the motion with that frame's number, as
+        // a neighbour's would move it by another frame's motion.
+        var motion: PCVRMotionShift?
+        if let presented {
+            let frame = presented.frame
+            if presented.isNew || firstShown?.frameNumber != frame.frameNumber || firstShown?.streamEpoch != frame.streamEpoch {
+                firstShown = (frame.frameNumber, frame.streamEpoch, presentTime)
+            } else if warp.motionExtrapolation, let entry = depthEntry, entry.frameNumber == frame.frameNumber,
+                      let shift = PCVRMotionShift.forDisplay(map: entry.motion, sinceFirstShown: presentTime - (firstShown?.time ?? presentTime)) {
+                motion = shift
+                motionShifts += 1
+                motionPixels += Double(shift.map.meanPixels)
+            }
+        }
         for drawable in drawables {
             drawable.deviceAnchor = anchor
             let targets = Self.targets(for: drawable, head: head ?? .identity)
             do {
                 if let warper {
                     try warper.encode(frame: presented?.frame, depth: depthEntry?.map, views: targets,
-                                      planeDistance: warp.planeDistance, commandBuffer: commandBuffer)
+                                      planeDistance: warp.planeDistance, motion: motion, commandBuffer: commandBuffer)
                 } else if let receiver {
                     try receiver.encode(frame: presented?.frame, targets: targets,
                                         options: options.receiver, commandBuffer: commandBuffer)
@@ -470,6 +497,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             return times
         }
         let warps = depthWarps, withoutDepth = depthWarpsWithoutDepth
+        let shifts = motionShifts, shiftPixels = motionPixels
         let gpuMean = gpu.isEmpty ? nil : gpu.reduce(0, +) / Double(gpu.count)
         // The budget steps on the window's mean GPU time against the period
         // the display ran at in it. A pinned tier, or the warp off, leaves it
@@ -497,6 +525,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             }
             stats.depthWarps = warps
             stats.depthWarpsWithoutDepth = withoutDepth
+            stats.motionShifts = shifts
+            stats.motionMeanPixels = shifts > 0 ? shiftPixels / Double(shifts) : nil
             stats.displayRate = snapshot.presents > 1 ? Double(snapshot.presents - 1) / max(snapshot.lastPresent - snapshot.firstPresent, 1e-3) : 0
             stats.presentedNew = counts.presentedNew
             stats.repeated = counts.repeated

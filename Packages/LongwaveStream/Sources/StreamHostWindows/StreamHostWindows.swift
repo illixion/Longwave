@@ -733,6 +733,52 @@ public final class FoveationWarpPass: @unchecked Sendable {
     }
 }
 
+/// Motion between two pictures from NVENC's motion-estimation-only mode
+/// (`lw_motion_*`): the encoder engine's search, not the 3D engine's, so it
+/// doesn't queue behind a game. Its own encoder session; `estimate` waits for
+/// the result (a few ms beside the colour encode), so call it off the encode thread.
+public final class MotionSearch: @unchecked Sendable {
+    public struct Result: Sendable {
+        public var gridWidth: Int
+        public var gridHeight: Int
+        public var block: Int
+        /// Per block x then y, quarter pixels: current(p) matches reference(p + v).
+        public var vectors: [Int16]
+        /// 0: no inter vector.
+        public var known: [UInt8]
+        /// Submit to result, the encoder engine's queue included.
+        public var milliseconds: Double
+        public var knownBlocks: Int
+    }
+
+    public let width: Int
+    public let height: Int
+    private let raw: OpaquePointer
+
+    /// `width` x `height`: the pictures searched (BGRA8). `block`: the output
+    /// grid's block side, 8, 16 or 32 pixels.
+    public init(device: GraphicsDevice, width: Int, height: Int, block: Int = 8, preset: Int = 1) throws {
+        var params = lw_motion_params(width: Int32(width), height: Int32(height), preset: UInt32(preset), block: UInt32(block))
+        var motion: OpaquePointer?
+        try check(lw_motion_create(device.raw, &params, &motion), "lw_motion_create")
+        raw = motion!
+        self.width = width
+        self.height = height
+    }
+
+    deinit { lw_motion_release(raw) }
+
+    public func estimate(current: GraphicsTexture, reference: GraphicsTexture) throws -> Result {
+        var field = lw_motion_field()
+        try check(lw_motion_estimate(raw, current.raw, reference.raw, &field), "lw_motion_estimate")
+        let blocks = Int(field.grid_width) * Int(field.grid_height)
+        return Result(gridWidth: Int(field.grid_width), gridHeight: Int(field.grid_height), block: Int(field.block),
+                      vectors: Array(UnsafeBufferPointer(start: field.vectors, count: blocks * 2)),
+                      known: Array(UnsafeBufferPointer(start: field.known, count: blocks)),
+                      milliseconds: field.stats.submit_ms + field.stats.wait_ms, knownBlocks: Int(field.stats.known_blocks))
+    }
+}
+
 /// A PCVR frame's depth for the depthVideo stream (lw_depth_*): both eyes
 /// side by side as grey BGRA8 holding inverse depth, `near / z`.
 public final class DepthPass: @unchecked Sendable {

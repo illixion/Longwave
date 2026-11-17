@@ -67,6 +67,7 @@ var targets: [Target] = [
     .testTarget(name: "StreamTransportTests", dependencies: ["StreamTransport", "StreamCrypto", "StreamWire", "StreamSim",
                                                              "StreamPlayout", "StreamFEC", "StreamHost"]),
     .target(name: "StreamHost", dependencies: ["StreamTransport", "StreamFEC", "StreamWire"]),
+    .testTarget(name: "StreamHostTests", dependencies: ["StreamHost", "StreamWire"]),
     // Test support: the deterministic network simulator (section 7.5).
     .target(name: "StreamSim"),
     // The stream bench: the host's closed loop (rate control, FEC, recovery,

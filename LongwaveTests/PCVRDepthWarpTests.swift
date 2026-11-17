@@ -92,7 +92,8 @@ final class PCVRDepthWarpTests: XCTestCase {
     }
 
     private func warp(_ frame: PCVRDecodedFrame, depth: PCVRDepthMap?, targets: PCVRStereo<PCVRPose>,
-                      planeDistance: Float = 2, resampling: PCVRDepthWarper.Resampling? = nil) throws -> Output {
+                      planeDistance: Float = 2, resampling: PCVRDepthWarper.Resampling? = nil,
+                      motion: PCVRMotionShift? = nil) throws -> Output {
         let warper = try PCVRDepthWarper(device: device)
         if let resampling { warper.resampling = resampling }
         // These scenes' right eyes are flat (`depthMap`), not what that eye saw.
@@ -102,7 +103,7 @@ final class PCVRDepthWarpTests: XCTestCase {
         let warped = try texture(.r16Float, width: 2 * Self.depthWidth, height: Self.depthHeight, write: true)
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: planeDistance, into: colour,
-                          warpedDepth: warped, commandBuffer: commandBuffer)
+                          warpedDepth: warped, motion: motion, commandBuffer: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
@@ -705,6 +706,51 @@ final class PCVRDepthWarpTests: XCTestCase {
                                                        mode: .rotationAndTranslation(planeDistance: 2))
             assertMatches(out, eye: eye, homography: h, texels: 0.6)
         }
+    }
+
+    /// A repeat half a frame after the first display reads each pixel from
+    /// where its content will have come from: `uv + v / 2` in the left eye,
+    /// whose blocks all moved (8, -4) pixels; the right eye's blocks moved not
+    /// at all and its picture stays put. The first display moves nothing.
+    func testARepeatCarriesTheGamesMotionOnByTheTimeSinceTheFirstDisplay() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        let depth = try depthMap { _, _ in 2 }
+        let targets = frame.renderPose.eyes.map(\.pose)
+        let columns = Self.eyeWidth / 32, rows = Self.eyeHeight / 32
+        var vectors = [Int8](repeating: 0, count: 4 * columns * rows)
+        for block in 0..<(columns * rows) {
+            vectors[block * 2] = 8
+            vectors[block * 2 + 1] = -4
+        }
+        // The right eye's last block has no motion known: still, as all its others.
+        vectors[(2 * columns * rows - 1) * 2] = MotionField.unknown
+        let field = MotionField(cellSize: 32, columns: UInt16(columns), rows: UInt16(rows),
+                                renderSize: PixelSize(width: UInt16(Self.eyeWidth), height: UInt16(Self.eyeHeight)),
+                                interval: 22_222, scale: 1, vectors: vectors)
+        let map = try XCTUnwrap(PCVRMotionMap(field: field, device: device))
+        XCTAssertEqual(map.knownBlocks, 2 * columns * rows - 1)
+        XCTAssertNil(PCVRMotionShift.forDisplay(map: map, sinceFirstShown: 0))
+        let repeatShift = try XCTUnwrap(PCVRMotionShift.forDisplay(map: map, sinceFirstShown: 0.011_111))
+        XCTAssertEqual(repeatShift.amount, 0.5, accuracy: 0.001)
+        let out = try warp(frame, depth: depth, targets: targets, motion: repeatShift)
+        var worst: SIMD2<Float> = .zero, checked = 0
+        for eye in 0..<2 {
+            let shift = eye == 0 ? SIMD2<Float>(4 / Float(Self.eyeWidth), -2 / Float(Self.eyeHeight)) : .zero
+            for y in stride(from: 8, to: Self.eyeHeight - 8, by: 5) {
+                for x in stride(from: 8, to: Self.eyeWidth - 8, by: 7) {
+                    let uv = SIMD2((Float(x) + 0.5) / Float(Self.eyeWidth), (Float(y) + 0.5) / Float(Self.eyeHeight))
+                    let error = abs(out.sourceUV(eye: eye, x: x, y: y) - (uv + shift))
+                        * SIMD2(Float(Self.eyeWidth), Float(Self.eyeHeight))
+                    worst = simd_max(worst, error)
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 2000)
+        XCTAssertLessThan(worst.x, 0.6, "worst error across, pixels")
+        XCTAssertLessThan(worst.y, 0.6, "worst error down, pixels")
+        // A full interval later it is capped there, not carried past the next frame's time.
+        XCTAssertEqual(PCVRMotionShift.forDisplay(map: map, sinceFirstShown: 0.05)?.amount, 1)
     }
 }
 #endif

@@ -24,7 +24,7 @@
 namespace {
 
 constexpr int kCell = 8;   // the smallest CU, the grid the records are first placed on
-constexpr int kBlock = 16; // the output grid
+constexpr int kBlock = 16; // the output grid's default
 
 struct Registration {
     winrt::com_ptr<ID3D11Texture2D> texture;
@@ -49,7 +49,7 @@ struct lw_motion {
     std::vector<int16_t> cell_mv;
     std::vector<uint8_t> cell_ok;
     // Output grid (16x16).
-    int32_t grid_w = 0, grid_h = 0;
+    int32_t grid_w = 0, grid_h = 0, block = kBlock;
     std::vector<int16_t> vectors;
     std::vector<uint8_t> known;
     lw_motion_stats stats{};
@@ -155,8 +155,9 @@ lw_status lw_motion::open(lw_device *dev, const lw_motion_params &p) {
     cells_h = (height + kCell - 1) / kCell;
     cell_mv.assign(static_cast<size_t>(cells_w) * cells_h * 2, 0);
     cell_ok.assign(static_cast<size_t>(cells_w) * cells_h, 0);
-    grid_w = (width + kBlock - 1) / kBlock;
-    grid_h = (height + kBlock - 1) / kBlock;
+    block = p.block == 0 ? kBlock : static_cast<int32_t>(p.block);
+    grid_w = (width + block - 1) / block;
+    grid_h = (height + block - 1) / block;
     vectors.assign(static_cast<size_t>(grid_w) * grid_h * 2, 0);
     known.assign(static_cast<size_t>(grid_w) * grid_h, 0);
     return LW_OK;
@@ -274,15 +275,16 @@ void lw_motion::place(const NV_ENC_HEVC_MV_DATA *records, size_t count) {
     stats.malformed_ctbs = malformed;
 }
 
-// Each 16x16 block: the mean of its inter cells; unknown with none.
+// Each output block: the mean of its inter cells; unknown with none.
 void lw_motion::reduce() {
     uint32_t known_blocks = 0;
     double sum_abs = 0;
     for (int by = 0; by < grid_h; ++by) {
         for (int bx = 0; bx < grid_w; ++bx) {
             int sx = 0, sy = 0, n = 0;
-            for (int cy = by * 2; cy < by * 2 + 2 && cy < cells_h; ++cy) {
-                for (int cx = bx * 2; cx < bx * 2 + 2 && cx < cells_w; ++cx) {
+            const int per = block / kCell;
+            for (int cy = by * per; cy < by * per + per && cy < cells_h; ++cy) {
+                for (int cx = bx * per; cx < bx * per + per && cx < cells_w; ++cx) {
                     const size_t cell = static_cast<size_t>(cy) * cells_w + cx;
                     if (!cell_ok[cell]) continue;
                     sx += cell_mv[cell * 2];
@@ -290,17 +292,17 @@ void lw_motion::reduce() {
                     ++n;
                 }
             }
-            const size_t block = static_cast<size_t>(by) * grid_w + bx;
-            known[block] = n > 0;
+            const size_t at = static_cast<size_t>(by) * grid_w + bx;
+            known[at] = n > 0;
             int16_t vx = n ? static_cast<int16_t>(sx / n) : 0, vy = n ? static_cast<int16_t>(sy / n) : 0;
             // Under half a pixel is the search's noise on still content (it costs a blurred
             // resample and buys nothing): still.
             if (std::abs(vx) < 2 && std::abs(vy) < 2) vx = vy = 0;
-            vectors[block * 2] = vx;
-            vectors[block * 2 + 1] = vy;
+            vectors[at * 2] = vx;
+            vectors[at * 2 + 1] = vy;
             if (n) {
                 ++known_blocks;
-                sum_abs += std::hypot(vectors[block * 2] / 4.0, vectors[block * 2 + 1] / 4.0);
+                sum_abs += std::hypot(vectors[at * 2] / 4.0, vectors[at * 2 + 1] / 4.0);
             }
         }
     }
@@ -388,6 +390,8 @@ extern "C" lw_status lw_motion_create(lw_device *device, const lw_motion_params 
     *out = nullptr;
     if (params->width <= 0 || params->height <= 0 || (params->width & 1) || (params->height & 1))
         return lw::fail(LW_E_INVALID_ARG, "motion size %dx%d must be positive and even", params->width, params->height);
+    if (params->block != 0 && params->block != 8 && params->block != 16 && params->block != 32)
+        return lw::fail(LW_E_INVALID_ARG, "motion block %u must be 8, 16 or 32", params->block);
     return lw::guarded("lw_motion_create", [&]() -> lw_status {
         auto motion = std::make_unique<lw_motion>();
         lw_status status = motion->open(device, *params);
@@ -404,7 +408,7 @@ extern "C" lw_status lw_motion_estimate(lw_motion *motion, void *current, void *
         if (status != LW_OK) return status;
         out->grid_width = motion->grid_w;
         out->grid_height = motion->grid_h;
-        out->block = kBlock;
+        out->block = motion->block;
         out->vectors = motion->vectors.data();
         out->known = motion->known.data();
         out->stats = motion->stats;

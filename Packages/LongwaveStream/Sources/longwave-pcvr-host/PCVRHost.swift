@@ -88,6 +88,11 @@ struct HostOptions {
     var depthQP = 12
     /// Diagnostics: a directory the estimate's grids and output are written to.
     var depthDump: String?
+    /// The game's own motion on depth frames for a viewer that negotiated
+    /// `motionField` (it extrapolates repeated frames along it): NVENC's
+    /// motion search on a quarter-size copy of each frame against the one
+    /// before. Off: the capability isn't offered.
+    var motion = true
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
@@ -135,6 +140,8 @@ final class PCVRHost: @unchecked Sendable {
         var sender: VideoStreamSender
         /// The eye stream's depth auxiliary, for a viewer that negotiated `depthVideo`.
         var depthSender: VideoStreamSender?
+        /// It negotiated `motionField`: its depth frames carry the game's motion.
+        var wantsMotion: Bool { depthSender != nil && capabilities.contains(.motionField) }
         var lastPose: UInt32?
         var posesReceived = 0
         var lastPresented: PresentedFrame?
@@ -253,6 +260,16 @@ final class PCVRHost: @unchecked Sendable {
     private var depthTextures: [GraphicsTexture] = []
     private var nextDepthTexture = 0
     private static let depthTextureCount = 4
+    /// The motion search's pictures, written in turn by the encode thread: one
+    /// held as the previous, one being searched, `depthQueue` waiting, one being written.
+    private var motionTextures: [GraphicsTexture] = []
+    private var nextMotionTexture = 0
+    private static let motionTextureCount = depthQueue + 4
+    private var motionScaler: FoveationWarpPass?
+    private var motionUnavailable = false
+    // The depth thread's.
+    private var motionSearch: MotionSearch?
+    private var previousMotion: MotionPicture?
     private static let depthQueue = 2
     private var lastDepthDump: UInt64 = 0
     private var depthDumpBurst = 0
@@ -274,6 +291,15 @@ final class PCVRHost: @unchecked Sendable {
         var captureTime: UInt64
         var numbers: [UInt32: UInt32]
         var gpuMilliseconds: Double?
+        /// The frame's quarter-size copy for the motion search, when a viewer wants motion.
+        var motion: MotionPicture?
+    }
+    /// One frame's picture for the motion search and what the field needs about it.
+    private struct MotionPicture {
+        var texture: GraphicsTexture
+        var renderEye: PixelSize
+        var searchEye: PixelSize
+        var renderPose: RenderPose
     }
     private let depthLock = NSLock()
     private var depthJobs: [DepthJob] = []
@@ -330,6 +356,12 @@ final class PCVRHost: @unchecked Sendable {
         var gpuMilliseconds: Double?
         var size: String?
         var near: Float = 0
+        /// Motion fields sent, searches made without a field (no previous
+        /// picture, or too long since it), search time.
+        var motionFields = 0, motionSkipped = 0
+        var motionMilliseconds = 0.0, motionMillisecondsMax = 0.0
+        var motionBytes = 0
+        var motionMeanPixels = 0.0
     }
 
     private struct FoveationStatistics {
@@ -443,8 +475,8 @@ final class PCVRHost: @unchecked Sendable {
     }
 
     private func encode(_ frame: CapturedFrame) throws {
-        let (watched, requestedKey, bitrate, foveate, head, depthWanted, separateEyes) = lock.withLock {
-            () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool, Bool) in
+        let (watched, requestedKey, bitrate, foveate, head, depthWanted, separateEyes, motionWanted) = lock.withLock {
+            () -> (Bool, Bool, Int?, Bool, HeadPose?, Bool, Bool, Bool) in
             let confirmed = viewers.values.filter(\.confirmed)
             let watched = !confirmed.isEmpty
             lastProducerFrame = Self.now()
@@ -455,7 +487,8 @@ final class PCVRHost: @unchecked Sendable {
                 && confirmed.allSatisfy { $0.capabilities.contains(.foveatedVideo) }
                 && (options.foveation == .on || confirmed.allSatisfy { $0.capabilities.contains(.gaze) })
             return (watched, force, targetBitrate, foveate, headPose?.pose, confirmed.contains { $0.depthSender != nil },
-                    watched && confirmed.allSatisfy { $0.capabilities.contains(.separateEyeVideo) })
+                    watched && confirmed.allSatisfy { $0.capabilities.contains(.separateEyeVideo) },
+                    options.motion && confirmed.contains { $0.wantsMotion })
         }
         guard watched else { return }
 
@@ -555,6 +588,13 @@ final class PCVRHost: @unchecked Sendable {
                 depthJob = try prepareDepth(frame, renderPose: renderPose, renderEye: renderEye)
             } catch {
                 log.line("depth failed: \(error)")
+            }
+            if motionWanted, depthJob != nil {
+                do {
+                    depthJob?.motion = try prepareMotion(frame, renderPose: renderPose, renderEye: renderEye)
+                } catch {
+                    log.line("motion picture failed: \(error)")
+                }
             }
         }
 
@@ -799,6 +839,77 @@ final class PCVRHost: @unchecked Sendable {
                         sequence: frame.sequence, captureTime: 0, numbers: [:], gpuMilliseconds: depthPass.gpuMilliseconds)
     }
 
+    /// The frame's quarter-size copy for the motion search: a scale through the
+    /// warp pass, queued on the GPU ahead of the colour encode like the depth
+    /// pass (a 1280x512 picture: a fraction of a millisecond).
+    private func prepareMotion(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize) throws -> MotionPicture? {
+        guard !motionUnavailable else { return nil }
+        if motionScaler == nil {
+            do {
+                motionScaler = try FoveationWarpPass(device: device)
+            } catch {
+                motionUnavailable = true
+                log.line("motion unavailable, depth frames go without it: \(error)")
+                return nil
+            }
+        }
+        guard let motionScaler,
+              let identity = CentreEdgeAxisMapping(centreSize: 1, edgeRatio: 1, centre: 0.5)?.constants else { return nil }
+        let eye = MotionFieldBuilder.searchEye(forRender: renderEye)
+        let width = Int(eye.width) * 2, height = Int(eye.height)
+        if motionTextures.first?.width != width || motionTextures.first?.height != height {
+            motionTextures = try (0..<Self.motionTextureCount).map { _ in
+                try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+            }
+        }
+        let texture = motionTextures[nextMotionTexture]
+        nextMotionTexture = (nextMotionTexture + 1) % motionTextures.count
+        let mapping = FoveationWarpPass.Eye(x: identity, y: identity)
+        try motionScaler.apply(source: frame, renderEye: (Int(renderEye.width), Int(renderEye.height)), destination: texture,
+                               wireEye: (Int(eye.width), Int(eye.height)), left: mapping, right: mapping)
+        return MotionPicture(texture: texture, renderEye: renderEye, searchEye: eye, renderPose: renderPose)
+    }
+
+    /// Depth thread: the motion from the previous searched picture to this
+    /// one, as the field the depth frame carries. Nil without a previous
+    /// picture of the same size from at most 100 ms before.
+    private func motionField(for picture: MotionPicture) -> (field: MotionField, milliseconds: Double, meanPixels: Double)? {
+        defer { previousMotion = picture }
+        guard let previous = previousMotion, previous.searchEye == picture.searchEye,
+              previous.renderEye == picture.renderEye,
+              picture.renderPose.displayTime > previous.renderPose.displayTime,
+              picture.renderPose.displayTime - previous.renderPose.displayTime < 100_000_000 else { return nil }
+        do {
+            let width = Int(picture.searchEye.width) * 2, height = Int(picture.searchEye.height)
+            if motionSearch?.width != width || motionSearch?.height != height {
+                motionSearch = nil
+                motionSearch = try MotionSearch(device: device, width: width, height: height, block: 8)
+                log.line("motion search: NVENC HEVC ME \(width)x\(height), 8x8 blocks, "
+                         + "\(PCVRProfile.motionCellSize)-pixel cells on the wire")
+            }
+            guard let motionSearch else { return nil }
+            let result = try motionSearch.estimate(current: picture.texture, reference: previous.texture)
+            let search = MotionFieldBuilder.Search(gridWidth: result.gridWidth, gridHeight: result.gridHeight,
+                                                   block: result.block, vectors: result.vectors, known: result.known,
+                                                   eye: picture.searchEye)
+            guard let field = MotionFieldBuilder.field(search: search, renderEye: picture.renderEye,
+                                                       current: picture.renderPose, previous: previous.renderPose)
+            else { return nil }
+            var total = 0.0, count = 0
+            for i in stride(from: 0, to: field.vectors.count, by: 2) where field.vectors[i] != MotionField.unknown {
+                let x = Double(field.vectors[i]) * Double(field.scale), y = Double(field.vectors[i + 1]) * Double(field.scale)
+                total += (x * x + y * y).squareRoot()
+                count += 1
+            }
+            return (field, result.milliseconds, count > 0 ? total / Double(count) : 0)
+        } catch {
+            log.line("motion search failed, off for this run: \(error)")
+            motionSearch = nil
+            motionUnavailable = true
+            return nil
+        }
+    }
+
     /// Diagnostics (--depth-dump): every few seconds, three frames in a row of
     /// the estimate's luminance grid, grid disparity and output, as PGM, plus
     /// the luminance as raw floats (a fixture for tuning the estimate).
@@ -893,12 +1004,18 @@ final class PCVRHost: @unchecked Sendable {
                 newFormat = FormatDescription(
                     streamID: PCVRProfile.depthStreamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
                     size: picture, bitDepth: 8, chromaFormat: .yuv420, colour: .bt709, configuration: sets,
-                    sideDataTypes: [.depthRange],
+                    sideDataTypes: options.motion ? [.depthRange, .motionField] : [.depthRange],
                     auxiliary: AuxiliaryStream(role: .depth, primaryStreamID: PCVRProfile.streamID),
                     depthEncoding: PCVRProfile.depthEncoding)
             }
         }
         let sideData = SideData(depthRange: .planes(near: job.near, far: .infinity, convergence: 0))
+        var motionSideData = sideData
+        var motion: (field: MotionField, milliseconds: Double, meanPixels: Double)?
+        if let picture = job.motion {
+            motion = motionField(for: picture)
+            motionSideData.motionField = motion?.field
+        }
 
         lock.withLock {
             depthStats.frames += 1
@@ -910,6 +1027,15 @@ final class PCVRHost: @unchecked Sendable {
             depthStats.gpuMilliseconds = job.gpuMilliseconds
             depthStats.size = "\(job.eye.width)x\(job.eye.height) per eye"
             depthStats.near = job.near
+            if let motion {
+                depthStats.motionFields += 1
+                depthStats.motionMilliseconds += motion.milliseconds
+                depthStats.motionMillisecondsMax = max(depthStats.motionMillisecondsMax, motion.milliseconds)
+                depthStats.motionBytes += motion.field.wireSize
+                depthStats.motionMeanPixels += motion.meanPixels
+            } else if job.motion != nil {
+                depthStats.motionSkipped += 1
+            }
             if let newFormat {
                 depthFormat = newFormat
                 for viewer in viewers.values where viewer.confirmed && viewer.depthSender != nil { sendDepthFormat(to: viewer) }
@@ -921,7 +1047,8 @@ final class PCVRHost: @unchecked Sendable {
                       let udpPayload = endpoint.sessions[viewer.index]?.session.udpPayload else { continue }
                 do {
                     switch try viewer.depthSender!.submit(accessUnit: accessUnit, isKeyFrame: isIDR,
-                                                          captureTime: job.captureTime, sideData: sideData,
+                                                          captureTime: job.captureTime,
+                                                          sideData: viewer.wantsMotion ? motionSideData : sideData,
                                                           frameNumber: number, udpPayload: udpPayload, now: now) {
                     case .queued: break
                     case .awaitingKeyFrame, .queueFull: needsKey = true
@@ -1216,6 +1343,7 @@ final class PCVRHost: @unchecked Sendable {
         if !grants.contains(.screen) { grants = [] }
         var capabilities = PCVRProfile.hostCapabilities
         if microphone != nil { capabilities.insert(.microphone) }
+        if !options.motion || options.depth == .off { capabilities.remove(.motionField) }
         let ack = HostHelloAck(answering: hello, hostCapabilities: capabilities, platform: .windows,
                                keyCodeSpace: .hidUsage, grants: grants, maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
                                hostName: String(ProcessInfo.processInfo.hostName.prefix(HelloLimits.maxNameBytes)),
@@ -1648,6 +1776,12 @@ final class PCVRHost: @unchecked Sendable {
             if let gpu = d.gpuMilliseconds { line += String(format: ", GPU %.2f ms", gpu) }
             if d.dropped > 0 { line += ", \(d.dropped) dropped behind the encoder" }
             line += String(format: ", near %.3f m", d.near)
+            if d.motionFields + d.motionSkipped > 0 {
+                line += String(format: "; motion %d fields (%d without), search %.2f ms avg %.2f max, %.1f Mbps, game motion %.1f px avg",
+                               d.motionFields, d.motionSkipped,
+                               d.motionMilliseconds / Double(max(d.motionFields, 1)), d.motionMillisecondsMax,
+                               Double(d.motionBytes) * 8 / seconds / 1e6, d.motionMeanPixels / Double(max(d.motionFields, 1)))
+            }
             log.line(line)
             depthStats = DepthStatistics(size: size)
         }

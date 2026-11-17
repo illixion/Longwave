@@ -1,6 +1,8 @@
 # PCVR motion extrapolation (ASW-style), plan
 
-Status: step 1 (probe) done 2026-11-17, idle and with the game running, and it is a go; steps 2-5 not started.
+Status (2026-11-17): step 1 (probe) done, idle and with the game running, and it is a go. Steps 2 and 3
+(host and headset) are built and pass their tests (unit tests on the Mac and in the visionOS simulator, host
+built on the PC); not yet run end to end. Steps 4 (HUD mask) and 5 (device run) are open.
 
 ## Why
 
@@ -30,10 +32,12 @@ So the missing frame has to be made without the 3D engine of a busy GPU.
    HEVC output is per CU in Z-order inside each CTB (`NV_ENC_HEVC_MV_DATA`, `lastCUInCTB`); it is
    rebuilt into a 16x16-block grid per eye and cleaned (median of neighbours, intra blocks and high-cost
    blocks marked unknown).
-2. **A small motion picture beside depth (wire).** Per eye a 2-channel grid (2536x2040 / 16 = 159x128),
-   motion in pixels per frame, sent like the depth picture: its own capability (`motionVideo`), an 8-bit
-   HEVC picture (x and y as two halves of the luma, a fixed scale and offset in the format), keyed to
-   the colour frame's number. About 1 Mbps.
+2. **The motion on the depth frames (wire).** Built as a side data item rather than a stream of its own:
+   `motionField` (type 5, capability `motionField` 25, NATIVE_V3_PROTOCOL.md section 4.8) on each depth
+   frame, so it shares the depth frame's number, FEC, NACK and decode, and needs no second decoder. Per
+   32x32 block of each render eye (80x64 for 2536x2040), x and y as signed bytes of a render pixel, 20 KB a
+   frame (7 Mbps at 45 fps), next to the depth picture's few Mbps. A video stream would be smaller, but
+   it would need its own format, sender, receiver, recovery and decoder for a grid this size.
 3. **Extrapolation in the headset warp.** On a display frame that repeats the current stream frame,
    the warp samples the colour at `s - a * mv(s)`, where `s` is the source position the depth warp
    already computes and `a` is how far the display time is past the frame's own time in source periods
@@ -87,6 +91,29 @@ estimate per frame would. That is over the 4 ms aimed for at p95, but the estima
 encode, not in series with it: on its own thread, like depth, its picture reaches the headset with the
 depth picture well before the repeat it is for (half a period after the frame is first shown). The game
 held 45 throughout. Quarter size it is.
+
+## What was built (2026-11-17)
+
+- **Host** (`longwave-pcvr-host`, `--motion on|off`, default on; only for a viewer that negotiated
+  `motionField`): the encode thread scales each frame to a quarter (`MotionFieldBuilder.searchEye`, 640x512 an
+  eye for 2536x2040, whole 8-pixel blocks so none straddles the eyes) through the warp pass, queued ahead of
+  the colour encode like the depth pass. The depth thread runs the search (`MotionSearch`, `lw_motion` with
+  8x8 output blocks) against the previous picture, at most 100 ms older, before it encodes the depth, and
+  `MotionFieldBuilder.field` turns it into the item: the vectors under each 32-pixel cell, scaled to render
+  pixels, minus the motion the change of render orientation explains for a world at infinity (the head's
+  translation is left in: a pixel or two at a metre over one frame), a 3x3 median of the known cells, and
+  quantised. Stats on the depth line: fields, search time, Mbps, the game motion's mean length.
+- **Headset**: `PCVRV3Remote` offers `motionField` with depth and hands each item to the depth store's
+  entry as a `PCVRMotionMap` (an `rg16Float` texture of both eyes' blocks). `PCVRShellRenderer` records when
+  each frame was first shown; a repeat of it whose depth entry has the same frame number gets a
+  `PCVRMotionShift` of `(now - first shown) / interval`, at most 1, and the warp reads the picture at
+  `uv + amount * v` (`pcvrMotionShift`, in both the display-view and the compute paths). Switch:
+  `pcvrShellControl motion=false`; stats `motionShifts`, `motionMeanPixels`.
+- **Tests**: `SideDataTests` (golden item, rejects), `MotionFieldBuilderTests` (a turn's motion is removed
+  and the game's kept, unknown and stray blocks), `PCVRDepthWarpTests.testARepeatCarriesTheGamesMotionOnByTheTimeSinceTheFirstDisplay`.
+- **Not done**: the HUD mask (step 4); motion is per 32-pixel block read bilinearly, so moving silhouettes
+  will warble (a depth-aware split is the next refinement); the field's age is not checked against the
+  colour frame beyond the frame number.
 
 ## Steps and checks
 

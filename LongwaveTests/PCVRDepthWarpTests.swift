@@ -708,6 +708,15 @@ final class PCVRDepthWarpTests: XCTestCase {
         XCTAssertGreaterThan(history.yellow, alone.magenta * 3 / 4, "most of the strip from the earlier frame")
         XCTAssertLessThan(history.magenta, alone.magenta / 4)
         XCTAssertEqual(history.cyan, 0)
+        // The same earlier frame, but its slab moved with its eye (a game's
+        // hands follow the head): its left eye saw the slab where the strip
+        // is, not the wall behind, and those fills are refused rather than
+        // drawn as a trail of slab; its right eye, 6.4 cm on, does see the
+        // wall past the moved slab and fills the rest (1280 and 1792 pixels,
+        // 2026-11-17; without the check all of it was yellow).
+        let followed = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0))])
+        XCTAssertGreaterThan(followed.magenta, alone.magenta / 3, "the left eye's view of the moved slab is refused")
+        XCTAssertLessThan(followed.yellow, history.yellow * 2 / 3)
     }
 
     /// An earlier frame with both eyes `x` metres right of the identity frame's.

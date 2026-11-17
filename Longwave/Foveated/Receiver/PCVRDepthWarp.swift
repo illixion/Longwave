@@ -1496,6 +1496,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         return clip.w > 1e-6 ? clamp(clip.z / clip.w, PCVR_FAR_DEPTH, 1.0) : PCVR_FAR_DEPTH;
     }
 
+    // How far ahead of the target eye a hit seen from the source eye of `u`
+    // lies, metres (infinity for the far end).
+    static float pcvrDepthWarpAhead(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u) {
+        if (hit.w <= 1e-6) return INFINITY;
+        float4 st = u.sourceTangents;
+        float2 tangent = float2(st.x + hit.uv.x * (st.y - st.x), st.z - hit.uv.y * (st.z - st.w));
+        float3 inSource = float3(tangent, -1) / hit.w;
+        return -(transpose(u.rotation) * (inSource - u.translation.xyz)).z;
+    }
+
     // The depth handed to the compositor: the hit's own, or with flag 16384
     // (`flatCompositorDepth`) the plane's, so its late reprojection moves the
     // picture as one surface.
@@ -1546,6 +1556,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                 uint index = min((o.flags >> 8) & 7u, uint(PCVR_FILL_FRAMES - 1));
                 PCVRDepthWarpHit other = pcvrDepthWarpMarch(target, o, fillDepth[index], linear);
                 if (other.filled > 0.5 || any(other.uv < 0.0) || any(other.uv > 1.0)) continue;
+                // What was uncovered lies behind the near object, about as far
+                // as the far side beside its edge (the main march's hit). A
+                // fill view that sees something clearly nearer there sees the
+                // near object itself where it was when that view was rendered:
+                // a game's hands follow the head, so an earlier frame's hands
+                // are elsewhere, and filling from them drew a trail of hands
+                // (Cyberpunk, tinted yellow, 2026-11-17). Try the next view.
+                if (hit.filled > 0.5 && !outside && pcvrDepthWarpAhead(other, o) < 0.8 * pcvrDepthWarpAhead(hit, u)) continue;
                 if (u.flags & 2u) {
                     out.color = index == 0 ? float4(0, 1, 1, 1) : float4(1, 1, 0, 1);
                 } else {

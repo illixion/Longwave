@@ -1563,7 +1563,16 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                 // a game's hands follow the head, so an earlier frame's hands
                 // are elsewhere, and filling from them drew a trail of hands
                 // (Cyberpunk, tinted yellow, 2026-11-17). Try the next view.
-                if (hit.filled > 0.5 && !outside && pcvrDepthWarpAhead(other, o) < 0.8 * pcvrDepthWarpAhead(hit, u)) continue;
+                // Nor clearly farther: inside a near object the march can slip
+                // behind it at a depth texel boundary, and an earlier frame,
+                // rendered before a passer-by got there, saw the street behind:
+                // filled from it, nearby NPCs showed a grid of see-through
+                // lines (Cyberpunk, 2026-11-17). What an edge uncovers is the
+                // surface just behind it, about the far side's distance.
+                if (hit.filled > 0.5 && !outside) {
+                    float fillAhead = pcvrDepthWarpAhead(other, o), farAhead = pcvrDepthWarpAhead(hit, u);
+                    if (fillAhead < 0.8 * farAhead || fillAhead > 1.25 * farAhead) continue;
+                }
                 if (u.flags & 2u) {
                     out.color = index == 0 ? float4(0, 1, 1, 1) : float4(1, 1, 0, 1);
                 } else {

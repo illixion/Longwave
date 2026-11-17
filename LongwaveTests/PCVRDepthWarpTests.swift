@@ -562,7 +562,7 @@ final class PCVRDepthWarpTests: XCTestCase {
     /// A slab 20 cm wide, 0.5 m ahead, over a wall 4 m ahead, as each eye of
     /// a frame whose left eye is at `leftX` saw it (the right eye 6.4 cm
     /// further right): a depth per texel by casting its ray.
-    private func slabDepth(leftX: Float) throws -> PCVRDepthMap {
+    private func slabDepth(leftX: Float, far: Float = 4) throws -> PCVRDepthMap {
         let width = Self.depthWidth, height = Self.depthHeight
         let map = PCVRDepthMap(texture: try texture(.r8Unorm, width: 2 * width, height: height), near: 0.25, far: .infinity)
         var pixels = [UInt8](repeating: 0, count: 2 * width * height)
@@ -572,7 +572,7 @@ final class PCVRDepthWarpTests: XCTestCase {
                 let eyeX = leftX + (x / width == 0 ? 0 : 0.064)
                 let u = (Float(x % width) + 0.5) / Float(width)
                 let atSlab = eyeX + (t.x + u * (t.y - t.x)) * 0.5
-                let z: Float = abs(atSlab) < 0.1 ? 0.5 : 4
+                let z: Float = abs(atSlab) < 0.1 ? 0.5 : far
                 pixels[y * 2 * width + x] = UInt8((0.25 / z * 255).rounded())
             }
         }
@@ -717,6 +717,12 @@ final class PCVRDepthWarpTests: XCTestCase {
         let followed = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0))])
         XCTAssertGreaterThan(followed.magenta, alone.magenta / 3, "the left eye's view of the moved slab is refused")
         XCTAssertLessThan(followed.yellow, history.yellow * 2 / 3)
+        // An earlier frame that saw much farther there (rendered before a
+        // passer-by stood in front of the wall: its wall is 12 m off, this
+        // frame's 4 m): what the edge uncovered is the near wall, not the
+        // street behind it, and those fills are refused too.
+        let farther = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0.03, far: 12))])
+        XCTAssertGreaterThan(farther.magenta, alone.magenta * 3 / 4, "fills from much farther than the far side are refused")
     }
 
     /// An earlier frame with both eyes `x` metres right of the identity frame's.

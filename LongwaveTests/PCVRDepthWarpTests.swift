@@ -657,7 +657,8 @@ final class PCVRDepthWarpTests: XCTestCase {
         let near: Float = 0.1
         let projection = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, -1), SIMD4(0, 0, near, 0)))
         let width = Self.eyeWidth, height = Self.eyeHeight
-        func tints(otherEye: Bool, fills: [PCVRDepthWarper.FillSource]) throws -> (magenta: Int, cyan: Int, yellow: Int) {
+        func tints(otherEye: Bool, fills: [PCVRDepthWarper.FillSource],
+                   fillFarthest: Float = .infinity) throws -> (magenta: Int, cyan: Int, yellow: Int) {
             var colours: [any MTLTexture] = []
             var targets: [PCVRReceiverTarget] = []
             for eye in 0..<2 {
@@ -679,6 +680,7 @@ final class PCVRDepthWarpTests: XCTestCase {
             let warper = try PCVRDepthWarper(device: device)
             warper.tintsFills = true
             warper.fillsFromOtherEye = otherEye
+            warper.fillFarthest = fillFarthest
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
             try warper.encode(frame: frame, depth: depth, views: targets, planeDistance: 2, fills: fills,
                               commandBuffer: commandBuffer)
@@ -721,7 +723,8 @@ final class PCVRDepthWarpTests: XCTestCase {
         // passer-by stood in front of the wall: its wall is 12 m off, this
         // frame's 4 m): what the edge uncovered is the near wall, not the
         // street behind it, and those fills are refused too.
-        let farther = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0.03, far: 12))])
+        let farther = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0.03, far: 12))],
+                                fillFarthest: 1.25)
         XCTAssertGreaterThan(farther.magenta, alone.magenta * 3 / 4, "fills from much farther than the far side are refused")
     }
 

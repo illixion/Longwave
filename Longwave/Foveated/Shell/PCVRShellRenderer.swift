@@ -74,6 +74,9 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// with its own depth, as well as from the frame's other eye
     /// (`PCVRDepthWarper.encode(..., fills:)`).
     var fillsFromEarlierFrames = true
+    /// `PCVRDepthWarper.fillNearest` and `fillFarthest`.
+    var fillNearest: Float = 0.8
+    var fillFarthest: Float = .infinity
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -375,6 +378,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             warper.headLockedHud = warp.headLockedHud
             warper.refinesEdges = warp.refinesEdges
             warper.flatCompositorDepth = warp.flatCompositorDepth
+            warper.fillNearest = warp.fillNearest
+            warper.fillFarthest = warp.fillFarthest
             warper.fillsFromOtherEye = march.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1

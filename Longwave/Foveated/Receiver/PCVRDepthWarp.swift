@@ -95,6 +95,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         var motionRect: SIMD4<Float> = .zero
         var hudRect: SIMD4<Float> = .zero
         var hudBounds: SIMD4<Float> = .zero
+        /// x, y: the nearest and farthest a fill may lie, as shares of the far
+        /// side's distance beside the edge (`fillNearest`, `fillFarthest`).
+        var fillBand: SIMD4<Float> = SIMD4(0.8, 1e30, 0, 0)
     }
 
     /// Codes of an 8-bit depth picture between neighbouring texels that make
@@ -179,6 +182,12 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// reprojection moves the picture as one surface rather than stretching
     /// it over the scene's depth edges.
     var flatCompositorDepth = false
+    /// A display-path fill must lie between these shares of the far side's
+    /// distance beside the edge: nearer is the near object where an earlier
+    /// frame had it (a trail of hands), farther the street behind a passer-by
+    /// (a grid of see-through lines). Infinity: no far limit.
+    var fillNearest: Float = 0.8
+    var fillFarthest: Float = .infinity
     static let refineScale = 2
     /// How alike two colours must be (in square-root RGB) to count as the
     /// same surface: the colour weight's standard deviation.
@@ -833,6 +842,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
             flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0) | (resampling == .bilinear ? 0 : 128) | (resampling == .catmullRomDeRinged ? 2048 : 0) | (flatCompositorDepth ? 16384 : 0))
+        result.fillBand = SIMD4(fillNearest, fillFarthest.isFinite ? fillFarthest : 1e30, 0, 0)
         if let hud = depth?.hud, headLockedHud {
             result.flags |= 8192
             result.hudRect = PCVRReceiver.eyeRect(eye: eye, texture: hud)
@@ -889,6 +899,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         float4 motionRect;      // the eye's blocks in the motion texture: x offset, UV scale x and y, half texel
         float4 hudRect;         // this eye's half of the HUD mark (the depth picture's chroma), and its clamp
         float4 hudBounds;
+        float4 fillBand;        // x, y: a fill's distance as a share of the far side's, nearest and farthest allowed
     };
 
     #define PCVR_WARP_BOUND_PASSES \(PCVRDepthWarper.boundPasses)
@@ -1569,9 +1580,12 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                 // filled from it, nearby NPCs showed a grid of see-through
                 // lines (Cyberpunk, 2026-11-17). What an edge uncovers is the
                 // surface just behind it, about the far side's distance.
+                // The band is `fillBand`: a far limit of 1.25 stopped the NPC
+                // grid but refused real background on a sloping sidewalk beside
+                // the hands, and the trail came back; no far limit by default.
                 if (hit.filled > 0.5 && !outside) {
                     float fillAhead = pcvrDepthWarpAhead(other, o), farAhead = pcvrDepthWarpAhead(hit, u);
-                    if (fillAhead < 0.8 * farAhead || fillAhead > 1.25 * farAhead) continue;
+                    if (fillAhead < u.fillBand.x * farAhead || fillAhead > u.fillBand.y * farAhead) continue;
                 }
                 if (u.flags & 2u) {
                     out.color = index == 0 ? float4(0, 1, 1, 1) : float4(1, 1, 0, 1);

@@ -1,6 +1,6 @@
 # PCVR motion extrapolation (ASW-style), plan
 
-Status: step 1 (probe) done 2026-11-17 and it is a go; steps 2-5 not started.
+Status: step 1 (probe) done 2026-11-17, idle and with the game running, and it is a go; steps 2-5 not started.
 
 ## Why
 
@@ -70,7 +70,23 @@ left eye's centre against the truth half a 45 Hz period later, frames with motio
   no implicit split), CUs in z-order, `lastCUInCTB` ends each CTB; the MV buffer is a fixed size with
   stale records after the last CTB. The driver refuses a tuning hint and the preset's multi-pass in
   this mode.
-- Still to measure: the same with the game running at 45 (encoder engine shared with the colour encode).
+
+**With the game running** (Cyberpunk at the 45 lock, DLSS Balanced, game present p99 22.7 ms, GPU 83-93%,
+the spike host encoding the 5072x2040 stream at 45 on the same encoder; `C:\lwvr\motion-load.ps1`). The
+probe now reads its two pictures back before each estimate, so their draws, queued behind the game on the
+3D engine, are not counted in it:
+
+| searched per eye | ME time mean / p50 / p95 | gain | frames gained |
+|---|---|---|---|
+| 634x510 | 4.2 / 3.7 / 7.0 ms | +2.6 dB | 164 of 168 |
+| 1268x1020 | 7.3 / 7.0 / 9.7 ms | +3.2 dB | 166 of 168 |
+
+The time is nearly all waiting for the one encoder engine, which the colour encode holds 8-13 ms a frame;
+the probe also ran its estimates back to back (about 4x the stream's rate), so it queued harder than one
+estimate per frame would. That is over the 4 ms aimed for at p95, but the estimate runs beside the colour
+encode, not in series with it: on its own thread, like depth, its picture reaches the headset with the
+depth picture well before the repeat it is for (half a period after the frame is first shown). The game
+held 45 throughout. Quarter size it is.
 
 ## Steps and checks
 

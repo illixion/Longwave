@@ -56,6 +56,9 @@ enum MotionProbe {
             let t1 = viewer.start + Double(k) * period
             try draw(scene, at: t1 - period, viewer: viewer, into: previous)
             try draw(scene, at: t1, viewer: viewer, into: current)
+            // Reading the picture back waits for both draws, so the estimate's time is the
+            // encoder's alone, not the draws queued behind a game on the 3D engine.
+            try read(device, current, into: &currentPixels, width: width)
             var field = lw_motion_field()
             try Pipeline.check(lw_motion_estimate(motion, current.raw, previous.raw, &field), "lw_motion_estimate")
             let blocks = Int(field.grid_width) * Int(field.grid_height)
@@ -65,7 +68,6 @@ enum MotionProbe {
                                 ctb: field.stats.ctb_size, markers: field.stats.ctb_markers, largestCU: field.stats.largest_cu)
             if k % scoreEvery == 0 {
                 try draw(scene, at: t1 + period / 2, viewer: viewer, into: half)
-                try read(device, current, into: &currentPixels, width: width)
                 try read(device, half, into: &halfPixels, width: width)
                 let vectors = UnsafeBufferPointer(start: field.vectors, count: blocks * 2)
                 let known = UnsafeBufferPointer(start: field.known, count: blocks)

@@ -276,10 +276,13 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
 
 /// How late a stream frame may arrive and still be shown in its turn
 /// (`PCVRPacedFrameQueue.jitterAllowance`), tunable while a session runs.
+/// 15 ms: at 35 the queue held up to two extra frames and 53 ms from arrival
+/// to present; at 15, 41 ms with no new drops, and the wearer saw no hitches
+/// and shorter trails round the hands (Cyberpunk, 2026-11-17).
 enum PCVRPlayoutTuning {
     static var jitterAllowance: TimeInterval {
         DebugTunables.number(
-            "pcvr.playout.jitterMs", 35, range: 0...150, step: 5,
+            "pcvr.playout.jitterMs", 15, range: 0...150, step: 5,
             label: "PCVR: how late a frame may arrive and still be shown in turn (ms)") / 1000
     }
 }

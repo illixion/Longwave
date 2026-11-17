@@ -1,5 +1,6 @@
 #if FOVEATED_ENABLED && os(visionOS)
 import RAVEGuardian
+import StreamWire
 import ARKit
 import CompositorServices
 import DebugTrace
@@ -376,7 +377,13 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
                 motionPixels += Double(shift.map.meanPixels)
             }
         }
-        for drawable in drawables {
+        let capture = presented == nil ? nil : PCVRShellCapture.shared.next()
+        if let capture, let presented {
+            recordCaptureInput(capture, presented: presented.frame, isNew: presented.isNew, depth: depthEntry,
+                               head: head, presentTime: presentTime, motion: motion != nil, warp: warp,
+                               commandBuffer: commandBuffer)
+        }
+        for (drawableIndex, drawable) in drawables.enumerated() {
             drawable.deviceAnchor = anchor
             let targets = Self.targets(for: drawable, head: head ?? .identity)
             do {
@@ -390,6 +397,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             } catch {
                 log.error("Reprojection encode failed: \(error, privacy: .public)")
             }
+            if let capture, drawableIndex == 0 {
+                recordCaptureOutput(capture, drawable: drawable, targets: targets, commandBuffer: commandBuffer)
+            }
             if let guardian, let anchor, guardian.hasContent {
                 guardian.encode(commandBuffer: commandBuffer,
                                 targets: Self.guardianTargets(for: drawable, originFromDevice: anchor.originFromAnchorTransform))
@@ -401,6 +411,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         let sampled = presented?.frame
         commandBuffer.addCompletedHandler { [inFlight, gpuTimes] buffer in
             withExtendedLifetime((sampled, depthEntry)) {}
+            capture?.complete()
             let time = buffer.gpuEndTime - buffer.gpuStartTime
             if time > 0 { gpuTimes.withLock { $0.append(time) } }
             inFlight.signal()
@@ -469,6 +480,110 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
                 rasterizationRateMap: rateMaps.count == drawable.views.count ? rateMaps[index] : rateMaps.first,
                 viewProjection: drawable.computeProjection(viewIndex: index) * originFromEye.inverse)
         }
+    }
+
+    // MARK: Capture (`PCVRShellCapture`)
+
+    private func recordCaptureInput(_ capture: PCVRShellCapture.Frame, presented frame: PCVRDecodedFrame, isNew: Bool,
+                                    depth: PCVRDepthStore.Entry?, head: PCVRPose?, presentTime: TimeInterval,
+                                    motion: Bool, warp: PCVRShellDepthWarp, commandBuffer: any MTLCommandBuffer) {
+        var meta: [String: Any] = [
+            "version": 1,
+            "presentTime": presentTime,
+            "isNew": isNew,
+            "frameNumber": Int(frame.frameNumber),
+            "streamEpoch": Int(frame.streamEpoch),
+            "arrivalTime": frame.arrivalTime,
+            "renderDisplayTime": frame.renderPose.displayTime,
+            "poseSequence": Int(frame.renderPose.poseSequence),
+            "renderEyes": [PCVRShellCapture.json(frame.renderPose.eyes[0]), PCVRShellCapture.json(frame.renderPose.eyes[1])],
+            "motionShift": motion,
+            "warp": ["enabled": warp.isEnabled, "maxSteps": warp.maxSteps, "stepTexels": Double(warp.stepTexels),
+                     "otherEye": warp.fillsFromOtherEye, "hudLocked": warp.headLockedHud,
+                     "planeDistance": Double(warp.planeDistance), "tier": (warp.tier ?? warpBudget.tier).name] as [String: Any],
+        ]
+        if let head { meta["head"] = PCVRShellCapture.json(head) }
+        if let foveation = frame.foveation {
+            meta["foveation"] = [
+                "renderEye": [Int(foveation.renderEye.width), Int(foveation.renderEye.height)],
+                "eyes": (0..<2).map { eye -> [String: Any] in
+                    let c = foveation.constants(eye: eye)
+                    return ["x": PCVRShellCapture.json(c.x), "y": PCVRShellCapture.json(c.y)]
+                },
+            ] as [String: Any]
+        }
+        let device = layerRenderer.device
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            capture.meta = meta
+            return
+        }
+        blit.label = "PCVR capture input"
+        if let section = PCVRShellCapture.copy(frame.texture, name: "stream.colour", blit: blit, device: device) {
+            capture.sections.append(section)
+        }
+        if let depth {
+            let map = depth.map
+            meta["depth"] = ["frameNumber": Int(depth.frameNumber), "near": Double(map.near),
+                             "far": map.far.isFinite ? Double(map.far) : -1, "valueScale": Double(map.valueScale),
+                             "valueOffset": Double(map.valueOffset), "hasHud": map.hud != nil,
+                             "hasMotion": depth.motion != nil] as [String: Any]
+            if depth.values.count >= depth.width * depth.height, depth.width > 0 {
+                capture.sections.append(.init(name: "depth.luma", format: "r8", width: depth.width, height: depth.height,
+                                              bytesPerRow: depth.width, data: Data(depth.values.prefix(depth.width * depth.height))))
+            } else if let section = PCVRShellCapture.copy(map.texture, name: "depth.luma", blit: blit, device: device) {
+                capture.sections.append(section)
+            }
+            if let hud = map.hud, let section = PCVRShellCapture.copy(hud, name: "depth.chroma", blit: blit, device: device) {
+                capture.sections.append(section)
+            }
+        }
+        blit.endEncoding()
+        capture.meta = meta
+    }
+
+    private func recordCaptureOutput(_ capture: PCVRShellCapture.Frame, drawable: LayerRenderer.Drawable,
+                                     targets: [PCVRReceiverTarget], commandBuffer: any MTLCommandBuffer) {
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.label = "PCVR capture output"
+        let device = layerRenderer.device
+        var views: [[String: Any]] = []
+        for (index, target) in targets.enumerated() {
+            let viewport = target.viewport
+            // A rate-mapped view's viewport is in screen pixels; its texture holds
+            // the physical (smaller) ones, so copy only what the texture has.
+            let originX = target.rasterizationRateMap == nil ? Int(viewport.originX) : 0
+            let originY = target.rasterizationRateMap == nil ? Int(viewport.originY) : 0
+            let physical = target.rasterizationRateMap?.physicalSize(layer: 0)
+            let width = min(physical?.width ?? Int(viewport.width), target.colorTexture.width - originX)
+            let height = min(physical?.height ?? Int(viewport.height), target.colorTexture.height - originY)
+            let region = MTLRegion(origin: MTLOrigin(x: originX, y: originY, z: 0),
+                                   size: MTLSize(width: width, height: height, depth: 1))
+            var view: [String: Any] = [
+                "eye": target.eye,
+                "display": PCVRShellCapture.json(target.display),
+                "projection": PCVRShellCapture.json(target.displayProjection),
+                "viewport": [viewport.originX, viewport.originY, viewport.width, viewport.height],
+                "colourFramebufferOnly": target.colorTexture.isFramebufferOnly,
+            ]
+            if let section = PCVRShellCapture.copy(target.colorTexture, slice: target.colorSlice, name: "view\(index).colour",
+                                                   region: region, blit: blit, device: device) {
+                capture.sections.append(section)
+            }
+            if let depthTexture = target.depthTexture {
+                view["depthFramebufferOnly"] = depthTexture.isFramebufferOnly
+                if let section = PCVRShellCapture.copy(depthTexture, slice: target.depthSlice, name: "view\(index).depth",
+                                                       region: region, blit: blit, device: device) {
+                    capture.sections.append(section)
+                }
+            }
+            if let map = target.rasterizationRateMap {
+                view["screenSize"] = [map.screenSize.width, map.screenSize.height]
+                capture.sections.append(contentsOf: PCVRShellCapture.rateMapSections(map, view: index))
+            }
+            views.append(view)
+        }
+        blit.endEncoding()
+        capture.meta["views"] = views
     }
 
     // MARK: Diagnostics

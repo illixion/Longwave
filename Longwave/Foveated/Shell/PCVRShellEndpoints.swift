@@ -103,6 +103,60 @@ enum PCVRShellEndpoints {
                 }
                 return report(session)
             },
+            .untyped("pcvrShellCapture", kind: .command,
+                     "Diagnostics: record the next display frames of Shell A as the render loop saw them (the stream frame "
+                     + "shown, its depth, poses and foveation, and the colour and depth the warp handed the compositor), "
+                     + "for replay off the headset (scripts/pcvr-capture). Waits until they are recorded; fetch each "
+                     + "with pcvrShellCaptureFrame. A capture holds about 80 MB a frame until the next one or clear.",
+                     parameters: [
+                        .integer("frames", "display frames to record (default 4)", default: 4, range: 1...12),
+                        .integer("stride", "record every n-th display frame (default 1: consecutive)", default: 1, range: 1...90),
+                        .boolean("clear", "drop the held capture and record nothing"),
+                     ]) { args in
+                let capture = PCVRShellCapture.shared
+                if args.bool("clear") == true {
+                    capture.clear()
+                    return ["cleared": true]
+                }
+                guard let session = PCVRShellSession.current, session.isPresenting else {
+                    throw DebugError.unavailable("Shell A is not presenting", hint: "open it with pcvrShellControl action=open")
+                }
+                let count = args.int("frames") ?? 4
+                capture.request(count: count, stride: args.int("stride") ?? 1)
+                let deadline = Date().addingTimeInterval(10)
+                while Date() < deadline {
+                    let frames = capture.frames
+                    if capture.remaining == 0, frames.count == count, frames.allSatisfy(\.isComplete) { break }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                let frames = capture.frames
+                return [
+                    "recorded": frames.filter(\.isComplete).count,
+                    "requested": count,
+                    "frames": frames.enumerated().map { index, frame -> [String: Any] in
+                        var row: [String: Any] = ["index": index, "complete": frame.isComplete,
+                                                  "sections": frame.sections.map(\.name)]
+                        for key in ["frameNumber", "isNew", "presentTime", "renderDisplayTime", "motionShift"] {
+                            if let value = frame.meta[key] { row[key] = value }
+                        }
+                        if let depth = frame.meta["depth"] as? [String: Any] { row["depthFrameNumber"] = depth["frameNumber"] }
+                        return row
+                    },
+                ]
+            },
+            .raw("pcvrShellCaptureFrame", kind: .query,
+                 "One display frame of the last pcvrShellCapture as a binary blob (LWCAP1: JSON header, then raw "
+                 + "sections; scripts/pcvr-capture/lwcap.py reads it). Holds the pictures shown in the headset.",
+                 parameters: [.integer("index", "which recorded frame (default 0)", default: 0, range: 0...11)],
+                 sensitivity: .screenCapture, timeout: .seconds(60)) { args in
+                let frames = PCVRShellCapture.shared.frames
+                let index = args.int("index") ?? 0
+                guard frames.indices.contains(index), frames[index].isComplete else {
+                    throw DebugError.unavailable("no recorded frame \(index)", hint: "run pcvrShellCapture first")
+                }
+                return .binary(frames[index].blob(), contentType: "application/octet-stream",
+                               filename: "pcvr-capture-\(index).lwcap")
+            },
             .untyped("pcvrLink", kind: .query,
                      "What the Wi-Fi link did to the v3 stream (Shell A's or the overlay's, whichever started last): "
                      + "gaps between datagrams (stalls of 30 ms and more listed), each frame's age from capture to its "

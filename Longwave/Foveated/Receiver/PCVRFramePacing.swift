@@ -107,8 +107,16 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     static var cadenceFrames: Int { 45 }
     private var streakCadence = 1
     private var cadenceStreak = 0
-    /// The cadence that has held for `cadenceFrames` frames, else 1.
-    var settledCadence: Int { cadenceStreak >= Self.cadenceFrames ? streakCadence : 1 }
+    /// The cadence settled on (1: none). Once settled it holds until the
+    /// measured ratio has been more than `cadenceSlack` off it for
+    /// `cadenceFrames` frames in a row: the measured period wanders with
+    /// arrival jitter, and each time it left the narrow band that settles a
+    /// cadence, playout fell back to display time for a second and dropped
+    /// frames, 80 in 22 s once the broker waited longer for the game (headset,
+    /// 2026-11-17).
+    private(set) var settledCadence = 1
+    private var offCadence = 0
+    static var cadenceSlack: Double { 0.3 }
 
     /// The display period, measured from the takes.
     private(set) var period: TimeInterval = 1.0 / 90
@@ -155,6 +163,16 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         lastArrival = frame.arrivalTime
         let now = cadence
         if now == streakCadence { cadenceStreak += 1 } else { streakCadence = now; cadenceStreak = 1 }
+        if settledCadence > 1 {
+            offCadence = abs(sourcePeriod / period - Double(settledCadence)) > Self.cadenceSlack ? offCadence + 1 : 0
+            if offCadence >= Self.cadenceFrames {
+                settledCadence = 1
+                offCadence = 0
+            }
+        } else if streakCadence > 1, cadenceStreak >= Self.cadenceFrames {
+            settledCadence = streakCadence
+            offCadence = 0
+        }
         arrivals.append((frame.poseSequence, frame.arrivalTime))
         if arrivals.count > Self.capacity * 4 { arrivals.removeFirst(arrivals.count - Self.capacity * 4) }
         queued.append(frame)
@@ -268,6 +286,9 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             dropped += 1
         }
         let showing = current.flatMap { $0.spaceEpoch == spaceEpoch ? $0 : nil }
+        // The settled cadence when there is one: the measured one flickers with arrival jitter,
+        // and a hold cut to one slot by a flicker is a stutter.
+        let cadence = settledCadence > 1 ? settledCadence : self.cadence
         // Held for its cadence, unless frames are piling up behind it or a
         // slot of delay is being given back. Above a cadence of one, two may
         // wait: a late frame followed closely by the next is arrival jitter, and

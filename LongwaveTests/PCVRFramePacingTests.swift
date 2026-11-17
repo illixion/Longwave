@@ -290,6 +290,19 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertLessThanOrEqual(run.queue.dropped, 20, "only while the cadence settled")
         XCTAssertLessThanOrEqual(run.queue.trimmed, 1)
     }
+
+    func testASettledCadenceRidesOutArrivalBursts() {
+        // 45 fps on 90 Hz with bursts: every 7th frame waits 15 ms more on the PC
+        // (the broker waiting for the game's GPU) and the one after it is on time.
+        let display = 1.0 / 90
+        let run = runTimed(source: 2 * display, display: display, seconds: 10, lead: 9 * display,
+                           displayJitter: { n in [0, display, -display][n % 3] }) { n in
+            12 * display + (n % 7 == 0 ? 0.015 : 0) + Double((n * 7919) % 9 - 4) / 1000
+        }
+        XCTAssertEqual(run.queue.settledCadence, 2)
+        let settled = Array(run.shown.dropFirst(120))
+        XCTAssertEqual(settled, Array(settled.first!...settled.last!), "every frame shown, in order")
+    }
 }
 #endif
 

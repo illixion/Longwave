@@ -140,9 +140,10 @@ Copyright (c) 2022-2024 Matthieu Bucchianeri.
 <https://github.com/mbucchia/VirtualDesktop-OpenXR>
 
 The OpenXR runtime games talk to on a PCVR host. Longwave builds against it unmodified
-except for a single-line change published as `ci/patches/vdxr-longwave.patch`, which
-disables Vulkan timestamp queries in 32-bit processes where the first timer submission
-device-losts. There is no fork: the broker is reached through VDXR's ordinary
+except for a small patch published as `ci/patches/vdxr-longwave.patch`. It disables Vulkan
+timestamp queries in 32-bit processes where the first timer submission device-losts, marks
+one-eye quad layers, and, behind a registry switch that is off by default, hands a Direct3D 12
+game's depth to LibOVR as plain textures. There is no fork: the broker is reached through VDXR's ordinary
 `LIBOVR_DLL_DIR` search path, with no patching of VDXR's shipped binaries.
 
 *Virtual Desktop* is a trademark of Guy Godin. Longwave is not affiliated with, endorsed

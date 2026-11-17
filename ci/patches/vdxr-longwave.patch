@@ -1,8 +1,147 @@
+diff --git a/virtualdesktop-openxr/d3d12_interop.cpp b/virtualdesktop-openxr/d3d12_interop.cpp
+index 6c03686..38fa39a 100644
+--- a/virtualdesktop-openxr/d3d12_interop.cpp
++++ b/virtualdesktop-openxr/d3d12_interop.cpp
+@@ -144,6 +144,12 @@ namespace virtualdesktop_openxr {
+         for (uint32_t i = 0; i < k_numGpuTimers; i++) {
+             m_gpuTimerApp[i].reset();
+         }
++        for (uint32_t i = 0; i < k_numD3D12DepthLists; i++) {
++            m_d3d12DepthLists[i].Reset();
++            m_d3d12DepthAllocators[i].Reset();
++            m_d3d12DepthListFenceValues[i] = 0;
++        }
++        m_d3d12DepthFence.Reset();
+         m_d3d12CommandList.Reset();
+         m_d3d12CommandAllocator.Reset();
+         m_d3d12Fence.Reset();
+@@ -195,6 +201,26 @@ namespace virtualdesktop_openxr {
+ 
+                 xrSwapchain.d3d12Images.push_back(d3d12Resource);
+ 
++                if (xrSwapchain.d3d12DepthCopy) {
++                    // The application renders into a depth texture of its own; the imported image only receives
++                    // copies.
++                    D3D12_RESOURCE_DESC appDesc = d3d12Resource->GetDesc();
++                    appDesc.Alignment = 0;
++                    appDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++                    appDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
++                    D3D12_HEAP_PROPERTIES heap{};
++                    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
++                    ComPtr<ID3D12Resource> appImage;
++                    CHECK_HRCMD(m_d3d12Device->CreateCommittedResource(&heap,
++                                                                       D3D12_HEAP_FLAG_NONE,
++                                                                       &appDesc,
++                                                                       D3D12_RESOURCE_STATE_DEPTH_WRITE,
++                                                                       nullptr,
++                                                                       IID_PPV_ARGS(appImage.ReleaseAndGetAddressOf())));
++                    setDebugName(appImage.Get(), fmt::format("App Depth Texture[{}, {}]", i, (void*)&xrSwapchain));
++                    xrSwapchain.d3d12DepthAppImages.push_back(appImage);
++                }
++
+                 if (needTransition) {
+                     D3D12_RESOURCE_BARRIER barrier{};
+                     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -202,14 +228,16 @@ namespace virtualdesktop_openxr {
+                     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+                     barrier.Transition.StateAfter =
+-                        xrSwapchain.xrDesc.usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
++                        xrSwapchain.d3d12DepthCopy ? D3D12_RESOURCE_STATE_COPY_DEST
++                        : xrSwapchain.xrDesc.usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
+                             ? D3D12_RESOURCE_STATE_RENDER_TARGET
+                             : D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                     m_d3d12CommandList->ResourceBarrier(1, &barrier);
+                 }
+             }
+ 
+-            d3d12Images[i].texture = xrSwapchain.d3d12Images[i].Get();
++            d3d12Images[i].texture = xrSwapchain.d3d12DepthCopy ? xrSwapchain.d3d12DepthAppImages[i].Get()
++                                                                : xrSwapchain.d3d12Images[i].Get();
+ 
+             if (i == 0) {
+                 const auto& desc = d3d12Images[i].texture->GetDesc();
+@@ -258,6 +286,67 @@ namespace virtualdesktop_openxr {
+         }
+     }
+ 
++    // Longwave: copy the depth images released since the last frame from the application's own textures into
++    // the OVR images, on the application's queue, so the copies are ordered after its rendering and before the
++    // fence the submission context waits for. Called from xrEndFrame() with m_swapchainsMutex held.
++    void OpenXrRuntime::copyD3D12DepthImages() {
++        std::vector<Swapchain*> pending;
++        for (const auto& handle : m_swapchains) {
++            Swapchain& xrSwapchain = *(Swapchain*)handle;
++            if (xrSwapchain.d3d12DepthCopy && xrSwapchain.d3d12DepthPending && xrSwapchain.lastReleasedIndex >= 0 &&
++                xrSwapchain.lastReleasedIndex < (int)xrSwapchain.d3d12DepthAppImages.size()) {
++                pending.push_back(&xrSwapchain);
++            }
++        }
++        if (pending.empty()) {
++            return;
++        }
++
++        if (!m_d3d12DepthFence) {
++            CHECK_HRCMD(m_d3d12Device->CreateFence(
++                0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(m_d3d12DepthFence.ReleaseAndGetAddressOf())));
++        }
++        const uint32_t slot = m_d3d12DepthNextList++ % k_numD3D12DepthLists;
++        if (!m_d3d12DepthLists[slot]) {
++            CHECK_HRCMD(m_d3d12Device->CreateCommandAllocator(
++                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(m_d3d12DepthAllocators[slot].ReleaseAndGetAddressOf())));
++            CHECK_HRCMD(m_d3d12Device->CreateCommandList(0,
++                                                         D3D12_COMMAND_LIST_TYPE_DIRECT,
++                                                         m_d3d12DepthAllocators[slot].Get(),
++                                                         nullptr,
++                                                         IID_PPV_ARGS(m_d3d12DepthLists[slot].ReleaseAndGetAddressOf())));
++            CHECK_HRCMD(m_d3d12DepthLists[slot]->Close());
++        }
++        // The list last used k_numD3D12DepthLists frames ago; wait for it in the unlikely case it is still queued.
++        if (m_d3d12DepthFence->GetCompletedValue() < m_d3d12DepthListFenceValues[slot]) {
++            wil::unique_handle eventHandle;
++            *eventHandle.put() = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
++            CHECK_HRCMD(m_d3d12DepthFence->SetEventOnCompletion(m_d3d12DepthListFenceValues[slot], eventHandle.get()));
++            WaitForSingleObject(eventHandle.get(), INFINITE);
++        }
++        CHECK_HRCMD(m_d3d12DepthAllocators[slot]->Reset());
++        ID3D12GraphicsCommandList* list = m_d3d12DepthLists[slot].Get();
++        CHECK_HRCMD(list->Reset(m_d3d12DepthAllocators[slot].Get(), nullptr));
++        for (Swapchain* xrSwapchain : pending) {
++            const int index = xrSwapchain->lastReleasedIndex;
++            D3D12_RESOURCE_BARRIER barrier{};
++            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++            barrier.Transition.pResource = xrSwapchain->d3d12DepthAppImages[index].Get();
++            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
++            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++            list->ResourceBarrier(1, &barrier);
++            list->CopyResource(xrSwapchain->d3d12Images[index].Get(), xrSwapchain->d3d12DepthAppImages[index].Get());
++            std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
++            list->ResourceBarrier(1, &barrier);
++            xrSwapchain->d3d12DepthPending = false;
++        }
++        CHECK_HRCMD(list->Close());
++        m_d3d12CommandQueue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList**>(&list));
++        m_d3d12DepthListFenceValues[slot] = ++m_d3d12DepthFenceValue;
++        CHECK_HRCMD(m_d3d12CommandQueue->Signal(m_d3d12DepthFence.Get(), m_d3d12DepthFenceValue));
++    }
++
+     // Serialize commands from the D3D12 queue to the D3D11 context used by OVR.
+     void OpenXrRuntime::serializeD3D12Frame() {
+         m_fenceValue++;
 diff --git a/virtualdesktop-openxr/frame.cpp b/virtualdesktop-openxr/frame.cpp
-index 4cede67..af93576 100644
+index 4cede67..83a90d4 100644
 --- a/virtualdesktop-openxr/frame.cpp
 +++ b/virtualdesktop-openxr/frame.cpp
-@@ -857,6 +857,12 @@ namespace virtualdesktop_openxr {
+@@ -395,6 +395,7 @@ namespace virtualdesktop_openxr {
+ 
+             // Serializes the app work between D3D12/Vulkan and D3D11.
+             if (isD3D12Session()) {
++                copyD3D12DepthImages();
+                 serializeD3D12Frame();
+             } else if (isVulkanSession()) {
+                 serializeVulkanFrame();
+@@ -857,6 +858,12 @@ namespace virtualdesktop_openxr {
  
          // CONFORMANCE: We ignore eyeVisibility, since there is no equivalent in the OVR compositor.
          // We cannot achieve conformance for this particular (but uncommon) API usage.
@@ -16,10 +155,31 @@ index 4cede67..af93576 100644
          if (quad.subImage.imageArrayIndex >= xrSwapchain.xrDesc.arraySize || xrSwapchain.xrDesc.faceCount != 1) {
              return XR_ERROR_VALIDATION_FAILURE;
 diff --git a/virtualdesktop-openxr/runtime.h b/virtualdesktop-openxr/runtime.h
-index 144f5e0..2fa7bbe 100644
+index 144f5e0..10bcce1 100644
 --- a/virtualdesktop-openxr/runtime.h
 +++ b/virtualdesktop-openxr/runtime.h
-@@ -637,6 +637,7 @@ namespace virtualdesktop_openxr {
+@@ -352,6 +352,12 @@ namespace virtualdesktop_openxr {
+             // Resources needed for interop.
+             std::vector<ComPtr<ID3D11Texture2D>> d3d11Images;
+             std::vector<ComPtr<ID3D12Resource>> d3d12Images;
++            // Longwave: D3D12 depth swapchains handed to the application as its own depth textures and copied
++            // into the (plain, not depth-stencil) OVR images on the application's queue in xrEndFrame(). See
++            // copyD3D12DepthImages().
++            bool d3d12DepthCopy{false};
++            bool d3d12DepthPending{false};
++            std::vector<ComPtr<ID3D12Resource>> d3d12DepthAppImages;
+             std::vector<VkDeviceMemory> vkDeviceMemory;
+             std::vector<VkImage> vkImages;
+             std::vector<GLuint> glMemory;
+@@ -599,6 +605,7 @@ namespace virtualdesktop_openxr {
+         bool isD3D12Session() const;
+         XrResult getSwapchainImagesD3D12(Swapchain& xrSwapchain, XrSwapchainImageD3D12KHR* d3d12Images, uint32_t count);
+         void flushD3D12CommandQueue();
++        void copyD3D12DepthImages();
+         void serializeD3D12Frame();
+ 
+         // vulkan_interop.cpp
+@@ -637,6 +644,7 @@ namespace virtualdesktop_openxr {
          // Instance & OVR state.
          bool m_isOVRLoaded{false};
          bool m_useOculusRuntime{false};
@@ -27,6 +187,75 @@ index 144f5e0..2fa7bbe 100644
          wil::unique_hmodule m_OVRlay;
          ovrSession m_ovrSession{nullptr};
          bool m_instanceCreated{false};
+@@ -802,6 +810,15 @@ namespace virtualdesktop_openxr {
+         ComPtr<ID3D12CommandQueue> m_d3d12CommandQueue;
+         ComPtr<ID3D12CommandAllocator> m_d3d12CommandAllocator;
+         ComPtr<ID3D12GraphicsCommandList> m_d3d12CommandList;
++        // Longwave: quirk_d3d12_depth_copy, see Swapchain::d3d12DepthCopy.
++        bool m_d3d12DepthCopy{false};
++        static constexpr uint32_t k_numD3D12DepthLists = 4;
++        ComPtr<ID3D12CommandAllocator> m_d3d12DepthAllocators[k_numD3D12DepthLists];
++        ComPtr<ID3D12GraphicsCommandList> m_d3d12DepthLists[k_numD3D12DepthLists];
++        UINT64 m_d3d12DepthListFenceValues[k_numD3D12DepthLists]{};
++        ComPtr<ID3D12Fence> m_d3d12DepthFence;
++        UINT64 m_d3d12DepthFenceValue{0};
++        uint32_t m_d3d12DepthNextList{0};
+         VkInstance m_vkBootstrapInstance{VK_NULL_HANDLE};
+         VkPhysicalDevice m_vkBootstrapPhysicalDevice{VK_NULL_HANDLE};
+         VkInstance m_vkInstance{VK_NULL_HANDLE};
+diff --git a/virtualdesktop-openxr/session.cpp b/virtualdesktop-openxr/session.cpp
+index 42f36d8..14c58d9 100644
+--- a/virtualdesktop-openxr/session.cpp
++++ b/virtualdesktop-openxr/session.cpp
+@@ -527,6 +527,10 @@ namespace virtualdesktop_openxr {
+ 
+         m_syncGpuWorkInEndFrame = getSetting("quirk_sync_gpu_work_in_end_frame").value_or(false);
+ 
++        // Longwave: a D3D11 read of a depth-stencil texture that a D3D12 application renders into stalls the
++        // reader's GPU work, so such depth is copied to a plain texture on the application's queue instead.
++        m_d3d12DepthCopy = getSetting("quirk_d3d12_depth_copy").value_or(false);
++
+         m_jiggleViewRotations = getSetting("jiggle_view_rotations").value_or(false);
+ 
+         m_sharpenFactor = getSetting("sharpen").value_or(0) / 100.f;
+diff --git a/virtualdesktop-openxr/swapchain.cpp b/virtualdesktop-openxr/swapchain.cpp
+index 68714f5..0bc3a88 100644
+--- a/virtualdesktop-openxr/swapchain.cpp
++++ b/virtualdesktop-openxr/swapchain.cpp
+@@ -372,6 +372,17 @@ namespace virtualdesktop_openxr {
+             desc.BindFlags |= ovrTextureBind_DX_UnorderedAccess;
+         }
+ 
++        // Longwave: see Swapchain::d3d12DepthCopy. The OVR images are then plain textures of the depth format.
++        const bool d3d12DepthCopy =
++            isD3D12Session() && m_d3d12DepthCopy && m_shouldUseDepth &&
++            (createInfo->usageFlags & XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && desc.Type == ovrTexture_2D &&
++            desc.SampleCount == 1 && desc.ArraySize == 1 && desc.MipLevels == 1 && !m_forceSlowpathSwapchains &&
++            !requireNTHandleSharing();
++        if (d3d12DepthCopy) {
++            desc.BindFlags &= ~ovrTextureBind_DX_DepthStencil;
++            Log("Creating a D3D12 depth swapchain with its own application images (quirk_d3d12_depth_copy)\n");
++        }
++
+         ovrTextureSwapChain ovrSwapchain{};
+         int length = 0;
+         // If and only if the swapchain images are directly usable by LibOVR, we create an OVR swapchain. Otherwise, we
+@@ -399,6 +410,7 @@ namespace virtualdesktop_openxr {
+         xrSwapchain.appSwapchain.ovrSwapchain = ovrSwapchain;
+         xrSwapchain.ovrSwapchainLength = length;
+         xrSwapchain.ovrDesc = desc;
++        xrSwapchain.d3d12DepthCopy = d3d12DepthCopy;
+         xrSwapchain.xrDesc = *createInfo;
+         xrSwapchain.dxgiFormatForSubmission = dxgiFormatForSubmission;
+ 
+@@ -614,6 +626,7 @@ namespace virtualdesktop_openxr {
+         xrSwapchain.lastReleasedIndex = xrSwapchain.lastWaitedIndex;
+         xrSwapchain.lastWaitedIndex = -1;
+         xrSwapchain.dirty = true;
++        xrSwapchain.d3d12DepthPending = xrSwapchain.d3d12DepthCopy;
+         xrSwapchain.acquiredIndices.pop_front();
+ 
+         return XR_SUCCESS;
 diff --git a/virtualdesktop-openxr/system.cpp b/virtualdesktop-openxr/system.cpp
 index a439e52..f7f1c0c 100644
 --- a/virtualdesktop-openxr/system.cpp
@@ -48,7 +277,7 @@ index 5d8464e..04f88ba 100644
          }
  
 -        const bool queueSupportsTimers = properties.properties.limits.timestampComputeAndGraphics;
-+        const bool queueSupportsTimers = properties.properties.limits.timestampComputeAndGraphics && sizeof(void*) == 8; // Longwave: first timer vkQueueSubmit device-losts on 32-bit
++        const bool queueSupportsTimers = properties.properties.limits.timestampComputeAndGraphics && sizeof(void*) == 8; // VisionVNC: first timer vkQueueSubmit device-losts on 32-bit
  
          ComPtr<IDXGIFactory1> dxgiFactory;
          CHECK_HRCMD(CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory.ReleaseAndGetAddressOf())));

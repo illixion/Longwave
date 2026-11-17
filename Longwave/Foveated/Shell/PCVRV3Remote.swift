@@ -807,14 +807,30 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         return posed
     }
 
+    /// How far apart the game's eyes really were, as a multiple of what its
+    /// frames say: Cyberpunk's port renders from its IPD times `xr_ipd_scale`
+    /// but submits (and so the frame carries) the runtime's unscaled eye poses.
+    /// Rendering wider took the trail round the hands away, the eyes between
+    /// seeing round them, but warped from the stated eyes the far scene swam
+    /// (2026-11-17). Set to the port's scale, the warp starts from the eyes
+    /// the picture was rendered from. 1: as stated.
+    nonisolated(unsafe) static var renderEyeScale: Float = 1
+
     /// A frame without a clock mapping cannot supply a truthful render time.
     static func renderMetadata(_ wirePose: RenderPose?, localTime: (UInt64) -> UInt64?) -> PCVRRenderPose? {
         guard let wirePose, let time = localTime(wirePose.displayTime) else { return nil }
+        var left = Self.eyeView(wirePose.left), right = Self.eyeView(wirePose.right)
+        let scale = renderEyeScale
+        if scale != 1, scale > 0 {
+            let middle = (left.pose.position + right.pose.position) / 2
+            left.pose.position = middle + (left.pose.position - middle) * scale
+            right.pose.position = middle + (right.pose.position - middle) * scale
+        }
         return PCVRRenderPose(
             poseSequence: wirePose.poseSequence,
             spaceEpoch: wirePose.spaceEpoch,
             displayTime: Self.seconds(time),
-            eyes: PCVRStereo(left: Self.eyeView(wirePose.left), right: Self.eyeView(wirePose.right)))
+            eyes: PCVRStereo(left: left, right: right))
     }
 
     private func apply(_ format: FormatDescription) {

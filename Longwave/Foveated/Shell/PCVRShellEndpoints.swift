@@ -123,6 +123,7 @@ enum PCVRShellEndpoints {
             "repeated": s.repeated,
             "dropped": s.dropped,
             "predictionHorizonMs": s.predictionHorizon,
+            "playoutHoldBackMs": s.playoutHoldBack,
             "framesWithoutAnchor": s.framesWithoutAnchor,
             "depthWarps": s.depthWarps,
             "depthWarpsWithoutDepth": s.depthWarpsWithoutDepth,

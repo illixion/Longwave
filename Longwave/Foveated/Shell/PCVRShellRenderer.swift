@@ -72,6 +72,9 @@ nonisolated struct PCVRShellStats: Equatable, Sendable {
     /// Present time minus the frame's arrival: time spent waiting for a display slot.
     var arrivalToPresent: Double?
     var predictionHorizon: Double = 0
+    /// How long the playout holds every frame past its render display time
+    /// (`PCVRPacedFrameQueue.holdBack`), ms: nonzero while frames come late.
+    var playoutHoldBack: Double = 0
     /// Pose snapshot to the first drawable its frame could be shown in, ms:
     /// 10th, 50th and 90th percentile of the last 120 frames.
     var readiness: [Double]?
@@ -503,6 +506,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             stats.poseToPresent = snapshot.poseToPresent.mean.map { $0 * 1000 }
             stats.arrivalToPresent = snapshot.arrivalToPresent.mean.map { $0 * 1000 }
             stats.predictionHorizon = horizon * 1000
+            stats.playoutHoldBack = mailbox.pacing?.holdBackMs ?? 0
             stats.readiness = readiness
             stats.framesWithoutAnchor += snapshot.withoutAnchor
             stats.worldTracking = "\(tracking)"

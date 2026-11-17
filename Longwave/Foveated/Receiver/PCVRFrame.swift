@@ -261,10 +261,10 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
     }
 
     /// The paced queue's own measures, nil for `.latest`.
-    var pacing: (trimmed: Int, periodMs: Double, lastWaitMs: Double, queued: Int)? {
+    var pacing: (trimmed: Int, periodMs: Double, lastWaitMs: Double, queued: Int, holdBackMs: Double)? {
         slot.withLock {
             guard case .paced(let s) = $0 else { return nil }
-            return (s.trimmed, s.period * 1000, s.lastWait * 1000, s.queued.count)
+            return (s.trimmed, s.period * 1000, s.lastWait * 1000, s.queued.count, s.holdBack * 1000)
         }
     }
 }

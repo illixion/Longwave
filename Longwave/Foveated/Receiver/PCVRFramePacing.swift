@@ -65,6 +65,33 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     /// Slots of delay given back: frames skipped (also counted in `dropped`)
     /// at a cadence of one, holds shortened above it.
     private(set) var trimmed = 0
+    /// Timed playout's hold-back: how long every frame is held past its render
+    /// display time, whole display periods, so that frames that come late
+    /// still land in slots a whole number apart.
+    ///
+    /// A frame rendered for a display time it cannot make (the prediction
+    /// horizon capped short of the pipeline: Cyberpunk is ready 133 ms after
+    /// its pose against a 100 ms cap, 2026-11-17) is eligible as soon as it
+    /// arrives, and then its slot is decided by its arrival jitter: arrivals
+    /// near a slot boundary show one frame for three slots and the next for
+    /// one, or two in one slot and the first never (165 dropped and ~230
+    /// missing of 22,900 frames at 45 fps on 90 Hz, about one hitch a second).
+    /// Held back by how late frames come (`holdBackPercentile` of the lateness
+    /// over `holdBackWindow` frames), each is due again in its own slot. Zero
+    /// while frames come in time, which leaves on-time playout as it was.
+    private(set) var holdBack: TimeInterval = 0
+    /// Which lateness the hold-back covers: the rest are shown as they come.
+    var holdBackPercentile = 0.95
+    static var holdBackWindow: Int { 90 }
+    /// The most a frame is held back: past this the stream is broken, not late.
+    static var maximumHoldBack: TimeInterval { 0.1 }
+    /// Frames sampled before the hold-back is trusted.
+    static var holdBackMinimumSamples: Int { 20 }
+    /// How far each recent frame's first possible slot was past its display time.
+    private var lateness: [TimeInterval] = []
+    /// The newest frame whose lateness was sampled (stream epoch, frame number).
+    private var lastSampled: (epoch: UInt32, frame: UInt32)?
+
     /// The interval between frames, measured from their arrivals.
     private(set) var sourcePeriod: TimeInterval = 1.0 / 90
     /// Display slots per frame when the source runs at a whole fraction of
@@ -147,6 +174,7 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             if interval > 1.0 / 150, interval < 1.0 / 40 { period += 0.05 * (interval - period) }
         }
         lastTake = now
+        sampleLateness(slotTime: target - period / 2)
         var released: [Frame] = []
         var next: Frame?
         while let head = queued.first {
@@ -155,7 +183,7 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
                 dropped += 1
                 continue
             }
-            guard head.displayTime <= target else { break }
+            guard head.displayTime + holdBack <= target else { break }
             if let superseded = next {
                 released.append(superseded)
                 dropped += 1
@@ -174,6 +202,31 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         current = next
         presentedNew += 1
         return Presentation(frame: next, isNew: true, released: released)
+    }
+
+    /// Notes, for each frame queued since the last take, how far past its
+    /// display time the first slot it could be shown in is (`slotTime`), and
+    /// sets the hold-back from them. Measured from where a frame could first
+    /// be shown, not where it was, so the hold-back never feeds itself.
+    private mutating func sampleLateness(slotTime: TimeInterval) {
+        var sampled = false
+        for frame in queued {
+            if let last = lastSampled, frame.streamEpoch == last.epoch,
+               !PCVRSerialNumber.isNewer(frame.frameNumber, than: last.frame) { continue }
+            lastSampled = (frame.streamEpoch, frame.frameNumber)
+            lateness.append(slotTime - frame.displayTime)
+            sampled = true
+        }
+        guard sampled else { return }
+        if lateness.count > Self.holdBackWindow { lateness.removeFirst(lateness.count - Self.holdBackWindow) }
+        guard lateness.count >= Self.holdBackMinimumSamples, period > 0 else { return }
+        let sorted = lateness.sorted()
+        let rank = Int(min(max(holdBackPercentile, 0), 1) * Double(sorted.count - 1) + 0.5)
+        let late = sorted[min(sorted.count - 1, rank)]
+        // Slots and display times sit on one grid, so lateness comes in whole
+        // periods plus clock noise: the nearest whole number of them.
+        let periods = max(0, (late / period).rounded())
+        holdBack = min(periods * period, Self.maximumHoldBack)
     }
 
     /// The frame for the display slot at `now`, shown at a display pose in `spaceEpoch`.

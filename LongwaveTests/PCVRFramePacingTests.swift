@@ -222,6 +222,29 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertLessThanOrEqual(after.max() ?? 1, 1.0 / 180 + 1e-9)
     }
 
+    func testTimedPlayoutHoldsLateFramesToSlotsAWholeCadenceApart() {
+        // The headset on 2026-11-17: 45 fps on 90 Hz, each frame rendered for 100 ms
+        // after its pose (the horizon's cap, so for a slot) but ready about 133 ms
+        // after it, right on a slot boundary, with 3 ms of jitter either way. Shown
+        // as they come, half the frames take a slot more than the rest: one frame
+        // for three slots and the next for one, or two in a slot.
+        let display = 1.0 / 90
+        let run = runTimed(source: 2 * display, display: display, seconds: 6, lead: 9 * display) { n in
+            12 * display + (n % 3 == 0 ? 0.003 : -0.003)
+        }
+        let settled = Array(zip(run.shown, run.errors).dropFirst(30))
+        XCTAssertEqual(run.queue.holdBack, 5 * display, accuracy: 1e-9, "held back by the late frames' lateness")
+        XCTAssertEqual(settled.map(\.0), Array(settled.first!.0...settled.last!.0), "every frame shown, in order")
+        let errors = settled.map(\.1)
+        XCTAssertLessThanOrEqual((errors.max() ?? 1) - (errors.min() ?? 0), 1e-9,
+                                 "each frame shown the same time after its display time: two slots apart, always")
+    }
+
+    func testTimedPlayoutHoldsNothingBackWhileFramesComeInTime() {
+        let run = runTimed(source: 1.0 / 75, display: 1.0 / 90, seconds: 3, lead: 0.05) { n in n % 3 == 0 ? 0.024 : 0.02 }
+        XCTAssertEqual(run.queue.holdBack, 0)
+    }
+
     func testTimedPlayoutTellsThePresenterWhatArrived() {
         var queue = PCVRPacedFrameQueue<Frame>()
         _ = queue.deliver(Frame(frameNumber: 1, arrivalTime: 0.5, poseSequence: 41))

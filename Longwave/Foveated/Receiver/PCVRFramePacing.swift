@@ -48,6 +48,19 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
     var margin: TimeInterval = 0.003
     /// Takes over which every frame must have waited too long before one is skipped.
     var window = 180
+    /// How late a frame may come and still be shown in its turn (arrival-order
+    /// playout): delay that late frames have built up to this much is kept
+    /// rather than given back, and that many more frames may wait before the
+    /// hold is cut or one is dropped. At zero the delay was trimmed to one slot,
+    /// and a Wi-Fi gap of 30 ms then meant a repeat, a cut hold and a dropped
+    /// frame, about one frame in ten on the headset (2026-11-17). Costs up to
+    /// this much latency while the link is uneven.
+    var jitterAllowance: TimeInterval = 0
+    /// Frames the allowance lets wait beyond the usual ones.
+    private func slackFrames(cadence: Int) -> Int {
+        guard jitterAllowance > 0, period > 0 else { return 0 }
+        return Int((jitterAllowance / (period * Double(max(cadence, 1)))).rounded(.up))
+    }
     /// Frames left waiting behind the one just shown; more are dropped.
     static var queuedAfterTake: Int { 1 }
     /// Frames held at most while nothing takes any.
@@ -125,6 +138,9 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
 
     private var lastTake: TimeInterval?
     private var lastArrival: TimeInterval?
+    /// Arrival times the source period is measured over.
+    private var periodArrivals: [TimeInterval] = []
+    static var periodBaseline: Int { 64 }
     /// Frames delivered since `drainArrivals()`: pose sequence and arrival time.
     private(set) var arrivals: [(poseSequence: UInt32, time: TimeInterval)] = []
     private var minimumWait = TimeInterval.infinity
@@ -156,9 +172,26 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
             }
         }
         if let lastArrival {
-            // Bursts and gaps average out; only a stall is left out.
             let interval = frame.arrivalTime - lastArrival
-            if interval >= 0, interval < 0.1 { sourcePeriod += 0.05 * (interval - sourcePeriod) }
+            if interval >= 0, interval < 0.1 {
+                // Over a long baseline: a frame held back 30 ms by the link and the
+                // next right behind it moved a running average of the intervals far
+                // enough off the cadence, every time, that with such a gap twice a
+                // second no cadence was ever settled on and playout stayed on
+                // display time, dropping one frame in ten (headset, 2026-11-17).
+                periodArrivals.append(frame.arrivalTime)
+                if periodArrivals.count > Self.periodBaseline { periodArrivals.removeFirst() }
+                if periodArrivals.count >= 8 {
+                    sourcePeriod = (frame.arrivalTime - periodArrivals[0]) / Double(periodArrivals.count - 1)
+                } else {
+                    sourcePeriod += 0.05 * (interval - sourcePeriod)
+                }
+            } else {
+                // A stall says nothing about the period.
+                periodArrivals = [frame.arrivalTime]
+            }
+        } else {
+            periodArrivals = [frame.arrivalTime]
         }
         lastArrival = frame.arrivalTime
         let now = cadence
@@ -293,7 +326,8 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         // slot of delay is being given back. Above a cadence of one, two may
         // wait: a late frame followed closely by the next is arrival jitter, and
         // cutting the hold for it showed one frame for a single slot.
-        let piledUp = queued.count >= (cadence > 1 ? 3 : 2)
+        let slack = slackFrames(cadence: cadence)
+        let piledUp = queued.count >= (cadence > 1 ? 3 : 2) + slack
         let holding = showing != nil && heldSlots < cadence && !piledUp && !shortenHold
         guard !queued.isEmpty, !holding else {
             guard let showing else {
@@ -306,13 +340,13 @@ nonisolated struct PCVRPacedFrameQueue<Frame: PCVRTimedPlayoutFrame> {
         if heldSlots < cadence, shortenHold { trimmed += 1 }
         shortenHold = false
         // Piled up: show the oldest that keeps at most one (two above a cadence of one) behind it.
-        while queued.count > Self.queuedAfterTake + (cadence > 1 ? 2 : 1) {
+        while queued.count > Self.queuedAfterTake + (cadence > 1 ? 2 : 1) + slack {
             released.append(queued.removeFirst())
             dropped += 1
         }
         minimumWait = min(minimumWait, now - queued[0].arrivalTime)
         waits += 1
-        if waits >= window, minimumWait > period + margin {
+        if waits >= window, minimumWait > period + margin + jitterAllowance {
             // Every frame in the window was in time for the slot before its
             // own. Above a cadence of one, the next hold ends a slot early;
             // otherwise skip a frame, once the next has arrived to take its place.

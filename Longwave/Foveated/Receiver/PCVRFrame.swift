@@ -1,4 +1,5 @@
 #if FOVEATED_ENABLED
+import DebugTrace
 import Foundation
 import Metal
 import os
@@ -212,8 +213,10 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
     /// A `.timed` mailbox's next frame: the newest rendered for no later than `target`.
     func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval, until target: TimeInterval)
         -> (frame: PCVRDecodedFrame, isNew: Bool)? {
+        let allowance = PCVRPlayoutTuning.jitterAllowance
         let taken: (frame: PCVRDecodedFrame?, isNew: Bool, released: [PCVRDecodedFrame]) = slot.withLock {
             guard case .paced(var queue) = $0 else { return (nil, false, []) }
+            queue.jitterAllowance = allowance
             let p = queue.takeForPresentation(spaceEpoch: spaceEpoch, now: now, until: target)
             $0 = .paced(queue)
             return (p.frame, p.isNew, p.released)
@@ -235,6 +238,7 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
     /// The frame to show at a display pose in `spaceEpoch`, or nil for nothing.
     /// `now` (the `arrivalTime` clock) paces a `.paced` mailbox; `.latest` ignores it.
     func takeForPresentation(spaceEpoch: UInt16, now: TimeInterval = 0) -> (frame: PCVRDecodedFrame, isNew: Bool)? {
+        let allowance = PCVRPlayoutTuning.jitterAllowance
         let taken: (frame: PCVRDecodedFrame?, isNew: Bool, released: [PCVRDecodedFrame]) = slot.withLock {
             switch $0 {
             case .latest(var latest):
@@ -242,6 +246,7 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
                 $0 = .latest(latest)
                 return (p.frame, p.isNew, p.released)
             case .paced(var paced):
+                paced.jitterAllowance = allowance
                 let p = paced.takeForPresentation(spaceEpoch: spaceEpoch, now: now)
                 $0 = .paced(paced)
                 return (p.frame, p.isNew, p.released)
@@ -266,6 +271,16 @@ nonisolated final class PCVRFrameMailbox: @unchecked Sendable {
             guard case .paced(let s) = $0 else { return nil }
             return (s.trimmed, s.period * 1000, s.lastWait * 1000, s.queued.count, s.holdBack * 1000)
         }
+    }
+}
+
+/// How late a stream frame may arrive and still be shown in its turn
+/// (`PCVRPacedFrameQueue.jitterAllowance`), tunable while a session runs.
+enum PCVRPlayoutTuning {
+    static var jitterAllowance: TimeInterval {
+        DebugTunables.number(
+            "pcvr.playout.jitterMs", 35, range: 0...150, step: 5,
+            label: "PCVR: how late a frame may arrive and still be shown in turn (ms)") / 1000
     }
 }
 #endif

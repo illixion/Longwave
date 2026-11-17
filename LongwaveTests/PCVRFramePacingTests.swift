@@ -172,16 +172,18 @@ final class PCVRFramePacingTests: XCTestCase {
     /// frame written at a slot is shown in the next one. Returns, per frame
     /// shown, how far its slot's display time was from its render display time.
     private func runTimed(source: TimeInterval, display: TimeInterval, seconds: TimeInterval, lead: TimeInterval,
-                          displayJitter: (Int) -> TimeInterval = { _ in 0 },
-                          latency: (Int) -> TimeInterval) -> (errors: [TimeInterval], shown: [UInt32], queue: PCVRPacedFrameQueue<Frame>) {
+                          displayJitter: (Int) -> TimeInterval = { _ in 0 }, allowance: TimeInterval = 0,
+                          latency: (Int) -> TimeInterval)
+        -> (errors: [TimeInterval], shown: [UInt32], queue: PCVRPacedFrameQueue<Frame>, slots: [Int]) {
         var queue = PCVRPacedFrameQueue<Frame>()
+        queue.jitterAllowance = allowance
         let count = Int(seconds / source)
         var frames = (0..<count).map { n -> Frame in
             let start = Double(n) * source
             return Frame(frameNumber: UInt32(n), arrivalTime: start + latency(n), displayTime: start + lead + displayJitter(n))
         }
         frames.sort { $0.arrivalTime < $1.arrivalTime }
-        var errors: [TimeInterval] = [], shown: [UInt32] = []
+        var errors: [TimeInterval] = [], shown: [UInt32] = [], slots: [Int] = []
         for slot in 0..<Int(seconds / display) {
             let now = Double(slot) * display
             while let next = frames.first, next.arrivalTime <= now { _ = queue.deliver(frames.removeFirst()) }
@@ -190,9 +192,10 @@ final class PCVRFramePacingTests: XCTestCase {
             if p.isNew, let frame = p.frame {
                 errors.append(showAt - frame.displayTime)
                 shown.append(frame.frameNumber)
+                slots.append(slot)
             }
         }
-        return (errors, shown, queue)
+        return (errors, shown, queue, slots)
     }
 
     func testTimedPlayoutShowsEachFrameInItsOwnSlotAtAnyRate() {
@@ -230,11 +233,15 @@ final class PCVRFramePacingTests: XCTestCase {
         // as they come, half the frames take a slot more than the rest: one frame
         // for three slots and the next for one, or two in a slot.
         let display = 1.0 / 90
-        let run = runTimed(source: 2 * display, display: display, seconds: 6, lead: 9 * display) { n in
+        // With the jitter allowance the headset runs with: without one, a slot of delay
+        // is given back whenever the frames' phase leaves more than a slot spare, and
+        // the late third of them then misses its slot again, a hitch every window.
+        let run = runTimed(source: 2 * display, display: display, seconds: 12, lead: 9 * display,
+                           allowance: 0.035) { n in
             12 * display + (n % 3 == 0 ? 0.003 : -0.003)
         }
         // Past the hand-over to arrival order at the cadence (after 45 frames of it, about 90 in all).
-        let settled = Array(zip(run.shown, run.errors).dropFirst(120))
+        let settled = Array(zip(run.shown, run.errors).dropFirst(270))
         XCTAssertEqual(run.queue.holdBack, 5 * display, accuracy: 1e-9, "held back by the late frames' lateness")
         XCTAssertEqual(settled.map(\.0), Array(settled.first!.0...settled.last!.0), "every frame shown, in order")
         let errors = settled.map(\.1)
@@ -302,6 +309,30 @@ final class PCVRFramePacingTests: XCTestCase {
         XCTAssertEqual(run.queue.settledCadence, 2)
         let settled = Array(run.shown.dropFirst(120))
         XCTAssertEqual(settled, Array(settled.first!...settled.last!), "every frame shown, in order")
+    }
+
+    func testAJitterAllowanceKeepsTheCadenceThroughWiFiGaps() {
+        // 45 fps on 90 Hz over a link that holds every 23rd frame back 32 ms; the
+        // ones behind it arrive in order, right after it (the headset, 2026-11-17).
+        let display = 1.0 / 90
+        var extra: [TimeInterval] = [], previous = -TimeInterval.infinity
+        for n in 0..<1400 {
+            let arrival = max(Double(n) * 2 * display + (n % 23 == 0 ? 0.032 : 0) + Double((n * 7919) % 5 - 2) / 1000,
+                              previous + 0.0005)
+            extra.append(arrival - Double(n) * 2 * display)
+            previous = arrival
+        }
+        func uneven(allowance: TimeInterval) -> (holds: Int, skipped: Int) {
+            let run = runTimed(source: 2 * display, display: display, seconds: 30, lead: 9 * display,
+                               allowance: allowance) { n in 12 * display + extra[n] }
+            XCTAssertEqual(run.queue.settledCadence, 2)
+            let shown = Array(run.shown.dropFirst(450)), slots = Array(run.slots.dropFirst(450))
+            let holds = zip(slots.dropFirst(), slots).map { $0 - $1 }
+            return (holds.filter { $0 != 2 }.count, Int(shown.last! - shown.first!) + 1 - shown.count)
+        }
+        let allowed = uneven(allowance: 0.035)
+        XCTAssertEqual(allowed.skipped, 0, "every frame shown")
+        XCTAssertEqual(allowed.holds, 0, "each frame up for two slots once the delay is built")
     }
 }
 #endif

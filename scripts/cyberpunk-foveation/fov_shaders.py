@@ -96,10 +96,72 @@ def cone_main(ir, a):
     return split_after(ir, m.group(0), test, [UNOCCLUDED % one_store(ir)])
 
 
+def ssr_classifier(ir, a):
+    """ScreenSpaceReflections' tile classifier (one 8x8 group = one 32-pixel tile of one eye, a coarse ray per
+    thread, thread 0 files the tile). A tile whose centre is outside the ellipse is filed in the clear list at
+    once and no thread of it traces. The eye's width is half of cb0 row 2.x, its height row 2.y; the right
+    eye's dispatch is the one whose cb6 row 40.w is 2."""
+    start, end = ham.function_body(ir)
+    body = ir[start:end]
+    gid = re.search(r'(?m)^  (%\d+) = call i32 @dx\.op\.groupId\.i32\(i32 94, i32 0\)[^\n]*\n  (%\d+) = call i32 @dx\.op\.groupId\.i32\(i32 94, i32 1\)', body)
+    flat = re.search(r'(?m)^  (%\d+) = call i32 @dx\.op\.flattenedThreadIdInGroup\.i32\(i32 96\)', body)
+    cb0 = re.search(r'(?m)^  (%\d+) = call %dx\.types\.Handle @dx\.op\.createHandle\(i32 57, i8 2, i32 0, i32 0, i1 false\)', body)
+    right = re.search(r'(?m)^  (%\d+) = extractvalue %dx\.types\.CBufRet\.i32 %\d+, 3\n  (%\d+) = icmp eq i32 \1, 2\n', body)
+    first = re.search(r'(?m)^  br i1 (%\d+), label (%\d+), label (%\d+)\n', body)
+    clear = re.search(r'(?m)^  (%\d+) = call i32 @dx\.op\.atomicBinOp\.i32\(i32 78, %dx\.types\.Handle (%\d+), i32 0, i32 6, i32 undef, i32 undef, i32 4\)[^\n]*\n'
+                      r'  %\d+ = lshr i32 \1, 2\n  call void @dx\.op\.bufferStore\.i32\(i32 69, %dx\.types\.Handle (%\d+), ', body)
+    tail = re.search(r'(?m)^; <label>:(\d+)[^\n]*\n  %\d+ = icmp ult i32 %\d+, 3\n', body)
+    if not (gid and flat and cb0 and right and first and clear and tail):
+        raise ValueError('classifier landmarks not found')
+    lit = ham.lit
+    test = [
+        f'  %fov.c2 = call %dx.types.CBufRet.f32 @dx.op.cbufferLoadLegacy.f32(i32 59, %dx.types.Handle {cb0.group(1)}, i32 2)',
+        '  %fov.fw = extractvalue %dx.types.CBufRet.f32 %fov.c2, 0',
+        '  %fov.fh = extractvalue %dx.types.CBufRet.f32 %fov.c2, 1',
+        '  %fov.ew = fmul fast float %fov.fw, 5.000000e-01',
+        f'  %fov.gx = uitofp i32 {gid.group(1)} to float',
+        f'  %fov.gy = uitofp i32 {gid.group(2)} to float',
+        '  %fov.px = call float @dx.op.tertiary.f32(i32 46, float %fov.gx, float 3.200000e+01, float 1.600000e+01)',
+        '  %fov.py = call float @dx.op.tertiary.f32(i32 46, float %fov.gy, float 3.200000e+01, float 1.600000e+01)',
+        '  %fov.eu = fdiv fast float %fov.px, %fov.ew',
+        '  %fov.v = fdiv fast float %fov.py, %fov.fh',
+        f'  %fov.cx = select i1 {right.group(2)}, float {lit(0.5 - a.nose)}, float {lit(0.5 + a.nose)}',
+        '  %fov.dx0 = fsub fast float %fov.eu, %fov.cx',
+        f'  %fov.dx = fmul fast float %fov.dx0, {lit(1.0 / a.rx)}',
+        f'  %fov.dy0 = fsub fast float %fov.v, {lit(a.cy)}',
+        f'  %fov.dy = fmul fast float %fov.dy0, {lit(1.0 / a.ry)}',
+        '  %fov.xx = fmul fast float %fov.dx, %fov.dx',
+        '  %fov.yy = fmul fast float %fov.dy, %fov.dy',
+        '  %fov.d = fadd fast float %fov.xx, %fov.yy',
+        '  %fov.vis = fcmp fast ole float %fov.d, 1.000000e+00',
+        '  br i1 %fov.vis, label %fov.body, label %fov.skip',
+        '',
+        'fov.skip:',
+        f'  %fov.t0 = icmp eq i32 {flat.group(1)}, 0',
+        f'  br i1 %fov.t0, label %fov.clear, label %{tail.group(1)}',
+        '',
+        'fov.clear:',
+        f'  %fov.hi = shl i32 {gid.group(2)}, 16',
+        f'  %fov.id = or i32 %fov.hi, {gid.group(1)}',
+        f'  %fov.n = call i32 @dx.op.atomicBinOp.i32(i32 78, %dx.types.Handle {clear.group(2)}, i32 0, i32 6, i32 undef, i32 undef, i32 4)',
+        '  %fov.i = lshr i32 %fov.n, 2',
+        f'  call void @dx.op.bufferStore.i32(i32 69, %dx.types.Handle {clear.group(3)}, i32 %fov.i, i32 0, i32 %fov.id, i32 undef, i32 undef, i32 undef, i8 1)',
+        f'  br label %{tail.group(1)}',
+        '',
+        'fov.body:',
+    ]
+    body = re.sub(r'(?m)^(  %\S+ = phi .*)$', lambda m: re.sub(r'%0 \]', '%fov.body ]', m.group(1)), body)
+    body = body.replace(first.group(0), '\n'.join(test) + '\n' + first.group(0), 1)
+    if 'dx.op.tertiary.f32' not in ir[end:]:
+        raise ValueError('FMad is not declared in this shader')
+    return ir[:start] + body + ir[end:]
+
+
 # engine shader's FNV-1a -> (name, recipe, source folder: the engine's shader, or the port's twin of it to build on)
 RECIPES = {
     0x65e542c0719b464d: ('DrawConeAO 8x8 pass', cone_trace, 'shaders'),
     0x33f28d9a0e7a8352: ('DrawConeAO main trace (on the port twin)', cone_main, 'twins'),
+    0xbdf51af7acfab45e: ('ScreenSpaceReflections tile classifier', ssr_classifier, 'shaders'),
 }
 
 

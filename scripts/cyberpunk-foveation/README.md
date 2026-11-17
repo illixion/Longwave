@@ -44,6 +44,11 @@ What each compute pass costs the FRAME, measured by not sending its dispatches (
 - **Foveated cone AO works: -7 % frame time** (18.15 -> 16.9 ms, 56.0 -> 60.0 fps, ABBA). Outside an ellipse of
   0.40 x 0.38 of each eye's image (48 % of the eye kept) the two heavy AO shaders store "unoccluded" and return. With
   the VRS map on top: 16.7 ms (-8 %).
+- **Foveated SSR: -4 % on its own.** The tile classifier files a 32-pixel tile whose centre is outside the same
+  ellipse in its clear list at once, and no thread of it traces. The node goes from 1.25 to 0.50 ms.
+- **All three together: 18.5 -> 16.2 ms, 54.5 -> 61.8 fps (-12 % frame time), 1 % low 48 -> 56 fps**
+  (`all.ps1`, one launch: off 18.5, AO 17.6, SSR 17.8, AO + SSR 16.8, AO + SSR + VRS 16.2, off 18.5). "Off" here
+  also turns off the port's own AO and SSR corrections, which its author measured at 0.23 ms for all groups.
 - A fine checkerboard would not do the same: compute threads run in warps of 32, so only contiguous regions that
   empty whole thread groups save time.
 
@@ -62,8 +67,10 @@ What each compute pass costs the FRAME, measured by not sending its dispatches (
 - `fov_shaders.py`: builds the foveated AO twins with the port's recipe tools (`tools/hidden_area_tests`) and its
   `dxil_tool` (compile `tools/single_pass_tests/dxil_tool.cpp`, link `ole32.lib`). `65e542c0719b464d` (8x8 pass) is
   made from the engine's shader; `33f28d9a0e7a8352` (the main trace, 1.6 of the node's 2.2 ms) from the port's own
-  two-eye twin in `shaders\asym_ao`. The outputs go into `shaders\asym_ao\`, named by the engine shader's hash; the
-  group's live switch is `CyberpunkVR_AsymAoPatch`.
+  two-eye twin in `shaders\asym_ao`; `bdf51af7acfab45e` (the SSR tile classifier) from the engine's shader. The AO
+  outputs go into `shaders\asym_ao\`, the classifier into `shaders\asym_ssr\`, named by the engine shader's hash;
+  the groups' live switches are `CyberpunkVR_AsymAoPatch` and `CyberpunkVR_AsymSsrPatch`.
+- `rollback.ps1`: the shipped DLL and twins back (backups under `C:\lwvr\cpvr`).
 - `prof.py`, `ab.py`, `detail.py`, `census.py`, `setx.py`, `skip.ps1`, `ao.ps1`: profile per node, A/B live exports,
   per-pipeline detail of a node, the shader census (needs `log\cvr_shader_census.txt` at game start), set an export,
   and the two measurement runs above. Frame rate is PresentMon's (`C:\lwvr\pm-capture.ps1`), launches are
@@ -71,10 +78,9 @@ What each compute pass costs the FRAME, measured by not sending its dispatches (
 
 ## Next
 
-1. Headset check of the AO ellipse (hard edge, straight bent normal outside): is the border visible, and at what
-   size? A feather and the surface normal instead of the straight one are the first fixes if it is.
-2. SSR the same way: its tile classifier sends peripheral tiles to the clear list (the port's author measured
-   1.08 -> 0.18 ms with 80 % of the screen skipped). Expected about -1 ms.
-3. Volumetric fog: froxels outside the ellipse, about -0.6 ms if its three shaders skip cleanly.
-4. The ellipse as placeholders rewritten at run time (the port's `DxilPatch`), with an overlay slider, instead of
+1. Headset check, not done yet: nothing here has been seen in the headset. The AO ellipse has a hard edge and a
+   straight bent normal outside; SSR ends in 32-pixel steps. Is either border visible, and at what size? A feather
+   and the surface normal instead of the straight one are the first fixes for AO if it is.
+2. Volumetric fog: froxels outside the ellipse, about -0.6 ms if its three shaders skip cleanly.
+3. The ellipse as placeholders rewritten at run time (the port's `DxilPatch`), with an overlay slider, instead of
    constants baked into the twin.

@@ -364,6 +364,35 @@ lw_status lw_texture_copy_region(lw_device *device, void *source, uint32_t sourc
                                  uint32_t source_y, void *destination);
 void lw_texture_release(void *texture);
 
+/* ---- Motion (NVENC motion-estimation-only mode) ----------------------------
+ * The motion from a reference picture to the current one, searched by the
+ * video encoder's engine rather than the 3D engine (motion_nvenc.cpp,
+ * docs/PCVR_MOTION_EXTRAPOLATION.md). Both pictures are BGRA8 textures of the
+ * size given at creation. Synchronous: waits for the encoder engine. */
+typedef struct lw_motion lw_motion;
+typedef struct lw_motion_params {
+    int32_t width, height;
+    uint32_t preset; /* 1 (fastest) to 7; 0 = 4 */
+} lw_motion_params;
+typedef struct lw_motion_stats {
+    double submit_ms, wait_ms, parse_ms; /* CPU wall time of each step */
+    uint32_t records, records_used, malformed_ctbs;
+    uint32_t ctb_size, ctb_markers, largest_cu; /* the CTB size the records were read with */
+    uint32_t known_blocks;               /* blocks with a P vector */
+    double mean_pixels;                  /* mean vector length over them */
+} lw_motion_stats;
+typedef struct lw_motion_field {
+    int32_t grid_width, grid_height, block; /* blocks of `block` x `block` pixels, raster order */
+    /* Per block x then y, quarter pixels: current(p) matches reference(p + v).
+     * Owned by the lw_motion, valid until its next estimate. */
+    const int16_t *vectors;
+    const uint8_t *known; /* 0: no inter vector (intra, or outside) */
+    lw_motion_stats stats;
+} lw_motion_field;
+lw_status lw_motion_create(lw_device *device, const lw_motion_params *params, lw_motion **out);
+lw_status lw_motion_estimate(lw_motion *motion, void *current, void *reference, lw_motion_field *out);
+void lw_motion_release(lw_motion *motion);
+
 /* ---- Picture quality (the codec bench) -------------------------------------
  * Compares pictures on the GPU, in luma (BT.709, limited range: what NVENC
  * encodes from BGRA), and reads back small per-tile sums. Waits for the GPU:

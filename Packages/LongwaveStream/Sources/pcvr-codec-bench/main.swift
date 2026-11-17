@@ -80,7 +80,7 @@ func apply(_ arguments: [String], to config: inout Config) {
         switch argument {
         case "--mode":
             config.mode = value()
-            guard ["link", "encode"].contains(config.mode) else { fail("--mode takes link or encode") }
+            guard ["link", "encode", "motion"].contains(config.mode) else { fail("--mode takes link, encode or motion") }
         case "--scenario":
             config.scenarios = value().split(separator: ",").map(String.init)
             for name in config.scenarios where LinkScenario.named(name) == nil {
@@ -188,7 +188,7 @@ do {
 if base.contains("--help") || base.contains("-h") {
     print("""
     pcvr-codec-bench [options] [--variant "label: options"]... [@argument-file]
-      --mode link|encode  --scenario \(LinkScenario.all.map(\.name).joined(separator: ","))
+      --mode link|encode|motion  --scenario \(LinkScenario.all.map(\.name).joined(separator: ","))
       --refresh 90 | 120:5,90:5,60  --seconds S  --bitrate MBPS[,MBPS] (encode)
       --max-mbps 120 --start-mbps 100 --depth-mbps 40 --depth-load 4
       --trajectory FILE --start S --gaze fixate|ahead --follow-gaze on|off --gaze-lag MS --box PX
@@ -219,6 +219,26 @@ do {
 let device: GraphicsDevice
 do { device = try GraphicsDevice(for: nil) } catch { fail("device: \(error)") }
 print("device: \(device.adapterName); trajectory \(String(format: "%.1f", trajectory.duration)) s, from \(shared.start) s for \(shared.seconds) s; refresh \(shared.refresh.description)")
+
+if shared.mode == "motion" {
+    // Motion estimation alone: no encoder, no network (Motion.swift). The picture is the
+    // unwarped render eye at the wire's size, as the host sends with foveation off.
+    var viewer = ViewerSettings(trajectory: trajectory)
+    viewer.start = shared.start
+    do {
+        // LW_MOTION_EYE=WxH: estimate at another eye size (a smaller picture is cheaper to search).
+        var eye = PixelSize(width: 2536, height: 2040)
+        if let text = ProcessInfo.processInfo.environment["LW_MOTION_EYE"] {
+            let parts = text.split(separator: "x").compactMap { UInt16($0) }
+            if parts.count == 2 { eye = PixelSize(width: parts[0], height: parts[1]) }
+        }
+        try MotionProbe.run(device: device, viewer: viewer, eye: eye, seconds: shared.seconds,
+                            sourceHz: 45, preset: shared.encoder.preset, scoreEvery: 4)
+    } catch {
+        fail("motion: \(error)")
+    }
+    exit(0)
+}
 
 struct FrameRow: Codable {
     var t: Double, hz: Double, mbps: Double, bytes: Int, key: Bool, qp: Int, encodeMs: Double

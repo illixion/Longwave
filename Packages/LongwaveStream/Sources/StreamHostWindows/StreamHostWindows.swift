@@ -779,6 +779,34 @@ public final class MotionSearch: @unchecked Sendable {
     }
 }
 
+/// An eye pair turned from one pose to another (`lw_reproject_*`): the motion
+/// search's previous picture turned to the current render orientation.
+public final class ReprojectPass: @unchecked Sendable {
+    private let raw: OpaquePointer
+
+    public init(device: GraphicsDevice) throws {
+        var r: OpaquePointer?
+        try check(lw_reproject_create(device.raw, &r), "lw_reproject_create")
+        raw = r!
+    }
+
+    deinit { lw_reproject_release(raw) }
+
+    /// `matrices`: 18 values, left then right eye, each 3x3 row-major from a
+    /// destination eye pixel to a source eye pixel. GPU work only.
+    public func apply(source: GraphicsTexture, destination: GraphicsTexture, eye: (width: Int, height: Int),
+                      matrices: [Float]) throws {
+        precondition(matrices.count == 18)
+        var params = lw_reproject_params()
+        params.eye_width = Int32(eye.width)
+        params.eye_height = Int32(eye.height)
+        withUnsafeMutableBytes(of: &params.matrices) { bytes in
+            matrices.withUnsafeBytes { bytes.copyMemory(from: $0) }
+        }
+        try check(lw_reproject_apply(raw, source.raw, destination.raw, &params), "lw_reproject_apply")
+    }
+}
+
 /// A PCVR frame's depth for the depthVideo stream (lw_depth_*): both eyes
 /// side by side as grey BGRA8 holding inverse depth, `near / z`.
 public final class DepthPass: @unchecked Sendable {

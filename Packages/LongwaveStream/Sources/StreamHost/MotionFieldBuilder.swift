@@ -47,6 +47,12 @@ public enum MotionFieldBuilder {
         }
     }
 
+    /// Motion under this many pixels of the search picture is taken as still:
+    /// searched against the turned previous picture, a still synthetic scene
+    /// left 96% of blocks within it (pcvr-codec-bench --mode motion, 2026-11-17),
+    /// and at 4x to the render eye the rest would shimmer by a few pixels.
+    public static let noiseFloor: Float = 1
+
     /// The search picture's eye for a render eye: a quarter per axis, rounded
     /// up to whole 8-pixel blocks so no block straddles the two eyes.
     public static func searchEye(forRender eye: PixelSize, divisor: Int = 4) -> PixelSize {
@@ -54,11 +60,33 @@ public enum MotionFieldBuilder {
         return PixelSize(width: scaled(eye.width), height: scaled(eye.height))
     }
 
+    /// What went into a field, for diagnostics: mean lengths over the known
+    /// cells (render pixels) of the motion the search measured, the share the
+    /// head's turn explains, and what is left, before cleaning.
+    public struct Diagnostics: Sendable {
+        public var cells = 0
+        public var measured: Double = 0
+        public var head: Double = 0
+        public var residual: Double = 0
+        /// Per cell, both eyes (left then right, rows top first): the
+        /// measured and the residual motion, nil where unknown.
+        public var measuredCells: [SIMD2<Float>?] = []
+        public var residualCells: [SIMD2<Float>?] = []
+    }
+
     /// The field for this frame, or nil when the two frames can't be compared
     /// (no time between them).
     public static func field(search: Search, renderEye: PixelSize, current: RenderPose, previous: RenderPose,
                              cellSize: Int = PCVRProfile.motionCellSize,
                              scale: Float = PCVRProfile.motionScale) -> MotionField? {
+        build(search: search, renderEye: renderEye, current: current, previous: previous, cellSize: cellSize,
+              scale: scale)?.field
+    }
+
+    public static func build(search: Search, renderEye: PixelSize, current: RenderPose, previous: RenderPose,
+                             cellSize: Int = PCVRProfile.motionCellSize, scale: Float = PCVRProfile.motionScale,
+                             keepCells: Bool = false, turnRemoved: Bool = false,
+                             floor: Float = noiseFloor) -> (field: MotionField, diagnostics: Diagnostics)? {
         guard current.displayTime > previous.displayTime, search.block > 0, cellSize > 0,
               search.vectors.count >= search.gridWidth * search.gridHeight * 2,
               search.known.count >= search.gridWidth * search.gridHeight else { return nil }
@@ -70,12 +98,14 @@ public enum MotionFieldBuilder {
         // Render pixels per search pixel, and per quarter of one.
         let sx = Float(renderEye.width) / Float(search.eye.width), sy = Float(renderEye.height) / Float(search.eye.height)
         var vectors = [Int8](repeating: 0, count: 4 * columns * rows)
+        var diagnostics = Diagnostics()
         for eye in 0..<2 {
             let now = eye == 0 ? current.left : current.right
             let before = eye == 0 ? previous.left : previous.right
             let turn = Rotation(from: now.pose.orientation, to: before.pose.orientation)
             // Residual motion per output cell, render pixels; nil where unknown.
             var cells = [SIMD2<Float>?](repeating: nil, count: columns * rows)
+            var measuredCells = [SIMD2<Float>?](repeating: nil, count: keepCells ? columns * rows : 0)
             for row in 0..<rows {
                 for column in 0..<columns {
                     let p = SIMD2<Float>((Float(column) + 0.5) * Float(cellSize), (Float(row) + 0.5) * Float(cellSize))
@@ -86,10 +116,28 @@ public enum MotionFieldBuilder {
                     let b = by * search.gridWidth + bx
                     guard b >= 0, b < search.gridWidth * search.gridHeight, search.known[b] != 0 else { continue }
                     let measured = SIMD2<Float>(Float(search.vectors[b * 2]) / 4 * sx, Float(search.vectors[b * 2 + 1]) / 4 * sy)
-                    let head = headMotion(at: p, renderEye: renderEye, now: now.fieldOfView, before: before.fieldOfView,
-                                          turn: turn)
-                    cells[row * columns + column] = measured - (head ?? .zero)
+                    // Where the turn puts this cell's content in the previous picture: a cell
+                    // whose content was outside it (coming into view at an edge) has nothing
+                    // there to match, and the search's vector for it is noise.
+                    let turned = headMotion(at: p, renderEye: renderEye, now: now.fieldOfView, before: before.fieldOfView,
+                                            turn: turn)
+                    guard let turned, (0..<Float(renderEye.width)).contains(p.x + turned.x),
+                          (0..<Float(renderEye.height)).contains(p.y + turned.y) else { continue }
+                    // Searched against the previous picture already turned to this
+                    // pose (`previousFromCurrent`): the search's vector is the game's.
+                    let head: SIMD2<Float>? = turnRemoved ? .zero : turned
+                    let residual = measured - (head ?? .zero)
+                    cells[row * columns + column] = residual
+                    diagnostics.cells += 1
+                    diagnostics.measured += length(measured)
+                    diagnostics.head += length(head ?? .zero)
+                    diagnostics.residual += length(residual)
+                    if keepCells { measuredCells[row * columns + column] = measured }
                 }
+            }
+            if keepCells {
+                diagnostics.measuredCells += measuredCells
+                diagnostics.residualCells += cells
             }
             for row in 0..<rows {
                 for column in 0..<columns {
@@ -100,14 +148,25 @@ public enum MotionFieldBuilder {
                         continue
                     }
                     func quantised(_ value: Float) -> Int8 { Int8(min(max((value / scale).rounded(), -127), 127)) }
-                    vectors[at] = quantised(v.x)
-                    vectors[at + 1] = quantised(v.y)
+                    // Under the search's precision (a pixel of its picture): still.
+                    let still = (v.x / sx) * (v.x / sx) + (v.y / sy) * (v.y / sy) < floor * floor
+                    vectors[at] = still ? 0 : quantised(v.x)
+                    vectors[at + 1] = still ? 0 : quantised(v.y)
                 }
             }
         }
-        return MotionField(cellSize: UInt8(min(cellSize, 255)), columns: UInt16(columns), rows: UInt16(rows),
-                           renderSize: renderEye, interval: UInt32(micros), scale: scale, vectors: vectors)
+        if diagnostics.cells > 0 {
+            let n = Double(diagnostics.cells)
+            diagnostics.measured /= n
+            diagnostics.head /= n
+            diagnostics.residual /= n
+        }
+        let field = MotionField(cellSize: UInt8(min(cellSize, 255)), columns: UInt16(columns), rows: UInt16(rows),
+                                renderSize: renderEye, interval: UInt32(micros), scale: scale, vectors: vectors)
+        return (field, diagnostics)
     }
+
+    private static func length(_ v: SIMD2<Float>) -> Double { Double((v.x * v.x + v.y * v.y).squareRoot()) }
 
     /// Where the point at render pixel `p` of this frame's eye was in the
     /// previous frame's, for a still world at infinity, minus `p`: the motion
@@ -143,6 +202,38 @@ public enum MotionFieldBuilder {
         xs.sort()
         ys.sort()
         return SIMD2(xs[xs.count / 2], ys[ys.count / 2])
+    }
+
+    /// The homography that turns the previous picture to this frame's render
+    /// orientation, per eye (left, then right, 9 values each, row-major): from a
+    /// pixel of this frame's `eye`-sized eye to the previous picture's pixel
+    /// showing the same direction (a still world at infinity). Searching the
+    /// frame against the previous picture turned so leaves only the game's
+    /// own motion, and a block the search can't place (flat or repeating
+    /// texture) reads as still, which for the world it is.
+    public static func previousFromCurrent(eye: PixelSize, current: RenderPose, previous: RenderPose) -> [Float] {
+        var out: [Float] = []
+        for e in 0..<2 {
+            let now = e == 0 ? current.left : current.right, before = e == 0 ? previous.left : previous.right
+            let w = Float(eye.width), h = Float(eye.height)
+            let l = tan(now.fieldOfView.angleLeft), r = tan(now.fieldOfView.angleRight)
+            let u = tan(now.fieldOfView.angleUp), d = tan(now.fieldOfView.angleDown)
+            let l0 = tan(before.fieldOfView.angleLeft), r0 = tan(before.fieldOfView.angleRight)
+            let u0 = tan(before.fieldOfView.angleUp), d0 = tan(before.fieldOfView.angleDown)
+            // Pixel to ray in this eye: (l + x (r - l) / w, u - y (u - d) / h, -1).
+            let a: [[Float]] = [[(r - l) / w, 0, l], [0, -(u - d) / h, u], [0, 0, -1]]
+            let turn = Rotation(from: now.pose.orientation, to: before.pose.orientation)
+            let m: [[Float]] = [[turn.m.0.x, turn.m.0.y, turn.m.0.z], [turn.m.1.x, turn.m.1.y, turn.m.1.z],
+                                [turn.m.2.x, turn.m.2.y, turn.m.2.z]]
+            // Ray in the previous eye to its pixel (homogeneous, w = -z).
+            let kx = w / (r0 - l0), ky = h / (u0 - d0)
+            let b: [[Float]] = [[kx, 0, kx * l0], [0, -ky, -ky * u0], [0, 0, -1]]
+            func product(_ x: [[Float]], _ y: [[Float]]) -> [[Float]] {
+                (0..<3).map { i in (0..<3).map { j in (0..<3).reduce(Float(0)) { $0 + x[i][$1] * y[$1][j] } } }
+            }
+            out += product(b, product(m, a)).flatMap { $0 }
+        }
+        return out
     }
 
     /// The rotation taking a direction in one eye's space to the same world

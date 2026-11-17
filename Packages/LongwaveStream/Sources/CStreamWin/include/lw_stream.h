@@ -390,6 +390,20 @@ typedef struct lw_motion_field {
     const uint8_t *known; /* 0: no inter vector (intra, or outside) */
     lw_motion_stats stats;
 } lw_motion_field;
+/* An eye pair turned by a homography per eye (lw_reproject_*), for the motion
+ * search: the previous picture turned to the current render orientation, so a
+ * still world matches itself at zero motion. `matrices`: left then right, each
+ * 3x3 row-major, destination eye pixel (x, y, 1) to source eye pixel
+ * (homogeneous). GPU work only, on the immediate context, queued before a later
+ * lw_motion_estimate of the destination. */
+typedef struct lw_reproject_params {
+    int32_t eye_width, eye_height;
+    float matrices[18];
+} lw_reproject_params;
+typedef struct lw_reproject lw_reproject;
+lw_status lw_reproject_create(lw_device *device, lw_reproject **out);
+lw_status lw_reproject_apply(lw_reproject *reproject, void *source, void *destination, const lw_reproject_params *params);
+void lw_reproject_release(lw_reproject *reproject);
 lw_status lw_motion_create(lw_device *device, const lw_motion_params *params, lw_motion **out);
 lw_status lw_motion_estimate(lw_motion *motion, void *current, void *reference, lw_motion_field *out);
 void lw_motion_release(lw_motion *motion);

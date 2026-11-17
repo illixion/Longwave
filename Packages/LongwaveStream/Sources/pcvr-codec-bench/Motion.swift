@@ -24,6 +24,15 @@ enum MotionProbe {
         var extrapolatedPSNR: Double?
         /// The other sign (a check on the vectors' convention).
         var negatedPSNR: Double?
+        /// The wire field's view: mean motion measured, the head's share of it,
+        /// and what is left (render pixels; the scene's own motion plus error).
+        var measured: Double = 0
+        var head: Double = 0
+        var residual: Double = 0
+        /// Searched against the previous picture turned to this pose: what is left.
+        var turnedResidual: Double = 0
+        /// The sent (cleaned) field searched so: share of known blocks over 1, 2 and 4 pixels.
+        var over: [Double] = [0, 0, 0]
         var malformed: UInt32
         var ctb: UInt32 = 0
         var markers: UInt32 = 0
@@ -40,6 +49,8 @@ enum MotionProbe {
         let previous = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
         let current = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
         let half = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+        let turned = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+        let reproject = try ReprojectPass(device: device)
         var params = lw_motion_params(width: Int32(width), height: Int32(height), preset: UInt32(preset), block: 0)
         var m: OpaquePointer?
         try Pipeline.check(lw_motion_create(device.raw, &params, &m), "lw_motion_create")
@@ -77,6 +88,63 @@ enum MotionProbe {
                 sample.extrapolatedPSNR = scores.extrapolated
                 sample.negatedPSNR = scores.negated
             }
+            // The host's field from it: the head's turn between the two poses removed.
+            let blocks2 = Int(field.grid_width) * Int(field.grid_height)
+            let search = MotionFieldBuilder.Search(
+                gridWidth: Int(field.grid_width), gridHeight: Int(field.grid_height), block: Int(field.block),
+                vectors: Array(UnsafeBufferPointer(start: field.vectors, count: blocks2 * 2)),
+                known: Array(UnsafeBufferPointer(start: field.known, count: blocks2)), eye: eye)
+            if let built = MotionFieldBuilder.build(search: search, renderEye: eye,
+                                                    current: renderPose(at: t1, viewer: viewer),
+                                                    previous: renderPose(at: t1 - period, viewer: viewer)) {
+                sample.measured = built.diagnostics.measured
+                sample.head = built.diagnostics.head
+                sample.residual = built.diagnostics.residual
+            }
+            // Once, at the shake's fastest: measured against the head's share across the left eye, in eight bands.
+            if abs(t1 - viewer.start - 2.02) < period / 2,
+               let built = MotionFieldBuilder.build(search: search, renderEye: eye, current: renderPose(at: t1, viewer: viewer),
+                                                    previous: renderPose(at: t1 - period, viewer: viewer), keepCells: true) {
+                let columns = Int(built.field.columns), rows = Int(built.field.rows)
+                var line = "  across the left eye at t 2.02 s (band: measured x / head x, px):"
+                for band in 0..<8 {
+                    var m = 0.0, h = 0.0, n = 0.0
+                    for row in rows / 4..<(3 * rows / 4) {
+                        for column in (band * columns / 8)..<((band + 1) * columns / 8) {
+                            let cell = row * columns + column
+                            guard let measured = built.diagnostics.measuredCells[cell],
+                                  let residual = built.diagnostics.residualCells[cell] else { continue }
+                            m += Double(measured.x)
+                            h += Double(measured.x - residual.x)
+                            n += 1
+                        }
+                    }
+                    line += String(format: " %.1f/%.1f", m / max(n, 1), h / max(n, 1))
+                }
+                print(line)
+            }
+            // The host's way since 2026-11-17: the previous picture turned to this pose first.
+            let now = renderPose(at: t1, viewer: viewer), before = renderPose(at: t1 - period, viewer: viewer)
+            try reproject.apply(source: previous, destination: turned, eye: (Int(eye.width), Int(eye.height)),
+                                matrices: MotionFieldBuilder.previousFromCurrent(eye: eye, current: now, previous: before))
+            var turnedField = lw_motion_field()
+            try Pipeline.check(lw_motion_estimate(motion, current.raw, turned.raw, &turnedField), "lw_motion_estimate")
+            let turnedSearch = MotionFieldBuilder.Search(
+                gridWidth: Int(turnedField.grid_width), gridHeight: Int(turnedField.grid_height), block: Int(turnedField.block),
+                vectors: Array(UnsafeBufferPointer(start: turnedField.vectors, count: blocks2 * 2)),
+                known: Array(UnsafeBufferPointer(start: turnedField.known, count: blocks2)), eye: eye)
+            if let built = MotionFieldBuilder.build(search: turnedSearch, renderEye: eye, current: now, previous: before,
+                                                    turnRemoved: true) {
+                sample.turnedResidual = built.diagnostics.residual
+                var counts = [0.0, 0.0, 0.0], known = 0.0
+                for i in stride(from: 0, to: built.field.vectors.count, by: 2) where built.field.vectors[i] != MotionField.unknown {
+                    let x = Float(built.field.vectors[i]) * built.field.scale, y = Float(built.field.vectors[i + 1]) * built.field.scale
+                    let length = (x * x + y * y).squareRoot()
+                    known += 1
+                    for (k, limit) in [Float(1), 2, 4].enumerated() where length > limit { counts[k] += 1 }
+                }
+                sample.over = counts.map { $0 / max(known, 1) }
+            }
             samples.append(sample)
             lastStats = field.stats
         }
@@ -101,14 +169,39 @@ enum MotionProbe {
         print(String(format: "half-period frame, left-eye centre: repeat %.2f dB, extrapolated %.2f dB, gain %.2f dB mean "
                      + "(%d of %d scored frames gained); other sign %.2f dB", repeatMean, extrapolatedMean, Stats.mean(gains),
                      gains.filter { $0 > 0 }.count, gains.count, Stats.mean(scored.compactMap(\.negatedPSNR))))
+        let turning = samples.filter { $0.head > 2 }
+        print(String(format: "head compensation over %d frames with the head turning: measured %.2f px, head's share %.2f px, "
+                     + "left %.2f px when subtracted; %.2f px left searching the turned previous picture "
+                     + "(the scene's own motion and the search's error)", turning.count,
+                     Stats.mean(turning.map(\.measured)), Stats.mean(turning.map(\.head)), Stats.mean(turning.map(\.residual)),
+                     Stats.mean(turning.map(\.turnedResidual))))
+        print(String(format: "  sent field, turned first: blocks over 1 px %.1f%%, over 2 px %.1f%%, over 4 px %.1f%% (head turning); "
+                     + "%.1f%% / %.1f%% / %.1f%% over all frames",
+                     Stats.mean(turning.map { $0.over[0] }) * 100, Stats.mean(turning.map { $0.over[1] }) * 100,
+                     Stats.mean(turning.map { $0.over[2] }) * 100, Stats.mean(samples.map { $0.over[0] }) * 100,
+                     Stats.mean(samples.map { $0.over[1] }) * 100, Stats.mean(samples.map { $0.over[2] }) * 100))
+        for sample in turning.prefix(8) {
+            print(String(format: "  t %.2f s: measured %.2f, head %.2f, left %.2f px; turned first, left %.2f px", sample.time,
+                         sample.measured, sample.head, sample.residual, sample.turnedResidual))
+        }
         for sample in scored.prefix(12) {
             print(String(format: "  t %.2f s: ME %.2f ms, |v| %.1f px, repeat %.2f dB, extrapolated %.2f dB", sample.time,
                          sample.estimateMs, sample.meanPixels, sample.repeatPSNR!, sample.extrapolatedPSNR!))
         }
     }
 
+    /// `LW_MOTION_ROTATION_ONLY=1`: the head turns but stays in place, and the
+    /// scene is frozen, so all the motion is the turn's.
+    static let rotationOnly = ProcessInfo.processInfo.environment["LW_MOTION_ROTATION_ONLY"] == "1"
+
+    private static func head(at time: Double, viewer: ViewerSettings) -> HeadSample {
+        var head = viewer.trajectory.sample(at: time)
+        if rotationOnly { head.position = viewer.trajectory.sample(at: viewer.start).position }
+        return head
+    }
+
     private static func draw(_ scene: OpaquePointer, at time: Double, viewer: ViewerSettings, into texture: GraphicsTexture) throws {
-        let head = viewer.trajectory.sample(at: time)
+        let head = head(at: time, viewer: viewer)
         var eyes = [lw_spike_scene_eye(), lw_spike_scene_eye()]
         for e in 0..<2 {
             let offset = head.orientation.rotate([Double(e == 0 ? -viewer.ipd / 2 : viewer.ipd / 2), 0, 0])
@@ -118,11 +211,27 @@ enum MotionProbe {
                                 Float(head.position[2] + offset[2]))
             let t = e == 0 ? viewer.leftTangents : viewer.rightTangents
             eyes[e].angles = (atan(t[0]), atan(t[1]), atan(t[2]), atan(t[3]))
-            eyes[e].time = Float(time)
+            eyes[e].time = Float(rotationOnly ? viewer.start : time)
         }
         try eyes.withUnsafeBufferPointer { buffer in
             try Pipeline.check(lw_spike_scene_draw(scene, texture.raw, nil, buffer.baseAddress, 0, 0), "lw_spike_scene_draw")
         }
+    }
+
+    /// The render pose `draw` uses at `time`, as the wire has it.
+    private static func renderPose(at time: Double, viewer: ViewerSettings) -> RenderPose {
+        let head = head(at: time, viewer: viewer)
+        func eye(_ e: Int) -> EyeView {
+            let offset = head.orientation.rotate([Double(e == 0 ? -viewer.ipd / 2 : viewer.ipd / 2), 0, 0])
+            let o = head.orientation
+            let t = e == 0 ? viewer.leftTangents : viewer.rightTangents
+            return EyeView(pose: Pose(orientation: Quaternion(x: Float(o.x), y: Float(o.y), z: Float(o.z), w: Float(o.w)),
+                                      position: Vector3(Float(head.position[0] + offset[0]), Float(head.position[1] + offset[1]),
+                                                        Float(head.position[2] + offset[2]))),
+                           fieldOfView: FieldOfView(angleLeft: atan(t[0]), angleRight: atan(t[1]), angleUp: atan(t[2]),
+                                                    angleDown: atan(t[3])))
+        }
+        return RenderPose(poseSequence: 0, spaceEpoch: 0, displayTime: UInt64(max(time, 0) * 1e9), left: eye(0), right: eye(1))
     }
 
     private static func read(_ device: GraphicsDevice, _ texture: GraphicsTexture, into pixels: inout [UInt8], width: Int) throws {

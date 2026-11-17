@@ -93,6 +93,10 @@ struct HostOptions {
     /// motion search on a quarter-size copy of each frame against the one
     /// before. Off: the capability isn't offered.
     var motion = true
+    /// Diagnostics (`--motion-probe DIR`): with no viewer, still search every
+    /// frame for motion, log what it measures, and every few seconds write the
+    /// two search pictures and the cells' measured and residual motion to DIR.
+    var motionProbe: String?
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
@@ -270,6 +274,9 @@ final class PCVRHost: @unchecked Sendable {
     // The depth thread's.
     private var motionSearch: MotionSearch?
     private var previousMotion: MotionPicture?
+    /// The previous picture turned to the current one's render orientation.
+    private var motionReproject: ReprojectPass?
+    private var motionTurned: GraphicsTexture?
     private static let depthQueue = 2
     private var lastDepthDump: UInt64 = 0
     private var depthDumpBurst = 0
@@ -362,6 +369,8 @@ final class PCVRHost: @unchecked Sendable {
         var motionMilliseconds = 0.0, motionMillisecondsMax = 0.0
         var motionBytes = 0
         var motionMeanPixels = 0.0
+        /// Sums over fields of the builder's means: measured, the head's share, left over.
+        var motionMeasured = 0.0, motionHead = 0.0, motionResidual = 0.0
     }
 
     private struct FoveationStatistics {
@@ -490,7 +499,10 @@ final class PCVRHost: @unchecked Sendable {
                     watched && confirmed.allSatisfy { $0.capabilities.contains(.separateEyeVideo) },
                     options.motion && confirmed.contains { $0.wantsMotion })
         }
-        guard watched else { return }
+        guard watched else {
+            if options.motionProbe != nil { probeMotion(frame) }
+            return
+        }
 
         var forceKey = requestedKey
         let renderEye = PixelSize(width: UInt16(frame.width / 2), height: UInt16(frame.height))
@@ -873,7 +885,8 @@ final class PCVRHost: @unchecked Sendable {
     /// Depth thread: the motion from the previous searched picture to this
     /// one, as the field the depth frame carries. Nil without a previous
     /// picture of the same size from at most 100 ms before.
-    private func motionField(for picture: MotionPicture) -> (field: MotionField, milliseconds: Double, meanPixels: Double)? {
+    private func motionField(for picture: MotionPicture)
+        -> (field: MotionField, milliseconds: Double, meanPixels: Double, diagnostics: MotionFieldBuilder.Diagnostics)? {
         defer { previousMotion = picture }
         guard let previous = previousMotion, previous.searchEye == picture.searchEye,
               previous.renderEye == picture.renderEye,
@@ -888,25 +901,128 @@ final class PCVRHost: @unchecked Sendable {
                          + "\(PCVRProfile.motionCellSize)-pixel cells on the wire")
             }
             guard let motionSearch else { return nil }
-            let result = try motionSearch.estimate(current: picture.texture, reference: previous.texture)
+            // Against the previous picture turned to this one's orientation: a
+            // still world then matches at zero, flat texture included.
+            if motionReproject == nil { motionReproject = try ReprojectPass(device: device) }
+            if motionTurned?.width != width || motionTurned?.height != height {
+                motionTurned = try GraphicsTexture(device: device, width: width, height: height, format: .bgra8)
+            }
+            guard let motionReproject, let turned = motionTurned else { return nil }
+            try motionReproject.apply(source: previous.texture, destination: turned,
+                                      eye: (Int(picture.searchEye.width), Int(picture.searchEye.height)),
+                                      matrices: MotionFieldBuilder.previousFromCurrent(eye: picture.searchEye,
+                                                                                       current: picture.renderPose,
+                                                                                       previous: previous.renderPose))
+            let result = try motionSearch.estimate(current: picture.texture, reference: turned)
             let search = MotionFieldBuilder.Search(gridWidth: result.gridWidth, gridHeight: result.gridHeight,
                                                    block: result.block, vectors: result.vectors, known: result.known,
                                                    eye: picture.searchEye)
-            guard let field = MotionFieldBuilder.field(search: search, renderEye: picture.renderEye,
-                                                       current: picture.renderPose, previous: previous.renderPose)
+            let dumping = options.motionProbe != nil && Self.now() - lastMotionDump > 3_000_000_000
+            guard let built = MotionFieldBuilder.build(search: search, renderEye: picture.renderEye,
+                                                       current: picture.renderPose, previous: previous.renderPose,
+                                                       keepCells: dumping, turnRemoved: true)
             else { return nil }
+            let field = built.field
+            if dumping, let directory = options.motionProbe {
+                lastMotionDump = Self.now()
+                dumpMotion(to: directory, picture: picture, previous: previous, turned: turned, field: field,
+                           diagnostics: built.diagnostics)
+            }
             var total = 0.0, count = 0
             for i in stride(from: 0, to: field.vectors.count, by: 2) where field.vectors[i] != MotionField.unknown {
                 let x = Double(field.vectors[i]) * Double(field.scale), y = Double(field.vectors[i + 1]) * Double(field.scale)
                 total += (x * x + y * y).squareRoot()
                 count += 1
             }
-            return (field, result.milliseconds, count > 0 ? total / Double(count) : 0)
+            return (field, result.milliseconds, count > 0 ? total / Double(count) : 0, built.diagnostics)
         } catch {
             log.line("motion search failed, off for this run: \(error)")
             motionSearch = nil
             motionUnavailable = true
             return nil
+        }
+    }
+
+    private var lastMotionDump: UInt64 = 0
+    private var motionDumpIndex = 0
+
+    /// `--motion-probe`: the two search pictures (luma PGM) and per cell the
+    /// measured, residual and sent motion (CSV, render pixels).
+    private func dumpMotion(to directory: String, picture: MotionPicture, previous: MotionPicture, turned: GraphicsTexture,
+                            field: MotionField, diagnostics: MotionFieldBuilder.Diagnostics) {
+        motionDumpIndex += 1
+        let tag = String(format: "%@/motion-%03d", directory, motionDumpIndex)
+        do {
+            for (texture, suffix) in [(picture.texture, "current"), (previous.texture, "previous"), (turned, "turned")] {
+                let bgra = try texture.read()
+                var data = Data("P5\n\(texture.width) \(texture.height)\n255\n".utf8)
+                var luma = [UInt8](repeating: 0, count: bgra.count / 4)
+                for i in 0..<luma.count {
+                    let blue = Double(bgra[i * 4]), green = Double(bgra[i * 4 + 1]), red = Double(bgra[i * 4 + 2])
+                    let value: Double = 0.0722 * blue + 0.7152 * green + 0.2126 * red
+                    luma[i] = UInt8(min(255, value.rounded()))
+                }
+                data.append(contentsOf: luma)
+                FileManager.default.createFile(atPath: "\(tag)-\(suffix).pgm", contents: data)
+            }
+            let columns = Int(field.columns), rows = Int(field.rows)
+            var csv = "eye,row,column,measured_x,measured_y,residual_x,residual_y,sent_x,sent_y\n"
+            for eye in 0..<2 {
+                for row in 0..<rows {
+                    for column in 0..<columns {
+                        let cell = eye * columns * rows + row * columns + column
+                        let m = cell < diagnostics.measuredCells.count ? diagnostics.measuredCells[cell] : nil
+                        let r = cell < diagnostics.residualCells.count ? diagnostics.residualCells[cell] : nil
+                        let sx = field.vectors[cell * 2], sy = field.vectors[cell * 2 + 1]
+                        func f(_ v: Float?) -> String { v.map { String(format: "%.2f", $0) } ?? "" }
+                        csv += "\(eye),\(row),\(column),\(f(m?.x)),\(f(m?.y)),\(f(r?.x)),\(f(r?.y)),"
+                            + (sx == MotionField.unknown ? "," : "\(Float(sx) * field.scale),\(Float(sy) * field.scale)") + "\n"
+                    }
+                }
+            }
+            let l = picture.renderPose.left, pl = previous.renderPose.left
+            csv += String(format: "# interval %u us; left orientation now %.5f %.5f %.5f %.5f, before %.5f %.5f %.5f %.5f\n",
+                          field.interval, l.pose.orientation.x, l.pose.orientation.y, l.pose.orientation.z, l.pose.orientation.w,
+                          pl.pose.orientation.x, pl.pose.orientation.y, pl.pose.orientation.z, pl.pose.orientation.w)
+            FileManager.default.createFile(atPath: "\(tag)-cells.csv", contents: Data(csv.utf8))
+        } catch {
+            log.line("motion dump failed: \(error)")
+        }
+    }
+
+    /// No viewer, `--motion-probe`: the frame searched against the last one
+    /// as if a viewer wanted motion, for the statistics and the dumps.
+    private func probeMotion(_ frame: CapturedFrame) {
+        guard let bytes = frame.external?.sideData, !bytes.isEmpty else { return }
+        var reader = WireReader(bytes)
+        guard let decoded = try? SideData(items: &reader), let renderPose = decoded.renderPose else { return }
+        let renderEye = PixelSize(width: UInt16(frame.width / 2), height: UInt16(frame.height))
+        do {
+            guard let picture = try prepareMotion(frame, renderPose: renderPose, renderEye: renderEye) else { return }
+            let motion = motionField(for: picture)
+            lock.withLock {
+                if depthStats.size == nil { depthStats.size = "(motion probe, no viewer)" }
+                record(motion, wanted: true)
+            }
+        } catch {
+            log.line("motion probe failed: \(error)")
+        }
+    }
+
+    /// Under `lock`: one depth frame's motion into the statistics.
+    private func record(_ motion: (field: MotionField, milliseconds: Double, meanPixels: Double,
+                                   diagnostics: MotionFieldBuilder.Diagnostics)?, wanted: Bool) {
+        if let motion {
+            depthStats.motionFields += 1
+            depthStats.motionMilliseconds += motion.milliseconds
+            depthStats.motionMillisecondsMax = max(depthStats.motionMillisecondsMax, motion.milliseconds)
+            depthStats.motionBytes += motion.field.wireSize
+            depthStats.motionMeanPixels += motion.meanPixels
+            depthStats.motionMeasured += motion.diagnostics.measured
+            depthStats.motionHead += motion.diagnostics.head
+            depthStats.motionResidual += motion.diagnostics.residual
+        } else if wanted {
+            depthStats.motionSkipped += 1
         }
     }
 
@@ -1011,7 +1127,7 @@ final class PCVRHost: @unchecked Sendable {
         }
         let sideData = SideData(depthRange: .planes(near: job.near, far: .infinity, convergence: 0))
         var motionSideData = sideData
-        var motion: (field: MotionField, milliseconds: Double, meanPixels: Double)?
+        var motion: (field: MotionField, milliseconds: Double, meanPixels: Double, diagnostics: MotionFieldBuilder.Diagnostics)?
         if let picture = job.motion {
             motion = motionField(for: picture)
             motionSideData.motionField = motion?.field
@@ -1027,15 +1143,7 @@ final class PCVRHost: @unchecked Sendable {
             depthStats.gpuMilliseconds = job.gpuMilliseconds
             depthStats.size = "\(job.eye.width)x\(job.eye.height) per eye"
             depthStats.near = job.near
-            if let motion {
-                depthStats.motionFields += 1
-                depthStats.motionMilliseconds += motion.milliseconds
-                depthStats.motionMillisecondsMax = max(depthStats.motionMillisecondsMax, motion.milliseconds)
-                depthStats.motionBytes += motion.field.wireSize
-                depthStats.motionMeanPixels += motion.meanPixels
-            } else if job.motion != nil {
-                depthStats.motionSkipped += 1
-            }
+            record(motion, wanted: job.motion != nil)
             if let newFormat {
                 depthFormat = newFormat
                 for viewer in viewers.values where viewer.confirmed && viewer.depthSender != nil { sendDepthFormat(to: viewer) }
@@ -1777,10 +1885,12 @@ final class PCVRHost: @unchecked Sendable {
             if d.dropped > 0 { line += ", \(d.dropped) dropped behind the encoder" }
             line += String(format: ", near %.3f m", d.near)
             if d.motionFields + d.motionSkipped > 0 {
-                line += String(format: "; motion %d fields (%d without), search %.2f ms avg %.2f max, %.1f Mbps, game motion %.1f px avg",
-                               d.motionFields, d.motionSkipped,
-                               d.motionMilliseconds / Double(max(d.motionFields, 1)), d.motionMillisecondsMax,
-                               Double(d.motionBytes) * 8 / seconds / 1e6, d.motionMeanPixels / Double(max(d.motionFields, 1)))
+                let n = Double(max(d.motionFields, 1))
+                line += String(format: "; motion %d fields (%d without), search %.2f ms avg %.2f max, %.1f Mbps, game motion %.1f px avg "
+                               + "(measured %.1f, head %.1f, left %.1f)",
+                               d.motionFields, d.motionSkipped, d.motionMilliseconds / n, d.motionMillisecondsMax,
+                               Double(d.motionBytes) * 8 / seconds / 1e6, d.motionMeanPixels / n,
+                               d.motionMeasured / n, d.motionHead / n, d.motionResidual / n)
             }
             log.line(line)
             depthStats = DepthStatistics(size: size)

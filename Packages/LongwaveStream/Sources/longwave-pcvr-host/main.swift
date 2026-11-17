@@ -140,6 +140,8 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 print("--motion takes on or off: the game's motion on depth frames, for a headset that extrapolates by it")
                 exit(2)
             }
+        case "--motion-probe":
+            options.motionProbe = value(argument)
         case "--depth-qp":
             guard let qp = Int(value(argument)), (0...51).contains(qp) else {
                 print("--depth-qp takes 0 (CBR at --depth-mbps) or a constant QP 1-51")

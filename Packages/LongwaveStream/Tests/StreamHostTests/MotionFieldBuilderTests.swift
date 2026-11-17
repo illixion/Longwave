@@ -68,10 +68,16 @@ final class MotionFieldBuilderTests: XCTestCase {
             XCTAssertEqual(field.cellSize, 32)
             XCTAssertEqual(field.interval, 22_222)
             XCTAssertEqual(field.vectors.count, 4 * 80 * 64)
-            for i in stride(from: 0, to: field.vectors.count, by: 2) {
-                XCTAssertEqual(Float(field.vectors[i]), game.x, accuracy: 1, "block \(i / 2) x")
-                XCTAssertEqual(Float(field.vectors[i + 1]), game.y, accuracy: 1, "block \(i / 2) y")
+            var known = 0
+            for i in stride(from: 0, to: field.vectors.count, by: 2) where field.vectors[i] != MotionField.unknown {
+                // Under the noise floor (a search pixel, about 4 render pixels here) a block is still.
+                XCTAssertEqual(Float(field.vectors[i]), game == .zero ? 0 : game.x, accuracy: 1, "block \(i / 2) x")
+                XCTAssertEqual(Float(field.vectors[i + 1]), game == .zero ? 0 : game.y, accuracy: 1, "block \(i / 2) y")
+                known += 1
             }
+            // The column the turn brought into view has nothing to compare with.
+            XCTAssertGreaterThan(known, field.vectors.count / 2 * 95 / 100)
+            XCTAssertLessThan(known, field.vectors.count / 2)
         }
     }
 
@@ -89,4 +95,27 @@ final class MotionFieldBuilderTests: XCTestCase {
         XCTAssertEqual(field.vectors[cell], 4)
         XCTAssertNil(MotionFieldBuilder.field(search: s, renderEye: renderEye, current: previous, previous: current))
     }
+
+    /// The homography that turns the previous picture to this pose sends each
+    /// pixel where the turn's own motion says it was.
+    func testThePreviousPictureIsTurnedAsTheHeadMotionSays() throws {
+        let eye = PixelSize(width: 640, height: 512)
+        let current = pose(yaw: 0.04, displayTime: 2), previous = pose(yaw: 0, displayTime: 1)
+        var pitched = current
+        let q = Quaternion(x: sin(0.015), y: sin(0.02), z: 0, w: (1 - sin(0.015) * sin(0.015) - sin(0.02) * sin(0.02)).squareRoot())
+        pitched.left.pose.orientation = q
+        pitched.right.pose.orientation = q
+        for now in [current, pitched] {
+            let h = MotionFieldBuilder.previousFromCurrent(eye: eye, current: now, previous: previous)
+            XCTAssertEqual(h.count, 18)
+            let turn = MotionFieldBuilder.Rotation(from: now.left.pose.orientation, to: previous.left.pose.orientation)
+            for p in [SIMD2<Float>(20, 30), SIMD2<Float>(320, 256), SIMD2<Float>(600, 480)] {
+                let x = h[0] * p.x + h[1] * p.y + h[2], y = h[3] * p.x + h[4] * p.y + h[5], w = h[6] * p.x + h[7] * p.y + h[8]
+                let v = try XCTUnwrap(MotionFieldBuilder.headMotion(at: p, renderEye: eye, now: fov, before: fov, turn: turn))
+                XCTAssertEqual(x / w - p.x, v.x, accuracy: 0.01)
+                XCTAssertEqual(y / w - p.y, v.y, accuracy: 0.01)
+            }
+        }
+    }
 }
+

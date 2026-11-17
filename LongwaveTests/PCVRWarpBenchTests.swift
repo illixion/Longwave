@@ -84,8 +84,10 @@ final class PCVRWarpBenchTests: XCTestCase {
                                fieldOfView: right.expanded(by: grow)))
     }
 
-    func render(_ eyes: PCVRStereo<PCVREyeView>, readDepth: Bool = true) throws -> Rendered {
-        let w = Self.width, h = Self.height
+    func render(_ eyes: PCVRStereo<PCVREyeView>, readDepth: Bool = true,
+                handX: Float = .infinity, passerbyX: Float = .infinity, passerbyZ: Float = -2.65,
+                resolutionDivisor: Int = 1) throws -> Rendered {
+        let w = Self.width / resolutionDivisor, h = Self.height / resolutionDivisor
         let colourDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 2 * w, height: h,
                                                                         mipmapped: false)
         colourDescriptor.usage = [.shaderRead, .shaderWrite]
@@ -107,6 +109,8 @@ final class PCVRWarpBenchTests: XCTestCase {
         encoder.setTexture(colour, index: 0)
         encoder.setTexture(depth, index: 1)
         encoder.setBytes(&uniforms, length: MemoryLayout<EyeUniforms>.stride * 2, index: 0)
+        var subjects = SIMD4(handX, passerbyX, passerbyZ, 0)
+        encoder.setBytes(&subjects, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
         encoder.dispatchThreads(MTLSize(width: 2 * w, height: h, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding()
         commandBuffer.commit()
@@ -199,6 +203,116 @@ final class PCVRWarpBenchTests: XCTestCase {
         }
         lastOutside = (outside, outsideCount)
         return (seen, seenCount, hidden, hiddenCount)
+    }
+
+    /// A sparse background cache prototype. Keep one posed colour/depth
+    /// keyframe in addition to the four recent frames. The production
+    /// planner still picks only two fill views per eye.
+    func testOlderBackgroundKeyframe() throws {
+        let renderEyes = Self.eyes(head: Self.head)
+        let handX = Self.head.position.x - 0.19
+        let source = try render(renderEyes, readDepth: false, handX: handX)
+        let sourceDepth = try hostDepthGPU(source, divisor: 4)
+        func fill(_ rendered: Rendered, depth: PCVRDepthMap, eyes: PCVRStereo<PCVREyeView>, time: TimeInterval)
+            -> PCVRDepthWarper.FillSource {
+            let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: UInt32(100 + Int(45 * time)),
+                texture: rendered.colour,
+                renderPose: PCVRRenderPose(poseSequence: 0, spaceEpoch: 0, displayTime: time, eyes: eyes),
+                arrivalTime: time)
+            return .init(frame: frame, depth: depth)
+        }
+        let current = fill(source, depth: sourceDepth, eyes: renderEyes, time: 0)
+        // The hand has been up throughout the last four frames. The small
+        // lean is away from the other eye, which shares the obstruction.
+        let recent = (1...PCVRDepthWarper.fillFrames).map {
+            fill(source, depth: sourceDepth, eyes: renderEyes, time: -Double($0) / 45)
+        }
+        var targetHead = Self.head
+        targetHead.position.x -= 0.027
+        let targetEyes = Self.eyes(head: targetHead)
+        let truth = try render(targetEyes, readDepth: false, handX: handX)
+        let handRegion = PCVRFieldOfView(tangentLeft: -0.65, tangentRight: -0.48,
+                                        tangentUp: 0.27, tangentDown: -0.27)
+        let warper = try PCVRDepthWarper(device: device)
+        var targets: [PCVRReceiverTarget] = []
+        for eye in 0..<2 {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
+                width: Self.width, height: Self.height, mipmapped: false)
+            descriptor.storageMode = .shared
+            descriptor.usage = [.renderTarget, .shaderRead]
+            targets.append(PCVRReceiverTarget(eye: eye,
+                colorTexture: try XCTUnwrap(device.makeTexture(descriptor: descriptor)),
+                depthTexture: nil, depthClearValue: 0,
+                viewport: MTLViewport(originX: 0, originY: 0, width: Double(Self.width),
+                                      height: Double(Self.height), znear: 0, zfar: 1),
+                display: targetEyes[eye], displayProjection: matrix_identity_float4x4))
+        }
+
+        func measure(_ name: String, fills: [PCVRDepthWarper.FillSource],
+                     minimumDepthRatio: Float = 0.8) throws -> String {
+            warper.fillNearest = minimumDepthRatio
+            var times: [Double] = []
+            for pass in 0..<7 {
+                let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+                try warper.encode(frame: current.frame, depth: current.depth, views: targets,
+                    planeDistance: 50, fills: fills, commandBuffer: buffer)
+                buffer.commit()
+                buffer.waitUntilCompleted()
+                XCTAssertEqual(buffer.status, .completed, String(describing: buffer.error))
+                if pass >= 2 { times.append(1000 * (buffer.gpuEndTime - buffer.gpuStartTime)) }
+            }
+            let result = try scoreGPU(warped: targets[0].colorTexture, truth: truth, truthEye: targetEyes.left,
+                                     source: source, sourceEye: renderEyes.left, display: handRegion)
+            XCTAssertGreaterThan(result.hiddenCount, 0)
+            let plan = PCVRDepthWarper.fillPlan(frame: current.frame, targets: targetEyes.map(\.pose),
+                                               fills: fills, otherEye: true)
+            let chosen = plan[0].map { view in
+                view.fill.map { String(format: "%.0f ms old", -1000 * fills[$0].frame.displayTime) } ?? "other eye"
+            }.joined(separator: ", ")
+            return String(format: "%@ | %d | %.5f | %.5f | %.3f | %@", name, result.hiddenCount,
+                          result.hidden / Double(result.hiddenCount), result.seen / Double(max(result.seenCount, 1)),
+                          times.sorted()[times.count / 2], chosen)
+        }
+
+        var report = ["source | uncovered pixels | uncovered RGB error | visible RGB error | simulator GPU ms | left fill views"]
+        report.append(try measure("last four", fills: recent))
+        let background = try render(targetEyes, readDepth: false)
+        let backgroundDepth = try hostDepthGPU(background, divisor: 4)
+        for age in [0.25, 0.8, 1.4, 2.0] {
+            let cached = fill(background, depth: backgroundDepth, eyes: targetEyes, time: -age)
+            report.append(try measure("empty background at \(age) s", fills: recent + [cached]))
+        }
+        for divisor in [2, 4] {
+            let smaller = try render(targetEyes, readDepth: false, resolutionDivisor: divisor)
+            let cached = fill(smaller, depth: backgroundDepth, eyes: targetEyes, time: -0.8)
+            report.append(try measure("empty background at 0.8 s, 1/\(divisor) colour dimensions", fills: recent + [cached]))
+        }
+        let clean = fill(background, depth: backgroundDepth, eyes: targetEyes, time: -0.8)
+        report.append(try measure("empty background at 0.8 s, 0.94 depth ratio",
+                                  fills: recent + [clean], minimumDepthRatio: 0.94))
+        var archiveHead = targetHead
+        archiveHead.position += [-0.012, 0.015, 0]
+        archiveHead.rotation = simd_quatf(angle: -2 * .pi / 180, axis: [0, 1, 0]) * targetHead.rotation
+        let archiveEyes = Self.eyes(head: archiveHead)
+        let shifted = try render(archiveEyes, readDepth: false)
+        let shiftedDepth = try hostDepthGPU(shifted, divisor: 4)
+        let cachedShifted = fill(shifted, depth: shiftedDepth, eyes: archiveEyes, time: -0.8)
+        report.append(try measure("empty background at 0.8 s, different pose", fills: recent + [cachedShifted]))
+        // The old view saw a passer-by whose depth is close to the wall.
+        // Try both an object that the tighter band distinguishes and one
+        // nearly flush with the wall, where depth alone cannot separate it.
+        for z: Float in [-2.65, -2.95] {
+            let snapshot = try render(targetEyes, readDepth: false, passerbyX: -1.60, passerbyZ: z)
+            let depth = try hostDepthGPU(snapshot, divisor: 4)
+            let cached = fill(snapshot, depth: depth, eyes: targetEyes, time: -0.8)
+            for ratio: Float in [0.8, 0.94] {
+                let name = String(format: "old passerby at z=%.2f, %.2f depth ratio", z, ratio)
+                report.append(try measure(name, fills: recent + [cached], minimumDepthRatio: ratio))
+            }
+        }
+        let text = report.joined(separator: "\n")
+        print(text)
+        try text.write(to: directory.appendingPathComponent("background-keyframe.txt"), atomically: true, encoding: .utf8)
     }
 
     // MARK: A recorded head motion
@@ -810,7 +924,7 @@ final class PCVRWarpBenchTests: XCTestCase {
 
     static float hash(float n) { return fract(sin(n) * 43758.5453); }
 
-    static Hit scene(float3 o, float3 d) {
+    static Hit scene(float3 o, float3 d, float4 subjects) {
         Hit best = {1e30, float3(0.42, 0.58, 0.9)};
         // Floor, y = 0: 0.5 m checks.
         if (d.y < 0) {
@@ -873,12 +987,24 @@ final class PCVRWarpBenchTests: XCTestCase {
                 if (t > 0 && t < best.t && p.y > 0 && p.y < 2.0) best = {t, float3(0.85, 0.2, 0.15)};
             }
         }
+        if (d.z < 0) {
+            // Optional subjects for the background-cache bench.
+            float t = (subjects.z - o.z) / d.z;
+            float3 p = o + t * d;
+            if (t > 0 && t < best.t && abs(p.x - subjects.y) < 0.28 && abs(p.y - 1.45) < 0.7)
+                best = {t, float3(0.85, 0.09, 0.12)};
+            t = (-0.05 - o.z) / d.z;
+            p = o + t * d;
+            if (t > 0 && t < best.t && abs(p.x - subjects.x) < 0.1 && abs(p.y - 1.45) < 0.1)
+                best = {t, float3(0.26, 0.11, 0.06)};
+        }
         return best;
     }
 
     kernel void benchRender(texture2d<float, access::write> colour [[texture(0)]],
                             texture2d<float, access::write> depth [[texture(1)]],
                             constant EyeUniforms *eyes [[buffer(0)]],
+                            constant float4 &subjects [[buffer(1)]],
                             uint2 gid [[thread_position_in_grid]]) {
         uint eye = gid.x >= eyes[1].origin ? 1 : 0;
         constant EyeUniforms &u = eyes[eye];
@@ -892,14 +1018,14 @@ final class PCVRWarpBenchTests: XCTestCase {
             for (uint sx = 0; sx < n; sx++) {
                 float2 uv = (float2(local) + (float2(sx, sy) + 0.5) / float(n)) / float2(u.size);
                 float3 e = float3(u.tangents.x + uv.x * (u.tangents.y - u.tangents.x), u.tangents.z - uv.y * (u.tangents.z - u.tangents.w), -1);
-                sum += scene(o, normalize(r * e)).colour;
+                sum += scene(o, normalize(r * e), subjects).colour;
             }
         }
         colour.write(float4(sum / float(n * n), 1), gid);
         // Depth at the pixel centre, as a depth buffer has it: distance along -z.
         float2 uv = (float2(local) + 0.5) / float2(u.size);
         float3 e = float3(u.tangents.x + uv.x * (u.tangents.y - u.tangents.x), u.tangents.z - uv.y * (u.tangents.z - u.tangents.w), -1);
-        Hit h = scene(o, normalize(r * e));
+        Hit h = scene(o, normalize(r * e), subjects);
         float z = h.t < 1e29 ? h.t / length(e) : 0;
         depth.write(float4(z, 0, 0, 0), gid);
     }

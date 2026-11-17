@@ -779,6 +779,28 @@ public final class MotionSearch: @unchecked Sendable {
     }
 }
 
+/// The head-locked HUD marked in a depth picture's chroma (`lw_hud_mark_*`),
+/// from the frame's alpha where its producer marked it.
+public final class HudMarkPass: @unchecked Sendable {
+    private let raw: OpaquePointer
+
+    public init(device: GraphicsDevice) throws {
+        var m: OpaquePointer?
+        try check(lw_hud_mark_create(device.raw, &m), "lw_hud_mark_create")
+        raw = m!
+    }
+
+    deinit { lw_hud_mark_release(raw) }
+
+    /// GPU work only.
+    public func apply(depth: GraphicsTexture, colour: CapturedFrame, destination: GraphicsTexture,
+                      depthEye: (width: Int, height: Int), colourEye: (width: Int, height: Int)) throws {
+        var params = lw_hud_mark_params(depth_eye_width: Int32(depthEye.width), depth_eye_height: Int32(depthEye.height),
+                                        colour_eye_width: Int32(colourEye.width), colour_eye_height: Int32(colourEye.height))
+        try check(lw_hud_mark_apply(raw, depth.raw, colour.texture, destination.raw, &params), "lw_hud_mark_apply")
+    }
+}
+
 /// An eye pair turned from one pose to another (`lw_reproject_*`): the motion
 /// search's previous picture turned to the current render orientation.
 public final class ReprojectPass: @unchecked Sendable {

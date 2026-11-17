@@ -162,6 +162,10 @@ nonisolated struct PCVRDepthMap: @unchecked Sendable {
     /// limited-range luma has its 16...235 stretched back to 0...1.
     var valueScale: Float = 1
     var valueOffset: Float = 0
+    /// The depth picture's chroma (`rg8Unorm`, half its size): Cb away from
+    /// grey marks the head-locked HUD (NATIVE_V3_PROTOCOL.md §4.8), which the
+    /// warp shows where the head is now instead of reprojecting it with the world.
+    var hud: (any MTLTexture)?
 
     /// The kernel's `depthDecode`: value scale and offset, 1/far, 1/near - 1/far.
     var decode: SIMD4<Float> {

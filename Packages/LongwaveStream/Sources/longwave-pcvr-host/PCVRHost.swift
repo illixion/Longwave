@@ -97,6 +97,10 @@ struct HostOptions {
     /// frame for motion, log what it measures, and every few seconds write the
     /// two search pictures and the cells' measured and residual motion to DIR.
     var motionProbe: String?
+    /// Mark the head-locked HUD in the depth picture's chroma where the producer
+    /// marked it in alpha (side data hudMark), for the headset to show it
+    /// head-locked instead of reprojecting it with the world.
+    var hudMask = true
     /// The largest eye picture to encode (nil: no cap). A bigger one, warped or
     /// not, is scaled down uniformly to fit, keeping its aspect.
     var maxWireEye: PixelSize?
@@ -277,6 +281,10 @@ final class PCVRHost: @unchecked Sendable {
     /// The previous picture turned to the current one's render orientation.
     private var motionReproject: ReprojectPass?
     private var motionTurned: GraphicsTexture?
+    private var hudMarkPass: HudMarkPass?
+    private var hudMarkUnavailable = false
+    /// The depth pass's output on a marked frame, before the mark pass copies it into the job's texture.
+    private var depthUnmarked: GraphicsTexture?
     private static let depthQueue = 2
     private var lastDepthDump: UInt64 = 0
     private var depthDumpBurst = 0
@@ -371,6 +379,8 @@ final class PCVRHost: @unchecked Sendable {
         var motionMeanPixels = 0.0
         /// Sums over fields of the builder's means: measured, the head's share, left over.
         var motionMeasured = 0.0, motionHead = 0.0, motionResidual = 0.0
+        /// Frames whose head-locked HUD was marked in the chroma.
+        var hudMarked = 0
     }
 
     private struct FoveationStatistics {
@@ -594,10 +604,13 @@ final class PCVRHost: @unchecked Sendable {
             return
         }
 
+        // Producer to host only: the frame's alpha holds the head-locked HUD.
+        let hudMarked = sideData.hudMark
+        sideData.hudMark = false
         var depthJob: DepthJob?
         if depthWanted, let renderPose = sideData.renderPose {
             do {
-                depthJob = try prepareDepth(frame, renderPose: renderPose, renderEye: renderEye)
+                depthJob = try prepareDepth(frame, renderPose: renderPose, renderEye: renderEye, hudMarked: hudMarked)
             } catch {
                 log.line("depth failed: \(error)")
             }
@@ -785,7 +798,8 @@ final class PCVRHost: @unchecked Sendable {
     /// The frame's depth into the next of the depth textures: queued on the GPU
     /// ahead of the colour encode, whose completion then covers it, so the
     /// frame's ring slot is free of it by the time `frame` is released.
-    private func prepareDepth(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize) throws -> DepthJob? {
+    private func prepareDepth(_ frame: CapturedFrame, renderPose: RenderPose, renderEye: PixelSize,
+                              hudMarked: Bool = false) throws -> DepthJob? {
         guard !depthUnavailable else { return nil }
         if depthPass == nil {
             do {
@@ -804,8 +818,24 @@ final class PCVRHost: @unchecked Sendable {
                 try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height), format: .bgra8)
             }
         }
-        let texture = depthTextures[nextDepthTexture]
+        let job = depthTextures[nextDepthTexture]
         nextDepthTexture = (nextDepthTexture + 1) % depthTextures.count
+        // A marked frame's depth goes through the mark pass on its way to the job's texture.
+        var marking = hudMarked && options.hudMask && !hudMarkUnavailable
+        if marking, hudMarkPass == nil {
+            do {
+                hudMarkPass = try HudMarkPass(device: device)
+                log.line("HUD mark: head-locked quads marked in the depth picture's chroma")
+            } catch {
+                hudMarkUnavailable = true
+                marking = false
+                log.line("HUD mark unavailable: \(error)")
+            }
+        }
+        if marking, depthUnmarked?.width != Int(picture.width) || depthUnmarked?.height != Int(picture.height) {
+            depthUnmarked = try GraphicsTexture(device: device, width: Int(picture.width), height: Int(picture.height), format: .bgra8)
+        }
+        let texture = marking ? depthUnmarked! : job
 
         func tangents(_ fov: FieldOfView) -> SIMD4<Float> {
             SIMD4(Float(tan(Double(fov.angleLeft))), Float(tan(Double(fov.angleRight))),
@@ -839,6 +869,12 @@ final class PCVRHost: @unchecked Sendable {
                                 sourceEye: (Int(renderEye.width), Int(renderEye.height)), destination: texture,
                                 depthEye: (Int(eye.width), Int(eye.height)), tangents: frusta, near: near)
         }
+        if marking, let hudMarkPass {
+            try hudMarkPass.apply(depth: texture, colour: frame, destination: job,
+                                  depthEye: (Int(eye.width), Int(eye.height)),
+                                  colourEye: (Int(renderEye.width), Int(renderEye.height)))
+            lock.withLock { depthStats.hudMarked += 1 }
+        }
         if let directory = options.depthDump, !fromGame {
             let l = renderPose.left.pose.position, r = renderPose.right.pose.position
             let note = String(format: "left tangents %.4f %.4f %.4f %.4f at %.4f %.4f %.4f\nright tangents %.4f %.4f %.4f %.4f at %.4f %.4f %.4f\nnear %.4f max disparity %d\n",
@@ -847,7 +883,7 @@ final class PCVRHost: @unchecked Sendable {
                               near, maxDisparity)
             dumpDepth(to: directory, texture: texture, maxDisparity: maxDisparity, note: note)
         }
-        return DepthJob(texture: texture, picture: picture, eye: eye, near: near, fromGame: fromGame,
+        return DepthJob(texture: job, picture: picture, eye: eye, near: near, fromGame: fromGame,
                         sequence: frame.sequence, captureTime: 0, numbers: [:], gpuMilliseconds: depthPass.gpuMilliseconds)
     }
 
@@ -964,6 +1000,12 @@ final class PCVRHost: @unchecked Sendable {
                 }
                 data.append(contentsOf: luma)
                 FileManager.default.createFile(atPath: "\(tag)-\(suffix).pgm", contents: data)
+                if suffix == "current" {
+                    // Alpha: 1 - the head-locked HUD's coverage where the producer marks it.
+                    var alpha = Data("P5\n\(texture.width) \(texture.height)\n255\n".utf8)
+                    alpha.append(contentsOf: (0..<luma.count).map { bgra[$0 * 4 + 3] })
+                    FileManager.default.createFile(atPath: "\(tag)-alpha.pgm", contents: alpha)
+                }
             }
             let columns = Int(field.columns), rows = Int(field.rows)
             var csv = "eye,row,column,measured_x,measured_y,residual_x,residual_y,sent_x,sent_y\n"
@@ -1884,6 +1926,7 @@ final class PCVRHost: @unchecked Sendable {
             if let gpu = d.gpuMilliseconds { line += String(format: ", GPU %.2f ms", gpu) }
             if d.dropped > 0 { line += ", \(d.dropped) dropped behind the encoder" }
             line += String(format: ", near %.3f m", d.near)
+            if d.hudMarked > 0 { line += ", HUD marked in \(d.hudMarked)" }
             if d.motionFields + d.motionSkipped > 0 {
                 let n = Double(max(d.motionFields, 1))
                 line += String(format: "; motion %d fields (%d without), search %.2f ms avg %.2f max, %.1f Mbps, game motion %.1f px avg "

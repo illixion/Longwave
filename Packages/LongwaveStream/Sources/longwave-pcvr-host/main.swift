@@ -140,6 +140,14 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 print("--motion takes on or off: the game's motion on depth frames, for a headset that extrapolates by it")
                 exit(2)
             }
+        case "--hud-mask":
+            switch value(argument) {
+            case "on": options.hudMask = true
+            case "off": options.hudMask = false
+            default:
+                print("--hud-mask takes on or off: mark the head-locked HUD in the depth picture for the headset")
+                exit(2)
+            }
         case "--motion-probe":
             options.motionProbe = value(argument)
         case "--depth-qp":

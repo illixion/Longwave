@@ -752,5 +752,93 @@ final class PCVRDepthWarpTests: XCTestCase {
         // A full interval later it is capped there, not carried past the next frame's time.
         XCTAssertEqual(PCVRMotionShift.forDisplay(map: map, sinceFirstShown: 0.05)?.amount, 1)
     }
+
+    /// A pixel the host marked as head-locked HUD (the depth picture's Cb off
+    /// grey) is shown where the head is now: the display pixel reads the frame
+    /// at its own UV, not reprojected through the head's turn like the rest.
+    func testTheMarkedHudStaysWithTheHeadWhileTheWorldIsReprojected() throws {
+        let frame = try gradientFrame(foveation: nil, pose: .identity)
+        var depth = try depthMap { _, _ in 2 }
+        // The chroma at half the depth picture: Cb 0.75 over the left eye's left half, grey elsewhere.
+        let chromaWidth = Self.depthWidth, chromaHeight = Self.depthHeight / 2 // both eyes: 2 x depthWidth / 2
+        let hud = try texture(.rg8Unorm, width: chromaWidth, height: chromaHeight)
+        var cbcr = [UInt8](repeating: 128, count: chromaWidth * chromaHeight * 2)
+        for y in 0..<chromaHeight {
+            for x in 0..<(chromaWidth / 4) { cbcr[(y * chromaWidth + x) * 2] = 191 }
+        }
+        cbcr.withUnsafeBytes {
+            hud.replace(region: MTLRegionMake2D(0, 0, chromaWidth, chromaHeight), mipmapLevel: 0, withBytes: $0.baseAddress!,
+                        bytesPerRow: chromaWidth * 2)
+        }
+        depth.hud = hud
+        let turn = PCVRPose(rotation: simd_quatf(angle: 0.05, axis: [0, 1, 0]), position: .zero)
+        let near: Float = 0.1
+        let projection = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, -1), SIMD4(0, 0, near, 0)))
+        let width = Self.eyeWidth, height = Self.eyeHeight
+        var colours: [any MTLTexture] = [], targets: [PCVRReceiverTarget] = []
+        for eye in 0..<2 {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height,
+                                                                      mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            let colour = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+            colours.append(colour)
+            targets.append(PCVRReceiverTarget(
+                eye: eye, colorTexture: colour, depthTexture: nil, depthClearValue: 0,
+                viewport: MTLViewport(originX: 0, originY: 0, width: Double(width), height: Double(height), znear: 0, zfar: 1),
+                display: PCVREyeView(pose: frame.renderPose.eyes[eye].pose * turn, fieldOfView: Self.fov),
+                displayProjection: projection))
+        }
+        let warper = try PCVRDepthWarper(device: device)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        try warper.encode(frame: frame, depth: depth, views: targets, planeDistance: 2, commandBuffer: commandBuffer)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        XCTAssertEqual(commandBuffer.status, .completed, String(describing: commandBuffer.error))
+        for eye in 0..<2 {
+            var pixels = [Float16](repeating: 0, count: width * height * 4)
+            pixels.withUnsafeMutableBytes {
+                colours[eye].getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height),
+                                      mipmapLevel: 0)
+            }
+            let h = PCVRReprojection.sourceFromDisplay(render: frame.renderPose.eyes[eye], display: targets[eye].display,
+                                                       mode: .rotation)
+            var lockedChecked = 0, worldChecked = 0, worstLocked: Float = 0, worstWorld: Float = 0
+            for y in stride(from: 3, to: height, by: 8) {
+                for x in stride(from: 3, to: width, by: 8) {
+                    let i = (y * width + x) * 4
+                    let got = SIMD2(Float(pixels[i]), Float(pixels[i + 1]))
+                    let own = SIMD2((Float(x) + 0.5) / Float(width), (Float(y) + 0.5) / Float(height))
+                    if eye == 0, own.x < 0.45 {
+                        worstLocked = max(worstLocked, abs(got.x - own.x) * Float(width), abs(got.y - own.y) * Float(height))
+                        lockedChecked += 1
+                    } else if eye == 1 || own.x > 0.55, let expected = expectedUV(x: x, y: y, through: h),
+                              expected.x > 0.03, expected.x < 0.97, expected.y > 0.03, expected.y < 0.97 {
+                        worstWorld = max(worstWorld, abs(got.x - expected.x) * Float(width), abs(got.y - expected.y) * Float(height))
+                        worldChecked += 1
+                    }
+                }
+            }
+            if eye == 0 {
+                XCTAssertGreaterThan(lockedChecked, 500)
+                XCTAssertLessThan(worstLocked, 0.6, "the HUD reads its own UV, texels")
+            }
+            XCTAssertGreaterThan(worldChecked, 300)
+            XCTAssertLessThan(worstWorld, 0.6, "eye \(eye): the world follows the turn, texels")
+        }
+        // Off, the HUD turns with the world like everything else.
+        warper.headLockedHud = false
+        let again = try XCTUnwrap(queue.makeCommandBuffer())
+        try warper.encode(frame: frame, depth: depth, views: targets, planeDistance: 2, commandBuffer: again)
+        again.commit()
+        again.waitUntilCompleted()
+        var pixels = [Float16](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes {
+            colours[0].getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        let i = (128 * width + 100) * 4
+        XCTAssertGreaterThan(abs(Float(pixels[i]) - (100.5 / Float(width))) * Float(width), 5, "the HUD moved with the world")
+    }
 }
 #endif
+

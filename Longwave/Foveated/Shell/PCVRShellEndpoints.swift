@@ -37,6 +37,8 @@ enum PCVRShellEndpoints {
                         .number("warpStep", "the march's step in depth-map texels (default 2)", default: 0, range: 0...8),
                         .boolean("warpTint", "diagnostics: the pixels the warp fills in, in magenta (cyan: filled from the other eye)"),
                         .boolean("otherEye", "fill what an eye could not see from the frame's other eye (default on)"),
+                        .boolean("hudLocked", "show the HUD the host marked as head-locked where the head is now, not "
+                                 + "reprojected with the world (default on; needs a broker and host that mark it)"),
                         .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
                                  + "motion the host sends with depth (default on; host --motion on)"),
                         .string("warpTier", "auto | full | reduced | minimal: pin the warp's quality tier for an A/B run, or let "
@@ -61,6 +63,7 @@ enum PCVRShellEndpoints {
                 if let tint = args.bool("warpTint") { options.depthWarp.tintsFills = tint }
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
                 if let motion = args.bool("motion") { options.depthWarp.motionExtrapolation = motion }
+                if let locked = args.bool("hudLocked") { options.depthWarp.headLockedHud = locked }
                 if let name = args.string("warpTier"), !name.isEmpty {
                     if name == "auto" {
                         options.depthWarp.tier = nil
@@ -148,7 +151,7 @@ enum PCVRShellEndpoints {
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
-                "motion": warp.motionExtrapolation,
+                "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud,
                 "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,

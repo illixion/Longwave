@@ -390,6 +390,22 @@ typedef struct lw_motion_field {
     const uint8_t *known; /* 0: no inter vector (intra, or outside) */
     lw_motion_stats stats;
 } lw_motion_field;
+/* The head-locked HUD marked in a depth picture's chroma (lw_hud_mark_*): copies
+ * `depth` (grey BGRA8, two depth eyes side by side) to `destination`, and where
+ * `colour` (the frame, two colour eyes) has alpha under 0.75 anywhere in a depth
+ * texel's footprint, keeps its luma and pushes its Cb off grey (NATIVE_V3_PROTOCOL.md
+ * section 4.8). Only for frames whose producer marked alpha (side data hudMark).
+ * GPU work only, queued before the depth encode. */
+typedef struct lw_hud_mark_params {
+    int32_t depth_eye_width, depth_eye_height;
+    int32_t colour_eye_width, colour_eye_height;
+} lw_hud_mark_params;
+typedef struct lw_hud_mark lw_hud_mark;
+lw_status lw_hud_mark_create(lw_device *device, lw_hud_mark **out);
+lw_status lw_hud_mark_apply(lw_hud_mark *mark, void *depth, void *colour, void *destination,
+                            const lw_hud_mark_params *params);
+void lw_hud_mark_release(lw_hud_mark *mark);
+
 /* An eye pair turned by a homography per eye (lw_reproject_*), for the motion
  * search: the previous picture turned to the current render orientation, so a
  * still world matches itself at zero motion. `matrices`: left then right, each

@@ -1,8 +1,10 @@
 # PCVR motion extrapolation (ASW-style), plan
 
 Status (2026-11-17): step 1 (probe) done, idle and with the game running, and it is a go. Steps 2 and 3
-(host and headset) are built and pass their tests (unit tests on the Mac and in the visionOS simulator, host
-built on the PC); not yet run end to end. Steps 4 (HUD mask) and 5 (device run) are open.
+(host and headset) built; the first headset run wobbled, and the cause was found and fixed (below, "First
+headset run"). Step 4 (HUD mask) built: the broker marks head-locked quads in alpha, the host in the depth
+picture's chroma, the headset shows them head-locked (NATIVE_V3_PROTOCOL.md section 4.8). Step 5 (device run
+of the fix and the mask) is open.
 
 ## Why
 
@@ -114,6 +116,22 @@ held 45 throughout. Quarter size it is.
 - **Not done**: the HUD mask (step 4); motion is per 32-pixel block read bilinearly, so moving silhouettes
   will warble (a depth-aware split is the next refinement); the field's age is not checked against the
   colour frame beyond the frame number.
+
+## First headset run (2026-11-17): it wobbled
+
+The host searched the raw frames and subtracted the motion the head's turn explains. NVENC's search does not
+see that turn on flat or repeating texture ("no motion" matches there as well as the true one), so subtracting
+the turn from such a block left false motion the size of the turn, which the headset then carried on. The
+bench's head shake (`--mode motion`, `LW_MOTION_ROTATION_ONLY=1`): the search read 9.7 px a frame against the
+turn's 16.4 px (the turn moves a rectilinear picture's edges up to 4x its centre, and the search caught little
+of it; near the centre it read 4 px of 14), and 10.8 px of false motion was left.
+
+Fix, as Oculus ASW did it: the previous search picture is turned to the current render orientation first
+(`lw_reproject`, a homography per eye, `MotionFieldBuilder.previousFromCurrent`) and searched against that, so
+a still world matches at zero everywhere. False motion left on the same shake: 1.3 px, under 3% of blocks over
+one search pixel after the median. Blocks whose content the turn brings in from outside the previous picture
+are marked unknown; motion under one search pixel is sent as still. On real Cyberpunk frames with the head
+still (`--motion-probe`, no viewer) the search found no motion on any of 10,112 blocks.
 
 ## Steps and checks
 

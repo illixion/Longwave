@@ -167,4 +167,15 @@ final class SideDataTests: XCTestCase {
         var reader = WireReader(hex("05 1600 01 20 0100 0100 1e00 1400 ce560000 0000803f 03fe 8000"))
         XCTAssertWireError(.invalid("motionField.flags")) { try SideData(items: &reader) }
     }
+
+    func testTheHudMarkIsOneByte() throws {
+        var writer = WireWriter()
+        try SideData(hudMark: true).encodeItems(to: &writer)
+        XCTAssertEqual(writer.bytes, hex("06 0100 01"))
+        var reader = WireReader(writer.bytes)
+        XCTAssertTrue(try SideData(items: &reader).hudMark)
+        var bad = WireReader(hex("06 0100 00"))
+        XCTAssertWireError(.invalid("sideData.hudMark")) { try SideData(items: &bad) }
+    }
 }
+

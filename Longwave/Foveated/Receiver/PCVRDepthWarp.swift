@@ -93,6 +93,8 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         var flags: UInt32
         var motionUV: SIMD4<Float> = .zero
         var motionRect: SIMD4<Float> = .zero
+        var hudRect: SIMD4<Float> = .zero
+        var hudBounds: SIMD4<Float> = .zero
     }
 
     /// Codes of an 8-bit depth picture between neighbouring texels that make
@@ -172,6 +174,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// and two pixels off the silhouette (`pcvrDepthWarpHoleColour`), rather
     /// than at it, where the near object's rim bleeds in.
     var fillsOffTheEdge = true
+    /// Show the head-locked HUD the host marked (`PCVRDepthMap.hud`) where the
+    /// head is now (display views only).
+    var headLockedHud = true
     /// How a pixel that shows what its eye saw reads the picture. Fills stay
     /// bilinear whatever this says: they are a smudge on purpose.
     enum Resampling: String, CaseIterable, Sendable {
@@ -455,6 +460,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             encoder.setFragmentTexture(depthTexture, index: 1)
             encoder.setFragmentTexture(map, index: 3)
             encoder.setFragmentTexture(motion?.map.texture ?? noDepth, index: 15)
+            encoder.setFragmentTexture(depth?.hud ?? noDepth, index: 16)
             encoder.setFragmentSamplerState(sampler, index: 0)
             for target in group {
                 var view = ViewUniforms(projection: target.displayProjection, index: SIMD4(UInt32(min(slot, 1)), 0, 0, 0))
@@ -677,6 +683,11 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
             flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0) | (resampling == .bilinear ? 0 : 128) | (resampling == .catmullRomDeRinged ? 2048 : 0))
+        if let hud = depth?.hud, headLockedHud {
+            result.flags |= 8192
+            result.hudRect = PCVRReceiver.eyeRect(eye: eye, texture: hud)
+            result.hudBounds = PCVRReceiver.eyeBounds(eye: eye, texture: hud)
+        }
         if let motionConstants, let motion, motion.amount > 0 {
             result.flags |= 4096
             result.motionUV = motionConstants.uv
@@ -722,9 +733,12 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                 // 32: a fill view in use, its source in bits 8-10 of the fill arrays;
                                 // 64: an unseen pixel's colour from off the silhouette (`fillsOffTheEdge`);
                                 // 128: seen pixels read with Catmull-Rom (`resampling`), 2048: de-ringed (bit 11; bits 8-10 are the fill index);
-                                // 4096: carry the game's motion on (`PCVRMotionShift`, the motion texture at index 15)
+                                // 4096: carry the game's motion on (`PCVRMotionShift`, the motion texture at index 15);
+                                // 8192: show the head-locked HUD head-locked (`PCVRDepthMap.hud`, texture 16)
         float4 motionUV;        // render pixels of motion to render UV, times the shift's amount
         float4 motionRect;      // the eye's blocks in the motion texture: x offset, UV scale x and y, half texel
+        float4 hudRect;         // this eye's half of the HUD mark (the depth picture's chroma), and its clamp
+        float4 hudBounds;
     };
 
     #define PCVR_WARP_BOUND_PASSES \(PCVRDepthWarper.boundPasses)
@@ -1030,6 +1044,22 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         return uv + motion.sample(linear, at).xy * u.motionUV.xy;
     }
 
+    // The head-locked HUD (flag 8192). The broker draws a head-locked quad at
+    // the render pose; reprojected with the world it swam by however far the
+    // head had moved since (100+ ms of it). A display pixel the host marked as
+    // head-locked (Cb in the depth picture's chroma off grey) instead reads the
+    // frame at the same direction in its eye: where the head is now. Its
+    // direction in the display eye, `target`, read in the source eye's frustum.
+    static bool pcvrHeadLocked(float2 target, constant PCVRDepthWarpUniforms &u,
+                               texture2d<float, access::sample> hud, sampler linear, thread float2 &locked) {
+        if (!(u.flags & 8192u)) return false;
+        float4 tt = u.targetTangents, st = u.sourceTangents;
+        float2 t = float2(tt.x + target.x * (tt.y - tt.x), tt.z - target.y * (tt.z - tt.w));
+        locked = float2((t.x - st.x) / (st.y - st.x), (st.z - t.y) / (st.z - st.w));
+        if (any(locked < 0.0) || any(locked > 1.0)) return false;
+        return abs(hud.sample(linear, pcvrEyeTexel(locked, u.hudRect, u.hudBounds)).r - 0.502) > 0.12;
+    }
+
     // Pass one, the warp map at a quarter of the output per axis: per texel,
     // how far the hit's render UV is from the texel's own (a displacement,
     // smooth across a surface however the foveation map bends under it) and
@@ -1248,11 +1278,19 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                              texture2d<float, access::sample> source,
                                                              texture2d<float, access::sample> depth,
                                                              texture2d<float, access::sample> map,
-                                                             texture2d<float, access::sample> motion, sampler linear) {
+                                                             texture2d<float, access::sample> motion,
+                                                             texture2d<float, access::sample> hud, sampler linear) {
         constant PCVRDepthWarpUniforms &u = eyes[v.index.x];
         float2 target = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-        PCVRDepthWarpHit hit = pcvrDepthWarpLookup(target, target, u, depth, map, linear);
         PCVRDepthWarpDisplayOut out;
+        float2 locked;
+        if (pcvrHeadLocked(target, u, hud, linear, locked)) {
+            float2 uv = pcvrEyeTexel(pcvrWireUV(locked, u.wireX, u.wireY), u.sourceRect, u.sourceBounds);
+            out.color = (u.flags & 2u) ? float4(1, 0.5, 0, 1) : float4(source.sample(linear, uv).rgb, 1);
+            out.depth = PCVR_FAR_DEPTH;
+            return out;
+        }
+        PCVRDepthWarpHit hit = pcvrDepthWarpLookup(target, target, u, depth, map, linear);
         if (hit.filled > 0.5 && (u.flags & 8u)) {
             // Hidden from this eye's render view: the other eye, 6 cm to the
             // side, often saw it (what a sideways move uncovers beside a near
@@ -1306,8 +1344,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                           texture2d<float, access::sample> depth [[texture(1)]],
                                                           texture2d<float, access::sample> map [[texture(3)]],
                                                           texture2d<float, access::sample> motion [[texture(15)]],
+                                                          texture2d<float, access::sample> hud [[texture(16)]],
                                                           sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, linear);
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, linear);
     }
 
     fragment float4 pcvrDepthWarpDisplayColour(PCVRDepthWarpFullScreen in [[stage_in]],
@@ -1317,8 +1356,9 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
                                                texture2d<float, access::sample> depth [[texture(1)]],
                                                texture2d<float, access::sample> map [[texture(3)]],
                                                texture2d<float, access::sample> motion [[texture(15)]],
+                                               texture2d<float, access::sample> hud [[texture(16)]],
                                                sampler linear [[sampler(0)]]) {
-        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, linear).color;
+        return pcvrDepthWarpDisplayPixel(in.ndc, eyes, v, source, depth, map, motion, hud, linear).color;
     }
     """ }
 }

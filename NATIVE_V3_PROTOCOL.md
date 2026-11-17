@@ -901,7 +901,8 @@ length. Types: `renderPose` and `foveation` (§4.7), `depthRange` and
 so a parser never has to guess where TLVs end and NAL units begin. The design
 left that boundary open. Type numbers: renderPose 1 (102 bytes), foveation 2
 (20 bytes), depthRange 3 (13 bytes), inputBridge 4 (at most 512 bytes),
-motionField 5 (18 bytes plus 4 per block pair). Each known type appears at most once per
+motionField 5 (18 bytes plus 4 per block pair), hudMark 6 (1 byte, producer to
+host only: a host strips it). Each known type appears at most once per
 frame. The format's declared types bound what a frame may carry:
 
 - an item whose type isn't declared is an error;
@@ -1475,6 +1476,20 @@ not VR.
   row overhanging it. 80x64 blocks for a 2536x2040 eye: 20 KB a frame. A
   frame without the item, or a receiver that didn't offer the capability,
   repeats as before.
+- **The head-locked HUD (2026-11-17).** The session broker composites the
+  game's quad layers into the eye images; a head-locked one (a HUD) is drawn
+  at the render pose, so a headset reprojecting the frame to its display pose
+  moved the HUD with the world by however far the head had turned since,
+  and it swam. With native output in opaque mode the broker sets the eye
+  images' alpha to 1 minus the head-locked quads' coverage and says so in the
+  frame's side data (`hudMark`). The host then marks those depth texels in
+  the depth picture's chroma: Cb pushed half its range off grey (away from
+  the nearer end), G compensating so the luma, the depth, is unchanged. A
+  headset that reads the chroma shows a marked pixel where the head is now
+  (the display pixel's direction read at the same direction in the render
+  eye) and carries no motion on it; one that reads only the luma sees the
+  depth as before. Off: broker `LONGWAVE_BROKER_HUD_MASK=0`, host
+  `--hud-mask off`, headset `pcvrShellControl hudLocked=false`.
 - **Pre-rendered cutscenes** have no depth buffer (the component sees a
   cleared or constant one). It marks those frames empty in `depthRange`, and
   the headset switches to estimated depth until real depth returns, rather

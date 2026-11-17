@@ -55,6 +55,9 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Carry the game's own motion on in display frames that repeat a stream
     /// frame (`PCVRMotionShift`), from the motion the host sends with depth.
     var motionExtrapolation = true
+    /// Show the HUD the host marked as head-locked where the head is now,
+    /// instead of reprojecting it with the world (`PCVRDepthWarper.headLockedHud`).
+    var headLockedHud = true
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -347,6 +350,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             warper.maxSteps = march.maxSteps
             warper.stepTexels = march.stepTexels
             warper.tintsFills = warp.tintsFills
+            warper.headLockedHud = warp.headLockedHud
             warper.fillsFromOtherEye = march.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1

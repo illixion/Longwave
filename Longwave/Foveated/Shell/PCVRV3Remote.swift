@@ -1207,10 +1207,13 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
             var map = PCVRDepthMap(texture: texture.texture, near: near, far: far)
             map.valueScale = scale
             map.valueOffset = offset
+            // The chroma: Cb off grey marks the head-locked HUD (a host that doesn't mark leaves it grey).
+            let chroma = makeChromaTexture(imageBuffer)
+            map.hud = chroma?.texture
             let (values, width, height) = Self.lumaCopy(imageBuffer)
             store.deliver(PCVRDepthStore.Entry(frameNumber: frameNumber, map: map, values: values, width: width,
                                                height: height, motion: motion,
-                                               release: { withExtendedLifetime((texture, imageBuffer)) {} }))
+                                               release: { withExtendedLifetime((texture, chroma, imageBuffer)) {} }))
         }
         if status != noErr {
             noteSessionLost(status)
@@ -1272,6 +1275,17 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault, textureCache, imageBuffer, nil, depth ? .r8Unorm : .bgra8Unorm_srgb, width, height, 0,
             &cvTexture)
+        guard status == kCVReturnSuccess, let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture) else { return nil }
+        return WrappedTexture(cvTexture: cvTexture, texture: texture)
+    }
+
+    /// A depth picture's CbCr plane as an `rg8Unorm` texture.
+    private func makeChromaTexture(_ imageBuffer: CVImageBuffer) -> WrappedTexture? {
+        guard CVPixelBufferGetPlaneCount(imageBuffer) >= 2 else { return nil }
+        let width = CVPixelBufferGetWidthOfPlane(imageBuffer, 1), height = CVPixelBufferGetHeightOfPlane(imageBuffer, 1)
+        var cvTexture: CVMetalTexture?
+        let status = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, textureCache, imageBuffer, nil, .rg8Unorm, width, height, 1, &cvTexture)
         guard status == kCVReturnSuccess, let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture) else { return nil }
         return WrappedTexture(cvTexture: cvTexture, texture: texture)
     }

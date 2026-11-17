@@ -1,10 +1,13 @@
 # Headset session: v3 stack (broker + PCVR host), then Cyberpunk, then load the last save. Run with ssh-exec -G.
-param([int]$Width = 2536, [int]$Height = 2040, [int]$Mbps = 120, [int]$DepthScale = 4)
+param([int]$Width = 2536, [int]$Height = 2040, [int]$Mbps = 120, [int]$DepthScale = 4, [double]$SubmitWaitMs = 8)
 $log = "C:\lwvr\cpvr\connect.log"; "start $(Get-Date -Format HH:mm:ss)" | Out-File $log
 if (Get-Process Cyberpunk2077, LongwaveSessionBroker, longwave-pcvr-host, frame-source-spike -ErrorAction SilentlyContinue) { "something is already running" | Add-Content $log; return }
 $broker = (Get-ChildItem C:\dev, C:\Users\Ixion\Developer -Recurse -Depth 6 -Filter LongwaveSessionBroker.exe -ErrorAction SilentlyContinue | ? { $_.FullName -match "build-vive\\Release" } | sort LastWriteTime -Descending | select -First 1).FullName
 "broker $broker" | Add-Content $log
 $env:LONGWAVE_BROKER_GAME_DEPTH = "1"
+# A broker tick that finds no new frame waits this long for the game's submit (it lands 2-3 ms
+# after the tick at 45 fps): at 0 every frame waited a whole tick, 19.7 ms (2026-11-17).
+$env:LONGWAVE_NATIVE_SUBMIT_WAIT_MS = "$SubmitWaitMs"
 $launcher = "F:\Games\Cyberpunk 2077\red4ext\plugins\cyberpunkvrport\config\vrport-launcher.ini"
 $l = Get-Content $launcher | ForEach-Object { if ($_ -match "^width=") { "width=$Width" } elseif ($_ -match "^height=") { "height=$Height" } else { $_ } }
 [IO.File]::WriteAllLines($launcher, $l, (New-Object Text.UTF8Encoding($false)))

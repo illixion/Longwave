@@ -1577,28 +1577,15 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         if ((u.flags & 2u) && hit.filled > 0.5) {
             out.color = float4(1, 0, 1, 1);
         } else if (hit.filled > 0.5 && (u.flags & 1u)) {
-            // What neither eye saw: the far surface a depth texel and two
-            // pixels back from the silhouette along the ray's track, one tap
-            // (`pcvrDepthWarpHoleColour` explains the distance; its five
-            // taps, compiled into this shader, cost every pixel of the Mac's
-            // GPU a tenth more whether or not they ran). The hit itself is
-            // the far side's last sample before the edge, and now that the
-            // march starts close in front of the scene its steps are short
-            // and that sample sits on the near object's antialiased rim: the
-            // strip under the board filled with its dark frame, 0.31 off the
-            // wall against 0.07 (PCVRWarpBenchTests, down15, 2026-11-16).
-            float4 tt = u.targetTangents;
-            float3 D = u.rotation * float3(tt.x + target.x * (tt.y - tt.x), tt.z - target.y * (tt.z - tt.w), -1);
-            float2 uvNear, uvFar;
-            float rhoNear, rhoFar;
-            pcvrDepthWarpRay(D, u.translation.xyz, u.nearInverse, u.sourceTangents, uvNear, rhoNear);
-            pcvrDepthWarpRay(D, u.translation.xyz, 0, u.sourceTangents, uvFar, rhoFar);
-            float2 texel = 1.0 / max(u.depthRect.zw * u.depthSize, float2(1));
-            float2 pixel = float2(u.wireX.w, u.wireY.w) / max(u.sourceRect.zw * float2(source.get_width(), source.get_height()), float2(1));
-            float2 track = uvFar - uvNear;
-            PCVRDepthWarpHit off = hit;
-            if (length(track / texel) > 1e-3) off.uv -= normalize(track) * (max(texel.x, texel.y) + 2 * max(pixel.x, pixel.y));
-            out.color = float4(pcvrDepthWarpSample(off, u, source, motion, linear), 1);
+            // What no view saw: the far surface beside the edge, five taps
+            // along it (`pcvrDepthWarpHoleColour`, the compute path's). One
+            // tap a depth texel and two pixels back along the ray's track
+            // (cheaper: the five taps compiled in cost the Mac's GPU a tenth
+            // more per pixel, 2026-11-16) drew a patterned surface as
+            // streaks: the sidewalk's dots smeared beside the hands on every
+            // head movement once the earlier-frame fills refused the hands'
+            // old places (Cyberpunk, 2026-11-17).
+            out.color = float4(pcvrDepthWarpHoleColour(target, hit, u, source, depth, linear), 1);
         } else {
             out.color = float4(pcvrDepthWarpSample(hit, u, source, motion, linear), 1);
         }

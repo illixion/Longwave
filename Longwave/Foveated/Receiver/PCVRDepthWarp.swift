@@ -174,6 +174,11 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
     /// flip from side to side as the head moves (Shell A capture, Cyberpunk,
     /// 2026-11-17).
     var refinesEdges = false
+    /// Diagnostics: hand the compositor the plane's depth (`planeDistance`)
+    /// for every display pixel instead of the hit's, so its own late
+    /// reprojection moves the picture as one surface rather than stretching
+    /// it over the scene's depth edges.
+    var flatCompositorDepth = false
     static let refineScale = 2
     /// How alike two colours must be (in square-root RGB) to count as the
     /// same surface: the colour weight's standard deviation.
@@ -782,7 +787,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             stepTexels: max(stepTexels, 0.25) * detail,
             edge: depth != nil ? Self.edgeCodes / 255 * abs(decode.x * decode.w) : 0,
             maxSteps: UInt32(max(maxSteps, 1)),
-            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0) | (resampling == .bilinear ? 0 : 128) | (resampling == .catmullRomDeRinged ? 2048 : 0))
+            flags: flags | (depth != nil ? 1 : 0) | (tintsFills ? 2 : 0) | (fillsOffTheEdge ? 64 : 0) | (resampling == .bilinear ? 0 : 128) | (resampling == .catmullRomDeRinged ? 2048 : 0) | (flatCompositorDepth ? 16384 : 0))
         if let hud = depth?.hud, headLockedHud {
             result.flags |= 8192
             result.hudRect = PCVRReceiver.eyeRect(eye: eye, texture: hud)
@@ -1446,6 +1451,14 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         return clip.w > 1e-6 ? clamp(clip.z / clip.w, PCVR_FAR_DEPTH, 1.0) : PCVR_FAR_DEPTH;
     }
 
+    // The depth handed to the compositor: the hit's own, or with flag 16384
+    // (`flatCompositorDepth`) the plane's, so its late reprojection moves the
+    // picture as one surface.
+    static float pcvrDepthWarpCompositorDepth(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u, float4x4 projection) {
+        if (u.flags & 16384u) hit.w = u.planeInverse;
+        return pcvrDepthWarpClipDepth(hit, u, projection);
+    }
+
     static float3 pcvrDepthWarpSample(PCVRDepthWarpHit hit, constant PCVRDepthWarpUniforms &u,
                                       texture2d<float, access::sample> source,
                                       texture2d<float, access::sample> motion, sampler linear) {
@@ -1483,7 +1496,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
             bool inside = all(other.uv >= 0.0) && all(other.uv <= 1.0);
             if (other.filled < 0.5 && inside) {
                 out.color = (u.flags & 2u) ? float4(0, 1, 1, 1) : float4(pcvrDepthWarpSample(other, o, source, motion, linear), 1);
-                out.depth = pcvrDepthWarpClipDepth(other, o, v.projection);
+                out.depth = pcvrDepthWarpCompositorDepth(other, o, v.projection);
                 return out;
             }
         }
@@ -1515,7 +1528,7 @@ nonisolated final class PCVRDepthWarper: @unchecked Sendable {
         } else {
             out.color = float4(pcvrDepthWarpSample(hit, u, source, motion, linear), 1);
         }
-        out.depth = pcvrDepthWarpClipDepth(hit, u, v.projection);
+        out.depth = pcvrDepthWarpCompositorDepth(hit, u, v.projection);
         return out;
     }
 

@@ -41,6 +41,11 @@ enum PCVRShellEndpoints {
                                  + "reprojected with the world (default on; needs a broker and host that mark it)"),
                         .boolean("refineEdges", "sharpen the depth picture's edges by the frame's colour before the warp "
                                  + "(twice its size; default off): outlines of hands and HUD on the colour, not the depth grid"),
+                        .boolean("flatDepth", "diagnostics: hand the compositor the plane's depth (planeDistance) instead of "
+                                 + "the scene's, so its late reprojection moves the picture as one surface"),
+                        .number("shiftLimitMm", "the most head translation the warp corrects per pixel by depth, mm; the rest is "
+                                + "corrected as if everything lay at planeDistance (opens no holes, near things swim). "
+                                + "Negative: no limit (default)", default: 0, range: -1...1000),
                         .boolean("motion", "carry the game's own motion on in display frames that repeat a stream frame, from the "
                                  + "motion the host sends with depth (default on; host --motion on)"),
                         .string("warpTier", "auto | full | reduced | minimal: hold the warp's quality tier (default full), or let "
@@ -66,6 +71,10 @@ enum PCVRShellEndpoints {
                 if let other = args.bool("otherEye") { options.depthWarp.fillsFromOtherEye = other }
                 if let motion = args.bool("motion") { options.depthWarp.motionExtrapolation = motion }
                 if let refine = args.bool("refineEdges") { options.depthWarp.refinesEdges = refine }
+                if let flat = args.bool("flatDepth") { options.depthWarp.flatCompositorDepth = flat }
+                if let limit = args.double("shiftLimitMm"), limit != 0 {
+                    PCVRDepthWarper.depthShiftLimitNow = limit < 0 ? .infinity : Float(limit / 1000)
+                }
                 if let locked = args.bool("hudLocked") { options.depthWarp.headLockedHud = locked }
                 if let name = args.string("warpTier"), !name.isEmpty {
                     if name == "auto" {
@@ -208,7 +217,8 @@ enum PCVRShellEndpoints {
             "options": [
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
-                "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud, "refineEdges": warp.refinesEdges,
+                "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud, "refineEdges": warp.refinesEdges, "flatDepth": warp.flatCompositorDepth,
+                "shiftLimitMm": PCVRDepthWarper.depthShiftLimitNow.isFinite ? Double(PCVRDepthWarper.depthShiftLimitNow) * 1000 : -1,
                 "warpTier": warp.tier?.name ?? "auto", "warpBudget": warp.budgetShare,
                 "predictsToLatency": session.renderOptions.predictsToLatency,
                 "percentile": session.renderOptions.readinessPercentile,

@@ -67,6 +67,9 @@ nonisolated struct PCVRShellDepthWarp: Equatable, Sendable {
     /// Sharpen the depth picture's edges by the frame's colour before the
     /// march (`PCVRDepthWarper.refinesEdges`).
     var refinesEdges = false
+    /// Diagnostics: the compositor gets the plane's depth, not the scene's
+    /// (`PCVRDepthWarper.flatCompositorDepth`).
+    var flatCompositorDepth = false
 }
 
 /// What the render loop measured, published a few times a second. Times in
@@ -361,6 +364,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             warper.tintsFills = warp.tintsFills
             warper.headLockedHud = warp.headLockedHud
             warper.refinesEdges = warp.refinesEdges
+            warper.flatCompositorDepth = warp.flatCompositorDepth
             warper.fillsFromOtherEye = march.fillsFromOtherEye
             depthEntry = depthStore?.depth(for: presented.frame.frameNumber)
             depthWarps += 1

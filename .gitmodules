@@ -27,12 +27,21 @@
 #
 # Do NOT run `git submodule sync` after setting those: sync copies the URLs *out
 # of this file* into the config, undoing the override rather than applying it.
+# `ignore = all` keeps these out of `git status` in this repo. They are private
+# and the Xcode project does not build them, so a submodule sitting ahead of the
+# recorded pointer (routine while the host is under development) must not make
+# every build-and-sign / Apparition install report the app as having uncommitted
+# changes. The pointer is bumped on purpose with an explicit
+# `git add <submodule>`; `git add -A` and `git commit -a` skip it.
 [submodule "Longwave-PCVR-Host"]
 	path = Longwave-PCVR-Host
 	url = https://github.com/illixion/longwave-pcvr-host.git
+	ignore = all
 [submodule "SessionBroker"]
 	path = SessionBroker
 	url = https://github.com/illixion/longwave-session-broker.git
+	ignore = all
 [submodule "OpenXRLayer"]
 	path = OpenXRLayer
 	url = https://github.com/illixion/longwave-openxr-layer.git
+	ignore = all

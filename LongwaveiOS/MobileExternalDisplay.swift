@@ -5,10 +5,7 @@ import UIKit
 /// Shared app state for the supplementary HDMI scene. The tablet remains the
 /// only input surface; this scene only renders the active desktop or stream.
 @MainActor
-@Observable
 final class MobileExternalDisplayContext {
-    static var current: MobileExternalDisplayContext?
-
     let connectionManager: VNCConnectionManager
     let nativeSessions: MacNativeSessionStore
     #if MOONLIGHT_ENABLED
@@ -29,86 +26,7 @@ final class MobileExternalDisplayContext {
     #endif
 }
 
-struct MobileExternalDisplayAccessoryHost: UIViewControllerRepresentable {
-    let context: MobileExternalDisplayContext
-
-    func makeUIViewController(context: Context) -> MobileExternalDisplayAccessoryController {
-        MobileExternalDisplayContext.current = self.context
-        return MobileExternalDisplayAccessoryController(displayContext: self.context)
-    }
-
-    func updateUIViewController(_ controller: MobileExternalDisplayAccessoryController, context: Context) {
-        controller.displayContext = self.context
-        MobileExternalDisplayContext.current = self.context
-    }
-}
-
-@MainActor
-final class MobileExternalDisplayAccessoryController: UIViewController {
-    var displayContext: MobileExternalDisplayContext
-    private var registration: AnyObject?
-
-    init(displayContext: MobileExternalDisplayContext) {
-        self.displayContext = displayContext
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // Scene accessories exist only in the version 27 SDK, so an older toolchain (Xcode 26.x is
-        // Swift 6.3 or earlier, Xcode 27 is Swift 6.4) can't compile them even behind `#available`;
-        // there the external display is simply not offered, as on an iPad before iOS 27.
-        #if compiler(>=6.4)
-        guard #available(iOS 27.0, *), registration == nil else { return }
-        let configuration = UISceneConfiguration()
-        configuration.delegateClass = MobileExternalDisplaySceneDelegate.self
-        let accessory = UISceneAccessory.externalNonInteractive(
-            sceneConfiguration: configuration,
-            userInfo: displayContext
-        )
-        registration = registerSceneAccessory(accessory)
-        #endif
-    }
-
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        #if compiler(>=6.4)
-        guard #available(iOS 27.0, *), let registration = registration as? UISceneAccessoryRegistration else { return }
-        unregisterSceneAccessory(registration)
-        self.registration = nil
-        #endif
-    }
-}
-
-@MainActor
-final class MobileExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
-    var window: UIWindow?
-
-    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
-        guard let scene = scene as? UIWindowScene else { return }
-        let context: MobileExternalDisplayContext?
-        #if compiler(>=6.4)
-        if #available(iOS 27.0, *) {
-            context = options.sceneAccessoryUserInfo as? MobileExternalDisplayContext
-                ?? MobileExternalDisplayContext.current
-        } else {
-            context = MobileExternalDisplayContext.current
-        }
-        #else
-        context = MobileExternalDisplayContext.current
-        #endif
-        guard let context else { return }
-        let window = UIWindow(windowScene: scene)
-        window.rootViewController = UIHostingController(rootView: MobileExternalDisplayView(context: context))
-        self.window = window
-        window.makeKeyAndVisible()
-    }
-}
-
-private struct MobileExternalDisplayView: View {
+struct MobileExternalDisplayView: View {
     let context: MobileExternalDisplayContext
 
     var body: some View {

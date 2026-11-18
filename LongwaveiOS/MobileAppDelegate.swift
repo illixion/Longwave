@@ -1,4 +1,5 @@
 import DebugTrace
+import RAVEUI
 import SwiftUI
 
 /// iOS app delegate. Same job as the visionOS `AppDelegate` — surface the Local
@@ -10,10 +11,8 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        let configuration = UISceneConfiguration(name: "External Display", sessionRole: session.role)
-        if #unavailable(iOS 27.0), session.role == .windowExternalDisplayNonInteractive {
-            configuration.delegateClass = MobileExternalDisplaySceneDelegate.self
-        }
+        let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)
+        RAVEExternalDisplay.configure(configuration)
         return configuration
     }
 

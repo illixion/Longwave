@@ -1,4 +1,5 @@
 import RAVECompanion
+import RAVEUI
 import SwiftUI
 
 /// The tab shell. Stands in for both the visionOS `MainView` ornament tab bar and
@@ -81,6 +82,7 @@ struct MobileRootView: View {
         // tab with a tab bar over it is unusable on a phone.
         .fullScreenCover(isPresented: $showingDesktop) {
             MobileRemoteDesktopView()
+                .background { externalDisplayHost }
         }
         .fullScreenCover(item: $presentedSession) { id in
             MobileTerminalCover(sessionID: id)
@@ -94,6 +96,7 @@ struct MobileRootView: View {
                 .environment(macNativeSessions.session(for: id))
                 // This session's own audio player, not the app's shared one.
                 .environment(macNativeSessions.audioPlayer(for: id))
+                .background { externalDisplayHost }
         }
         .onChange(of: macNativeSessions.activeID) { _, id in
             if let id {
@@ -113,6 +116,7 @@ struct MobileRootView: View {
         .fullScreenCover(item: $presentedMoonlightSession) { id in
             MobileMoonlightStreamView()
                 .environment(moonlightSessions.session(for: id))
+                .background { externalDisplayHost }
         }
         .onChange(of: moonlightSessions.activeSession?.slot) { _, slot in
             // The pairing sheet launched an app (or a dropped stream came back):
@@ -160,10 +164,6 @@ struct MobileRootView: View {
             knownSessions = Set(sshManager.sessions.map(\.id.raw))
         }
         .background(WatchCredentialSyncView())
-        .background(alignment: .topLeading) {
-            MobileExternalDisplayAccessoryHost(context: externalDisplayContext)
-                .frame(width: 0, height: 0)
-        }
         .onOpenURL { url in
             // A Mac's address link from the Companion (no secret in it).
             // Broadcast setup is not handled here — this target has no
@@ -173,6 +173,13 @@ struct MobileRootView: View {
                 CompanionLocator.shared.pendingPairLink = link
             }
         }
+    }
+
+    private var externalDisplayHost: some View {
+        RAVEExternalDisplayHost {
+            MobileExternalDisplayView(context: externalDisplayContext)
+        }
+        .frame(width: 0, height: 0)
     }
 }
 

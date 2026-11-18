@@ -62,32 +62,25 @@ final class PCVRCaptureReplayTests: XCTestCase {
                              renderEye: PixelSize(width: UInt16(render[0]), height: UInt16(render[1])))
     }
 
-    func testReplayACapture() throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PCVR_CAPTURE"], !path.isEmpty else {
-            throw XCTSkip("set TEST_RUNNER_PCVR_CAPTURE to an LWCAP1 blob")
-        }
-        let url = URL(fileURLWithPath: path)
-        let out = URL(fileURLWithPath: environment["PCVR_CAPTURE_OUT"] ?? url.deletingPathExtension().path + "-replay")
-        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-        let (header, sections) = try Self.read(url)
-        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        let queue = try XCTUnwrap(device.makeCommandQueue())
+    private func texture(_ format: MTLPixelFormat, _ width: Int, _ height: Int, device: any MTLDevice,
+                         usage: MTLTextureUsage = .shaderRead) throws -> any MTLTexture {
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
+        d.usage = usage
+        d.storageMode = .shared
+        return try XCTUnwrap(device.makeTexture(descriptor: d))
+    }
 
-        func texture(_ format: MTLPixelFormat, _ width: Int, _ height: Int, write: Bool = false) throws -> any MTLTexture {
-            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
-            d.usage = write ? [.shaderRead, .shaderWrite] : .shaderRead
-            d.storageMode = .shared
-            return try XCTUnwrap(device.makeTexture(descriptor: d))
-        }
+    private func load(_ url: URL, device: any MTLDevice) throws
+        -> (source: PCVRDepthWarper.FillSource, targets: PCVRStereo<PCVREyeView>) {
+        let (header, sections) = try Self.read(url)
         let streamSection = try XCTUnwrap(sections["stream.colour"])
-        let stream = try texture(.bgra8Unorm_srgb, streamSection.width, streamSection.height)
+        let stream = try texture(.bgra8Unorm_srgb, streamSection.width, streamSection.height, device: device)
         streamSection.data.withUnsafeBytes {
             stream.replace(region: MTLRegionMake2D(0, 0, streamSection.width, streamSection.height), mipmapLevel: 0,
                            withBytes: $0.baseAddress!, bytesPerRow: streamSection.bytesPerRow)
         }
         let depthSection = try XCTUnwrap(sections["depth.luma"])
-        let depthTexture = try texture(.r8Unorm, depthSection.width, depthSection.height)
+        let depthTexture = try texture(.r8Unorm, depthSection.width, depthSection.height, device: device)
         depthSection.data.withUnsafeBytes {
             depthTexture.replace(region: MTLRegionMake2D(0, 0, depthSection.width, depthSection.height), mipmapLevel: 0,
                                  withBytes: $0.baseAddress!, bytesPerRow: depthSection.bytesPerRow)
@@ -101,23 +94,40 @@ final class PCVRCaptureReplayTests: XCTestCase {
 
         let renderEyes = try XCTUnwrap(header["renderEyes"] as? [Any])
         let eyes = PCVRStereo(left: try Self.view(renderEyes[0]), right: try Self.view(renderEyes[1]))
-        let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: 1, texture: stream,
-                                     renderPose: PCVRRenderPose(poseSequence: 1, spaceEpoch: 0, displayTime: 0, eyes: eyes),
-                                     foveation: try Self.foveation(header["foveation"]), arrivalTime: 0)
+        let number = UInt32(header["frameNumber"] as? Int ?? 1)
+        let arrival = header["arrivalTime"] as? Double ?? 0
+        let frame = PCVRDecodedFrame(streamEpoch: 0, frameNumber: number, texture: stream,
+                                     renderPose: PCVRRenderPose(poseSequence: number, spaceEpoch: 0, displayTime: arrival, eyes: eyes),
+                                     foveation: try Self.foveation(header["foveation"]), arrivalTime: arrival)
         let views = try XCTUnwrap(header["views"] as? [[String: Any]])
+        return (.init(frame: frame, depth: depth),
+                PCVRStereo(left: try Self.view(views[0]["display"]), right: try Self.view(views[min(1, views.count - 1)]["display"])))
+    }
+
+    func testReplayACapture() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["PCVR_CAPTURE"], !path.isEmpty else {
+            throw XCTSkip("set TEST_RUNNER_PCVR_CAPTURE to an LWCAP1 blob")
+        }
+        let url = URL(fileURLWithPath: path)
+        let out = URL(fileURLWithPath: environment["PCVR_CAPTURE_OUT"] ?? url.deletingPathExtension().path + "-replay")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let (source, views) = try load(url, device: device)
+        let frame = source.frame
         // PCVR_CAPTURE_SHIFT: metres to move both display eyes sideways (eye
         // space x), to see what a larger miss than the captured one does.
         let extra = Float(environment["PCVR_CAPTURE_SHIFT"] ?? "") ?? 0
         let nudge = PCVRPose(rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), position: [extra, 0, 0])
-        let targets = PCVRStereo(left: try Self.view(views[0]["display"]).pose * nudge,
-                                 right: try Self.view(views[min(1, views.count - 1)]["display"]).pose * nudge)
+        let targets = views.map { $0.pose * nudge }
         let render = frame.renderSize
         for refine in [false, true] {
             let warper = try PCVRDepthWarper(device: device)
             warper.refinesEdges = refine
-            let output = try texture(.bgra8Unorm_srgb, render.width, render.height, write: true)
+            let output = try texture(.bgra8Unorm_srgb, render.width, render.height, device: device, usage: [.shaderRead, .shaderWrite])
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
-            try warper.encode(frame: frame, depth: depth, targets: targets, planeDistance: 50, into: output,
+            try warper.encode(frame: frame, depth: source.depth, targets: targets, planeDistance: 50, into: output,
                               commandBuffer: commandBuffer)
             commandBuffer.commit()
             commandBuffer.waitUntilCompleted()
@@ -130,6 +140,81 @@ final class PCVRCaptureReplayTests: XCTestCase {
             let name = "replay-\(refine ? "refined" : "plain")\(extra != 0 ? "-shift\(extra)" : "")-\(render.width)x\(render.height).bgra"
             try Data(bytes).write(to: out.appendingPathComponent(name))
         }
+    }
+
+    /// Replay a sequence through Shell A's fragment path with the same history
+    /// admission policy as the headset. Count diagnostic colours around gaps.
+    func testReplayBackgroundHistory() throws {
+        guard let path = ProcessInfo.processInfo.environment["PCVR_BACKGROUND_REPLAY"], !path.isEmpty else {
+            throw XCTSkip("set TEST_RUNNER_PCVR_BACKGROUND_REPLAY to a directory of chronologically named LWCAP1 frames")
+        }
+        let directory = URL(fileURLWithPath: path)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "lwcap" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertGreaterThan(files.count, 4)
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let warper = try PCVRDepthWarper(device: device)
+        warper.tintsFills = true
+        var history = PCVRBackgroundHistory()
+        var recent: [PCVRDepthWarper.FillSource] = []
+        var totals = SIMD3<Int>.zero
+        var peak = 0
+        for url in files {
+            try autoreleasepool {
+                let (source, views) = try load(url, device: device)
+                let frame = source.frame
+                let w = frame.texture.width / 2, h = frame.texture.height
+                let target = PCVRReceiverTarget(eye: 0,
+                    colorTexture: try texture(.bgra8Unorm, w, h, device: device, usage: .renderTarget),
+                    depthTexture: nil, depthClearValue: 0,
+                    viewport: MTLViewport(originX: 0, originY: 0, width: Double(w), height: Double(h), znear: 0, zfar: 1),
+                    display: views.left, displayProjection: matrix_identity_float4x4)
+                func render(_ archive: PCVRDepthWarper.BackgroundSources?, buffer: any MTLCommandBuffer) throws -> [UInt8] {
+                    try warper.encode(frame: frame, depth: source.depth, views: [target], planeDistance: 50,
+                                      fills: recent, background: archive, commandBuffer: buffer)
+                    buffer.commit()
+                    buffer.waitUntilCompleted()
+                    XCTAssertEqual(buffer.status, .completed, String(describing: buffer.error))
+                    var pixels = [UInt8](repeating: 0, count: w * h * 4)
+                    pixels.withUnsafeMutableBytes {
+                        target.colorTexture.getBytes($0.baseAddress!, bytesPerRow: w * 4,
+                                                     from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+                    }
+                    return pixels
+                }
+                history.expire(for: frame)
+                let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+                if history.shouldSample(frame) {
+                    history.remember(try warper.backgroundSnapshot(source, commandBuffer: buffer))
+                }
+                if let archive = history.pair(for: frame) {
+                    let baseline = try render(nil, buffer: try XCTUnwrap(queue.makeCommandBuffer()))
+                    let filled = try render(archive, buffer: buffer)
+                    var recovered = 0
+                    for i in stride(from: 0, to: baseline.count, by: 4) {
+                        guard baseline[i] == 255, baseline[i + 1] == 0, baseline[i + 2] == 255 else { continue }
+                        totals.x += 1
+                        if filled[i] == 0, filled[i + 1] == 255, filled[i + 2] == 0 { recovered += 1 }
+                    }
+                    totals.y += recovered
+                    totals.z += 1
+                    if recovered > peak {
+                        peak = recovered
+                        try Data(baseline).write(to: directory.appendingPathComponent("baseline-\(w)x\(h).bgra"))
+                        try Data(filled).write(to: directory.appendingPathComponent("background-\(w)x\(h).bgra"))
+                    }
+                } else {
+                    buffer.commit()
+                    buffer.waitUntilCompleted()
+                    XCTAssertEqual(buffer.status, .completed)
+                }
+                recent.insert(source, at: 0)
+                if recent.count > PCVRDepthWarper.fillFrames { recent.removeLast() }
+            }
+        }
+        print("Background replay: \(totals.y) of \(totals.x) otherwise-unfilled pixels recovered across \(totals.z) frames; peak \(peak).")
+        XCTAssertGreaterThan(totals.z, 0)
     }
 }
 #endif

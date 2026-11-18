@@ -658,7 +658,8 @@ final class PCVRDepthWarpTests: XCTestCase {
         let projection = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 0, -1), SIMD4(0, 0, near, 0)))
         let width = Self.eyeWidth, height = Self.eyeHeight
         func tints(otherEye: Bool, fills: [PCVRDepthWarper.FillSource],
-                   fillFarthest: Float = .infinity) throws -> (magenta: Int, cyan: Int, yellow: Int) {
+                   fillFarthest: Float = .infinity, background: PCVRDepthWarper.BackgroundSources? = nil)
+            throws -> (magenta: Int, cyan: Int, yellow: Int, green: Int) {
             var colours: [any MTLTexture] = []
             var targets: [PCVRReceiverTarget] = []
             for eye in 0..<2 {
@@ -682,7 +683,12 @@ final class PCVRDepthWarpTests: XCTestCase {
             warper.fillsFromOtherEye = otherEye
             warper.fillFarthest = fillFarthest
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+            let snapshots = try background.map {
+                PCVRDepthWarper.BackgroundSources(newer: try warper.backgroundSnapshot($0.newer, commandBuffer: commandBuffer),
+                                                  older: try warper.backgroundSnapshot($0.older, commandBuffer: commandBuffer))
+            }
             try warper.encode(frame: frame, depth: depth, views: targets, planeDistance: 2, fills: fills,
+                              background: snapshots,
                               commandBuffer: commandBuffer)
             commandBuffer.commit()
             commandBuffer.waitUntilCompleted()
@@ -691,14 +697,15 @@ final class PCVRDepthWarpTests: XCTestCase {
             out.withUnsafeMutableBytes {
                 colours[0].getBytes($0.baseAddress!, bytesPerRow: width * 8, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
             }
-            var magenta = 0, cyan = 0, yellow = 0
+            var magenta = 0, cyan = 0, yellow = 0, green = 0
             for i in stride(from: 0, to: out.count, by: 4) {
                 let r = out[i], g = out[i + 1], b = out[i + 2]
                 if r == 1, g == 0, b == 1 { magenta += 1 }
                 if r == 0, g == 1, b == 1 { cyan += 1 }
                 if r == 1, g == 1, b == 0 { yellow += 1 }
+                if r == 0, g == 1, b == 0 { green += 1 }
             }
-            return (magenta, cyan, yellow)
+            return (magenta, cyan, yellow, green)
         }
         let alone = try tints(otherEye: false, fills: [])
         XCTAssertGreaterThan(alone.magenta, 4 * Self.eyeHeight)
@@ -726,6 +733,18 @@ final class PCVRDepthWarpTests: XCTestCase {
         let farther = try tints(otherEye: false, fills: [.init(frame: earlier, depth: try slabDepth(leftX: 0.03, far: 12))],
                                 fillFarthest: 1.25)
         XCTAssertGreaterThan(farther.magenta, alone.magenta * 3 / 4, "fills from much farther than the far side are refused")
+
+        // A coplanar stale object passes a depth-only check. Give one older
+        // view a different colour at the same depth, while keeping the ray
+        // geometry identical so only the colour agreement can reject it.
+        let clean = PCVRDepthWarper.FillSource(frame: earlier, depth: earlierDepth)
+        let changed = PCVRDepthWarper.FillSource(frame: try gradientFrame(foveation: nil, pose: move) { _, _ in 1 },
+                                                 depth: earlierDepth)
+        let agreed = try tints(otherEye: false, fills: [], background: .init(newer: clean, older: clean))
+        XCTAssertGreaterThan(agreed.green, alone.magenta * 2 / 3)
+        let disagreed = try tints(otherEye: false, fills: [], background: .init(newer: changed, older: clean))
+        XCTAssertEqual(disagreed.green, 0)
+        XCTAssertEqual(disagreed.magenta, alone.magenta)
     }
 
     /// An earlier frame with both eyes `x` metres right of the identity frame's.

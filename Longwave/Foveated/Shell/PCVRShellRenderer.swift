@@ -185,6 +185,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     /// The frames shown before the one on screen, newest first, each with the
     /// depth that came with it: the depth warp's earlier-frame fills.
     private var fillHistory: [(frame: PCVRDecodedFrame, depth: PCVRDepthStore.Entry)] = []
+    private var backgroundHistory = PCVRBackgroundHistory()
     /// The frame on screen, while it has its own depth: it joins
     /// `fillHistory` when the next one replaces it.
     private var shownWithDepth: (frame: PCVRDecodedFrame, depth: PCVRDepthStore.Entry)?
@@ -398,6 +399,22 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         }
         let fills = warper != nil && warp.fillsFromEarlierFrames
             ? fillHistory.map { PCVRDepthWarper.FillSource(frame: $0.frame, depth: $0.depth.map) } : []
+        var background: PCVRDepthWarper.BackgroundSources?
+        if PCVRBackgroundHistory.isEnabled, let warper, let frame = presented?.frame {
+            backgroundHistory.expire(for: frame)
+            if let depthEntry, depthEntry.frameNumber == frame.frameNumber, backgroundHistory.shouldSample(frame) {
+                do {
+                    let snapshot = try warper.backgroundSnapshot(.init(frame: frame, depth: depthEntry.map),
+                                                                 commandBuffer: commandBuffer)
+                    backgroundHistory.remember(snapshot)
+                } catch {
+                    log.error("Background snapshot failed: \(error, privacy: .public)")
+                }
+            }
+            background = backgroundHistory.pair(for: frame)
+        } else {
+            backgroundHistory = PCVRBackgroundHistory()
+        }
         // A repeat moves on along the frame's own motion, by the time since the
         // frame was first shown: only the motion with that frame's number, as
         // a neighbour's would move it by another frame's motion.
@@ -425,7 +442,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             do {
                 if let warper {
                     try warper.encode(frame: presented?.frame, depth: depthEntry?.map, views: targets,
-                                      planeDistance: warp.planeDistance, motion: motion, fills: fills,
+                                      planeDistance: warp.planeDistance, motion: motion, fills: fills, background: background,
                                       commandBuffer: commandBuffer)
                 } else if let receiver {
                     try receiver.encode(frame: presented?.frame, targets: targets,
@@ -446,8 +463,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         // The frame's texture (and its depth picture) stay leased until the GPU
         // has finished sampling them.
         let sampled = presented?.frame
-        commandBuffer.addCompletedHandler { [inFlight, gpuTimes] buffer in
-            withExtendedLifetime((sampled, depthEntry, fills)) {}
+        commandBuffer.addCompletedHandler { [inFlight, gpuTimes, background] buffer in
+            withExtendedLifetime((sampled, depthEntry, fills, background)) {}
             capture?.complete()
             let time = buffer.gpuEndTime - buffer.gpuStartTime
             if time > 0 { gpuTimes.withLock { $0.append(time) } }

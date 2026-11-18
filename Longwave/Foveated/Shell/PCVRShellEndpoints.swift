@@ -48,6 +48,8 @@ enum PCVRShellEndpoints {
                                 + "Negative: no limit (default)", default: 0, range: -1...1000),
                         .boolean("earlierFrames", "fill what a pose miss uncovers from the last few frames shown (with their "
                                  + "own depth) as well as the frame's other eye (default on)"),
+                        .boolean("backgroundHistory", "fill remaining background strips where two older views agree (default off); "
+                                 + "green in the fill tint"),
                         .number("fillNearest", "a fill nearer than this share of the far side's distance beside the edge is "
                                 + "refused (the near object where an earlier frame had it; default 0.8)", default: 0, range: 0...1),
                         .number("fillFarthest", "a fill farther than this share is refused (the street behind a passer-by); "
@@ -81,6 +83,10 @@ enum PCVRShellEndpoints {
                 if let refine = args.bool("refineEdges") { options.depthWarp.refinesEdges = refine }
                 if let flat = args.bool("flatDepth") { options.depthWarp.flatCompositorDepth = flat }
                 if let earlier = args.bool("earlierFrames") { options.depthWarp.fillsFromEarlierFrames = earlier }
+                if let enabled = args.bool("backgroundHistory") {
+                    _ = PCVRBackgroundHistory.isEnabled
+                    _ = try DebugTunables.set(PCVRBackgroundHistory.toggle, .bool(enabled))
+                }
                 if let scale = args.double("renderEyeScale"), scale > 0 { PCVRV3Remote.renderEyeScale = Float(scale) }
                 if let nearest = args.double("fillNearest"), nearest > 0 { options.depthWarp.fillNearest = Float(nearest) }
                 if let farthest = args.double("fillFarthest"), farthest != 0 {
@@ -232,6 +238,7 @@ enum PCVRShellEndpoints {
                 "warp": warp.isEnabled, "warpSteps": warp.maxSteps, "warpStep": warp.stepTexels,
                 "warpTint": warp.tintsFills, "otherEye": warp.fillsFromOtherEye, "planeDistance": warp.planeDistance,
                 "motion": warp.motionExtrapolation, "hudLocked": warp.headLockedHud, "refineEdges": warp.refinesEdges, "flatDepth": warp.flatCompositorDepth,
+                "backgroundHistory": PCVRBackgroundHistory.isEnabled,
                 "earlierFrames": warp.fillsFromEarlierFrames, "renderEyeScale": Double(PCVRV3Remote.renderEyeScale), "fillNearest": Double(warp.fillNearest),
                 "fillFarthest": warp.fillFarthest.isFinite ? Double(warp.fillFarthest) : -1,
                 "shiftLimitMm": PCVRDepthWarper.depthShiftLimitNow.isFinite ? Double(PCVRDepthWarper.depthShiftLimitNow) * 1000 : -1,

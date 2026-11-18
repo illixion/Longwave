@@ -6,7 +6,9 @@ set -euo pipefail
 # CI itself builds with Moonlight DISABLED (enet doesn't compile on the
 # runner image) — this script is the local path to a complete build.
 #
-# Idempotent: existing checkouts are left untouched. Use --force to wipe
+# Idempotent: existing checkouts are left untouched.
+# Freshly patched checkouts get the patches committed locally
+# (seal-dep-patches.sh), so a dirty dep means an edit not yet in ci/patches/. Use --force to wipe
 # repos/ and re-clone everything.
 #
 # Usage:
@@ -41,6 +43,7 @@ else
         # Add asynchronous custom Ed25519 signing for hardware-backed keys.
         git apply ../../ci/patches/swift-nio-ssh-async-signer.patch
     )
+    scripts/seal-dep-patches.sh swift-nio-ssh
 fi
 
 if [[ -d repos/royalvnc ]]; then
@@ -56,6 +59,7 @@ else
         # pause/resumeFramebufferUpdates
         git apply ../../ci/patches/royalvnc-longwave.patch
     )
+    scripts/seal-dep-patches.sh royalvnc
 fi
 
 # The prefixed copies are generated, so they go stale whenever their generator
@@ -113,6 +117,7 @@ else
         ../../ci/deps/moonlight-common-c/make-instances.sh .
     )
     instances_inputs_sha > "$INSTANCES_STAMP"
+    scripts/seal-dep-patches.sh moonlight-common-c
 fi
 
 if [[ -d repos/opus ]]; then
@@ -142,6 +147,7 @@ else
         # for x86_64 (needed for the universal arm64+x86_64 macOS targets)
         git apply ../../ci/patches/opus-x86_64-universal.patch
     )
+    scripts/seal-dep-patches.sh opus
 fi
 
 echo ""

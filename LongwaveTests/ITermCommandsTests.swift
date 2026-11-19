@@ -42,4 +42,13 @@ final class ITermCommandsTests: XCTestCase {
         XCTAssertTrue(line.hasPrefix("T=\"$HOME/Library/Application Support/Longwave/iterm/iterm-tool\""))
         XCTAssertTrue(ITermCommands.viewCommand(sessionID: "S1").hasPrefix("zsh -lic "))
     }
+
+    /// `exec` belongs on
+    /// the tool call, not in front of the `T=` assignment.
+    func testViewExecSitsOnTheToolCall() {
+        let inner = ITermCommands.invocation(["view", "S1"], exec: true)
+        XCTAssertFalse(inner.hasPrefix("exec"))
+        XCTAssertTrue(inner.contains("exec \"$T\" 'view' 'S1'"))
+        XCTAssertTrue(inner.contains("then exec iterm-tool 'view' 'S1'"))
+    }
 }

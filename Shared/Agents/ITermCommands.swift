@@ -18,11 +18,16 @@ enum ITermCommands {
     /// own venv) when installed, else whatever `iterm-tool` the PATH has. Run
     /// inside a login shell (`loginShellCommand`) so `python3` resolves the way
     /// it does in the user's terminal.
-    static func invocation(_ arguments: [String]) -> String {
+    ///
+    /// `exec` replaces the shell with the tool (the live view's PTY), and has
+    /// to sit on the tool call itself: in front of the whole line it would
+    /// try to run the `T=…` assignment as a program.
+    static func invocation(_ arguments: [String], exec: Bool = false) -> String {
         let args = arguments.map(AgentSessionCommands.shellSingleQuote).joined(separator: " ")
+        let run = exec ? "exec " : ""
         return "T=\"$HOME/\(installedPath)\"; "
-            + "if [ -x \"$T\" ]; then ITERM_TOOL_VENV=\"$HOME/\(venvPath)\" \"$T\" \(args); "
-            + "elif command -v iterm-tool >/dev/null 2>&1; then iterm-tool \(args); "
+            + "if [ -x \"$T\" ]; then ITERM_TOOL_VENV=\"$HOME/\(venvPath)\" \(run)\"$T\" \(args); "
+            + "elif command -v iterm-tool >/dev/null 2>&1; then \(run)iterm-tool \(args); "
             + "else echo 'iterm-tool is not installed on this Mac. Install Longwave Companion, or put iterm-tool on the PATH.' >&2; exit 127; fi"
     }
 
@@ -34,7 +39,7 @@ enum ITermCommands {
 
     /// The PTY command for a live mirror of one session.
     static func viewCommand(sessionID: String) -> String {
-        AgentSessionCommands.loginShellCommand("exec \(invocation(["view", sessionID]))")
+        AgentSessionCommands.loginShellCommand(invocation(["view", sessionID], exec: true))
     }
 
     struct Failure: LocalizedError, Equatable {

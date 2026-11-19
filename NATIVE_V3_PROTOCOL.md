@@ -902,7 +902,8 @@ so a parser never has to guess where TLVs end and NAL units begin. The design
 left that boundary open. Type numbers: renderPose 1 (102 bytes), foveation 2
 (20 bytes), depthRange 3 (13 bytes), inputBridge 4 (at most 512 bytes),
 motionField 5 (18 bytes plus 4 per block pair), hudMark 6 (1 byte, producer to
-host only: a host strips it). Each known type appears at most once per
+host only: a host strips it), hudSeparated 7 (1 byte, world video).
+Each known type appears at most once per
 frame. The format's declared types bound what a frame may carry:
 
 - an item whose type isn't declared is an error;
@@ -1117,18 +1118,20 @@ diagnostics overlay), and `bye` with a reason.
   `audioOpus`, `audioPCM24`, `audioMultichannel`, `spatialObjects`, `gamepad`,
   `relativePointer`, `clipboard`, `virtualDisplay`, `localCursor`,
   `sideData`, `depthVideo`, `pcvr`, `gaze`, `foveatedVideo`, `separateEyeVideo`,
-  `microphone`.
+  `microphone`, `motionField`, `pcvrHud`.
   Unknown capabilities are ignored, never fatal.
   *Encoding (2026-10-12):*
   - **Bit numbers** follow the list order: `windowStreams` = 0 through
-    `foveatedVideo` = 22, `separateEyeVideo` = 23, `microphone` = 24, append-only.
+    `foveatedVideo` = 22, `separateEyeVideo` = 23, `microphone` = 24,
+    `motionField` = 25, `pcvrHud` = 26, append-only.
   - **Wire form:** `byteCount u8 | bitmap`, where bit n of byte n/8 is
     capability n, up to 256 capabilities. Senders write the shortest bitmap.
     Receivers accept trailing zero bytes and unknown bits.
   - **Negotiation** takes the intersection, restricted to capabilities the
     build knows. It then drops any capability whose requirements didn't
-    survive: `depthVideo` and `pcvr` need `sideData`, and `gaze` and
-    `foveatedVideo` and `separateEyeVideo` need `pcvr`.
+    survive: `depthVideo` and `pcvr` need `sideData`, `motionField` needs
+    `depthVideo`, and `gaze`, `foveatedVideo`, `separateEyeVideo` and
+    `pcvrHud` need `pcvr`.
 - **Hello and hello-ack (2026-10-24)** (`StreamWire/Hello.swift`). These are
   the handshake payloads: v2's JSON `Hello` and `HelloAck`, now binary. Each has
   a fixed core followed by items (`type u8 | length u16 | value`, as in side
@@ -1390,6 +1393,31 @@ Companion to start or stop the stack (`CompanionLink.swift`, `supervisor.js`).
 **What the entitlement adds later.** The gaze sample becomes valid, the warp
 centre follows it, and the system's QR pairing can replace v3's own enrollment
 for provider sessions. The wire format doesn't change.
+
+#### Separate head-locked HUD
+
+A PCVR host and viewer that both negotiate `pcvrHud` (bit 26, requires
+`pcvr`) can use video stream ID 3. It has its own numbering, HEVC Main SDR
+format, recovery and pacing. A 1536×1280 access unit packs two 768×640
+eyes side by side in its top half and their linear grayscale mattes in
+its bottom half. The colour represents sRGB-encoded linear premultiplied
+RGB. `renderPose` supplies the frustum for each eye. The viewer samples the
+HUD in the current eye's frustum and composites it over the reprojected
+world. It does not wait for a matching world frame or use the supplied
+world transform. Each world frame whose HUD was split off carries
+`hudSeparated` (side-data item 7, one byte set to 1). The viewer shows the
+overlay only over those world frames so it cannot double the still-queued
+flattened HUD at a transition.
+
+The native broker takes explicitly head-locked OpenXR quads out of the
+world composite only while the host requests stream 3. It renders them to
+a separate local frame source (`<world-channel>-hud`) up to 30 times per
+second. Regular world-space quads and quad-only menus keep their existing
+composition. An empty HUD picture clears the overlay. If the host loses
+HUD demand, it sends `streamClosed` for stream 3 and the broker resumes the
+original composition. A viewer also expires a HUD picture after 300 ms
+without a replacement. The test stack opts in using the host's
+`--hud-layer` and the broker's `LONGWAVE_BROKER_HUD_LAYER=1`.
 
 ### 4.8 Depth for flat games (3D on the headset)
 

@@ -23,6 +23,8 @@ public struct SideDataType: RawRepresentable, Hashable, Comparable, Sendable, Cu
     /// frame's alpha is 1 minus the head-locked HUD's coverage, so the host can
     /// mark those pixels for the headset (section 4.8). One byte, 1.
     public static let hudMark = SideDataType(rawValue: 6)
+    /// A world frame whose head-locked quads are in stream 3. One byte, 1.
+    public static let hudSeparated = SideDataType(rawValue: 7)
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
     public var description: String { "sideData(\(rawValue))" }
@@ -291,15 +293,17 @@ public struct SideData: Sendable, Hashable {
     public var motionField: MotionField?
     /// `SideDataType.hudMark`: producer to host only.
     public var hudMark = false
+    public var hudSeparated = false
 
     public init(renderPose: RenderPose? = nil, foveation: FoveationSideData? = nil, depthRange: DepthRange? = nil,
-                inputBridge: [UInt8]? = nil, motionField: MotionField? = nil, hudMark: Bool = false) {
+                inputBridge: [UInt8]? = nil, motionField: MotionField? = nil, hudMark: Bool = false, hudSeparated: Bool = false) {
         self.renderPose = renderPose
         self.foveation = foveation
         self.depthRange = depthRange
         self.inputBridge = inputBridge
         self.motionField = motionField
         self.hudMark = hudMark
+        self.hudSeparated = hudSeparated
     }
 
     public static let none = SideData()
@@ -314,6 +318,7 @@ public struct SideData: Sendable, Hashable {
         if inputBridge != nil { types.insert(.inputBridge) }
         if motionField != nil { types.insert(.motionField) }
         if hudMark { types.insert(.hudMark) }
+        if hudSeparated { types.insert(.hudSeparated) }
         return types
     }
 
@@ -355,6 +360,10 @@ public struct SideData: Sendable, Hashable {
                 guard !hudMark else { throw .duplicate("sideData.hudMark") }
                 guard length >= 1, try value.readUInt8() == 1 else { throw .invalid("sideData.hudMark") }
                 hudMark = true
+            case .hudSeparated:
+                guard !hudSeparated else { throw .duplicate("sideData.hudSeparated") }
+                guard length >= 1, try value.readUInt8() == 1 else { throw .invalid("sideData.hudSeparated") }
+                hudSeparated = true
             default:
                 break // unknown: skipped by length
             }
@@ -381,6 +390,9 @@ public struct SideData: Sendable, Hashable {
         if hudMark {
             writeItem(.hudMark, length: 1, to: &writer) { $0.writeUInt8(1) }
         }
+        if hudSeparated {
+            writeItem(.hudSeparated, length: 1, to: &writer) { $0.writeUInt8(1) }
+        }
     }
 
     private func writeItem(_ type: SideDataType, length: Int, to writer: inout WireWriter,
@@ -397,7 +409,7 @@ public struct SideData: Sendable, Hashable {
             + (depthRange == nil ? 0 : 3 + DepthRange.wireSize)
             + (inputBridge.map { 3 + $0.count } ?? 0)
             + (motionField.map { 3 + $0.wireSize } ?? 0)
-            + (hudMark ? 4 : 0)
+            + (hudMark ? 4 : 0) + (hudSeparated ? 4 : 0)
     }
 }
 

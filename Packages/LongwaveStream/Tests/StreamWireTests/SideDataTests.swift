@@ -168,6 +168,18 @@ final class SideDataTests: XCTestCase {
         XCTAssertWireError(.invalid("motionField.flags")) { try SideData(items: &reader) }
     }
 
+    func testSeparatedHudMarkerDoesNotSetLegacyMask() throws {
+        var writer = WireWriter()
+        try SideData(hudSeparated: true).encodeItems(to: &writer)
+        XCTAssertEqual(writer.bytes, hex("07 0100 01"))
+        var reader = WireReader(writer.bytes)
+        let metadata = try SideData(items: &reader)
+        XCTAssertTrue(metadata.hudSeparated)
+        XCTAssertFalse(metadata.hudMark)
+        var repeated = WireReader(writer.bytes + writer.bytes)
+        XCTAssertWireError(.duplicate("sideData.hudSeparated")) { try SideData(items: &repeated) }
+    }
+
     func testTheHudMarkIsOneByte() throws {
         var writer = WireWriter()
         try SideData(hudMark: true).encodeItems(to: &writer)

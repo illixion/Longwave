@@ -44,8 +44,11 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
     /// display frames along it (section 4.8).
     public static let motionField = Capability(rawValue: 25)
 
+    /// A stereo, head-relative PCVR HUD with its own colour and coverage.
+    public static let pcvrHud = Capability(rawValue: 26)
+
     /// Every capability this build implements the wire side of.
-    public static let known: [Capability] = (0...25).map { Capability(rawValue: $0) }
+    public static let known: [Capability] = (0...26).map { Capability(rawValue: $0) }
 
     /// Capabilities that are meaningless without others. Negotiation drops a
     /// capability whose requirements didn't survive.
@@ -56,6 +59,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         .foveatedVideo: [.pcvr],
         .separateEyeVideo: [.pcvr],
         .motionField: [.depthVideo],
+        .pcvrHud: [.pcvr],
     ]
 
     public static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
@@ -64,7 +68,7 @@ public struct Capability: RawRepresentable, Hashable, Comparable, Sendable, Cust
         let names = ["windowStreams", "alphaVideo", "hevc422", "hevc10bitHDR", "av1", "h264", "ltrRecovery",
                      "rfiRecovery", "nack", "audioOpus", "audioPCM24", "audioMultichannel", "spatialObjects",
                      "gamepad", "relativePointer", "clipboard", "virtualDisplay", "localCursor", "sideData",
-                     "depthVideo", "pcvr", "gaze", "foveatedVideo", "separateEyeVideo", "microphone", "motionField"]
+                     "depthVideo", "pcvr", "gaze", "foveatedVideo", "separateEyeVideo", "microphone", "motionField", "pcvrHud"]
         return Int(rawValue) < names.count ? names[Int(rawValue)] : "capability(\(rawValue))"
     }
 }

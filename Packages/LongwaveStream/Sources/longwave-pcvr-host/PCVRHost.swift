@@ -13,6 +13,7 @@ import StreamHost
 import StreamHostWindows
 import StreamTransport
 import StreamWire
+import Synchronization
 
 struct HostOptions {
     var channel = "pcvr"
@@ -70,6 +71,8 @@ struct HostOptions {
     var foveation = FoveationMode.auto
     var warp = PCVRProfile.defaultWarp
     var depth = DepthMode.auto
+    /// Pair with LONGWAVE_BROKER_HUD_LAYER=1 on the native broker.
+    var hudLayer = false
     /// The depth stream's encoder rate. Its picture is small and smooth, but a
     /// mesh displaced by it turns every codec block edge into a step in the
     /// world: at 6 Mbps walls tore along block boundaries (test scene, 2026-11-07).
@@ -148,6 +151,7 @@ final class PCVRHost: @unchecked Sendable {
         var sender: VideoStreamSender
         /// The eye stream's depth auxiliary, for a viewer that negotiated `depthVideo`.
         var depthSender: VideoStreamSender?
+        var hudSender: VideoStreamSender?
         /// It negotiated `motionField`: its depth frames carry the game's motion.
         var wantsMotion: Bool { depthSender != nil && capabilities.contains(.motionField) }
         var lastPose: UInt32?
@@ -187,6 +191,16 @@ final class PCVRHost: @unchecked Sendable {
     let socket: UDPSocket
     private let device: GraphicsDevice
     private var source: ExternalFrameSource?
+    private var hudSource: ExternalFrameSource?
+    // One pending picture. The external source keeps the texture leased through encode.
+    private let hudMailbox = Mutex<CapturedFrame?>(nil)
+    private let hudReady = DispatchSemaphore(value: 0)
+    // Under lock.
+    private var hudActive = false
+    private var hudHealthy = true
+    private var hudNeedsKey = true
+    private var hudFormat: FormatDescription?
+    private var hudFrames = 0
 
     // Under `lock`.
     var endpoint = HostEndpoint<UDPAddress>(devices: [])
@@ -417,6 +431,31 @@ final class PCVRHost: @unchecked Sendable {
         source = try ExternalFrameSource(device: device, channel: options.channel) { [weak self] frame in
             self?.offer(frame)
         }
+        if options.hudLayer {
+            do {
+                let picture = PCVRProfile.hudPicture
+                var parameters = VideoEncoder.Parameters(width: Int(picture.width), height: Int(picture.height),
+                                                         fps: PCVRProfile.hudFramesPerSecond,
+                                                         bitrate: PCVRProfile.hudMbps * 1_000_000)
+                parameters.asyncMode = true
+                let hudEncoder = try VideoEncoder(device: device, parameters: parameters)
+                hudSource = try ExternalFrameSource(device: device, channel: options.channel + "-hud") { [weak self] frame in
+                    guard let self else { return }
+                    let wake = hudMailbox.withLock {
+                        let wake = $0 == nil
+                        $0 = frame
+                        return wake
+                    }
+                    if wake { hudReady.signal() }
+                }
+                let thread = Thread { [self] in hudLoop(encoder: hudEncoder) }
+                thread.name = "HUD"
+                thread.start()
+                log.line("HUD encoder: HEVC \(picture.width)x\(picture.height), up to \(PCVRProfile.hudFramesPerSecond) Hz")
+            } catch {
+                log.line("Separate HUD unavailable, keeping the original game composite: \(error)")
+            }
+        }
         let encoderThread = Thread { [self] in encodeLoop() }
         encoderThread.name = "encoder"
         encoderThread.start()
@@ -455,7 +494,73 @@ final class PCVRHost: @unchecked Sendable {
         desktopCapture.stop()
         frameReady.signal()
         depthReady.signal()
+        hudReady.signal()
+        hudSource?.stop()
         source?.stop()
+    }
+
+    private func hudLoop(encoder: VideoEncoder) {
+        while running {
+            _ = hudReady.wait(timeout: .now() + .milliseconds(100))
+            guard let frame = hudMailbox.withLock({ frame -> CapturedFrame? in
+                defer { frame = nil }
+                return frame
+            }), frame.width == Int(PCVRProfile.hudPicture.width),
+                frame.height == Int(PCVRProfile.hudPicture.height),
+                let bytes = frame.external?.sideData else { continue }
+            var reader = WireReader(bytes)
+            guard let metadata = try? SideData(items: &reader), let pose = metadata.renderPose else { continue }
+            let forceKey = lock.withLock {
+                let key = hudActive ? hudNeedsKey : nil
+                if hudActive { hudNeedsKey = false }
+                return key
+            }
+            guard let forceKey else { continue }
+            do {
+                let (accessUnit, isIDR) = try encoder.encode(frame, timestamp: frame.sequence, forceIDR: forceKey) {
+                    (Array($0.bytes), $0.isIDR)
+                }
+                lock.withLock {
+                    guard hudActive else { return }
+                    if isIDR {
+                        let sets = Self.parameterSets(in: accessUnit)
+                        if !sets.isEmpty, sets != hudFormat?.configuration {
+                            hudFormat = FormatDescription(
+                                streamID: PCVRProfile.hudStreamID, firstFrameNumber: 0, codec: .hevc,
+                                formatKind: .annexBParameterSets, size: PCVRProfile.hudPicture, bitDepth: 8,
+                                chromaFormat: .yuv420, colour: .bt709, configuration: sets, sideDataTypes: [.renderPose])
+                            for viewer in viewers.values where viewer.confirmed { sendHudFormat(to: viewer) }
+                        }
+                    }
+                    guard hudFormat != nil else { hudNeedsKey = true; return }
+                    let now = Self.now()
+                    hudFrames += 1
+                    for viewer in viewers.values where viewer.confirmed {
+                        guard viewer.hudSender != nil,
+                              let payload = endpoint.sessions[viewer.index]?.session.udpPayload else { continue }
+                        let result = try? viewer.hudSender?.submit(
+                            accessUnit: accessUnit, isKeyFrame: isIDR,
+                            captureTime: HostClock.nanoseconds(frame.presentTicks), sideData: SideData(renderPose: pose),
+                            udpPayload: payload, now: now)
+                        if case .queued? = result { continue }
+                        hudNeedsKey = true
+                    }
+                    pump()
+                }
+            } catch {
+                lock.withLock { hudHealthy = false }
+                log.line("HUD encode failed; restoring the game composite: \(error)")
+            }
+        }
+    }
+
+    private func sendHudFormat(to viewer: Viewer) {
+        guard var format = hudFormat, let sender = viewer.hudSender else { return }
+        format.firstFrameNumber = sender.upcomingFrameNumber
+        viewer.hudSender?.recoveryRequested()
+        hudNeedsKey = true
+        guard let body = try? format.encoded() else { return }
+        _ = endpoint.withSession(viewer.index) { try? $0.send(.formatDescription, body: body, on: .control) }
     }
 
     // MARK: Frames
@@ -1247,7 +1352,8 @@ final class PCVRHost: @unchecked Sendable {
             streamID: PCVRProfile.streamID, firstFrameNumber: 0, codec: .hevc, formatKind: .annexBParameterSets,
             size: layout.pictureSize, bitDepth: layout.bitDepth, chromaFormat: .yuv420, colour: .bt709, configuration: parameterSets,
             // inputBridge: the producer's rendezvous, passed through when it sends one.
-            sideDataTypes: layout.warp == nil ? [.renderPose, .inputBridge] : [.renderPose, .foveation, .inputBridge],
+            sideDataTypes: layout.warp == nil ? [.renderPose, .inputBridge, .hudSeparated]
+                        : [.renderPose, .foveation, .inputBridge, .hudSeparated],
             // A uniformly scaled eye has nothing to unwarp: to the viewer it was rendered at the wire size.
             pcvr: PCVRLayout(layout: layout.stereoLayout, renderSize: layout.warp == nil ? layout.wireEye : layout.renderEye,
                              wireSize: layout.wireEye,
@@ -1427,6 +1533,28 @@ final class PCVRHost: @unchecked Sendable {
                 }
             }
             source?.publish(state)
+            if let hudSource {
+                let active = lock.withLock {
+                    let watching = viewers.values.filter(\.confirmed)
+                    let active = hudHealthy && !watching.isEmpty && watching.allSatisfy { $0.hudSender != nil }
+                    if active != hudActive {
+                        hudActive = active
+                        hudNeedsKey = true
+                        if active {
+                            for viewer in watching { sendHudFormat(to: viewer) }
+                        } else if let body = try? StreamClosed(streamID: PCVRProfile.hudStreamID).encoded() {
+                            for viewer in watching where viewer.hudSender != nil {
+                                viewer.hudSender?.recoveryRequested()
+                                _ = endpoint.withSession(viewer.index) { try? $0.send(.streamClosed, body: body, on: .control) }
+                            }
+                        }
+                    }
+                    return active
+                }
+                var demand = ExternalHostState()
+                demand.refreshMillihertz = active ? UInt32(PCVRProfile.hudFramesPerSecond * 1000) : 0
+                hudSource.publish(demand)
+            }
         }
     }
 
@@ -1499,6 +1627,7 @@ final class PCVRHost: @unchecked Sendable {
         if !grants.contains(.screen) { grants = [] }
         var capabilities = PCVRProfile.hostCapabilities
         if microphone != nil { capabilities.insert(.microphone) }
+        if hudSource != nil && hudHealthy { capabilities.insert(.pcvrHud) }
         if !options.motion || options.depth == .off { capabilities.remove(.motionField) }
         let ack = HostHelloAck(answering: hello, hostCapabilities: capabilities, platform: .windows,
                                keyCodeSpace: .hidUsage, grants: grants, maxUDPPayload: DatagramLayout.maxProbedUDPPayload,
@@ -1534,11 +1663,18 @@ final class PCVRHost: @unchecked Sendable {
                 depth.rateControl.frameRate = options.refreshHz
                 viewer.depthSender = VideoStreamSender(configuration: depth)
             }
+            if capabilities.contains(.pcvrHud) {
+                var hud = VideoStreamSender.Configuration(streamID: PCVRProfile.hudStreamID)
+                hud.rateControl.start = UInt64(PCVRProfile.hudMbps) * 125_000
+                hud.rateControl.frameRate = Double(PCVRProfile.hudFramesPerSecond)
+                viewer.hudSender = VideoStreamSender(configuration: hud)
+            }
             viewers[index] = viewer
             _ = endpoint.withSession(index) { $0.setPathCeiling(DatagramLayout.maxProbedUDPPayload, now: now) }
             if let udpPayload = endpoint.sessions[index]?.session.udpPayload {
                 viewer.sender.setEncoderCeiling(options.maxMbps * 1_000_000, udpPayload: udpPayload)
                 viewer.depthSender?.setEncoderCeiling(options.depthMbps * 2 * 1_000_000, udpPayload: udpPayload)
+                viewer.hudSender?.setEncoderCeiling(PCVRProfile.hudMbps * 2 * 1_000_000, udpPayload: udpPayload)
             }
         case .confirmed(let index):
             if let viewer = desktop.viewers[index] {
@@ -1553,6 +1689,7 @@ final class PCVRHost: @unchecked Sendable {
                 + ", \(viewer.depthSender != nil ? "depth" : "no depth")"
                 + ", \(viewer.capabilities.contains(.microphone) ? "microphone" : "no microphone"))")
             sendFormat(to: viewer)
+            sendHudFormat(to: viewer)
             if viewer.depthSender != nil {
                 sendDepthFormat(to: viewer)
                 depthWantsKeyFrame = true
@@ -1591,7 +1728,9 @@ final class PCVRHost: @unchecked Sendable {
                     if request.streamID == PCVRProfile.depthStreamID {
                         viewer.depthSender?.recoveryRequested()
                         depthWantsKeyFrame = true
-                    } else {
+                    } else if request.streamID == PCVRProfile.hudStreamID {
+                        if viewer.hudSender != nil { sendHudFormat(to: viewer) }
+                    } else if request.streamID == PCVRProfile.streamID {
                         viewer.sender.recoveryRequested()
                         requestKeyFrame(now: now)
                     }
@@ -1639,10 +1778,12 @@ final class PCVRHost: @unchecked Sendable {
             case .nack(let nack):
                 viewer.sender.handle(nack)
                 viewer.depthSender?.handle(nack)
+                viewer.hudSender?.handle(nack)
             case .feedback(_, let results):
                 let rtt = endpoint.sessions[viewer.index]?.session.rtt.smoothed ?? 2_000_000
                 viewer.sender.onFeedback(results, now: now, rtt: rtt)
                 viewer.depthSender?.onFeedback(results, now: now, rtt: rtt)
+                viewer.hudSender?.onFeedback(results, now: now, rtt: rtt)
             case .audio(let header, let packet):
                 if viewer.capabilities.contains(.microphone) {
                     microphone?.audio(header, packet: packet, from: viewer.index)
@@ -1821,6 +1962,7 @@ final class PCVRHost: @unchecked Sendable {
             }
             // Depth first: a few shards, and the headset wants it before the colour frame.
             if viewer.depthSender != nil { drain { viewer.depthSender!.next(now: now) } }
+            if hudActive, viewer.hudSender != nil { drain { viewer.hudSender!.next(now: now) } }
             drain { viewer.sender.next(now: now) }
         }
         flush(now: now)
@@ -1828,7 +1970,8 @@ final class PCVRHost: @unchecked Sendable {
             guard let session = endpoint.sessions[viewer.index]?.session else { return nil }
             // The depth stream's share comes out of the colour budget.
             let depth = viewer.depthSender == nil ? 0 : options.depthMbps * 1_000_000
-            var colour = max(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) - depth, 1_000_000)
+            let hud = hudActive ? PCVRProfile.hudMbps * 1_000_000 : 0
+            var colour = max(viewer.sender.encoderBitrate(udpPayload: session.udpPayload) - depth - hud, 1_000_000)
             if options.minMbps > 0, viewer.sender.controller.smoothedLoss < 0.02 {
                 colour = max(colour, options.minMbps * 1_000_000)
             }
@@ -1876,12 +2019,17 @@ final class PCVRHost: @unchecked Sendable {
         for viewer in viewers.values where viewer.confirmed {
             if let next = viewer.sender.nextWakeTime(now: now) { wake = min(wake, next) }
             if let next = viewer.depthSender?.nextWakeTime(now: now) { wake = min(wake, next) }
+            if hudActive, let next = viewer.hudSender?.nextWakeTime(now: now) { wake = min(wake, next) }
         }
         guard wake > now else { return 0 }
         return Int32(max(1, min(100, (wake - now + 999_999) / 1_000_000)))
     }
 
     private func logStatistics(now: UInt64) {
+        if hudFrames > 0 {
+            log.line("separate HUD: \(hudFrames) frames encoded in this interval")
+            hudFrames = 0
+        }
         let seconds = lastStats == 0 ? 5.0 : Double(now - lastStats) / 1e9
         lastStats = now
         let source = self.source?.statistics

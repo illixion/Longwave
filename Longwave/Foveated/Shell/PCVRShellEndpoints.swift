@@ -255,6 +255,7 @@ enum PCVRShellEndpoints {
                 "posesPerSecond": v.posesPerSecond, "gazeNegotiated": v.gazeNegotiated, "foveated": v.foveated,
                 "framesWithoutFoveation": v.framesWithoutFoveation, "framesRescheduled": v.framesRescheduled, "depthNegotiated": v.depthNegotiated,
                 "depthFramesDecoded": v.depthFramesDecoded, "depthFramesLost": v.depthFramesLost,
+                "hudNegotiated": v.hudNegotiated, "hudFramesDecoded": v.hudFramesDecoded,
                 "depthPicture": v.depthPicture,
             ]
             if let rtt = v.rttMilliseconds { v3["rttMs"] = rtt }

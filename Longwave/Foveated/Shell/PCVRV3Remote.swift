@@ -54,6 +54,8 @@ nonisolated struct PCVRV3Status: Equatable, Sendable {
     var depthFramesDecoded = 0
     var depthFramesLost = 0
     var depthPicture = "—"
+    var hudNegotiated = false
+    var hudFramesDecoded = 0
     /// What the host settled on (`pcvrSessionState`): the render size per eye,
     /// the stream rate, whether a title renders, and why it might be held back.
     var hostSession: PCVRSessionState?
@@ -219,6 +221,8 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     /// The depth stream, when this receiver asked for it (`wantsDepth`).
     let depthStore: PCVRDepthStore?
     private let depthDecoder: PCVRHEVCDecoder?
+    let hudFeed: PCVRHudFeed?
+    private let hudDecoder: PCVRHEVCDecoder?
     private let queue = DispatchQueue(label: "pro.longwave.pcvr.v3", qos: .userInteractive)
     private let log = DebugLogger(subsystem: "pro.longwave", category: "PCVRV3Remote")
 
@@ -247,6 +251,14 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     private var pendingDepthFormats: [FormatDescription] = []
     private var activeDepthFormat: FormatDescription?
     private var depthNeedsKeyFrame = true
+    private var hudNegotiated = false
+    private var hudReceiver = VideoStreamReceiver(streamID: PCVRProfile.hudStreamID)
+    private var hudDue: UInt64 = .max
+    private var pendingHudFormat: FormatDescription?
+    private var activeHudFormat: FormatDescription?
+    private var firstHudKeyFrame: AssembledVideoFrame?
+    private var hudNeedsKeyFrame = true
+    private var hudEpoch: UInt32 = 0
     /// Bumped per format applied: the frame numbering's run (`PCVRDecodedFrame.streamEpoch`).
     private var streamEpoch: UInt32 = 0
     private var running = false
@@ -289,7 +301,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
     /// - Parameter wantsDepth: Offer `depthVideo`, for a presenter that
     ///   reprojects by depth: the host's depth pictures land in `depthStore`.
     init?(device: any MTLDevice, mailbox: PCVRFrameMailbox, target: PCVRV3Target,
-          offersGaze: Bool = false, wantsDepth: Bool = false,
+          offersGaze: Bool = false, wantsDepth: Bool = false, wantsHud: Bool = false,
           encodedSink: (any PCVREncodedVideoSink)? = nil) throws {
         guard let psk = NativeV3.psk(for: target.credential) else { return nil }
         self.target = target
@@ -304,6 +316,14 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             depthStore = nil
             depthDecoder = nil
         }
+        if wantsHud {
+            let feed = PCVRHudFeed()
+            hudDecoder = try? PCVRHEVCDecoder(device: device, output: .hud(feed))
+            hudFeed = hudDecoder == nil ? nil : feed
+        } else {
+            hudFeed = nil
+            hudDecoder = nil
+        }
         // Motion with depth: the host puts the game's motion on depth frames,
         // and the renderer carries repeated frames on along it when its
         // `motionExtrapolation` is on (switchable live, so offered either way).
@@ -313,6 +333,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         if encodedSink?.acceptsFoveatedVideo == false { capabilities.remove(.foveatedVideo) }
         // Offered always: the host takes it only when it has somewhere to play it.
         capabilities.insert(.microphone)
+        if hudDecoder != nil { capabilities.insert(.pcvrHud) }
         hello = ClientHello(capabilities: capabilities,
                             platform: .visionOS,
                             maxUDPPayload: DatagramLayout.maxProbedUDPPayload, intent: [.screen],
@@ -323,6 +344,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         decoder?.stampChecker = stamps
         depthDecoder?.onDecodeError = { [weak self] in
             self?.queue.async { self?.requestDepthKeyFrame() }
+        }
+        hudDecoder?.onDecodeError = { [weak self] in
+            self?.queue.async { self?.requestHudKeyFrame() }
         }
     }
 
@@ -498,6 +522,12 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         session = nil
         gazeNegotiated = false
         depthNegotiated = false
+        hudNegotiated = false
+        resetHud()
+        status.withLock {
+            $0.hudNegotiated = false
+            $0.hudFramesDecoded = 0
+        }
         microphoneNegotiated = false
         microphoneFormatSent = nil
     }
@@ -560,15 +590,18 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             log.notice("v3 PCVR gaze \(self.gazeNegotiated ? "negotiated" : "not offered by the PC", privacy: .public)")
         }
         depthNegotiated = capabilities.contains(.depthVideo) && depthDecoder != nil
+        hudNegotiated = capabilities.contains(.pcvrHud) && hudDecoder != nil
         if hello.capabilities.contains(.depthVideo) {
             log.notice("v3 PCVR depth \(self.depthNegotiated ? "negotiated" : "not offered by the PC", privacy: .public)")
         }
         let depthNegotiated = depthNegotiated
+        let hudNegotiated = hudNegotiated
         microphoneNegotiated = capabilities.contains(.microphone)
         log.notice("v3 PCVR microphone \(self.microphoneNegotiated ? "taken by the PC" : "not taken by the PC (no virtual cable)", privacy: .public)")
         let microphoneNegotiated = microphoneNegotiated
         status.withLock {
             $0.depthNegotiated = depthNegotiated
+            $0.hudNegotiated = hudNegotiated
             $0.microphoneNegotiated = microphoneNegotiated
         }
         var session = opened
@@ -579,6 +612,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         configuration.nacks = capabilities.contains(.nack)
         receiver = VideoStreamReceiver(streamID: PCVRProfile.streamID, configuration: configuration)
         depthReceiver = VideoStreamReceiver(streamID: PCVRProfile.depthStreamID, configuration: configuration)
+        hudReceiver = VideoStreamReceiver(streamID: PCVRProfile.hudStreamID, configuration: configuration)
         attempts = 0
         setState("Connected, waiting for the picture")
         log.notice("v3 PCVR session up (\(ack.platform.description, privacy: .public), datagrams up to \(ack.maxUDPPayload, privacy: .public) bytes)")
@@ -602,7 +636,11 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
                 guard depthNegotiated else { break }
                 handleDepth(depthReceiver.receive(header, data: data, now: now))
                 depthDue = min(depthDue, now + 2_000_000)
-            } else {
+            } else if header.streamID == PCVRProfile.hudStreamID {
+                guard hudNegotiated else { break }
+                handleHud(hudReceiver.receive(header, data: data, now: now))
+                hudDue = min(hudDue, now + 2_000_000)
+            } else if header.streamID == PCVRProfile.streamID {
                 let remoteNow = session?.clock.remoteTime(atLocal: now)
                 link.withLock {
                     $0.shard(frame: header.frameNumber, captureTime: header.captureTime, key: header.flags.contains(.key),
@@ -626,6 +664,18 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
                       format.auxiliary == AuxiliaryStream(role: .depth, primaryStreamID: PCVRProfile.streamID),
                       format.depthEncoding?.kind == .inverseLinear {
                 pendingDepthFormats.append(format)
+            } else if format.streamID == PCVRProfile.hudStreamID, hudNegotiated,
+                      format.codec == .hevc, format.formatKind == .annexBParameterSets,
+                      format.size == PCVRProfile.hudPicture, format.sideDataTypes.contains(.renderPose) {
+                pendingHudFormat = format
+                if let key = firstHudKeyFrame {
+                    firstHudKeyFrame = nil
+                    if !SerialNumber.isNewer(format.firstFrameNumber, than: key.frameNumber) { deliverHud(key) }
+                }
+            }
+        case .streamClosed:
+            if let closed = try? StreamClosed(decoding: message.body), closed.streamID == PCVRProfile.hudStreamID {
+                resetHud()
             }
         case .bye:
             let reason = (try? TextBody.decode(message.body)) ?? ""
@@ -682,6 +732,72 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         handleDepth(depthReceiver.requestKeyFrame(now: now))
         depthDue = min(depthDue, depthReceiver.nextWakeTime(now: now) ?? .max)
         drive()
+    }
+
+    private func resetHud() {
+        hudDecoder?.invalidate()
+        hudFeed?.clear()
+        pendingHudFormat = nil
+        activeHudFormat = nil
+        firstHudKeyFrame = nil
+        hudNeedsKeyFrame = true
+        hudDue = .max
+        var configuration = VideoStreamReceiver.Configuration()
+        configuration.nacks = hello.capabilities.contains(.nack)
+        hudReceiver = VideoStreamReceiver(streamID: PCVRProfile.hudStreamID, configuration: configuration)
+    }
+
+    private func handleHud(_ outputs: [VideoStreamReceiver.Output]) {
+        for output in outputs {
+            switch output {
+            case .frame(let frame):
+                deliverHud(frame)
+            case .nack(let nack):
+                session?.send(nack)
+            case .recovery(let request):
+                if let body = try? request.encoded() { try? session?.send(.recoveryRequest, body: body, on: .control) }
+            }
+        }
+    }
+
+    private func requestHudKeyFrame() {
+        guard session != nil, hudNegotiated else { return }
+        let now = NativeV3.now()
+        hudNeedsKeyFrame = true
+        handleHud(hudReceiver.requestKeyFrame(now: now))
+        hudDue = min(hudDue, hudReceiver.nextWakeTime(now: now) ?? .max)
+    }
+
+    private func deliverHud(_ frame: AssembledVideoFrame) {
+        guard let hudDecoder, let wirePose = frame.payload.sideData.renderPose else { return }
+        let isKey = frame.flags.contains(.key)
+        if activeHudFormat == nil, pendingHudFormat == nil, isKey {
+            // UDP video can overtake the reliable format description.
+            firstHudKeyFrame = frame
+            return
+        }
+        if let next = pendingHudFormat, !SerialNumber.isNewer(next.firstFrameNumber, than: frame.frameNumber) {
+            guard isKey else { requestHudKeyFrame(); return }
+            do {
+                try hudDecoder.setFormat(next)
+            } catch {
+                log.error("v3 PCVR HUD decoder could not take the format: \(String(describing: error), privacy: .public)")
+                requestHudKeyFrame()
+                return
+            }
+            activeHudFormat = next
+            pendingHudFormat = nil
+            hudEpoch &+= 1
+        }
+        guard activeHudFormat != nil, !hudNeedsKeyFrame || isKey else { requestHudKeyFrame(); return }
+        hudNeedsKeyFrame = false
+        // Only the eye frusta are used. There is no world-space pose to match
+        // or playout delay to wait for in a head-relative HUD.
+        let geometry = PCVRRenderPose(poseSequence: wirePose.poseSequence, spaceEpoch: wirePose.spaceEpoch,
+                                      displayTime: 0, eyes: PCVRStereo(left: Self.eyeView(wirePose.left),
+                                                                     right: Self.eyeView(wirePose.right)))
+        hudDecoder.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: isKey, frameNumber: frame.frameNumber,
+                          streamEpoch: hudEpoch, renderPose: geometry)
     }
 
     private func deliverDepth(_ frame: AssembledVideoFrame) {
@@ -786,7 +902,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         }
         decoder?.decode(accessUnit: frame.payload.accessUnit, isKeyFrame: frame.flags.contains(.key),
                        frameNumber: frame.frameNumber, streamEpoch: streamEpoch, renderPose: renderPose,
-                       foveation: foveation)
+                       foveation: foveation, hudSeparated: hudNegotiated && frame.payload.sideData.hudSeparated)
     }
 
     /// How much later than its own pose's display time a frame's label may be
@@ -934,6 +1050,10 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
             handleDepth(depthReceiver.poll(now: now, rtt: session?.rtt.smoothed ?? 0))
             depthDue = depthReceiver.nextWakeTime(now: now) ?? .max
         }
+        if hudNegotiated, now >= hudDue {
+            handleHud(hudReceiver.poll(now: now, rtt: session?.rtt.smoothed ?? 0))
+            hudDue = hudReceiver.nextWakeTime(now: now) ?? .max
+        }
         flush(now: now)
         if let closure = session?.closure {
             lost(closure == .timedOut ? "the PC stopped answering" : "session closed (\(closure))")
@@ -941,7 +1061,7 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         }
         if now - lastStats >= Self.statsInterval { reportStats(now: now) }
         let wakes = [session?.nextWakeTime(now: now), receiverDue, depthNegotiated ? depthDue : nil,
-                     lastStats + Self.statsInterval].compactMap { $0 }
+                     hudNegotiated ? hudDue : nil, lastStats + Self.statsInterval].compactMap { $0 }
         timer?.arm(at: max(wakes.min() ?? now + 250_000_000, now + 50_000))
     }
 
@@ -960,6 +1080,9 @@ nonisolated final class PCVRV3Remote: @unchecked Sendable {
         let decoded = decoder?.takeCounters() ?? PCVRHEVCDecoder.Tally()
         let depthDecoded = depthDecoder?.takeCounters()
         let depthLost = depthReceiver.statistics.framesLost
+        if let hudDecoded = hudDecoder?.takeCounters() {
+            status.withLock { $0.hudFramesDecoded += hudDecoded.frames }
+        }
         let rtt = session.map { Double($0.rtt.smoothed) / 1e6 }
         let mbps = Double(counters.payloadBytes) * 8 / elapsed / 1e6
         let decodeMs = decoded.frames > 0 ? decoded.decodeSeconds / Double(decoded.frames) * 1000 : nil
@@ -1040,6 +1163,7 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
 
     enum Output {
         case colour(PCVRFrameMailbox)
+        case hud(PCVRHudFeed)
         case depth(PCVRDepthStore)
     }
 
@@ -1144,9 +1268,9 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
     }
 
     func decode(accessUnit: some Collection<UInt8>, isKeyFrame: Bool, frameNumber: UInt32, streamEpoch: UInt32,
-                renderPose: PCVRRenderPose, foveation: PCVRFoveation? = nil) {
+                renderPose: PCVRRenderPose, foveation: PCVRFoveation? = nil, hudSeparated: Bool = false) {
         renewSessionIfLost()
-        guard case .colour(let mailbox) = output, let session, let formatDescription else { return }
+        guard !isDepth, let session, let formatDescription else { return }
         let sample = PCVRAnnexB.lengthPrefixedSample(accessUnit)
         guard !sample.isEmpty, let buffer = Self.sampleBuffer(sample, format: formatDescription) else {
             fail("could not wrap an access unit")
@@ -1176,9 +1300,14 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
                                 poseSequence: renderPose.poseSequence)
             let metalTexture = texture.texture
             let frame = PCVRDecodedFrame(streamEpoch: streamEpoch, frameNumber: frameNumber, texture: metalTexture,
-                                         renderPose: renderPose, foveation: foveation, arrivalTime: now,
+                                         renderPose: renderPose, foveation: foveation,
+                                         hudSeparated: hudSeparated, arrivalTime: now,
                                          release: { withExtendedLifetime((texture, imageBuffer)) {} })
-            mailbox.deliver(frame)
+            switch output {
+            case .colour(let mailbox): mailbox.deliver(frame)
+            case .hud(let feed): feed.deliver(frame)
+            case .depth: break
+            }
         }
         if status != noErr {
             noteSessionLost(status)
@@ -1287,10 +1416,14 @@ nonisolated final class PCVRHEVCDecoder: @unchecked Sendable {
         let depth = isDepth
         let width = depth ? CVPixelBufferGetWidthOfPlane(imageBuffer, 0) : CVPixelBufferGetWidth(imageBuffer)
         let height = depth ? CVPixelBufferGetHeightOfPlane(imageBuffer, 0) : CVPixelBufferGetHeight(imageBuffer)
+        let format: MTLPixelFormat = switch output {
+        case .depth: .r8Unorm
+        case .colour: .bgra8Unorm_srgb
+        case .hud: .bgra8Unorm  // the matte is linear; the shader converts the RGB half
+        }
         var cvTexture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
-            kCFAllocatorDefault, textureCache, imageBuffer, nil, depth ? .r8Unorm : .bgra8Unorm_srgb, width, height, 0,
-            &cvTexture)
+            kCFAllocatorDefault, textureCache, imageBuffer, nil, format, width, height, 0, &cvTexture)
         guard status == kCVReturnSuccess, let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture) else { return nil }
         return WrappedTexture(cvTexture: cvTexture, texture: texture)
     }

@@ -37,6 +37,15 @@ public enum PCVRProfile {
     /// of the render eye size, as 8-bit luma (`depthEncoding`). Its frames take
     /// the eye frame's number and capture time.
     public static let depthStreamID: UInt32 = 2
+
+    /// An independent HEVC stream with its own frame numbers. Colour (sRGB of
+    /// linear premultiplied RGB) is stacked over its linear grayscale matte;
+    /// both halves have the left and right eyes side by side. renderPose carries
+    /// the source frusta; its world pose and presentation time do not aim the HUD.
+    public static let hudStreamID: UInt32 = 3
+    public static let hudPicture = PixelSize(width: 1536, height: 1280)
+    public static let hudFramesPerSecond = 30
+    public static let hudMbps = 4
     public static let depthDivisor = 16
     public static let depthEncoding = DepthEncoding(kind: .inverseLinear, valueBits: 8)
 

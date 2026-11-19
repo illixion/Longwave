@@ -140,6 +140,7 @@ func parseOptions(_ arguments: [String]) -> HostOptions {
                 print("--motion takes on or off: the game's motion on depth frames, for a headset that extrapolates by it")
                 exit(2)
             }
+        case "--hud-layer": options.hudLayer = true
         case "--hud-mask":
             switch value(argument) {
             case "on": options.hudMask = true

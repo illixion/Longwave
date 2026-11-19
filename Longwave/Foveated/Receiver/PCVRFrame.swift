@@ -54,17 +54,19 @@ nonisolated final class PCVRDecodedFrame: @unchecked Sendable {
     let renderPose: PCVRRenderPose
     /// The host's centre/edge warp for this frame, or nil for an unwarped one.
     let foveation: PCVRFoveation?
+    let hudSeparated: Bool
     /// When the frame became presentable (decode finished), receiver clock.
     let arrivalTime: TimeInterval
     private let release: (@Sendable () -> Void)?
 
     init(streamEpoch: UInt32, frameNumber: UInt32, texture: any MTLTexture, renderPose: PCVRRenderPose,
-         foveation: PCVRFoveation? = nil, arrivalTime: TimeInterval, release: (@Sendable () -> Void)? = nil) {
+         foveation: PCVRFoveation? = nil, hudSeparated: Bool = false, arrivalTime: TimeInterval, release: (@Sendable () -> Void)? = nil) {
         self.streamEpoch = streamEpoch
         self.frameNumber = frameNumber
         self.texture = texture
         self.renderPose = renderPose
         self.foveation = foveation
+        self.hudSeparated = hudSeparated
         self.arrivalTime = arrivalTime
         self.release = release
     }

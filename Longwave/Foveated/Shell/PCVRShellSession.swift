@@ -120,8 +120,10 @@ final class PCVRShellSession {
             do {
                 if let remote = try PCVRV3Remote(device: layerRenderer.device, mailbox: mailbox, target: v3Target,
                                                   offersGaze: gazeSource != nil,
-                                                  wantsDepth: renderOptions.depthWarp.isEnabled) {
+                                                  wantsDepth: renderOptions.depthWarp.isEnabled,
+                                                  wantsHud: renderer.hudRenderer != nil) {
                     renderer.depthStore = remote.depthStore
+                    renderer.hudFeed = remote.hudFeed
                     poseProducer.onSnapshot = { [remote] snapshot in remote.receive(snapshot) }
                     remote.start()
                     v3Remote = remote

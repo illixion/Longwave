@@ -167,6 +167,8 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
     private var depthWarper: PCVRDepthWarper?
     /// The v3 source's depth pictures, when it asked for them. Set before `start()`.
     var depthStore: PCVRDepthStore?
+    let hudRenderer: PCVRHudRenderer?
+    var hudFeed: PCVRHudFeed?
     /// The room guardian's walls, drawn over the stream in every eye (its
     /// snapshot is published from the main actor; encoding it never waits).
     /// Set before `start()`.
@@ -201,6 +203,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         }
         queue.label = "PCVR shell"
         self.layerRenderer = layerRenderer
+        hudRenderer = try? PCVRHudRenderer(device: layerRenderer.device)
         self.mailbox = mailbox
         self.poseProducer = poseProducer
         self.commandQueue = queue
@@ -430,6 +433,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
                 motionPixels += Double(shift.map.meanPixels)
             }
         }
+        // Playout can still be showing a world frame with the flattened HUD
+        // when the first independent HUD arrives. Never draw both copies.
+        let hud = presented?.frame.hudSeparated == true ? hudFeed?.latest(now: presentTime) : nil
         let capture = presented == nil ? nil : PCVRShellCapture.shared.next()
         if let capture, let presented {
             recordCaptureInput(capture, presented: presented.frame, isNew: presented.isNew, depth: depthEntry,
@@ -451,6 +457,9 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
             } catch {
                 log.error("Reprojection encode failed: \(error, privacy: .public)")
             }
+            if let hud {
+                hudRenderer?.encode(hud, targets: targets, commandBuffer: commandBuffer)
+            }
             if let capture, drawableIndex == 0 {
                 recordCaptureOutput(capture, drawable: drawable, targets: targets, commandBuffer: commandBuffer)
             }
@@ -464,7 +473,7 @@ nonisolated final class PCVRShellRenderer: @unchecked Sendable {
         // has finished sampling them.
         let sampled = presented?.frame
         commandBuffer.addCompletedHandler { [inFlight, gpuTimes, background] buffer in
-            withExtendedLifetime((sampled, depthEntry, fills, background)) {}
+            withExtendedLifetime((sampled, depthEntry, fills, background, hud)) {}
             capture?.complete()
             let time = buffer.gpuEndTime - buffer.gpuStartTime
             if time > 0 { gpuTimes.withLock { $0.append(time) } }

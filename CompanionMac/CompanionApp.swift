@@ -38,6 +38,8 @@ struct CompanionApp: App {
         // only when the user asks (Log In, setup, Device Hub) or a schedule
         // resets the sandbox — never just because the Companion launched.
         scheduler.start()
+        // Projects → iTerm2 on the headset runs this copy over SSH.
+        ITermToolInstaller.shared.install()
         PermissionCenter.shared.attach(presence: controller.presence, sandbox: sandbox)
 
         // com.illixion.rave: RAVECompanion (pairing, presence, port listeners).

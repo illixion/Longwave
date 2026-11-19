@@ -737,6 +737,30 @@ final class SSHTerminalManager: AgentSessionCommandBuilding {
         }
     }
 
+    // MARK: - iTerm2 on the host (Projects → iTerm2)
+
+    /// Runs one `iterm-tool` command on the host and returns its stdout; a
+    /// failure throws with the tool's own message (iTerm2's Python API off,
+    /// tool missing, no such session).
+    func runITerm(host: String, port: Int, username: String, arguments: [String]) async throws -> String {
+        let raw = try await runCommand(host: host, port: port, username: username,
+                                       command: ITermCommands.captured(arguments))
+        return try ITermCommands.result(raw)
+    }
+
+    /// Opens (or reopens) a live mirror of one iTerm2 session: a PTY running
+    /// `iterm-tool view`, which redraws that session on every change and types
+    /// what this terminal sends into it. Not tmux-backed: the mirror holds no
+    /// state, so a reconnect simply starts a fresh one.
+    @discardableResult
+    func openITermView(host: String, port: Int, username: String,
+                       session: ITermCommands.Session) throws -> SSHSessionID {
+        try startSession(slug: "iterm-\(session.sessionID)", title: session.displayTitle,
+                         host: host, port: port, username: username,
+                         command: ITermCommands.viewCommand(sessionID: session.sessionID),
+                         kind: .shell, cwd: session.cwd)
+    }
+
     // MARK: - Remote directory browsing (Projects folder picker)
 
     /// Absolute home directory on the host — the browser's start point.

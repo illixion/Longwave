@@ -21,7 +21,7 @@ struct CompanionWindowView: View {
             NativePane(controller: controller)
                 .tabItem { Label("Native", systemImage: "macwindow.on.rectangle") }
             DevicesPane(controller: controller)
-                .tabItem { Label("Devices", systemImage: "visionpro") }
+                .tabItem { Label("Devices", systemImage: "macbook.and.iphone") }
             BroadcastPane(broadcastServer: broadcastServer)
                 .tabItem { Label("Broadcast", systemImage: "dot.radiowaves.left.and.right") }
             RemoteControlPane(controller: controller)
@@ -343,6 +343,8 @@ struct RemoteControlPane: View {
                 Text("A device gets SSH by pairing with “Ask for SSH login” on: tick SSH in the pairing dialog (or later under Devices) and its key is added here; untick or revoke and it's removed. Remote Login must be on in System Settings → General → Sharing.")
             }
 
+            ITermToolSection()
+
             if !controller.installedVisionKeys.isEmpty {
                 Section("Authorized Keys") {
                     ForEach(controller.installedVisionKeys) { key in
@@ -368,6 +370,34 @@ struct RemoteControlPane: View {
             }
         }
         .onAppear { controller.refreshKeys() }
+    }
+}
+
+/// Status of the bundled `iterm-tool`, which Longwave's Projects → iTerm2
+/// runs over the same SSH login as the rows above.
+private struct ITermToolSection: View {
+    @State private var installer = ITermToolInstaller.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("iterm-tool") {
+                switch installer.state {
+                case .idle: Text("Not installed").foregroundStyle(.secondary)
+                case .installing: ProgressView().controlSize(.small)
+                case .ready: Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed: Label("Failed", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+            }
+            if case .failed(let reason) = installer.state {
+                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Button("Reinstall") { installer.install() }
+                .disabled(installer.state == .installing)
+        } header: {
+            Text("iTerm2")
+        } footer: {
+            Text("Lets a device with SSH view, type into and manage this Mac's iTerm2 tabs (Longwave → Projects → iTerm2). Turn on iTerm2 → Settings → General → Magic → Enable Python API. The first request asks whether SSH may control iTerm2.")
+        }
     }
 }
 

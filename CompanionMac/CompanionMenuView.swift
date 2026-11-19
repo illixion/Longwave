@@ -81,7 +81,7 @@ struct CompanionMenuView: View {
                 }
                 .help("Choose what headsets may do here and grant the permissions those features need.")
 
-                Button("Open Companion Window…") {
+                Button("Settings…") {
                     openSettings()
                     NSApp.activate(ignoringOtherApps: true)
                 }

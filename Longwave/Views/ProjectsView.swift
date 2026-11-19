@@ -53,11 +53,18 @@ struct ProjectsView: View {
                 Picker("Session access", selection: $accessMode) {
                     Text("Companion Sandbox").tag("companion")
                     Text("SSH Account").tag("ssh")
+                    Text("iTerm2").tag("iterm")
                 }
                 .pickerStyle(.segmented)
                 .padding()
                 if accessMode == "companion" {
                     CompanionProjectsView { id in
+                        #if !os(visionOS)
+                        reenteredSession = id
+                        #endif
+                    }
+                } else if accessMode == "iterm" {
+                    ITermProjectsView { id in
                         #if !os(visionOS)
                         reenteredSession = id
                         #endif
